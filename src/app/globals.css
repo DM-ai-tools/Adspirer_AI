@@ -1,0 +1,112 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #0b0f14;
+  --foreground: #e8eef4;
+  --card: #121820;
+  --card-elevated: #161e28;
+  --popover: #121820;
+  --muted: #8b9aab;
+  --muted-foreground: #8b9aab;
+  --border: #243041;
+  --border-subtle: #1a2430;
+  --input: #1a2430;
+  --ring: #2dd4bf;
+  --accent: #2dd4bf;
+  --accent-foreground: #042f2e;
+  --accent-muted: rgba(45, 212, 191, 0.12);
+  --accent-hover: #5eead4;
+  --danger: #f87171;
+  --danger-foreground: #450a0a;
+  --danger-muted: rgba(248, 113, 113, 0.12);
+  --warning: #fbbf24;
+  --warning-foreground: #422006;
+  --warning-muted: rgba(251, 191, 36, 0.12);
+  --success: #34d399;
+  --success-foreground: #022c22;
+  --success-muted: rgba(52, 211, 153, 0.12);
+  --secondary: #1a2430;
+  --secondary-foreground: #d5dee8;
+  --primary: #2dd4bf;
+  --primary-foreground: #042f2e;
+  --destructive: #f87171;
+  --destructive-foreground: #450a0a;
+  --sidebar: #0d1218;
+  --sidebar-border: #1c2734;
+  --grid-line: rgba(45, 212, 191, 0.04);
+  --radius: 0.625rem;
+  --shadow-glow: 0 0 40px rgba(45, 212, 191, 0.08);
+}
+
+* {
+  border-color: var(--border);
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-dm-sans), ui-sans-serif, sans-serif;
+  min-height: 100%;
+}
+
+.font-mono,
+code,
+kbd,
+samp,
+pre {
+  font-family: var(--font-jetbrains-mono), ui-monospace, monospace;
+}
+
+.atmosphere {
+  background-color: var(--background);
+  background-image:
+    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(45, 212, 191, 0.12), transparent),
+    radial-gradient(ellipse 60% 40% at 100% 0%, rgba(56, 189, 248, 0.06), transparent),
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size:
+    100% 100%,
+    100% 100%,
+    48px 48px,
+    48px 48px;
+}
+
+.atmosphere-login {
+  background-color: var(--background);
+  background-image:
+    radial-gradient(ellipse 70% 55% at 20% 40%, rgba(45, 212, 191, 0.15), transparent 55%),
+    radial-gradient(ellipse 50% 40% at 85% 20%, rgba(56, 189, 248, 0.1), transparent 50%),
+    radial-gradient(ellipse 40% 30% at 70% 80%, rgba(45, 212, 191, 0.06), transparent 45%),
+    linear-gradient(rgba(45, 212, 191, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(45, 212, 191, 0.035) 1px, transparent 1px);
+  background-size:
+    100% 100%,
+    100% 100%,
+    100% 100%,
+    56px 56px,
+    56px 56px;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2a3a4c;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3a4d63;
+}

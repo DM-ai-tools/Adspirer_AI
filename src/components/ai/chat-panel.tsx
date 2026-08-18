@@ -1,0 +1,1503 @@
+"use client";
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Check,
+  Download,
+  FileText,
+  Loader2,
+  Send,
+  ThumbsDown,
+  ThumbsUp,
+} from "lucide-react";
+import { toast } from "sonner";
+import type { Approval, Message } from "@/types";
+import { apiFetch, formatRelative } from "@/lib/api-client";
+import {
+  InlineApprovalCards,
+  InlineCreativeCards,
+  type CreativeDraftCard,
+} from "@/components/ai/workflow-cards";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
+import { resolveAssistantDisplay } from "@/lib/agent/message-reconcile";
+import {
+  GENERIC_FALLBACK_REPLY,
+  humanizeAgentReply,
+} from "@/lib/agent/reply-format";
+import { useCreativeStatus } from "@/hooks/use-creative-status";
+import { TargetingPickerCard } from "@/components/ai/targeting-picker";
+import {
+  targetingSelectionToCreateArgs,
+  type CampaignTargetingSelection,
+} from "@/lib/adspirer/targeting";
+
+const SUGGESTIONS = [
+  "Create a Meta campaign for this account",
+  "Write Meta ad copy for our offer",
+  "Optimize ads in this account",
+  "Audit the account and summarize spend, delivery, and risks",
+];
+
+type ServiceOption = { id: string; name: string; description?: string };
+
+type ToolProposal = {
+  tool: string;
+  args: Record<string, unknown>;
+  rationale?: string;
+};
+
+type ParsedAssistant = {
+  displayText: string;
+  services: ServiceOption[] | null;
+  copies: Array<{
+    id: string;
+    angle: string;
+    primary_text: string;
+    headline: string;
+    description?: string;
+    cta?: string;
+  }> | null;
+  ads: Array<{
+    id: string;
+    name: string;
+    status?: string;
+    creative_summary?: string;
+  }> | null;
+  imageChoice: {
+    landing_page_url?: string;
+    headline?: string;
+    primary_text?: string;
+  } | null;
+  formatChoice: { selected?: "image" | "video" | null } | null;
+  videoChoice: {
+    landing_page_url?: string;
+    headline?: string;
+    primary_text?: string;
+  } | null;
+  targetingPicker: { account_id?: string | null } | null;
+  creativePicker: {
+    drafts?: CreativeDraftCard[];
+    status?: string;
+  } | null;
+  pendingApprovalIds: string[];
+  proposals: ToolProposal[];
+};
+
+function readMetaServices(
+  metadata: Record<string, unknown> | null | undefined,
+): ServiceOption[] | null {
+  const ui = metadata?.ui as
+    | { servicePicker?: { services?: ServiceOption[] } }
+    | null
+    | undefined;
+  const services = ui?.servicePicker?.services;
+  if (!Array.isArray(services) || !services.length) return null;
+  return services.filter((s) => s?.name?.trim());
+}
+
+function readMetaCopies(
+  metadata: Record<string, unknown> | null | undefined,
+) {
+  const ui = metadata?.ui as
+    | {
+        copyPicker?: {
+          copies?: Array<{
+            id: string;
+            angle: string;
+            primary_text: string;
+            headline: string;
+            description?: string;
+            cta?: string;
+          }>;
+        };
+      }
+    | null
+    | undefined;
+  const copies = ui?.copyPicker?.copies;
+  if (!Array.isArray(copies) || !copies.length) return null;
+  return copies.filter((c) => c?.headline && c?.primary_text);
+}
+
+function readMetaAds(metadata: Record<string, unknown> | null | undefined) {
+  const ui = metadata?.ui as
+    | {
+        adPicker?: {
+          ads?: Array<{
+            id: string;
+            name: string;
+            status?: string;
+            creative_summary?: string;
+          }>;
+        };
+      }
+    | null
+    | undefined;
+  const ads = ui?.adPicker?.ads;
+  if (!Array.isArray(ads) || !ads.length) return null;
+  return ads.filter((a) => a?.id && a?.name);
+}
+
+function readMetaCreativePicker(
+  metadata: Record<string, unknown> | null | undefined,
+) {
+  const ui = metadata?.ui as
+    | { creativePicker?: { drafts?: CreativeDraftCard[]; status?: string } }
+    | null
+    | undefined;
+  return ui?.creativePicker ?? null;
+}
+
+function readPendingApprovalIds(
+  metadata: Record<string, unknown> | null | undefined,
+): string[] {
+  const ids = metadata?.pendingApprovalIds ?? metadata?.pendingApprovalId;
+  if (Array.isArray(ids)) return ids.map(String);
+  if (typeof ids === "string") return [ids];
+  return [];
+}
+
+function readMetaImageChoice(
+  metadata: Record<string, unknown> | null | undefined,
+) {
+  const ui = metadata?.ui as
+    | {
+        imageChoice?: {
+          landing_page_url?: string;
+          headline?: string;
+          primary_text?: string;
+        };
+      }
+    | null
+    | undefined;
+  return ui?.imageChoice ?? null;
+}
+
+function readMetaFormatChoice(
+  metadata: Record<string, unknown> | null | undefined,
+) {
+  const ui = metadata?.ui as
+    | { formatChoice?: { selected?: "image" | "video" | null } }
+    | null
+    | undefined;
+  return ui?.formatChoice ?? null;
+}
+
+function readMetaVideoChoice(
+  metadata: Record<string, unknown> | null | undefined,
+) {
+  const ui = metadata?.ui as
+    | {
+        videoChoice?: {
+          landing_page_url?: string;
+          headline?: string;
+          primary_text?: string;
+        };
+      }
+    | null
+    | undefined;
+  return ui?.videoChoice ?? null;
+}
+
+function readMetaTargetingPicker(
+  metadata: Record<string, unknown> | null | undefined,
+) {
+  const ui = metadata?.ui as
+    | { targetingPicker?: { account_id?: string | null } }
+    | null
+    | undefined;
+  return ui?.targetingPicker ?? null;
+}
+
+function parseAssistantContent(
+  content: string,
+  metadata: Record<string, unknown> | null | undefined,
+): ParsedAssistant {
+  const humanized = humanizeAgentReply(content ?? "");
+  const metaServices = readMetaServices(metadata);
+  const metaCopies = readMetaCopies(metadata);
+  const metaAds = readMetaAds(metadata);
+  const metaImageChoice = readMetaImageChoice(metadata);
+  const metaFormatChoice = readMetaFormatChoice(metadata);
+  const metaVideoChoice = readMetaVideoChoice(metadata);
+  const metaTargetingPicker = readMetaTargetingPicker(metadata);
+  const metaCreativePicker = readMetaCreativePicker(metadata);
+  const pendingApprovalIds = readPendingApprovalIds(metadata);
+  const services = metaServices?.length
+    ? metaServices
+    : humanized.servicePicker?.services ?? null;
+  const copies = metaCopies?.length
+    ? metaCopies
+    : humanized.copyPicker?.copies ?? null;
+  const ads = metaAds?.length ? metaAds : humanized.adPicker?.ads ?? null;
+  const imageChoice = metaImageChoice ?? humanized.imageChoice ?? null;
+  const formatChoice = metaFormatChoice ?? humanized.formatChoice ?? null;
+  const videoChoice = metaVideoChoice ?? humanized.videoChoice ?? null;
+  const targetingPicker =
+    metaTargetingPicker ?? humanized.targetingPicker ?? null;
+  const creativePicker = metaCreativePicker ?? null;
+
+  return {
+    displayText: resolveAssistantDisplay(humanized.display, {
+      servicePicker: services?.length ? { services } : null,
+      copyPicker: copies?.length ? { copies } : null,
+      adPicker: ads?.length ? { ads } : null,
+      imageChoice,
+      formatChoice,
+      videoChoice,
+      targetingPicker,
+      creativePicker,
+    }),
+    services,
+    copies,
+    ads,
+    imageChoice,
+    formatChoice,
+    videoChoice,
+    targetingPicker,
+    creativePicker,
+    pendingApprovalIds,
+    proposals: humanized.toolCalls.map((t) => ({
+      tool: t.name,
+      args: t.args,
+      rationale: t.rationale,
+    })),
+  };
+}
+
+function renderInline(text: string): React.ReactNode[] {
+  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+  return parts.map((part, i) => {
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return (
+        <strong key={i} className="font-semibold text-foreground">
+          {part.slice(2, -2)}
+        </strong>
+      );
+    }
+    if (part.startsWith("`") && part.endsWith("`")) {
+      return (
+        <code
+          key={i}
+          className="rounded bg-secondary px-1 py-0.5 font-mono text-[11px]"
+        >
+          {part.slice(1, -1)}
+        </code>
+      );
+    }
+    return <span key={i}>{part}</span>;
+  });
+}
+
+function FormattedMessageBody({ text }: { text: string }) {
+  if (!text.trim()) return null;
+  const lines = text.split("\n");
+  const blocks: React.ReactNode[] = [];
+  let listItems: string[] = [];
+
+  const flushList = () => {
+    if (!listItems.length) return;
+    blocks.push(
+      <ul key={`ul-${blocks.length}`} className="my-1.5 space-y-1 pl-1">
+        {listItems.map((item, idx) => (
+          <li key={idx} className="flex gap-2 text-sm text-foreground/90">
+            <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent/70" />
+            <span>{renderInline(item)}</span>
+          </li>
+        ))}
+      </ul>,
+    );
+    listItems = [];
+  };
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const heading = line.match(/^#{1,3}\s+(.+)$/);
+    const bullet = line.match(/^[-*•]\s+(.+)$/);
+    const numbered = line.match(/^\d+\.\s+(.+)$/);
+
+    if (heading) {
+      flushList();
+      blocks.push(
+        <p
+          key={`h-${i}`}
+          className="mb-1 mt-3 text-[13px] font-semibold tracking-tight text-foreground first:mt-0"
+        >
+          {renderInline(heading[1])}
+        </p>,
+      );
+      continue;
+    }
+    if (bullet || numbered) {
+      listItems.push((bullet?.[1] ?? numbered?.[1])!);
+      continue;
+    }
+    flushList();
+    if (!line.trim()) {
+      blocks.push(<div key={`sp-${i}`} className="h-2" />);
+      continue;
+    }
+    blocks.push(
+      <p key={`p-${i}`} className="text-sm leading-relaxed text-foreground/90">
+        {renderInline(line)}
+      </p>,
+    );
+  }
+  flushList();
+
+  return <div className="space-y-0.5">{blocks}</div>;
+}
+
+function ToolProposalCards({ proposals }: { proposals: ToolProposal[] }) {
+  if (!proposals.length) return null;
+  return (
+    <div className="mt-3 space-y-2">
+      {proposals.map((p, i) => (
+        <div
+          key={`${p.tool}-${i}`}
+          className="rounded-lg border border-border bg-secondary/30 px-3 py-2"
+        >
+          <p className="text-xs font-medium text-foreground">
+            Proposed: <code className="font-mono text-accent">{p.tool}</code>
+          </p>
+          {p.rationale ? (
+            <p className="mt-1 text-xs text-muted">{p.rationale}</p>
+          ) : null}
+          <dl className="mt-2 grid gap-1 text-[11px] text-muted">
+            {Object.entries(p.args)
+              .slice(0, 8)
+              .map(([k, v]) => (
+                <div key={k} className="grid grid-cols-[7rem_1fr] gap-2">
+                  <dt className="font-mono text-muted/80">{k}</dt>
+                  <dd className="truncate text-foreground/80">
+                    {typeof v === "string" || typeof v === "number"
+                      ? String(v)
+                      : JSON.stringify(v)}
+                  </dd>
+                </div>
+              ))}
+          </dl>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function ChatPanel({
+  messages,
+  onSend,
+  disabled,
+  sending: sendingProp,
+  statusLabel,
+  placeholder = "Ask Adspirer to audit, create campaigns, or propose changes…",
+  className,
+  clientId,
+  conversationId,
+  taskId,
+  clientName,
+  inlineApprovals = [],
+  onWorkflowRefresh,
+}: {
+  messages: Message[];
+  onSend: (content: string) => Promise<void> | void;
+  disabled?: boolean;
+  sending?: boolean;
+  statusLabel?: string | null;
+  placeholder?: string;
+  className?: string;
+  clientId?: string;
+  conversationId?: string | null;
+  taskId?: string | null;
+  clientName?: string;
+  inlineApprovals?: Approval[];
+  onWorkflowRefresh?: () => void | Promise<void>;
+}) {
+  const [input, setInput] = useState("");
+  const [sendingLocal, setSendingLocal] = useState(false);
+  const [feedbackById, setFeedbackById] = useState<
+    Record<string, "up" | "down">
+  >({});
+  const [selectedByMessage, setSelectedByMessage] = useState<
+    Record<string, string[]>
+  >({});
+  const [selectedCopyByMessage, setSelectedCopyByMessage] = useState<
+    Record<string, string>
+  >({});
+  const [selectedAdByMessage, setSelectedAdByMessage] = useState<
+    Record<string, string>
+  >({});
+  const [startingCreatives, setStartingCreatives] = useState(false);
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const sending = sendingProp ?? sendingLocal;
+
+  // Images render on the server, so the chat watches the drafts rather than
+  // the request that started them — leaving and returning keeps the progress.
+  const {
+    drafts: liveCreativeDrafts,
+    progress: creativeProgress,
+    active: creativesRendering,
+    refresh: refreshCreativeStatus,
+  } = useCreativeStatus({
+    clientId,
+    conversationId,
+    enabled: Boolean(clientId && conversationId),
+  });
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, statusLabel]);
+
+  async function submit(content: string) {
+    const trimmed = content.trim();
+    if (!trimmed || sending || disabled) return;
+    setSendingLocal(true);
+    setInput("");
+    try {
+      await onSend(trimmed);
+    } finally {
+      setSendingLocal(false);
+    }
+  }
+
+  async function sendFeedback(messageId: string, rating: "up" | "down") {
+    if (messageId.startsWith("stream_") || messageId.startsWith("local_")) {
+      return;
+    }
+    try {
+      await apiFetch("/api/feedback", {
+        method: "POST",
+        body: JSON.stringify({ messageId, rating }),
+      });
+      setFeedbackById((prev) => ({ ...prev, [messageId]: rating }));
+      toast.success(
+        rating === "up"
+          ? "Thanks — we'll lean into this style next time"
+          : "Thanks — we'll avoid repeating that approach",
+      );
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Feedback failed");
+    }
+  }
+
+  async function exportReport(
+    format: "md" | "docx" | "pdf",
+    title: string,
+    content: string,
+  ) {
+    try {
+      const response = await fetch("/api/reports/export", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, content, format }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.error?.message ?? "Export failed");
+      }
+      const blob = await response.blob();
+      const disposition = response.headers.get("Content-Disposition") ?? "";
+      const match = disposition.match(/filename="([^"]+)"/);
+      const filename =
+        match?.[1] ??
+        `adspirer-report.${format === "docx" ? "doc" : format}`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(`Downloaded ${filename}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Export failed");
+    }
+  }
+
+  function toggleService(messageId: string, serviceId: string) {
+    setSelectedByMessage((prev) => {
+      const current = prev[messageId] ?? [];
+      const next = current.includes(serviceId)
+        ? current.filter((id) => id !== serviceId)
+        : [...current, serviceId];
+      return { ...prev, [messageId]: next };
+    });
+  }
+
+  function confirmServices(messageId: string, services: ServiceOption[]) {
+    const selectedIds = selectedByMessage[messageId] ?? [];
+    if (!selectedIds.length) {
+      toast.error("Select at least one service");
+      return;
+    }
+    const picked = services.filter((s) => selectedIds.includes(s.id));
+    const lines = picked.map(
+      (s) =>
+        `- ${s.id}: ${s.name}${s.description ? ` (${s.description})` : ""}`,
+    );
+    void submit(
+      [
+        "Create PAUSED ad sets and ads for these selected services:",
+        ...lines,
+        "",
+        "For each create_adset include: account_id, campaign_id, name, ad_type=\"image\", primary_text, landing_page_url (https:// from this conversation). Queue create_adset and create_ad via Approvals, then report proof IDs. Entities stay PAUSED (not published).",
+      ].join("\n"),
+    );
+  }
+
+  function confirmCopy(
+    messageId: string,
+    copies: NonNullable<ParsedAssistant["copies"]>,
+  ) {
+    const copyId = selectedCopyByMessage[messageId];
+    const picked = copies.find((c) => c.id === copyId);
+    if (!picked) {
+      toast.error("Select a copy variant");
+      return;
+    }
+    void submit(
+      [
+        `Use approved ad copy variant ${picked.id} (${picked.angle}):`,
+        `- primary_text: ${picked.primary_text}`,
+        `- headline: ${picked.headline}`,
+        picked.description ? `- description: ${picked.description}` : null,
+        picked.cta ? `- cta: ${picked.cta}` : null,
+        "",
+        "Ask whether I have an image URL or should generate in Creatives. Then queue create with image_url via Approvals. Entities stay PAUSED.",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    );
+  }
+
+  function confirmAd(
+    messageId: string,
+    ads: NonNullable<ParsedAssistant["ads"]>,
+  ) {
+    const adId = selectedAdByMessage[messageId];
+    const picked = ads.find((a) => a.id === adId);
+    if (!picked) {
+      toast.error("Select an ad to optimize");
+      return;
+    }
+    void submit(
+      [
+        `Optimize selected ad ${picked.id} (${picked.name}).`,
+        "Run Adspirer detect_meta_creative_fatigue, optimize_meta_budget, and optimize_meta_placements.",
+        "Summarize recommendations for this ad and queue any EXECUTE changes via Approvals (PAUSED creates only).",
+      ].join("\n"),
+    );
+  }
+
+  async function confirmTargeting(selection: CampaignTargetingSelection) {
+    if (taskId && clientId) {
+      try {
+        await apiFetch("/api/workflow/targeting", {
+          method: "POST",
+          body: JSON.stringify({ clientId, taskId, targeting: selection }),
+        });
+      } catch {
+        // Chat message still carries the selection for the agent.
+      }
+    }
+    const args = targetingSelectionToCreateArgs(selection);
+    const lines = [
+      "Advanced targeting selections for this campaign (use these exact fields on create_meta_image_campaign / create_meta_video_campaign / create_adset):",
+      Object.keys(args).length
+        ? `\`\`\`json\n${JSON.stringify(args, null, 2)}\n\`\`\``
+        : "- (none)",
+      "",
+      "Human labels:",
+      selection.custom_audiences.length
+        ? `- Custom audiences: ${selection.custom_audiences.map((a) => a.name).join(", ")}`
+        : null,
+      selection.interests.length
+        ? `- Interests: ${selection.interests.map((i) => i.name).join(", ")}`
+        : null,
+      selection.behaviors.length
+        ? `- Behaviors: ${selection.behaviors.map((b) => b.name).join(", ")}`
+        : null,
+      selection.locations.length
+        ? `- Locations: ${selection.locations.map((l) => l.name).join(", ")}`
+        : null,
+      "",
+      "Continue to the creative step next (image URL / generate, or video URL / Meta video ID).",
+    ].filter(Boolean);
+    void submit(lines.join("\n"));
+  }
+
+  function skipTargeting() {
+    void submit(
+      "Skip advanced targeting — use broad / Advantage+ defaults (no custom_audiences or detailed interests/behaviors). Continue to the creative step next.",
+    );
+  }
+
+  const parsedById = useMemo(() => {
+    const map = new Map<string, ParsedAssistant>();
+    for (const m of messages) {
+      if (m.role === "assistant") {
+        map.set(m.id, parseAssistantContent(m.content, m.metadata));
+      }
+    }
+    return map;
+  }, [messages]);
+
+  const latestPickerMessageId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const m = messages[i];
+      if (m.role !== "assistant") continue;
+      const parsed = parsedById.get(m.id);
+      if (parsed?.services?.length) return m.id;
+    }
+    return null;
+  }, [messages, parsedById]);
+
+  const latestCopyPickerMessageId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const m = messages[i];
+      if (m.role !== "assistant") continue;
+      const parsed = parsedById.get(m.id);
+      if (parsed?.copies?.length) return m.id;
+    }
+    return null;
+  }, [messages, parsedById]);
+
+  const latestAdPickerMessageId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const m = messages[i];
+      if (m.role !== "assistant") continue;
+      const parsed = parsedById.get(m.id);
+      if (parsed?.ads?.length) return m.id;
+    }
+    return null;
+  }, [messages, parsedById]);
+
+  const latestImageChoiceMessageId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const m = messages[i];
+      if (m.role !== "assistant") continue;
+      const parsed = parsedById.get(m.id);
+      if (parsed?.imageChoice) return m.id;
+    }
+    return null;
+  }, [messages, parsedById]);
+
+  const latestFormatChoiceMessageId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const m = messages[i];
+      if (m.role !== "assistant") continue;
+      const parsed = parsedById.get(m.id);
+      if (parsed?.formatChoice) return m.id;
+    }
+    return null;
+  }, [messages, parsedById]);
+
+  const latestVideoChoiceMessageId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const m = messages[i];
+      if (m.role !== "assistant") continue;
+      const parsed = parsedById.get(m.id);
+      if (parsed?.videoChoice) return m.id;
+    }
+    return null;
+  }, [messages, parsedById]);
+
+  const latestTargetingPickerMessageId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const m = messages[i];
+      if (m.role !== "assistant") continue;
+      const parsed = parsedById.get(m.id);
+      if (parsed?.targetingPicker) return m.id;
+    }
+    return null;
+  }, [messages, parsedById]);
+
+  /**
+   * Every generation event carries its own snapshot of the drafts, which would
+   * otherwise render a duplicate set of cards per message with stale statuses.
+   * Collapse them into one live set shown on the most recent picker message.
+   */
+  const { creativeCardsMessageId, creativeCards } = useMemo(() => {
+    const byDraftId = new Map<string, CreativeDraftCard>();
+    let lastMessageId: string | null = null;
+    let lastAssistantId: string | null = null;
+    for (const m of messages) {
+      if (m.role !== "assistant") continue;
+      lastAssistantId = m.id;
+      const picker = parsedById.get(m.id)?.creativePicker;
+      if (!picker?.drafts?.length) continue;
+      lastMessageId = m.id;
+      for (const draft of picker.drafts) {
+        byDraftId.set(draft.id, { ...byDraftId.get(draft.id), ...draft });
+      }
+    }
+
+    // Snapshots freeze at the moment their message was written, so the poll —
+    // which reflects images finishing on the server — always wins.
+    for (const live of liveCreativeDrafts) {
+      byDraftId.set(live.id, {
+        ...byDraftId.get(live.id),
+        ...live,
+      } as CreativeDraftCard);
+    }
+
+    return {
+      // A batch started from the button has no picker message yet; hang its
+      // cards off the newest reply so they show up without a chat reload.
+      creativeCardsMessageId: lastMessageId ?? lastAssistantId,
+      creativeCards: Array.from(byDraftId.values()),
+    };
+  }, [messages, parsedById, liveCreativeDrafts]);
+
+  return (
+    <div className={cn("flex h-full min-h-0 flex-col", className)}>
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-4">
+        <div className="space-y-4 pb-4">
+          {messages.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-border bg-secondary/20 p-5">
+              <p className="text-sm font-medium text-foreground">
+                Start a new chat
+              </p>
+              <p className="mt-1 text-sm text-muted">
+                Ask about Meta Ads for this client — audits, campaign creation,
+                website service scrape, and approval-gated changes. Feedback
+                trains future answers.
+              </p>
+              <div className="mt-4 flex flex-col gap-2">
+                {SUGGESTIONS.map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => submit(s)}
+                    className="rounded-lg border border-border bg-card px-3 py-2 text-left text-sm text-muted transition-colors hover:border-accent/40 hover:text-foreground"
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            messages.map((message) => {
+              const streaming = Boolean(message.metadata?.streaming);
+              const feedback = feedbackById[message.id];
+              const parsed =
+                message.role === "assistant"
+                  ? parsedById.get(message.id)
+                  : null;
+              const services = parsed?.services ?? null;
+              const copies = parsed?.copies ?? null;
+              const ads = parsed?.ads ?? null;
+              const imageChoice = parsed?.imageChoice ?? null;
+              const selected = selectedByMessage[message.id] ?? [];
+              const selectedCopy = selectedCopyByMessage[message.id];
+              const selectedAd = selectedAdByMessage[message.id];
+              const isLatestPicker = message.id === latestPickerMessageId;
+              const isLatestCopyPicker =
+                message.id === latestCopyPickerMessageId;
+              const isLatestAdPicker = message.id === latestAdPickerMessageId;
+              const isLatestImageChoice =
+                message.id === latestImageChoiceMessageId;
+              const isLatestFormatChoice =
+                message.id === latestFormatChoiceMessageId;
+              const isLatestVideoChoice =
+                message.id === latestVideoChoiceMessageId;
+              const isLatestTargetingPicker =
+                message.id === latestTargetingPickerMessageId;
+              const formatChoice = parsed?.formatChoice ?? null;
+              const videoChoice = parsed?.videoChoice ?? null;
+              const targetingPicker = parsed?.targetingPicker ?? null;
+              const displayText = parsed?.displayText ?? message.content;
+              const isStreamingPlaceholder =
+                !displayText.trim() ||
+                displayText.trim() === GENERIC_FALLBACK_REPLY;
+              const liveLabel =
+                typeof message.metadata?.label === "string"
+                  ? message.metadata.label
+                  : statusLabel;
+              const isReport =
+                Boolean(message.metadata?.isReport) ||
+                /^#\s+.+/m.test(parsed?.displayText ?? "") &&
+                  /\b(executive summary|recommendations|next steps|session report)\b/i.test(
+                    parsed?.displayText ?? "",
+                  );
+              const reportTitle =
+                (typeof message.metadata?.reportTitle === "string" &&
+                  message.metadata.reportTitle) ||
+                parsed?.displayText?.match(/^#\s+(.+)$/m)?.[1]?.trim() ||
+                "Adspirer report";
+              const pendingApprovals = parsed?.pendingApprovalIds?.length
+                ? parsed.pendingApprovalIds
+                : Array.isArray(message.metadata?.pendingApprovalIds)
+                  ? (message.metadata?.pendingApprovalIds as string[])
+                  : message.metadata?.pendingApprovalId
+                    ? [String(message.metadata.pendingApprovalId)]
+                    : [];
+              const messageApprovals = inlineApprovals.filter((a) =>
+                pendingApprovals.includes(a.id),
+              );
+
+              return (
+                <div
+                  key={message.id}
+                  className={cn(
+                    "flex",
+                    message.role === "user" ? "justify-end" : "justify-start",
+                  )}
+                >
+                  <div
+                    className={cn(
+                      "max-w-[90%] rounded-xl px-3.5 py-2.5 text-sm leading-relaxed",
+                      message.role === "user"
+                        ? "bg-accent text-accent-foreground"
+                        : message.role === "system"
+                          ? "border border-border bg-secondary/40 text-muted"
+                          : "border border-border bg-card text-foreground",
+                    )}
+                  >
+                    <div className="mb-1 flex items-center gap-2 text-[10px] uppercase tracking-wide opacity-70">
+                      <span>{message.role}</span>
+                      <span className="font-mono normal-case">
+                        {formatRelative(message.created_at)}
+                      </span>
+                      {streaming ? (
+                        <span className="inline-flex items-center gap-1 normal-case text-accent">
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                          live
+                        </span>
+                      ) : null}
+                      {!streaming && isReport ? (
+                        <span className="rounded bg-accent/15 px-1.5 py-0.5 normal-case text-accent">
+                          report
+                        </span>
+                      ) : null}
+                    </div>
+
+                    {!streaming &&
+                    message.role === "assistant" &&
+                    isReport ? (
+                      <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-accent/30 bg-accent/5 px-2.5 py-2">
+                        <p className="mr-auto text-xs text-muted">
+                          Download this report
+                        </p>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          className="h-7 gap-1 text-xs"
+                          onClick={() =>
+                            void exportReport(
+                              "docx",
+                              reportTitle,
+                              parsed?.displayText || message.content,
+                            )
+                          }
+                        >
+                          <FileText className="h-3.5 w-3.5" />
+                          Word
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          className="h-7 gap-1 text-xs"
+                          onClick={() =>
+                            void exportReport(
+                              "pdf",
+                              reportTitle,
+                              parsed?.displayText || message.content,
+                            )
+                          }
+                        >
+                          <Download className="h-3.5 w-3.5" />
+                          PDF
+                        </Button>
+                      </div>
+                    ) : null}
+
+                    {message.role === "assistant" ? (
+                      <>
+                        {streaming && isStreamingPlaceholder ? (
+                          <p className="text-sm italic text-muted">
+                            {liveLabel ?? "Working…"}
+                          </p>
+                        ) : (
+                          <FormattedMessageBody text={displayText} />
+                        )}
+                        {streaming && !isStreamingPlaceholder ? (
+                          <span className="ml-0.5 inline-block h-3 w-1.5 animate-pulse bg-accent align-middle" />
+                        ) : null}
+                        {!streaming && parsed?.proposals?.length ? (
+                          <ToolProposalCards proposals={parsed.proposals} />
+                        ) : null}
+                      </>
+                    ) : (
+                      <div className="whitespace-pre-wrap">{message.content}</div>
+                    )}
+
+                    {!streaming &&
+                    message.role === "assistant" &&
+                    pendingApprovals.length > 0 &&
+                    messageApprovals.length > 0 ? (
+                      <InlineApprovalCards
+                        approvals={messageApprovals}
+                        clientName={clientName}
+                        onUpdated={async () => {
+                          await onWorkflowRefresh?.();
+                        }}
+                      />
+                    ) : pendingApprovals.length > 0 ? (
+                      <div className="mt-2 rounded-lg border border-accent/30 bg-accent/5 px-2.5 py-2 text-xs text-muted">
+                        Queued for Approvals ({pendingApprovals.length}). Review
+                        inline when loaded — nothing is live until executed.
+                      </div>
+                    ) : null}
+
+                    {message.id === creativeCardsMessageId &&
+                    creativeCards.length ? (
+                      <>
+                        {creativesRendering && creativeProgress ? (
+                          <div className="mt-3 flex items-center gap-2 rounded-lg border border-accent/30 bg-accent/5 px-2.5 py-2 text-xs text-muted">
+                            <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
+                            <span>
+                              Rendering stills —{" "}
+                              {creativeProgress.succeeded +
+                                creativeProgress.failed +
+                                creativeProgress.stalled}{" "}
+                              of {creativeProgress.total} done. Safe to switch
+                              pages; this keeps running.
+                            </span>
+                          </div>
+                        ) : null}
+                        <InlineCreativeCards
+                          drafts={creativeCards}
+                          disabled={disabled || sending}
+                          onUpdated={async () => {
+                            refreshCreativeStatus();
+                            await onWorkflowRefresh?.();
+                          }}
+                        />
+                      </>
+                    ) : null}
+
+                    {!streaming && services && isLatestPicker ? (
+                      <div className="mt-3 space-y-2.5 border-t border-border/60 pt-3">
+                        <div className="flex items-baseline justify-between gap-2">
+                          <p className="text-xs font-semibold text-foreground">
+                            Select services for ad sets / ads
+                          </p>
+                          <p className="text-[10px] text-muted">
+                            {selected.length} selected · {services.length} found
+                          </p>
+                        </div>
+                        <div className="grid gap-1.5 sm:grid-cols-2">
+                          {services.map((service) => {
+                            const on = selected.includes(service.id);
+                            return (
+                              <button
+                                key={service.id}
+                                type="button"
+                                onClick={() =>
+                                  toggleService(message.id, service.id)
+                                }
+                                className={cn(
+                                  "rounded-lg border px-2.5 py-2 text-left transition-colors",
+                                  on
+                                    ? "border-accent bg-accent/10"
+                                    : "border-border bg-secondary/30 hover:border-accent/40",
+                                )}
+                              >
+                                <div className="flex items-start gap-2">
+                                  <span
+                                    className={cn(
+                                      "mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded border",
+                                      on
+                                        ? "border-accent bg-accent text-accent-foreground"
+                                        : "border-border",
+                                    )}
+                                  >
+                                    {on ? <Check className="h-3 w-3" /> : null}
+                                  </span>
+                                  <span className="min-w-0">
+                                    <span className="block text-xs font-medium text-foreground">
+                                      {service.name}
+                                    </span>
+                                    {service.description ? (
+                                      <span className="mt-0.5 block text-[11px] leading-snug text-muted">
+                                        {service.description}
+                                      </span>
+                                    ) : null}
+                                  </span>
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="secondary"
+                            className="h-8"
+                            disabled={disabled || sending}
+                            onClick={() =>
+                              setSelectedByMessage((prev) => ({
+                                ...prev,
+                                [message.id]: services.map((s) => s.id),
+                              }))
+                            }
+                          >
+                            Select all
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            className="h-8"
+                            disabled={
+                              disabled || sending || selected.length === 0
+                            }
+                            onClick={() =>
+                              confirmServices(message.id, services)
+                            }
+                          >
+                            Create ad sets + ads for selected
+                          </Button>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {!streaming && copies && isLatestCopyPicker ? (
+                      <div className="mt-3 space-y-2.5 border-t border-border/60 pt-3">
+                        <div className="flex items-baseline justify-between gap-2">
+                          <p className="text-xs font-semibold text-foreground">
+                            Approve an ad copy variant
+                          </p>
+                          <p className="text-[10px] text-muted">
+                            {copies.length} options
+                          </p>
+                        </div>
+                        <div className="grid gap-2">
+                          {copies.map((copy) => {
+                            const on = selectedCopy === copy.id;
+                            return (
+                              <button
+                                key={copy.id}
+                                type="button"
+                                onClick={() =>
+                                  setSelectedCopyByMessage((prev) => ({
+                                    ...prev,
+                                    [message.id]: copy.id,
+                                  }))
+                                }
+                                className={cn(
+                                  "rounded-lg border px-2.5 py-2 text-left transition-colors",
+                                  on
+                                    ? "border-accent bg-accent/10"
+                                    : "border-border bg-secondary/30 hover:border-accent/40",
+                                )}
+                              >
+                                <div className="flex items-start gap-2">
+                                  <span
+                                    className={cn(
+                                      "mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border",
+                                      on
+                                        ? "border-accent bg-accent text-accent-foreground"
+                                        : "border-border",
+                                    )}
+                                  >
+                                    {on ? <Check className="h-3 w-3" /> : null}
+                                  </span>
+                                  <span className="min-w-0 space-y-1">
+                                    <span className="block text-xs font-medium text-foreground">
+                                      {copy.id} · {copy.angle}
+                                    </span>
+                                    <span className="block text-[11px] font-medium text-foreground">
+                                      {copy.headline}
+                                    </span>
+                                    <span className="block text-[11px] leading-snug text-muted">
+                                      {copy.primary_text}
+                                    </span>
+                                    {copy.cta ? (
+                                      <span className="inline-block rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted">
+                                        CTA: {copy.cta}
+                                      </span>
+                                    ) : null}
+                                  </span>
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          className="h-8"
+                          disabled={disabled || sending || !selectedCopy}
+                          onClick={() => confirmCopy(message.id, copies)}
+                        >
+                          Use selected copy → Approvals
+                        </Button>
+                      </div>
+                    ) : null}
+
+                    {!streaming && ads && isLatestAdPicker ? (
+                      <div className="mt-3 space-y-2.5 border-t border-border/60 pt-3">
+                        <p className="text-xs font-semibold text-foreground">
+                          Select an ad to optimize
+                        </p>
+                        <div className="grid gap-1.5">
+                          {ads.map((ad) => {
+                            const on = selectedAd === ad.id;
+                            return (
+                              <button
+                                key={ad.id}
+                                type="button"
+                                onClick={() =>
+                                  setSelectedAdByMessage((prev) => ({
+                                    ...prev,
+                                    [message.id]: ad.id,
+                                  }))
+                                }
+                                className={cn(
+                                  "rounded-lg border px-2.5 py-2 text-left transition-colors",
+                                  on
+                                    ? "border-accent bg-accent/10"
+                                    : "border-border bg-secondary/30 hover:border-accent/40",
+                                )}
+                              >
+                                <span className="block text-xs font-medium text-foreground">
+                                  {ad.name}
+                                </span>
+                                <span className="mt-0.5 block font-mono text-[10px] text-muted">
+                                  {ad.id}
+                                  {ad.status ? ` · ${ad.status}` : ""}
+                                </span>
+                                {ad.creative_summary ? (
+                                  <span className="mt-0.5 block text-[11px] text-muted">
+                                    {ad.creative_summary}
+                                  </span>
+                                ) : null}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          className="h-8"
+                          disabled={disabled || sending || !selectedAd}
+                          onClick={() => confirmAd(message.id, ads)}
+                        >
+                          Optimize selected ad
+                        </Button>
+                      </div>
+                    ) : null}
+
+                    {!streaming &&
+                    targetingPicker &&
+                    isLatestTargetingPicker &&
+                    clientId ? (
+                      <TargetingPickerCard
+                        clientId={clientId}
+                        accountId={targetingPicker.account_id}
+                        disabled={disabled || sending}
+                        onConfirm={(selection) =>
+                          void confirmTargeting(selection)
+                        }
+                        onSkip={skipTargeting}
+                      />
+                    ) : null}
+
+                    {!streaming &&
+                    formatChoice &&
+                    isLatestFormatChoice ? (
+                      <div className="mt-3 space-y-2 border-t border-border/60 pt-3">
+                        <p className="text-xs font-semibold text-foreground">
+                          Campaign format
+                        </p>
+                        <p className="text-[11px] text-muted">
+                          Image uses a still (URL or generate). Video needs a
+                          public MP4/MOV URL or an existing Meta video ID —
+                          Adspirer does not generate videos.
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            className="h-8"
+                            disabled={disabled || sending}
+                            onClick={() =>
+                              void submit(
+                                "I want an image ad/campaign. Continue the brief for create_meta_image_campaign.",
+                              )
+                            }
+                          >
+                            Image ad
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="secondary"
+                            className="h-8"
+                            disabled={disabled || sending}
+                            onClick={() =>
+                              void submit(
+                                "I want a video ad/campaign. Continue the brief for create_meta_video_campaign — I will provide a video URL or Meta video ID (no image generation).",
+                              )
+                            }
+                          >
+                            Video ad
+                          </Button>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {!streaming &&
+                    videoChoice &&
+                    isLatestVideoChoice ? (
+                      <div className="mt-3 space-y-2 border-t border-border/60 pt-3">
+                        <p className="text-xs font-semibold text-foreground">
+                          Video creative
+                        </p>
+                        <p className="text-[11px] text-muted">
+                          Provide a public https video URL (MP4/MOV) or a Meta
+                          video ID already in the ad account.
+                          {videoChoice.landing_page_url
+                            ? ` Landing page on file: ${videoChoice.landing_page_url}`
+                            : ""}
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            className="h-8"
+                            disabled={disabled || sending}
+                            onClick={() =>
+                              void submit(
+                                "I have a public video URL. Ask me for it, then use it as video_url in create_meta_video_campaign.",
+                              )
+                            }
+                          >
+                            I have a video URL
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="secondary"
+                            className="h-8"
+                            disabled={disabled || sending}
+                            onClick={() =>
+                              void submit(
+                                "I have an existing Meta video ID. Ask me for it, then use it as existing_video_id in create_meta_video_campaign.",
+                              )
+                            }
+                          >
+                            I have a Meta video ID
+                          </Button>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {!streaming &&
+                    imageChoice &&
+                    isLatestImageChoice &&
+                    !creativesRendering ? (
+                      <div className="mt-3 space-y-2 border-t border-border/60 pt-3">
+                        <p className="text-xs font-semibold text-foreground">
+                          Creative image
+                        </p>
+                        <p className="text-[11px] text-muted">
+                          Provide your own URL, or generate stills here from your
+                          ad copy + landing page (brand colours / logo).
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="secondary"
+                            className="h-8"
+                            disabled={disabled || sending}
+                            onClick={() =>
+                              void submit(
+                                "I already have an image URL / Meta image hash. Ask me for it, then use it as image_url in the create payload.",
+                              )
+                            }
+                          >
+                            I have an image URL
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            className="h-8"
+                            disabled={
+                              disabled ||
+                              sending ||
+                              !clientId ||
+                              startingCreatives
+                            }
+                            onClick={() => {
+                              void (async () => {
+                                setStartingCreatives(true);
+                                try {
+                                  await apiFetch("/api/workflow/creatives/generate", {
+                                    method: "POST",
+                                    body: JSON.stringify({
+                                      clientId,
+                                      conversationId,
+                                      taskId,
+                                      landingPageUrl: imageChoice.landing_page_url,
+                                      headline: imageChoice.headline,
+                                      primaryText: imageChoice.primary_text,
+                                      analyzeBrand: Boolean(
+                                        imageChoice.landing_page_url,
+                                      ),
+                                    }),
+                                  });
+                                  toast.success(
+                                    "Generating creatives — they'll appear in this chat",
+                                  );
+                                  refreshCreativeStatus();
+                                  await onWorkflowRefresh?.();
+                                } catch (err) {
+                                  toast.error(
+                                    err instanceof Error
+                                      ? err.message
+                                      : "Generation failed",
+                                  );
+                                } finally {
+                                  setStartingCreatives(false);
+                                }
+                              })();
+                            }}
+                          >
+                            {startingCreatives ? (
+                              <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                            ) : null}
+                            Generate images here
+                          </Button>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {message.role === "assistant" &&
+                    (parsed?.displayText || message.content) &&
+                    !streaming ? (
+                      <div className="mt-2 flex flex-wrap items-center gap-1 border-t border-border/60 pt-2">
+                        <button
+                          type="button"
+                          title="Helpful"
+                          onClick={() => void sendFeedback(message.id, "up")}
+                          className={cn(
+                            "rounded-md p-1 text-muted transition-colors hover:bg-secondary hover:text-foreground",
+                            feedback === "up" && "bg-accent/15 text-accent",
+                          )}
+                        >
+                          <ThumbsUp className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          title="Not helpful"
+                          onClick={() => void sendFeedback(message.id, "down")}
+                          className={cn(
+                            "rounded-md p-1 text-muted transition-colors hover:bg-secondary hover:text-foreground",
+                            feedback === "down" &&
+                              "bg-danger-muted text-danger",
+                          )}
+                        >
+                          <ThumbsDown className="h-3.5 w-3.5" />
+                        </button>
+                        <span className="ml-1 mr-2 text-[10px] text-muted">
+                          Teach the agent
+                        </span>
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-muted hover:bg-secondary hover:text-foreground"
+                          onClick={() =>
+                            void exportReport(
+                              "docx",
+                              "Adspirer report",
+                              parsed?.displayText || message.content,
+                            )
+                          }
+                        >
+                          <FileText className="h-3 w-3" />
+                          Word
+                        </button>
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-muted hover:bg-secondary hover:text-foreground"
+                          onClick={() =>
+                            void exportReport(
+                              "pdf",
+                              "Adspirer report",
+                              parsed?.displayText || message.content,
+                            )
+                          }
+                        >
+                          <Download className="h-3 w-3" />
+                          PDF
+                        </button>
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-muted hover:bg-secondary hover:text-foreground"
+                          onClick={() =>
+                            void exportReport(
+                              "md",
+                              "Adspirer report",
+                              parsed?.displayText || message.content,
+                            )
+                          }
+                        >
+                          MD
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })
+          )}
+          {sending && statusLabel ? (
+            <div className="flex items-center gap-2 text-xs text-muted">
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
+              {statusLabel}
+            </div>
+          ) : null}
+          <div ref={bottomRef} />
+        </div>
+      </div>
+
+      <form
+        className="shrink-0 flex gap-2 border-t border-border px-4 py-3"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit(input);
+        }}
+      >
+        <Textarea
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder={placeholder}
+          disabled={disabled || sending}
+          className="min-h-[52px] max-h-32 resize-none"
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              void submit(input);
+            }
+          }}
+        />
+        <Button
+          type="submit"
+          size="icon"
+          className="h-[52px] w-11 shrink-0"
+          disabled={disabled || sending || !input.trim()}
+        >
+          {sending ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Send className="h-4 w-4" />
+          )}
+        </Button>
+      </form>
+    </div>
+  );
+}
