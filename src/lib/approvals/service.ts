@@ -16,6 +16,7 @@ import {
   toApprovalInsert,
 } from "@/lib/db/live-maps";
 import { mapClientRow } from "@/lib/clients/map-client";
+import { normalizeMetaApprovalArgs } from "@/lib/meta/normalize-approval-args";
 
 async function getClient(clientId: string) {
   const config = getConfig();
@@ -55,10 +56,14 @@ export async function createPendingApproval(input: {
   idempotencyKey?: string;
 }): Promise<Approval> {
   assertNotBlocked(input.toolName);
+  const proposedArgs = normalizeMetaApprovalArgs(
+    input.toolName,
+    input.proposedArgs,
+  );
   const client = await getClient(input.clientId);
   assertWithinBudgetCeiling(
     client,
-    input.proposedArgs,
+    proposedArgs,
     input.budgetImpactCents,
   );
 
@@ -73,7 +78,7 @@ export async function createPendingApproval(input: {
     task_id: input.taskId ?? null,
     tool_call_id: input.toolCallId ?? null,
     tool_name: input.toolName,
-    proposed_args: input.proposedArgs,
+    proposed_args: proposedArgs,
     edited_args: null,
     status: "pending",
     rationale: input.rationale ?? null,
@@ -145,10 +150,14 @@ export async function edit(input: {
   const approval = await getApproval(input.approvalId);
   assertTransition(approval.status, "edited");
 
+  const editedArgs = normalizeMetaApprovalArgs(
+    approval.tool_name,
+    input.editedArgs,
+  );
   const client = await getClient(approval.client_id);
   assertWithinBudgetCeiling(
     client,
-    input.editedArgs,
+    editedArgs,
     input.budgetImpactCents ?? approval.budget_impact_cents,
   );
 
@@ -156,7 +165,7 @@ export async function edit(input: {
   const updated: Approval = {
     ...approval,
     status: "edited",
-    edited_args: input.editedArgs,
+    edited_args: editedArgs,
     budget_impact_cents:
       input.budgetImpactCents ?? approval.budget_impact_cents,
     reviewed_by: input.reviewedBy,

@@ -21,7 +21,10 @@ export async function POST(request: Request) {
       clientId = parsed.clientId ?? null;
     }
 
-    const result = await syncConnectedMetaAccounts({ clientId });
+    const result = await syncConnectedMetaAccounts({
+      clientId,
+      source: "adspirer",
+    });
 
     return jsonOk({
       count: result.count,

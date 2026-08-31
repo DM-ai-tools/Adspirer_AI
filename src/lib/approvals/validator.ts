@@ -3,6 +3,7 @@ import {
   ApprovalExpiredError,
   BudgetCeilingViolation,
 } from "@/lib/errors";
+import { resolveBudgetDaily } from "@/lib/meta/resolve-budget-daily";
 
 const EXECUTABLE_STATUSES: ApprovalStatus[] = ["approved", "edited"];
 
@@ -66,7 +67,10 @@ export function assertWithinBudgetCeiling(
   const daily =
     typeof args.daily_budget_cents === "number"
       ? args.daily_budget_cents
-      : null;
+      : (() => {
+          const budget = resolveBudgetDaily(args);
+          return budget != null ? Math.round(budget * 100) : null;
+        })();
 
   if (daily != null && daily > ceiling) {
     throw new BudgetCeilingViolation(

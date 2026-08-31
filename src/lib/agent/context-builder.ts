@@ -6,6 +6,7 @@ import {
   listCreativeDraftsAsync,
   resolveImageUrlForAdspirer,
 } from "@/lib/creatives/drafts";
+import { getWorkspaceContext } from "@/lib/runtime/workspace-context";
 import { buildClientBrandBlock } from "./prompts";
 
 export async function buildClientContext(
@@ -20,7 +21,7 @@ export async function buildClientContext(
   const conversationId = options?.conversationId ?? null;
   const services = await loadServices(clientId);
   const briefs = await loadBriefs(clientId);
-  const meta = await loadMetaAccounts(clientId);
+  const meta = await loadMappedMetaAccounts(clientId);
   const selectedCreative = await getSelectedCreativeDraftAsync(clientId, {
     conversationId,
   }).catch(() => null);
@@ -30,8 +31,34 @@ export async function buildClientContext(
     }).catch(() => [])
   ).slice(0, 3);
   const recentApprovals = loadRecentApprovals(clientId);
+  const isV2 = getWorkspaceContext()?.version === "v2";
 
   const sections = [
+    "## Workspace mode",
+    isV2
+      ? [
+          "- Version: Workspace V2 (Meta-direct)",
+          "- Backend: Facebook OAuth → Meta Graph API (NOT Adspirer MCP)",
+          "- If asked about Adspirer: say V2 does not use Adspirer; V1 does.",
+          meta.length
+            ? [
+                `- Mapped Meta accounts for this client: ${meta.length}`,
+                ...meta.map(
+                  (m) =>
+                    `  · ${m.meta_account_name} (${m.meta_account_id}) · access=${m.access_status}`,
+                ),
+                `- Primary account for API calls: ${
+                  meta.find((m) => m.access_status === "granted")
+                    ?.meta_account_name ?? "(none granted)"
+                }`,
+              ].join("\n")
+            : "- No Meta account mapped yet — Connect Facebook + map under Connections",
+        ].join("\n")
+      : [
+          "- Version: Workspace V1 (Adspirer)",
+          "- Backend: Adspirer MCP / API when configured",
+        ].join("\n"),
+    "",
     "## Brand context",
     buildClientBrandBlock(client),
     client.brand_guidelines
@@ -147,24 +174,7 @@ async function loadBriefs(clientId: string): Promise<CompetitorBrief[]> {
   return (data as CompetitorBrief[]) ?? [];
 }
 
-async function loadMetaAccounts(clientId: string) {
-  const config = getConfig();
-  if (config.isDemoMode || !config.hasSupabase) {
-    return getDemoStore().connectedMetaAccounts.filter(
-      (a) => a.client_id === clientId,
-    );
-  }
-  const { createAdminClient } = await import("@/lib/supabase/admin");
-  const { mapConnectedMetaAccountRow } = await import("@/lib/adspirer/db-map");
-  const supabase = createAdminClient();
-  const { data } = await supabase
-    .from("connected_meta_accounts")
-    .select("*")
-    .eq("mapped_client_id", clientId);
-  return (data ?? []).map((row) =>
-    mapConnectedMetaAccountRow(row as Record<string, unknown>),
-  );
-}
+import { loadMappedMetaAccounts } from "@/lib/adspirer/resolve-meta-account";
 
 function loadRecentApprovals(clientId: string) {
   const config = getConfig();

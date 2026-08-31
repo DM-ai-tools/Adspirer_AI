@@ -20,6 +20,7 @@ const TOOL_POLICY: Record<string, ToolSafetyClass> = {
   optimize_meta_budget: "diagnose",
   optimize_meta_placements: "diagnose",
   detect_meta_creative_fatigue: "diagnose",
+  list_competitor_ads_v2: "diagnose",
 
   // Execute
   update_adset_budget: "execute",
@@ -28,6 +29,10 @@ const TOOL_POLICY: Record<string, ToolSafetyClass> = {
   create_campaign: "execute",
   create_meta_image_campaign: "execute",
   create_meta_video_campaign: "execute",
+  create_meta_image_campaign_v2: "execute",
+  create_meta_video_campaign_v2: "execute",
+  optimize_meta_budget_v2: "execute",
+  optimize_meta_placements_v2: "execute",
   create_adset: "execute",
   create_ad: "execute",
   pause_ad: "execute",

@@ -24,3 +24,14 @@ export function slugify(value: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
 }
+
+/** Only allow in-app relative paths after login (blocks open redirects). */
+export function safeInternalPath(
+  value: string | null | undefined,
+  fallback = "/dashboard",
+): string {
+  if (!value) return fallback;
+  if (!value.startsWith("/")) return fallback;
+  if (value.startsWith("//") || value.includes("://")) return fallback;
+  return value;
+}

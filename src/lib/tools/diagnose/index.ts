@@ -235,3 +235,46 @@ export const detectMetaCreativeFatigueTool = registerTool({
     return provider.detectCreativeFatigue(args.account_id);
   },
 });
+
+export const listCompetitorAdsV2Tool = registerTool({
+  name: "list_competitor_ads_v2",
+  description:
+    "Fetch competitor ads from Sociavault (via V2 intel pipeline) and return AI-rankable candidates for creation/optimization inspiration.",
+  inputSchema: z.object({
+    client_id: z.string().min(1),
+    service_id: z.string().optional(),
+    competitor_name: z.string().optional(),
+  }),
+  async execute(args) {
+    const { fetchClientMetaCompetitorAds } = await import(
+      "@/lib/competitors/service"
+    );
+    const rows = await fetchClientMetaCompetitorAds({
+      clientId: args.client_id,
+      serviceId: args.service_id,
+    });
+    const filtered = args.competitor_name
+      ? rows.filter((r) =>
+          r.competitor_name
+            .toLowerCase()
+            .includes(args.competitor_name!.toLowerCase()),
+        )
+      : rows;
+    return filtered.flatMap((r) =>
+      r.ads.map((ad) => ({
+        competitor_name: r.competitor_name,
+        ad_archive_id: ad.ad_archive_id,
+        headline: ad.headline,
+        body: ad.body,
+        media_type: ad.media_type,
+        cta: ad.cta,
+        landing_url: ad.landing_url,
+        score:
+          (ad.is_active ? 30 : 0) +
+          (ad.media_type === "video" ? 15 : 10) +
+          (ad.cta ? 10 : 0) +
+          (ad.landing_url ? 10 : 0),
+      })),
+    );
+  },
+});

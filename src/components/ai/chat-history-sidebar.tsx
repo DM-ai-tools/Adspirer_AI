@@ -6,11 +6,10 @@ import { formatRelative } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { isV2ChatTitle, displayChatTitle } from "@/lib/agent/title-format";
 
 function conversationLabel(conversation: Conversation): string {
-  const title = conversation.title?.trim();
-  if (title && title.toLowerCase() !== "new chat") return title;
-  return "New chat";
+  return displayChatTitle(conversation.title);
 }
 
 export function ChatHistorySidebar({
@@ -22,6 +21,7 @@ export function ChatHistorySidebar({
   deletingId,
   disabled,
   className,
+  newChatLabel = "New chat",
 }: {
   conversations: Conversation[];
   activeId: string | null;
@@ -31,6 +31,7 @@ export function ChatHistorySidebar({
   deletingId?: string | null;
   disabled?: boolean;
   className?: string;
+  newChatLabel?: string;
 }) {
   return (
     <div
@@ -46,7 +47,7 @@ export function ChatHistorySidebar({
           disabled={disabled}
         >
           <MessageSquarePlus className="h-4 w-4" />
-          New chat
+          {newChatLabel}
         </Button>
       </div>
 
@@ -66,6 +67,8 @@ export function ChatHistorySidebar({
             {conversations.map((conversation) => {
               const active = conversation.id === activeId;
               const deleting = deletingId === conversation.id;
+              const v2 = isV2ChatTitle(conversation.title);
+              const label = conversationLabel(conversation);
               return (
                 <li key={conversation.id} className="group relative">
                   <button
@@ -79,8 +82,13 @@ export function ChatHistorySidebar({
                         : "text-muted hover:bg-secondary/60 hover:text-foreground",
                     )}
                   >
-                    <p className="truncate pr-7 text-sm font-medium">
-                      {conversationLabel(conversation)}
+                    <p className="flex items-center gap-1.5 truncate pr-7 text-sm font-medium">
+                      {v2 ? (
+                        <span className="shrink-0 rounded bg-accent-muted px-1 py-px text-[9px] font-semibold uppercase tracking-wide text-accent">
+                          V2
+                        </span>
+                      ) : null}
+                      <span className="truncate">{label}</span>
                     </p>
                     <p className="mt-0.5 font-mono text-[10px] opacity-70">
                       {formatRelative(conversation.updated_at)}
@@ -90,7 +98,7 @@ export function ChatHistorySidebar({
                     <button
                       type="button"
                       title="Delete chat"
-                      aria-label={`Delete ${conversationLabel(conversation)}`}
+                      aria-label={`Delete ${conversation.title?.trim() || conversationLabel(conversation)}`}
                       disabled={disabled || Boolean(deletingId)}
                       onClick={(e) => {
                         e.stopPropagation();

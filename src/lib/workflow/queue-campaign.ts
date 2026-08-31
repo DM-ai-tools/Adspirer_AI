@@ -173,6 +173,9 @@ function readTargetingArgs(
     interests: Array.isArray(t.interests) ? t.interests : [],
     behaviors: Array.isArray(t.behaviors) ? t.behaviors : [],
     locations: Array.isArray(t.locations) ? t.locations : [],
+    publisher_platforms: Array.isArray(t.publisher_platforms)
+      ? t.publisher_platforms
+      : [],
   });
 }
 

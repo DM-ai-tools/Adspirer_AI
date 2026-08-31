@@ -384,9 +384,9 @@ export function describeInteractivePayloads(payloads: {
 
   if (targetingPicker) {
     return [
-      "Set **advanced targeting** for the ad set — custom audiences and detailed targeting (interests / behaviors / locations).",
+      "Set **advanced targeting** — custom audiences, locations, interests, and behaviors.",
       "",
-      "Pick by name in the panel below (Meta IDs are applied automatically), or **Skip** to use broad / Advantage+ defaults.",
+      "Add each field in the panel below, then click **Add to message**. Nothing is sent until you press **Send** in the composer.",
     ].join("\n");
   }
 
@@ -445,7 +445,7 @@ export function describeInteractivePayloads(payloads: {
       "",
       ...lines,
       "",
-      "After you pick, I’ll queue create via Approvals (PAUSED).",
+      "After you approve a variant, set targeting in the panel below (nothing sends until you press Send).",
     ].join("\n");
   }
 

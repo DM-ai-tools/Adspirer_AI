@@ -79,6 +79,8 @@ export interface MetaAccountOverview {
   spend_30d: number;
   active_campaigns: number;
   paused_campaigns: number;
+  total_campaigns?: number;
+  archived_campaigns?: number;
   health: "healthy" | "attention" | "critical";
   notes: string[];
 }
@@ -90,6 +92,8 @@ export interface CreateCampaignInput {
   status?: "ACTIVE" | "PAUSED";
   daily_budget_cents?: number;
   special_ad_categories?: string[];
+  /** Required Meta v24+ when budget is set on ad sets (not campaign budget). */
+  is_adset_budget_sharing_enabled?: boolean;
 }
 
 export interface CreateImageCampaignInput {
@@ -198,6 +202,12 @@ export interface CreateAdSetInput {
   age_max?: number;
   genders?: string[];
   locations?: unknown[];
+  publisher_platforms?: string[];
+  objective?: string;
+  facebook_page_id?: string;
+  pixel_id?: string;
+  pixel_event_name?: string;
+  campaign_budget_optimization?: boolean;
   /** Any other field from Adspirer's add_meta_ad_set schema, forwarded verbatim. */
   extra_args?: Record<string, unknown>;
 }
@@ -208,13 +218,20 @@ export interface CreateAdInput {
   ad_type?: "image" | "video" | "carousel";
   primary_text: string;
   landing_page_url: string;
+  /** Display URL shown on the ad (distinct from landing_page_url). */
+  display_link?: string;
+  url_tags?: string;
   headline?: string;
+  description?: string;
+  call_to_action?: string;
   image_url?: string;
   existing_image_hash?: string;
   video_url?: string;
   existing_video_id?: string;
   thumbnail_url?: string;
   name?: string;
+  facebook_page_id?: string;
+  instagram_account_id?: string;
 }
 
 export interface UpdateAdSetBudgetInput {

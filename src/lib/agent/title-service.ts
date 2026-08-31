@@ -1,6 +1,8 @@
 import {
   generateChatTitle,
   isDefaultConversationTitle,
+  isV2ChatTitle,
+  withV2ChatTitle,
 } from "@/lib/agent/title";
 import type { Conversation } from "@/types";
 import { getConfig } from "@/lib/config";
@@ -10,12 +12,16 @@ import { mapConversationRow } from "@/lib/db/live-maps";
 export async function maybeAutoTitleConversation(
   conversation: Conversation,
   firstUserMessage: string,
+  options?: { workspaceVersion?: "v1" | "v2" },
 ): Promise<Conversation> {
   if (!isDefaultConversationTitle(conversation.title)) {
     return conversation;
   }
 
-  const title = await generateChatTitle(firstUserMessage);
+  let title = await generateChatTitle(firstUserMessage);
+  if (options?.workspaceVersion === "v2" || isV2ChatTitle(conversation.title)) {
+    title = withV2ChatTitle(title);
+  }
   const ts = nowIso();
   const config = getConfig();
 
@@ -41,4 +47,11 @@ export async function maybeAutoTitleConversation(
   return mapConversationRow(data as Record<string, unknown>);
 }
 
-export { generateChatTitle, isDefaultConversationTitle } from "@/lib/agent/title";
+export {
+  generateChatTitle,
+  isDefaultConversationTitle,
+  isV2ChatTitle,
+  withV2ChatTitle,
+  DEFAULT_CHAT_TITLE,
+  DEFAULT_V2_CHAT_TITLE,
+} from "@/lib/agent/title";

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getConfig } from "@/lib/config";
+import { authUserFromIdentity } from "@/lib/security/auth";
 import { AuthorizationError } from "@/lib/errors";
 import { jsonOk, parseBody, withApiHandler } from "@/lib/api/response";
 
@@ -54,9 +55,11 @@ export async function POST(request: Request) {
       );
     }
 
-    // Ensure profile exists and bootstrap first user as admin.
-    const { getCurrentUser } = await import("@/lib/security/auth");
-    const sessionUser = await getCurrentUser();
+    const sessionUser = await authUserFromIdentity({
+      id: data.user.id,
+      email: data.user.email,
+      user_metadata: data.user.user_metadata,
+    });
     if (!sessionUser) {
       throw new AuthorizationError("Signed in but profile could not be loaded", {
         statusHint: 500,

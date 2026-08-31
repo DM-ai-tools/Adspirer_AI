@@ -6,6 +6,7 @@ import { AgentPausedError } from "@/lib/errors";
 import { classify } from "@/lib/tools/policy";
 import "@/lib/tools"; // ensure tools registered
 import { createPendingApproval } from "@/lib/approvals/service";
+import { estimateMetaBudgetImpactCents } from "@/lib/meta/normalize-approval-args";
 import {
   runAdspirerAgent,
   gatherDiagnoseEvidence,
@@ -402,6 +403,13 @@ export async function runTask(
         formatChoice: undefined,
       };
     }
+    if (gathered.targetingPicker?.account_id) {
+      agentResult.ui = {
+        ...(agentResult.ui ?? {}),
+        targetingPicker:
+          agentResult.ui?.targetingPicker ?? gathered.targetingPicker,
+      };
+    }
     agentResult.summary = describeAttachedUi(
       agentResult.summary,
       agentResult.ui,
@@ -416,6 +424,16 @@ export async function runTask(
         }
       } else if (steps.some((s) => s.id === "intake")) {
         steps = activateStep(steps, "intake");
+      }
+    }
+    if (intent === "copy_approved") {
+      if (gathered.targetingPicker?.account_id) {
+        steps = completeStepsThrough(steps, "advanced_targeting");
+        if (steps.some((s) => s.id === "advanced_targeting")) {
+          steps = activateStep(steps, "advanced_targeting");
+        }
+      } else if (steps.some((s) => s.id === "creative_asset")) {
+        steps = activateStep(steps, "creative_asset");
       }
     }
     if (intent === "optimize") {
@@ -614,6 +632,13 @@ export async function runTask(
       }
 
       if (safety === "execute") {
+        const executionBackend =
+          typeof task.agent_state?.execution_backend === "string"
+            ? task.agent_state.execution_backend
+            : null;
+        const proposedArgsWithBackend = executionBackend
+          ? { ...args, __provider_backend: executionBackend }
+          : args;
         if (steps.some((s) => s.id === "approval")) {
           steps = activateStep(steps, "approval");
         }
@@ -628,7 +653,7 @@ export async function runTask(
           taskId: task.id,
           toolCallId: toolCall.id,
           toolName: call.name,
-          proposedArgs: args,
+          proposedArgs: proposedArgsWithBackend,
           rationale: call.rationale ?? approvalSummary,
           budgetImpactCents: estimateBudgetImpact(call.name, args),
           requestedBy: task.created_by,
@@ -899,20 +924,7 @@ function estimateBudgetImpact(
     if (!Number.isFinite(next)) return null;
     return Math.max(0, next - (Number.isFinite(prev) ? prev : 0));
   }
-  if (
-    toolName === "create_meta_image_campaign" ||
-    toolName === "create_meta_video_campaign" ||
-    toolName === "create_adset" ||
-    toolName === "create_campaign"
-  ) {
-    if (typeof args.budget_daily === "number") {
-      return Math.round(args.budget_daily * 100);
-    }
-    if (typeof args.daily_budget_cents === "number") {
-      return args.daily_budget_cents;
-    }
-  }
-  return null;
+  return estimateMetaBudgetImpactCents(toolName, args);
 }
 
 async function recordToolCall(

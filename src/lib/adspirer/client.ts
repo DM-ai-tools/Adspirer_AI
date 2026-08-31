@@ -2,6 +2,12 @@ import { getConfig } from "@/lib/config";
 import type { MetaAdsProvider } from "./provider";
 import { MockMetaAdsProvider } from "./mock-provider";
 import { AdspirerMCPProvider } from "./mcp-provider";
+import { MetaGraphProviderV2 } from "@/lib/meta/provider-v2";
+import { getUserMetaToken } from "@/lib/meta/get-user-token";
+import {
+  getWorkspaceContext,
+  type WorkspaceExecutionBackend,
+} from "@/lib/runtime/workspace-context";
 
 let cached: MetaAdsProvider | null = null;
 let cachedLive: MetaAdsProvider | null = null;
@@ -10,8 +16,20 @@ let cachedLive: MetaAdsProvider | null = null;
  * Resolve Meta ads provider from ADS_EXECUTION_MODE.
  * - mock → MockMetaAdsProvider (safe default for mutations)
  * - sandbox / production → AdspirerMCPProvider (requires ADSPIRER_API_KEY)
+ * - meta_direct → MetaGraphProviderV2 (requires OAuth token)
  */
-export function getProvider(): MetaAdsProvider {
+function getProviderByBackend(
+  backend: WorkspaceExecutionBackend | null,
+  metaAccessToken?: string,
+): MetaAdsProvider {
+  if (backend === "meta_direct") {
+    if (!metaAccessToken) {
+      throw new Error(
+        "Meta access token required for meta_direct backend. Connect your Facebook account.",
+      );
+    }
+    return new MetaGraphProviderV2(metaAccessToken);
+  }
   if (cached) return cached;
 
   const config = getConfig();
@@ -32,6 +50,35 @@ export function getProvider(): MetaAdsProvider {
   }
 
   return cached;
+}
+
+/** Sync helper — only use when token is already known or backend is not meta_direct. */
+export function getProvider(metaAccessToken?: string): MetaAdsProvider {
+  const backend = getWorkspaceContext()?.backend ?? null;
+  return getProviderByBackend(backend, metaAccessToken);
+}
+
+export function getProviderForBackend(
+  backend: WorkspaceExecutionBackend | null,
+  metaAccessToken?: string,
+): MetaAdsProvider {
+  return getProviderByBackend(backend, metaAccessToken);
+}
+
+/**
+ * Async resolver that loads the current user's Meta OAuth token when the
+ * workspace backend is meta_direct (Workspace V2).
+ */
+export async function resolveProvider(
+  backendOverride?: WorkspaceExecutionBackend | null,
+): Promise<MetaAdsProvider> {
+  const backend =
+    backendOverride ?? getWorkspaceContext()?.backend ?? null;
+  if (backend === "meta_direct") {
+    const { accessToken } = await getUserMetaToken();
+    return getProviderByBackend(backend, accessToken);
+  }
+  return getProviderByBackend(backend);
 }
 
 /**

@@ -2,10 +2,20 @@ import { generateText } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { getConfig } from "@/lib/config";
 import { logger } from "@/lib/observability/logger";
+import { DEFAULT_CHAT_TITLE } from "@/lib/agent/title-format";
+
+export {
+  DEFAULT_CHAT_TITLE,
+  DEFAULT_V2_CHAT_TITLE,
+  V2_CHAT_TITLE_PREFIX,
+  isDefaultConversationTitle,
+  isV2ChatTitle,
+  withV2ChatTitle,
+} from "@/lib/agent/title-format";
 
 function fallbackTitle(prompt: string): string {
   const cleaned = prompt.replace(/\s+/g, " ").trim();
-  if (!cleaned) return "New chat";
+  if (!cleaned) return DEFAULT_CHAT_TITLE;
   return cleaned.length > 56 ? `${cleaned.slice(0, 56)}…` : cleaned;
 }
 
@@ -42,12 +52,4 @@ export async function generateChatTitle(prompt: string): Promise<string> {
     });
     return fallbackTitle(prompt);
   }
-}
-
-export function isDefaultConversationTitle(
-  title: string | null | undefined,
-): boolean {
-  if (!title?.trim()) return true;
-  const t = title.trim().toLowerCase();
-  return t === "new chat" || t === "workspace session";
 }

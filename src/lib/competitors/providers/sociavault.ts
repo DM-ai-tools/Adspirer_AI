@@ -1,7 +1,9 @@
 import type { AdCreativeInsight, AdIntelligenceProvider } from "./types";
 import {
   fetchMetaCompanyAds,
+  fetchMetaCompanyAdsPage,
   inferAdThemes,
+  findNormalizedAdById,
   normalizeMetaAd,
   searchMetaCompanies,
 } from "@/lib/sociavault/facebook-ad-library";
@@ -70,7 +72,11 @@ export async function fetchMetaCompetitorIntel(input: {
   name: string;
   keywords?: string[];
   adLimit?: number;
+  cursor?: string | null;
+  specificAdId?: string;
 }) {
+  const nonNull = <T>(value: T | null | undefined): value is T =>
+    value != null;
   const companies = await searchMetaCompanies(input.name);
   const match =
     companies.find(
@@ -94,23 +100,31 @@ export async function fetchMetaCompetitorIntel(input: {
       pageId: fallback.page_id,
       companyName: fallback.name,
       limit: input.adLimit ?? 12,
+      cursor: input.cursor ?? null,
     });
+    const normalized = ads.map(normalizeMetaAd);
     return {
       company: fallback,
-      ads: ads.map(normalizeMetaAd),
+      ads: input.specificAdId
+        ? normalized.filter((a) => a.ad_archive_id === input.specificAdId)
+        : normalized,
       totalAdCount: totalCount,
     };
   }
 
-  const { ads, totalCount } = await fetchMetaCompanyAds({
+  const page = await fetchMetaCompanyAdsPage({
     pageId: match.page_id,
     companyName: match.name,
-    limit: input.adLimit ?? 12,
+    cursor: input.cursor ?? null,
   });
+  const normalized = page.ads.map(normalizeMetaAd).slice(0, input.adLimit ?? 12);
 
   return {
     company: match,
-    ads: ads.map(normalizeMetaAd),
-    totalAdCount: totalCount,
+    ads: input.specificAdId
+      ? [findNormalizedAdById(page.ads, input.specificAdId)].filter(nonNull)
+      : normalized,
+    totalAdCount: page.totalCount,
+    cursor: page.cursor,
   };
 }

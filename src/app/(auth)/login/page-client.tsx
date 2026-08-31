@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { Sparkles, Shield, Bot } from "lucide-react";
 import { toast } from "sonner";
 import { apiFetch } from "@/lib/api-client";
@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { safeInternalPath } from "@/lib/utils";
 import type { Profile } from "@/types";
 
 const DEMO_USERS = [
@@ -32,7 +33,6 @@ type AuthMode = {
 };
 
 export default function LoginPageClient() {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const [mode, setMode] = useState<AuthMode | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -57,9 +57,10 @@ export default function LoginPageClient() {
   }, []);
 
   function goNext() {
-    const next = searchParams.get("next") || "/dashboard";
-    router.push(next);
-    router.refresh();
+    const next = safeInternalPath(searchParams.get("next"));
+    // Full document navigation so the auth cookie from this response is
+    // definitely sent. Client-side router.push raced the cookie on first click.
+    window.location.assign(next);
   }
 
   async function demoLogin(demoEmail: string) {

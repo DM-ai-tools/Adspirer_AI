@@ -28,10 +28,25 @@ import {
 } from "@/lib/agent/reply-format";
 import { useCreativeStatus } from "@/hooks/use-creative-status";
 import { TargetingPickerCard } from "@/components/ai/targeting-picker";
-import {
-  targetingSelectionToCreateArgs,
-  type CampaignTargetingSelection,
+import type {
+  CampaignTargetingSelection,
 } from "@/lib/adspirer/targeting";
+import {
+  composeCopyApprovedMessage,
+  composeFormatChoiceMessage,
+  composeImageSourceMessage,
+  composeOptimizeAdMessage,
+  composeServicesMessage,
+  composeSkipTargetingMessage,
+  composeTargetingMessage,
+  composeVideoSourceMessage,
+  mergeComposerDraft,
+  stripComposerMarkers,
+} from "@/lib/chat/action-messages";
+import {
+  inferConversationFlow,
+  showCampaignCreativeUi,
+} from "@/lib/chat/infer-flow";
 
 const SUGGESTIONS = [
   "Create a Meta campaign for this account",
@@ -396,6 +411,7 @@ export function ChatPanel({
   conversationId,
   taskId,
   clientName,
+  apiBase = "/api",
   inlineApprovals = [],
   onWorkflowRefresh,
 }: {
@@ -410,10 +426,12 @@ export function ChatPanel({
   conversationId?: string | null;
   taskId?: string | null;
   clientName?: string;
+  apiBase?: string;
   inlineApprovals?: Approval[];
   onWorkflowRefresh?: () => void | Promise<void>;
 }) {
   const [input, setInput] = useState("");
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const [sendingLocal, setSendingLocal] = useState(false);
   const [feedbackById, setFeedbackById] = useState<
     Record<string, "up" | "down">
@@ -429,7 +447,12 @@ export function ChatPanel({
   >({});
   const [startingCreatives, setStartingCreatives] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  /** True when the user is near the bottom — only then do we follow new messages. */
+  const stickToBottomRef = useRef(true);
   const sending = sendingProp ?? sendingLocal;
+  const apiPath = (path: string) =>
+    `${apiBase}${path.startsWith("/") ? path : `/${path}`}`;
 
   // Images render on the server, so the chat watches the drafts rather than
   // the request that started them — leaving and returning keeps the progress.
@@ -444,13 +467,30 @@ export function ChatPanel({
     enabled: Boolean(clientId && conversationId),
   });
 
+  const isNearBottom = (el: HTMLDivElement, thresholdPx = 120) =>
+    el.scrollHeight - el.scrollTop - el.clientHeight <= thresholdPx;
+
+  const handleMessagesScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    stickToBottomRef.current = isNearBottom(el);
+  };
+
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (!stickToBottomRef.current) return;
+    const el = scrollRef.current;
+    if (el) {
+      el.scrollTop = el.scrollHeight;
+      return;
+    }
+    bottomRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
   }, [messages, statusLabel]);
 
   async function submit(content: string) {
-    const trimmed = content.trim();
+    const trimmed = stripComposerMarkers(content).trim();
     if (!trimmed || sending || disabled) return;
+    // Sending a message should always jump back to the latest reply.
+    stickToBottomRef.current = true;
     setSendingLocal(true);
     setInput("");
     try {
@@ -460,12 +500,18 @@ export function ChatPanel({
     }
   }
 
+  function applyToComposer(block: string, marker: string) {
+    setInput((prev) => mergeComposerDraft(prev, block, marker));
+    toast.message("Added to your message — review and press Send when ready.");
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }
+
   async function sendFeedback(messageId: string, rating: "up" | "down") {
     if (messageId.startsWith("stream_") || messageId.startsWith("local_")) {
       return;
     }
     try {
-      await apiFetch("/api/feedback", {
+      await apiFetch(apiPath("/feedback"), {
         method: "POST",
         body: JSON.stringify({ messageId, rating }),
       });
@@ -486,7 +532,7 @@ export function ChatPanel({
     content: string,
   ) {
     try {
-      const response = await fetch("/api/reports/export", {
+      const response = await fetch(apiPath("/reports/export"), {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
@@ -531,18 +577,7 @@ export function ChatPanel({
       return;
     }
     const picked = services.filter((s) => selectedIds.includes(s.id));
-    const lines = picked.map(
-      (s) =>
-        `- ${s.id}: ${s.name}${s.description ? ` (${s.description})` : ""}`,
-    );
-    void submit(
-      [
-        "Create PAUSED ad sets and ads for these selected services:",
-        ...lines,
-        "",
-        "For each create_adset include: account_id, campaign_id, name, ad_type=\"image\", primary_text, landing_page_url (https:// from this conversation). Queue create_adset and create_ad via Approvals, then report proof IDs. Entities stay PAUSED (not published).",
-      ].join("\n"),
-    );
+    applyToComposer(composeServicesMessage(picked), "services");
   }
 
   function confirmCopy(
@@ -555,19 +590,7 @@ export function ChatPanel({
       toast.error("Select a copy variant");
       return;
     }
-    void submit(
-      [
-        `Use approved ad copy variant ${picked.id} (${picked.angle}):`,
-        `- primary_text: ${picked.primary_text}`,
-        `- headline: ${picked.headline}`,
-        picked.description ? `- description: ${picked.description}` : null,
-        picked.cta ? `- cta: ${picked.cta}` : null,
-        "",
-        "Ask whether I have an image URL or should generate in Creatives. Then queue create with image_url via Approvals. Entities stay PAUSED.",
-      ]
-        .filter(Boolean)
-        .join("\n"),
-    );
+    applyToComposer(composeCopyApprovedMessage(picked), "copy");
   }
 
   function confirmAd(
@@ -580,57 +603,34 @@ export function ChatPanel({
       toast.error("Select an ad to optimize");
       return;
     }
-    void submit(
-      [
-        `Optimize selected ad ${picked.id} (${picked.name}).`,
-        "Run Adspirer detect_meta_creative_fatigue, optimize_meta_budget, and optimize_meta_placements.",
-        "Summarize recommendations for this ad and queue any EXECUTE changes via Approvals (PAUSED creates only).",
-      ].join("\n"),
-    );
+    applyToComposer(composeOptimizeAdMessage(picked), "optimize");
   }
 
-  async function confirmTargeting(selection: CampaignTargetingSelection) {
+  async function addTargetingToComposer(
+    selection: CampaignTargetingSelection,
+  ) {
     if (taskId && clientId) {
       try {
-        await apiFetch("/api/workflow/targeting", {
+        await apiFetch(apiPath("/workflow/targeting"), {
           method: "POST",
           body: JSON.stringify({ clientId, taskId, targeting: selection }),
         });
       } catch {
-        // Chat message still carries the selection for the agent.
+        // Composer still carries the selection for the agent.
       }
     }
-    const args = targetingSelectionToCreateArgs(selection);
-    const lines = [
-      "Advanced targeting selections for this campaign (use these exact fields on create_meta_image_campaign / create_meta_video_campaign / create_adset):",
-      Object.keys(args).length
-        ? `\`\`\`json\n${JSON.stringify(args, null, 2)}\n\`\`\``
-        : "- (none)",
-      "",
-      "Human labels:",
-      selection.custom_audiences.length
-        ? `- Custom audiences: ${selection.custom_audiences.map((a) => a.name).join(", ")}`
-        : null,
-      selection.interests.length
-        ? `- Interests: ${selection.interests.map((i) => i.name).join(", ")}`
-        : null,
-      selection.behaviors.length
-        ? `- Behaviors: ${selection.behaviors.map((b) => b.name).join(", ")}`
-        : null,
-      selection.locations.length
-        ? `- Locations: ${selection.locations.map((l) => l.name).join(", ")}`
-        : null,
-      "",
-      "Continue to the creative step next (image URL / generate, or video URL / Meta video ID).",
-    ].filter(Boolean);
-    void submit(lines.join("\n"));
+    applyToComposer(composeTargetingMessage(selection), "targeting");
   }
 
-  function skipTargeting() {
-    void submit(
-      "Skip advanced targeting — use broad / Advantage+ defaults (no custom_audiences or detailed interests/behaviors). Continue to the creative step next.",
-    );
+  function addSkipTargetingToComposer() {
+    applyToComposer(composeSkipTargetingMessage(), "targeting");
   }
+
+  const conversationFlow = useMemo(
+    () => inferConversationFlow(messages),
+    [messages],
+  );
+  const showCreativeUi = showCampaignCreativeUi(conversationFlow);
 
   const parsedById = useMemo(() => {
     const map = new Map<string, ParsedAssistant>();
@@ -751,7 +751,11 @@ export function ChatPanel({
 
   return (
     <div className={cn("flex h-full min-h-0 flex-col", className)}>
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-4">
+      <div
+        ref={scrollRef}
+        onScroll={handleMessagesScroll}
+        className="min-h-0 flex-1 overflow-y-auto px-4 pt-4"
+      >
         <div className="space-y-4 pb-4">
           {messages.length === 0 ? (
             <div className="rounded-xl border border-dashed border-border bg-secondary/20 p-5">
@@ -1058,7 +1062,7 @@ export function ChatPanel({
                               confirmServices(message.id, services)
                             }
                           >
-                            Create ad sets + ads for selected
+                            Create ad sets + ads for selected → Add to message
                           </Button>
                         </div>
                       </div>
@@ -1133,7 +1137,7 @@ export function ChatPanel({
                           disabled={disabled || sending || !selectedCopy}
                           onClick={() => confirmCopy(message.id, copies)}
                         >
-                          Use selected copy → Approvals
+                          Use selected copy → Add to message
                         </Button>
                       </div>
                     ) : null}
@@ -1186,7 +1190,7 @@ export function ChatPanel({
                           disabled={disabled || sending || !selectedAd}
                           onClick={() => confirmAd(message.id, ads)}
                         >
-                          Optimize selected ad
+                          Optimize selected ad → Add to message
                         </Button>
                       </div>
                     ) : null}
@@ -1198,15 +1202,17 @@ export function ChatPanel({
                       <TargetingPickerCard
                         clientId={clientId}
                         accountId={targetingPicker.account_id}
+                        apiBase={apiBase}
                         disabled={disabled || sending}
                         onConfirm={(selection) =>
-                          void confirmTargeting(selection)
+                          void addTargetingToComposer(selection)
                         }
-                        onSkip={skipTargeting}
+                        onSkip={addSkipTargetingToComposer}
                       />
                     ) : null}
 
                     {!streaming &&
+                    showCreativeUi &&
                     formatChoice &&
                     isLatestFormatChoice ? (
                       <div className="mt-3 space-y-2 border-t border-border/60 pt-3">
@@ -1225,8 +1231,9 @@ export function ChatPanel({
                             className="h-8"
                             disabled={disabled || sending}
                             onClick={() =>
-                              void submit(
-                                "I want an image ad/campaign. Continue the brief for create_meta_image_campaign.",
+                              applyToComposer(
+                                composeFormatChoiceMessage("image"),
+                                "format",
                               )
                             }
                           >
@@ -1239,8 +1246,9 @@ export function ChatPanel({
                             className="h-8"
                             disabled={disabled || sending}
                             onClick={() =>
-                              void submit(
-                                "I want a video ad/campaign. Continue the brief for create_meta_video_campaign — I will provide a video URL or Meta video ID (no image generation).",
+                              applyToComposer(
+                                composeFormatChoiceMessage("video"),
+                                "format",
                               )
                             }
                           >
@@ -1251,6 +1259,7 @@ export function ChatPanel({
                     ) : null}
 
                     {!streaming &&
+                    showCreativeUi &&
                     videoChoice &&
                     isLatestVideoChoice ? (
                       <div className="mt-3 space-y-2 border-t border-border/60 pt-3">
@@ -1271,8 +1280,9 @@ export function ChatPanel({
                             className="h-8"
                             disabled={disabled || sending}
                             onClick={() =>
-                              void submit(
-                                "I have a public video URL. Ask me for it, then use it as video_url in create_meta_video_campaign.",
+                              applyToComposer(
+                                composeVideoSourceMessage("url"),
+                                "video",
                               )
                             }
                           >
@@ -1285,8 +1295,9 @@ export function ChatPanel({
                             className="h-8"
                             disabled={disabled || sending}
                             onClick={() =>
-                              void submit(
-                                "I have an existing Meta video ID. Ask me for it, then use it as existing_video_id in create_meta_video_campaign.",
+                              applyToComposer(
+                                composeVideoSourceMessage("meta_id"),
+                                "video",
                               )
                             }
                           >
@@ -1297,6 +1308,7 @@ export function ChatPanel({
                     ) : null}
 
                     {!streaming &&
+                    showCreativeUi &&
                     imageChoice &&
                     isLatestImageChoice &&
                     !creativesRendering ? (
@@ -1316,8 +1328,9 @@ export function ChatPanel({
                             className="h-8"
                             disabled={disabled || sending}
                             onClick={() =>
-                              void submit(
-                                "I already have an image URL / Meta image hash. Ask me for it, then use it as image_url in the create payload.",
+                              applyToComposer(
+                                composeImageSourceMessage("url"),
+                                "image",
                               )
                             }
                           >
@@ -1337,7 +1350,7 @@ export function ChatPanel({
                               void (async () => {
                                 setStartingCreatives(true);
                                 try {
-                                  await apiFetch("/api/workflow/creatives/generate", {
+                                  await apiFetch(apiPath("/workflow/creatives/generate"), {
                                     method: "POST",
                                     body: JSON.stringify({
                                       clientId,
@@ -1473,6 +1486,7 @@ export function ChatPanel({
         }}
       >
         <Textarea
+          ref={inputRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           placeholder={placeholder}

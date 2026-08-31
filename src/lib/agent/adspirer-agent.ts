@@ -1,9 +1,11 @@
 import type { LanguageModel } from "ai";
 import type { Task } from "@/types";
 import { getConfig } from "@/lib/config";
-import { getLiveAdspirerProvider, getProvider } from "@/lib/adspirer/client";
+import { getLiveAdspirerProvider, getProvider, resolveProvider } from "@/lib/adspirer/client";
+import type { MetaAdsProvider } from "@/lib/adspirer/provider";
 import { getDemoStore } from "@/lib/demo/store";
 import { buildSystemPrompt } from "@/lib/agent/prompts";
+import { buildSystemPromptV2 } from "@/lib/agent/prompts-v2";
 import type { AgentHistoryMessage } from "@/lib/agent/history";
 import { detectRequestIntent, mentionsCreativeGeneration } from "@/lib/agent/task-plan";
 import {
@@ -12,6 +14,32 @@ import {
   stripMachineJson,
 } from "@/lib/agent/reply-format";
 import { logger } from "@/lib/observability/logger";
+import { getWorkspaceContext } from "@/lib/runtime/workspace-context";
+import { resolvePrimaryAccountId } from "@/lib/adspirer/resolve-meta-account";
+
+function activeSystemPrompt(clientContext: string): string {
+  return getWorkspaceContext()?.version === "v2"
+    ? buildSystemPromptV2(clientContext)
+    : buildSystemPrompt(clientContext);
+}
+
+function isWorkspaceV2(): boolean {
+  return getWorkspaceContext()?.version === "v2";
+}
+
+/** V2 → OAuth Meta Graph; V1 → Adspirer MCP when available, else mode provider. */
+async function resolveAgentProvider(): Promise<MetaAdsProvider> {
+  if (isWorkspaceV2()) {
+    return resolveProvider("meta_direct");
+  }
+  return getLiveAdspirerProvider() ?? getProvider();
+}
+
+function noMappedAccountMessage(): string {
+  return isWorkspaceV2()
+    ? "No granted Meta account is mapped to this client. Connect Facebook, sync accounts under Connections, then Add as client / Map — and select that client in Workspace V2."
+    : "No granted Meta account is mapped to this client. Map one under Connections (Adspirer).";
+}
 
 export type AgentToolCallProposal = {
   name: string;
@@ -439,7 +467,7 @@ function buildWriterMessages(input: WriterInput): {
         .join("\n");
 
   return {
-    system: buildSystemPrompt(input.clientContext),
+    system: activeSystemPrompt(input.clientContext),
     messages: [
       ...(input.history ?? []).map((m) => ({
         role: m.role,
@@ -687,14 +715,14 @@ async function runMockAgent(input: {
       parseCopyPickerFromEvidence(evidence ?? "");
     if (copies.length) {
       summary = [
-        `I drafted **${copies.length} Meta ad copy variants**. Pick one below to queue via Approvals.`,
+        `I drafted **${copies.length} Meta ad copy variants**. Pick one below.`,
         "",
         ...copies.map(
           (c) =>
             `**${c.id} · ${c.angle}**\n- Headline: ${c.headline}\n- Primary: ${c.primary_text}`,
         ),
         "",
-        "After you approve a variant I’ll ask only for missing campaign fields, then queue create tools (PAUSED).",
+        "After you approve a variant, choose targeting from the Meta dropdowns, then creative, then Approvals.",
       ].join("\n");
       ui = { copyPicker: { copies } };
     } else {
@@ -713,6 +741,14 @@ async function runMockAgent(input: {
       ]
         .filter(Boolean)
         .join("\n");
+    }
+  } else if (intent === "copy_approved") {
+    const humanized = evidence ? humanizeAgentReply(evidence) : null;
+    summary =
+      humanized?.display ??
+      "Copy approved — choose custom audiences and detailed targeting from the dropdowns below.";
+    if (accountId) {
+      ui = { targetingPicker: { account_id: accountId } };
     }
   } else if (intent === "optimize") {
     const humanized = evidence ? humanizeAgentReply(evidence) : null;
@@ -850,27 +886,7 @@ export function extractUrlFromText(text: string): string | null {
   return null;
 }
 
-export async function resolvePrimaryAccountId(
-  clientId: string,
-): Promise<string | null> {
-  const config = getConfig();
-  if (config.isDemoMode || !config.hasSupabase) {
-    const account = getDemoStore().connectedMetaAccounts.find(
-      (a) => a.client_id === clientId && a.access_status === "granted",
-    );
-    return account?.meta_account_id ?? null;
-  }
-  const { createAdminClient } = await import("@/lib/supabase/admin");
-  const supabase = createAdminClient();
-  const { data } = await supabase
-    .from("connected_meta_accounts")
-    .select("external_account_id")
-    .eq("mapped_client_id", clientId)
-    .eq("access_status", "granted")
-    .limit(1)
-    .maybeSingle();
-  return (data?.external_account_id as string | undefined) ?? null;
-}
+export { resolvePrimaryAccountId } from "@/lib/adspirer/resolve-meta-account";
 
 /** Collect live Meta evidence before the LLM writes the report. */
 export async function gatherDiagnoseEvidence(input: {
@@ -887,6 +903,7 @@ export async function gatherDiagnoseEvidence(input: {
   imageChoice?: ImageChoiceUi;
   formatChoice?: FormatChoiceUi;
   videoChoice?: VideoChoiceUi;
+  targetingPicker?: TargetingPickerUi;
 }> {
   const intent = detectRequestIntent(input.request);
   const accountId = await resolvePrimaryAccountId(input.clientId);
@@ -897,6 +914,29 @@ export async function gatherDiagnoseEvidence(input: {
   let imageChoice: ImageChoiceUi | undefined;
   let formatChoice: FormatChoiceUi | undefined;
   let videoChoice: VideoChoiceUi | undefined;
+  let targetingPicker: TargetingPickerUi | undefined;
+
+  const targetingSubmitted =
+    /\badvanced targeting selections\b/i.test(input.request) ||
+    /\bskip advanced targeting\b/i.test(input.request);
+
+  if (targetingSubmitted) {
+    sections.push(
+      [
+        "### Targeting recorded",
+        "Operator submitted advanced targeting from the picker.",
+        "Acknowledge what they selected in plain language.",
+        "Do NOT show image_choice, video_choice, format_choice, service_picker, or creative generation.",
+        "Do NOT prescribe a creative or campaign-create next step unless they explicitly ask.",
+        "Wait for their next instruction.",
+      ].join("\n"),
+    );
+    return {
+      accountId,
+      evidence: sections.join("\n\n"),
+      toolCalls,
+    };
+  }
 
   if (
     !accountId &&
@@ -906,13 +946,27 @@ export async function gatherDiagnoseEvidence(input: {
   ) {
     return {
       accountId: null,
-      evidence:
-        "No granted Meta account is mapped to this client. Map one under Adspirer Connection.",
+      evidence: noMappedAccountMessage(),
       toolCalls,
     };
   }
 
-  const provider = getLiveAdspirerProvider() ?? getProvider();
+  let provider: MetaAdsProvider;
+  try {
+    provider = await resolveAgentProvider();
+  } catch (error) {
+    return {
+      accountId,
+      evidence: `### Provider\n- Failed to resolve Meta access: ${
+        error instanceof Error ? error.message : String(error)
+      }${
+        isWorkspaceV2()
+          ? "\n- Connect Facebook OAuth in Workspace V2 / Connections, then retry."
+          : ""
+      }`,
+      toolCalls,
+    };
+  }
 
   if (intent === "out_of_scope") {
     return { accountId, evidence: "Request appears out of Meta Ads scope.", toolCalls };
@@ -937,6 +991,7 @@ export async function gatherDiagnoseEvidence(input: {
           `- Name: ${overview.account_name}`,
           `- ID: ${overview.account_id}`,
           `- Currency: ${overview.currency} · TZ: ${overview.timezone}`,
+          `- Campaigns: ${overview.total_campaigns ?? overview.active_campaigns + overview.paused_campaigns} total (${overview.active_campaigns} active, ${overview.paused_campaigns} paused)`,
           `- Health: ${overview.health}`,
           ...(overview.notes ?? []).map((n) => `- Note: ${n}`),
         ].join("\n"),
@@ -975,7 +1030,9 @@ export async function gatherDiagnoseEvidence(input: {
         rationale: "Campaign inventory",
       });
       if (!campaigns.length) {
-        sections.push("### Campaigns\n- No campaigns returned from Adspirer.");
+        sections.push(
+          `### Campaigns\n- No campaigns returned from Meta for ${accountId}.`,
+        );
       } else {
         const lines = campaigns.slice(0, 25).map((c) => {
           const budget =
@@ -1037,9 +1094,11 @@ export async function gatherDiagnoseEvidence(input: {
   const scrapeUrl = extractUrlFromText(input.request);
   const shouldScrape =
     Boolean(scrapeUrl) &&
+    intent !== "ad_copy" &&
+    intent !== "copy_approved" &&
     (intent === "scrape_services" ||
-      intent === "create_campaign" ||
-      /\b(scrape|services?|website|landing)\b/i.test(input.request));
+      (intent === "create_campaign" &&
+        /\b(scrape|services?|website)\b/i.test(input.request)));
 
   if (shouldScrape && scrapeUrl) {
     await input.onProgress?.({
@@ -1223,7 +1282,9 @@ export async function gatherDiagnoseEvidence(input: {
               "",
             ]),
             "Present copies in natural language. Append copy_picker JSON appendix for the UI.",
-            "Ask which variant to use, then queue create_meta_image_campaign, create_meta_video_campaign, or create_ad via Approvals using that copy (PAUSED). Adspirer applies the create — do not invent Graph API calls.",
+            "Do NOT scrape website services or create ad sets from this step.",
+            "Do NOT ask custom audience or detailed targeting questions — the operator picks those in the targeting picker after approving a variant.",
+            "When operator approves a variant, they will confirm targeting next, then creative, then Approvals.",
           ]
             .filter(Boolean)
             .join("\n"),
@@ -1317,15 +1378,35 @@ export async function gatherDiagnoseEvidence(input: {
     }
 
     if (accountId && (wantsImage || wantsVideo)) {
+      targetingPicker = { account_id: accountId };
       sections.push(
         [
-          "### Advanced targeting (after brief, before creative)",
-          "Offer custom audiences + detailed targeting pickers (names, not raw IDs).",
+          "### Advanced targeting",
+          "Show the targeting_picker UI (custom audiences + detailed targeting dropdowns from Meta).",
           `Append: {"ui":"targeting_picker","account_id":"${accountId}"}`,
-          "Operator can skip. On confirm, pass custom_audiences / interests / behaviors / locations into create args.",
+          "Do NOT ask audience or interest names in prose. Operator picks from dropdowns or skips.",
+          "On confirm, pass custom_audiences / interests / behaviors / locations into create args.",
         ].join("\n"),
       );
     }
+  }
+
+  if (intent === "copy_approved" && accountId) {
+    targetingPicker = { account_id: accountId };
+    sections.push(
+      [
+        "### Ad copy approved",
+        "Operator approved a copy variant. Show targeting_picker only.",
+        `Append: {"ui":"targeting_picker","account_id":"${accountId}"}`,
+        "Do NOT scrape website services. Do NOT present service_picker or create ad sets.",
+        "Do NOT ask custom audience or detailed targeting as text questions — use the picker dropdowns.",
+        "After targeting is confirmed, stop and wait for the operator's next instruction. Do NOT show image_choice, video_choice, or creative generation unless they explicitly ask to create a campaign or add creatives.",
+      ].join("\n"),
+    );
+  } else if (intent === "copy_approved" && !accountId) {
+    sections.push(
+      "### Ad copy approved\n- No mapped Meta account — map an ad account under Connections before targeting or create.",
+    );
   }
 
   if (intent === "optimize" && accountId) {
@@ -1440,6 +1521,7 @@ export async function gatherDiagnoseEvidence(input: {
     imageChoice,
     formatChoice,
     videoChoice,
+    targetingPicker,
   };
 }
 
@@ -1456,7 +1538,7 @@ export async function createAdspirerMastraAgent(clientContext: string) {
   return new Agent({
     id: "adspirer-agent",
     name: "Adspirer Agent",
-    instructions: buildSystemPrompt(clientContext),
+    instructions: activeSystemPrompt(clientContext),
     model: anthropic(config.ANTHROPIC_MODEL),
   });
 }

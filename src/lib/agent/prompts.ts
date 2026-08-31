@@ -79,7 +79,7 @@ Then collect:
    When they confirm selections in chat, include those fields on create:
    - custom_audiences: array of audience IDs
    - interests / behaviors: arrays of {id, name}
-   - locations: 2-letter country codes ("US") for countries, or {key, type, radius, distance_unit} for cities/regions/postcodes — a sub-country key without \`type\` is read as a country code and Meta rejects it
+   - locations: 2-letter country codes ("US") for countries, or {key, type, radius, distance_unit} for **cities only** (radius on regions/postcodes is rejected by Meta) — a sub-country key without \`type\` is read as a country code and Meta rejects it
 7. **Creative asset** — depends on format:
 
    **If image:** ask explicitly:
@@ -102,7 +102,7 @@ Then collect:
 8. Optional refinements — offer these once as a short list; sensible Adspirer defaults apply if skipped:
    - Call-to-action button (LEARN_MORE default | SHOP_NOW | SIGN_UP | DOWNLOAD | CONTACT_US | GET_QUOTE | SUBSCRIBE | BOOK_TRAVEL | WATCH_MORE) and a short description line
    - Age range (default 18–65), gender (default all) — prefer locations from the targeting picker above
-   - Placements (default automatic; can restrict publisher_platforms to ["facebook","instagram"])
+   - Placements (default automatic; can restrict publisher_platforms to ["facebook","instagram"] — do not use deprecated video_feeds)
    - Schedule: end date, or a lifetime budget instead of daily (lifetime requires end_time)
    - Tracking: Meta Pixel (required for OUTCOME_SALES; use pixel_id), UTM url_tags, display_link
    - Instagram account id for IG placements, specific facebook_page_id, special_ad_categories (housing/credit/employment), Advantage campaign budget (campaign_budget_optimization)
@@ -110,7 +110,7 @@ Then collect:
 When complete: explain in prose that you queued create, then append ONE JSON block for the matching tool:
 - Image → \`create_meta_image_campaign\` with \`campaign_name\`, \`primary_text\`, \`headline\`, \`landing_page_url\`, and \`image_url\` (or \`existing_image_hash\`)
 - Video → \`create_meta_video_campaign\` with \`campaign_name\`, \`primary_text\`, \`landing_page_url\`, and \`video_url\` (or \`existing_video_id\`); include \`headline\` / \`thumbnail_url\` when provided
-Also pass \`ad_set_name\` and \`ad_name\` (derive from the campaign name if the operator didn't specify), any advanced targeting fields they selected, plus any optional refinements. A missing required field fails the approval instead of creating a campaign named "undefined". Tell them to open Approvals.
+Also pass \`ad_set_name\` and \`ad_name\` (derive from the campaign name if the operator didn't specify), any advanced targeting fields they selected, plus any optional refinements. Use \`budget_daily\` for daily budget (major currency units, e.g. 5 = £5/day) — not \`daily_budget\`. A missing required field fails the approval instead of creating a campaign named "undefined". Tell them to open Approvals.
 After they approve/execute, show **proof** IDs in prose.
 
 ### Optimize (Adspirer)
@@ -142,7 +142,7 @@ For \`create_adset\`, Adspirer requires ALL of:
 - primary_text
 - landing_page_url (full https URL)
 For image: image_url (optional if adding later). For video: video_url or existing_video_id.
-Optional: budget_daily, headline, age_min, age_max, thumbnail_url, custom_audiences, interests, behaviors, locations (prefer values from the targeting picker).
+Optional: budget_daily (major currency units, e.g. 5 = £5/day — use budget_daily, not daily_budget), headline, age_min, age_max, thumbnail_url, custom_audiences, interests, behaviors, locations (prefer values from the targeting picker).
 
 Each create goes through Approvals. Entities stay PAUSED (not published/live).
 

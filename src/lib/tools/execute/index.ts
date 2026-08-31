@@ -154,6 +154,14 @@ export const createMetaImageCampaignTool = registerTool({
     age_max: z.number().int().min(18).max(65).optional(),
     genders: z.array(z.enum(["male", "female"])).optional(),
     locations: z.array(z.unknown()).optional(),
+    interests: z.array(z.unknown()).optional(),
+    behaviors: z.array(z.unknown()).optional(),
+    custom_audiences: z.array(z.union([z.string(), z.record(z.string(), z.unknown())])).optional(),
+    excluded_custom_audiences: z
+      .array(z.union([z.string(), z.record(z.string(), z.unknown())]))
+      .optional(),
+    facebook_positions: z.array(z.string()).optional(),
+    instagram_positions: z.array(z.string()).optional(),
     publisher_platforms: z.array(z.string()).optional(),
     special_ad_categories: z.array(z.string()).optional(),
     campaign_budget_optimization: z.boolean().optional(),
@@ -195,6 +203,16 @@ export const createMetaVideoCampaignTool = registerTool({
       age_max: z.number().int().min(18).max(65).optional(),
       genders: z.array(z.enum(["male", "female"])).optional(),
       locations: z.array(z.unknown()).optional(),
+      interests: z.array(z.unknown()).optional(),
+      behaviors: z.array(z.unknown()).optional(),
+      custom_audiences: z
+        .array(z.union([z.string(), z.record(z.string(), z.unknown())]))
+        .optional(),
+      excluded_custom_audiences: z
+        .array(z.union([z.string(), z.record(z.string(), z.unknown())]))
+        .optional(),
+      facebook_positions: z.array(z.string()).optional(),
+      instagram_positions: z.array(z.string()).optional(),
       publisher_platforms: z.array(z.string()).optional(),
       special_ad_categories: z.array(z.string()).optional(),
       campaign_budget_optimization: z.boolean().optional(),

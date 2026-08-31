@@ -22,6 +22,7 @@ export type RequestIntent =
   | "generate_creatives"
   | "scrape_services"
   | "ad_copy"
+  | "copy_approved"
   | "optimize"
   | "general"
   | "out_of_scope";
@@ -66,6 +67,12 @@ export function detectRequestIntent(request: string): RequestIntent {
     )
   ) {
     return "export";
+  }
+  if (
+    /\buse approved ad copy variant\b/i.test(text) ||
+    /\bapproved ad copy variant\b/i.test(text)
+  ) {
+    return "copy_approved";
   }
   if (
     /\b(ad copy|ad copies|primary text|headline|write copy|generate copy|copy variants|cta)\b/.test(
@@ -203,7 +210,14 @@ export function planTaskSteps(request: string): TaskStep[] {
         { id: "intake", label: "Collect copy brief", state: "pending" },
         { id: "generate_copy", label: "Generate ad copy variants", state: "pending" },
         { id: "pick_copy", label: "Present copies to pick", state: "pending" },
-        { id: "queue_create", label: "Queue create via Approvals", state: "pending" },
+        { id: "complete", label: "Complete", state: "pending" },
+      ];
+    case "copy_approved":
+      return [
+        ...base,
+        { id: "advanced_targeting", label: "Custom audiences & detailed targeting", state: "pending" },
+        { id: "creative_asset", label: "Creative URL or generate", state: "pending" },
+        { id: "queue_create", label: "Queue campaign create (Approvals)", state: "pending" },
         { id: "complete", label: "Complete", state: "pending" },
       ];
     case "optimize":

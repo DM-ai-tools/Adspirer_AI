@@ -64,6 +64,29 @@ export async function getCurrentUser(): Promise<AuthUser | null> {
   }
 }
 
+/**
+ * Build the session user from a known Auth identity (e.g. signInWithPassword).
+ * Avoids a second cookie read in the same Route Handler — Next.js can still
+ * see the pre-login cookie snapshot, which made the first login click fail.
+ */
+export async function authUserFromIdentity(input: {
+  id: string;
+  email?: string | null;
+  user_metadata?: Record<string, unknown>;
+}): Promise<AuthUser | null> {
+  const profile = await ensureProfileForUser(
+    input.id,
+    input.email ?? undefined,
+    input.user_metadata,
+  );
+  if (!profile) return null;
+  return {
+    id: input.id,
+    email: input.email ?? profile.email,
+    profile,
+  };
+}
+
 async function ensureProfileForUser(
   userId: string,
   email: string | undefined,

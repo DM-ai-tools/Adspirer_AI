@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack",
+    "dev:https": "next dev --turbopack --experimental-https",
     "dev:webpack": "next dev --webpack",
     "dev:turbo": "next dev --turbopack",
     "trigger:dev": "npx trigger.dev@4.5.10 dev",
@@ -45,6 +46,7 @@
     "react-dom": "19.2.8",
     "sonner": "^2.0.8",
     "tailwind-merge": "^3.6.0",
+    "xlsx": "^0.18.5",
     "zod": "^4.4.3"
   },
   "devDependencies": {

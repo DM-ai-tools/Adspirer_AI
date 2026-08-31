@@ -19,6 +19,7 @@ import {
   PanelLeft,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { isNavActive } from "@/lib/nav";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
@@ -35,6 +36,7 @@ const MAIN_NAV: NavItem[] = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
   { href: "/clients", label: "Clients", icon: Users },
   { href: "/workspace", label: "Workspace", icon: Bot },
+  { href: "/workspace-v2", label: "Workspace V2 (A/B)", icon: Sparkles },
   { href: "/approvals", label: "Approvals", icon: ShieldCheck },
   { href: "/monitoring", label: "Monitoring", icon: Activity },
   { href: "/competitors", label: "Competitor Intelligence", icon: Radar },
@@ -44,7 +46,7 @@ const MAIN_NAV: NavItem[] = [
 
 const ADMIN_NAV: NavItem[] = [
   { href: "/admin/team", label: "Team", icon: UserCog },
-  { href: "/admin/adspirer", label: "Adspirer Connection", icon: Plug },
+  { href: "/admin/adspirer", label: "Connections", icon: Plug },
   { href: "/admin/settings", label: "Settings", icon: Settings },
 ];
 
@@ -99,7 +101,7 @@ function NavLink({
 
 export function AppSidebar() {
   const pathname = usePathname();
-  const { user, pendingApprovals, sidebarCollapsed, toggleSidebar } = useApp();
+  const { user, pendingApprovals, sidebarCollapsed, toggleSidebar, selectedClientId } = useApp();
   const isAdmin = user?.profile.role === "admin";
 
   const main = MAIN_NAV.map((item) =>
@@ -141,11 +143,16 @@ export function AppSidebar() {
           {main.map((item) => (
             <div key={item.href} className="relative">
               <NavLink
-                item={item}
+                item={{
+                  ...item,
+                  href:
+                    selectedClientId &&
+                    (item.href === "/workspace" || item.href === "/workspace-v2")
+                      ? `${item.href}?clientId=${encodeURIComponent(selectedClientId)}`
+                      : item.href,
+                }}
                 collapsed={sidebarCollapsed}
-                active={
-                  pathname === item.href || pathname.startsWith(`${item.href}/`)
-                }
+                active={isNavActive(pathname, item.href)}
               />
             </div>
           ))}
@@ -165,10 +172,7 @@ export function AppSidebar() {
                   <NavLink
                     item={item}
                     collapsed={sidebarCollapsed}
-                    active={
-                      pathname === item.href ||
-                      pathname.startsWith(`${item.href}/`)
-                    }
+                    active={isNavActive(pathname, item.href)}
                   />
                 </div>
               ))}

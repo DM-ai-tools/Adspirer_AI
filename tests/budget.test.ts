@@ -3,6 +3,26 @@ import { assertWithinBudgetCeiling } from "@/lib/approvals/validator";
 import { createPendingApproval } from "@/lib/approvals/service";
 import { BudgetCeilingViolation } from "@/lib/errors";
 import { getDemoStore, resetDemoStore } from "@/lib/demo/store";
+import { resolveBudgetDaily } from "@/lib/meta/resolve-budget-daily";
+
+describe("resolveBudgetDaily", () => {
+  it("reads daily_budget alias used in approval JSON", () => {
+    expect(resolveBudgetDaily({ daily_budget: 5 })).toBe(5);
+  });
+
+  it("prefers budget_daily when both are set", () => {
+    expect(resolveBudgetDaily({ budget_daily: 10, daily_budget: 5 })).toBe(10);
+  });
+
+  it("coerces positive numeric strings", () => {
+    expect(resolveBudgetDaily({ daily_budget: "7.5" })).toBe(7.5);
+  });
+
+  it("returns undefined for zero or missing values", () => {
+    expect(resolveBudgetDaily({ daily_budget: 0 })).toBeUndefined();
+    expect(resolveBudgetDaily({})).toBeUndefined();
+  });
+});
 
 describe("budget ceiling", () => {
   it("throws BudgetCeilingViolation when daily budget exceeds ceiling", () => {

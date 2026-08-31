@@ -47,3 +47,10 @@ next-env.d.ts
 # trigger.dev local state
 .trigger
 
+# local security / recon artifacts
+strix_runs/
+found_subdomains.json
+subdomains.txt
+
+
+certificates

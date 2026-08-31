@@ -1,8 +1,9 @@
 import { getCurrentUser } from "@/lib/security/auth";
 import { assertAuthenticated, assertClientAccess } from "@/lib/authz/assert";
-import { getLiveAdspirerProvider, getProvider } from "@/lib/adspirer/client";
+import { getLiveAdspirerProvider, getProvider, resolveProvider } from "@/lib/adspirer/client";
 import { resolvePrimaryAccountId } from "@/lib/agent/adspirer-agent";
 import { jsonOk, withApiHandler } from "@/lib/api/response";
+import { getWorkspaceContext } from "@/lib/runtime/workspace-context";
 
 const ALLOWED_TYPES = new Set([
   "interest",
@@ -26,8 +27,7 @@ const BROWSABLE_CATEGORIES: Record<string, string> = {
 
 /**
  * GET /api/meta/targeting/search?clientId=&searchType=interest&query=fitness
- * Searchable Meta detailed targeting via Adspirer search_meta_targeting.
- * An empty query browses the category via browse_meta_targeting.
+ * Searchable Meta detailed targeting. Empty query browses the category.
  */
 export async function GET(request: Request) {
   return withApiHandler(async () => {
@@ -48,14 +48,15 @@ export async function GET(request: Request) {
       (await resolvePrimaryAccountId(clientId));
     if (!accountId) {
       throw new Error(
-        "No Meta ad account is mapped to this client. Connect one under Adspirer Connection.",
+        "No Meta ad account is mapped to this client. Connect Facebook in Workspace V2 or map an account under Adspirer Connection.",
       );
     }
 
-    const provider = getLiveAdspirerProvider() ?? getProvider();
+    const provider =
+      getWorkspaceContext()?.version === "v2"
+        ? await resolveProvider()
+        : getLiveAdspirerProvider() ?? getProvider();
 
-    // With no query yet, browse the category so operators see real options
-    // instead of an empty box. Locations have no browsable category.
     if (query.length < 2) {
       const category = BROWSABLE_CATEGORIES[searchType];
       if (!category || !provider.browseTargeting) {

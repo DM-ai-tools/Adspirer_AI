@@ -16,6 +16,7 @@ type SearchType = "interest" | "behavior" | "location";
 type Props = {
   clientId: string;
   accountId?: string | null;
+  apiBase?: string;
   disabled?: boolean;
   onConfirm: (selection: CampaignTargetingSelection) => void;
   onSkip: () => void;
@@ -42,15 +43,51 @@ type SearchSnapshot = {
   browsed: boolean;
 };
 
-const RADIUS_TYPES = new Set(["city", "region", "zip", "place"]);
+const RADIUS_TYPES = new Set(["city"]);
+
+const PLACEMENT_OPTIONS = [
+  { id: "facebook", label: "Facebook" },
+  { id: "instagram", label: "Instagram" },
+  { id: "audience_network", label: "Audience Network" },
+  { id: "messenger", label: "Messenger" },
+] as const;
 
 function emptySearchSnapshot(): SearchSnapshot {
   return { searching: false, error: null, options: [], browsed: false };
 }
 
+const selectClassName =
+  "h-8 w-full rounded-md border border-border bg-card px-2 text-xs text-foreground outline-none focus:border-accent/50 disabled:opacity-50";
+
+function SelectionChip({
+  label,
+  onRemove,
+  disabled,
+}: {
+  label: string;
+  onRemove: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-md bg-accent/10 px-2 py-0.5 text-[11px] text-foreground ring-1 ring-accent/30">
+      <span>{label}</span>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onRemove}
+        className="text-muted hover:text-foreground"
+        aria-label={`Remove ${label}`}
+      >
+        ×
+      </button>
+    </span>
+  );
+}
+
 export function TargetingPickerCard({
   clientId,
   accountId,
+  apiBase = "/api",
   disabled,
   onConfirm,
   onSkip,
@@ -75,7 +112,7 @@ export function TargetingPickerCard({
     const params = new URLSearchParams({ clientId });
     if (accountId) params.set("accountId", accountId);
     void apiFetch<{ accountId: string; audiences: MetaCustomAudience[] }>(
-      `/api/meta/audiences?${params.toString()}`,
+      `${apiBase}/meta/audiences?${params.toString()}`,
     )
       .then((data) => {
         if (cancelled) return;
@@ -97,7 +134,7 @@ export function TargetingPickerCard({
     return () => {
       cancelled = true;
     };
-  }, [clientId, accountId]);
+  }, [clientId, accountId, apiBase]);
 
   const trimmedQuery = query.trim();
   const browsing = trimmedQuery.length < 2;
@@ -116,7 +153,7 @@ export function TargetingPickerCard({
       });
       if (accountId) params.set("accountId", accountId);
       void apiFetch<{ options: MetaTargetingOption[]; browsed?: boolean }>(
-        `/api/meta/targeting/search?${params.toString()}`,
+        `${apiBase}/meta/targeting/search?${params.toString()}`,
       )
         .then((data) => {
           if (cancelled) return;
@@ -141,7 +178,7 @@ export function TargetingPickerCard({
       cancelled = true;
       window.clearTimeout(handle);
     };
-  }, [clientId, accountId, searchType, trimmedQuery, browsing, skipFetch]);
+  }, [clientId, accountId, apiBase, searchType, trimmedQuery, browsing, skipFetch]);
 
   const displayOptions = skipFetch ? [] : searchSnap.options;
 
@@ -259,9 +296,9 @@ export function TargetingPickerCard({
           Advanced targeting
         </p>
         <p className="mt-0.5 text-[11px] text-muted">
-          Pick locations, custom audiences and detailed targeting by name. Meta
-          IDs are applied automatically on create. Skipping means broad
-          targeting in the United States.
+          Add custom audiences, locations, interests, and behaviors. Nothing sends
+          until you click <span className="font-medium">Add to message</span> and
+          then press Send in the composer.
         </p>
       </div>
 
@@ -278,41 +315,46 @@ export function TargetingPickerCard({
             No custom audiences found on this ad account.
           </p>
         ) : (
-          <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border border-border/70 bg-secondary/20 p-1.5">
-            {sortedAudiences.map((a) => {
-              const selected = selectedAudienceIds.has(a.id);
-              const size = formatCount(a.approximate_count);
-              const expired = /expired/i.test(a.delivery_status ?? "");
-              return (
-                <button
-                  key={a.id}
-                  type="button"
-                  disabled={disabled}
-                  onClick={() => toggleAudience(a)}
-                  className={cn(
-                    "flex w-full items-start justify-between gap-2 rounded-md px-2 py-1.5 text-left text-[11px] transition-colors",
-                    selected
-                      ? "bg-accent/15 text-foreground ring-1 ring-accent/40"
-                      : "hover:bg-secondary/60 text-muted",
-                  )}
-                >
-                  <span>
-                    <span className="font-medium text-foreground">{a.name}</span>
-                    {a.subtype ? (
-                      <span className="ml-1 text-muted">· {a.subtype}</span>
-                    ) : null}
-                    {expired ? (
-                      <span className="ml-1 text-warning">· expired</span>
-                    ) : null}
-                  </span>
-                  {size ? (
-                    <span className="shrink-0 font-mono text-[10px] text-muted">
-                      ~{size}
-                    </span>
-                  ) : null}
-                </button>
-              );
-            })}
+          <div className="space-y-2">
+            <select
+              disabled={disabled}
+              value=""
+              onChange={(e) => {
+                const id = e.target.value;
+                if (!id) return;
+                const audience = sortedAudiences.find((a) => a.id === id);
+                if (audience) toggleAudience(audience);
+              }}
+              className={selectClassName}
+            >
+              <option value="">Select custom audience…</option>
+              {sortedAudiences
+                .filter((a) => !selectedAudienceIds.has(a.id))
+                .map((a) => {
+                  const size = formatCount(a.approximate_count);
+                  const expired = /expired/i.test(a.delivery_status ?? "");
+                  return (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                      {a.subtype ? ` · ${a.subtype}` : ""}
+                      {expired ? " · expired" : ""}
+                      {size ? ` · ~${size}` : ""}
+                    </option>
+                  );
+                })}
+            </select>
+            {selection.custom_audiences.length ? (
+              <div className="flex flex-wrap gap-1.5">
+                {selection.custom_audiences.map((a) => (
+                  <SelectionChip
+                    key={a.id}
+                    label={a.name}
+                    disabled={disabled}
+                    onRemove={() => toggleAudience({ id: a.id, name: a.name })}
+                  />
+                ))}
+              </div>
+            ) : null}
           </div>
         )}
       </div>
@@ -321,34 +363,20 @@ export function TargetingPickerCard({
         <p className="text-[11px] font-medium text-foreground">
           Detailed targeting
         </p>
-        <div className="flex flex-wrap gap-1.5">
-          {(
-            [
-              ["location", "Locations"],
-              ["interest", "Interests"],
-              ["behavior", "Behaviors"],
-            ] as const
-          ).map(([value, label]) => (
-            <button
-              key={value}
-              type="button"
-              disabled={disabled}
-              onClick={() => {
-                setSearchType(value);
-                setQuery("");
-                setSearchSnap(emptySearchSnapshot());
-              }}
-              className={cn(
-                "rounded-md border px-2 py-1 text-[11px]",
-                searchType === value
-                  ? "border-accent/50 bg-accent/10 text-foreground"
-                  : "border-border text-muted hover:border-accent/30",
-              )}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        <select
+          disabled={disabled}
+          value={searchType}
+          onChange={(e) => {
+            setSearchType(e.target.value as SearchType);
+            setQuery("");
+            setSearchSnap(emptySearchSnapshot());
+          }}
+          className={selectClassName}
+        >
+          <option value="location">Locations</option>
+          <option value="interest">Interests</option>
+          <option value="behavior">Behaviors</option>
+        </select>
         <input
           type="search"
           value={query}
@@ -370,51 +398,46 @@ export function TargetingPickerCard({
         ) : searchSnap.error ? (
           <p className="text-[11px] text-danger">{searchSnap.error}</p>
         ) : displayOptions.length ? (
-          <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border border-border/70 bg-secondary/20 p-1.5">
+          <div className="space-y-2">
             {searchSnap.browsed ? (
-              <p className="px-2 pb-1 text-[10px] text-muted">
-                Common {searchType === "behavior" ? "behaviors" : "interests"} —
-                type to search all of Meta.
+              <p className="text-[10px] text-muted">
+                Common {searchType === "behavior" ? "behaviors" : "interests"}{" "}
+                — type above to search all of Meta.
               </p>
             ) : null}
-            {displayOptions.map((opt) => {
-              const selected = isOptionSelected(opt);
-              const size = formatCount(opt.audience_size);
-              const isGeo = searchType === "location";
-              return (
-                <button
-                  key={`${opt.type}-${opt.id}`}
-                  type="button"
-                  disabled={disabled}
-                  onClick={() => toggleOption(opt)}
-                  className={cn(
-                    "flex w-full items-start justify-between gap-2 rounded-md px-2 py-1.5 text-left text-[11px] transition-colors",
-                    selected
-                      ? "bg-accent/15 text-foreground ring-1 ring-accent/40"
-                      : "hover:bg-secondary/60 text-muted",
-                  )}
-                >
-                  <span>
-                    <span className="font-medium text-foreground">
+            <select
+              disabled={disabled}
+              value=""
+              onChange={(e) => {
+                const id = e.target.value;
+                if (!id) return;
+                const opt = displayOptions.find((o) => o.id === id);
+                if (opt && !isOptionSelected(opt)) toggleOption(opt);
+              }}
+              className={selectClassName}
+            >
+              <option value="">
+                {searchType === "location"
+                  ? "Select location…"
+                  : searchType === "behavior"
+                    ? "Select behavior…"
+                    : "Select interest…"}
+              </option>
+              {displayOptions
+                .filter((opt) => !isOptionSelected(opt))
+                .map((opt) => {
+                  const size = formatCount(opt.audience_size);
+                  const isGeo = searchType === "location";
+                  return (
+                    <option key={`${opt.type}-${opt.id}`} value={opt.id}>
                       {opt.name}
-                    </span>
-                    {isGeo && opt.type ? (
-                      <span className="ml-1 text-muted">· {opt.type}</span>
-                    ) : null}
-                    {opt.path ? (
-                      <span className="mt-0.5 block text-[10px] text-muted">
-                        {opt.path}
-                      </span>
-                    ) : null}
-                  </span>
-                  {size ? (
-                    <span className="shrink-0 font-mono text-[10px] text-muted">
-                      ~{size}
-                    </span>
-                  ) : null}
-                </button>
-              );
-            })}
+                      {isGeo && opt.type ? ` · ${opt.type}` : ""}
+                      {opt.path ? ` · ${opt.path}` : ""}
+                      {size ? ` · ~${size}` : ""}
+                    </option>
+                  );
+                })}
+            </select>
           </div>
         ) : skipFetch ? (
           <p className="text-[11px] text-muted">
@@ -425,6 +448,59 @@ export function TargetingPickerCard({
           <p className="text-[11px] text-muted">No matches.</p>
         )}
       </div>
+
+      {selectedCount > 0 ? (
+        <div className="space-y-2 rounded-lg border border-border/70 bg-secondary/20 p-2">
+          <p className="text-[11px] font-medium text-foreground">
+            Your selections
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {selection.custom_audiences.map((a) => (
+              <SelectionChip
+                key={`aud-${a.id}`}
+                label={`Audience: ${a.name}`}
+                disabled={disabled}
+                onRemove={() => toggleAudience({ id: a.id, name: a.name })}
+              />
+            ))}
+            {selection.locations.map((l) => (
+              <SelectionChip
+                key={`loc-${l.key ?? l.id ?? l.name}`}
+                label={`Location: ${l.name}`}
+                disabled={disabled}
+                onRemove={() =>
+                  toggleOption({
+                    id: l.id ?? l.name,
+                    name: l.name,
+                    key: l.key ?? l.id,
+                    type: l.type ?? "city",
+                  })
+                }
+              />
+            ))}
+            {selection.interests.map((i) => (
+              <SelectionChip
+                key={`int-${i.id}`}
+                label={`Interest: ${i.name}`}
+                disabled={disabled}
+                onRemove={() =>
+                  toggleOption({ id: i.id, name: i.name, type: "interest" })
+                }
+              />
+            ))}
+            {selection.behaviors.map((b) => (
+              <SelectionChip
+                key={`beh-${b.id}`}
+                label={`Behavior: ${b.name}`}
+                disabled={disabled}
+                onRemove={() =>
+                  toggleOption({ id: b.id, name: b.name, type: "behavior" })
+                }
+              />
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       {selection.locations.length ? (
         <div className="space-y-1.5">
@@ -467,7 +543,43 @@ export function TargetingPickerCard({
         </div>
       ) : null}
 
-      {selectedCount > 0 ? (
+      <div className="space-y-1.5">
+        <p className="text-[11px] font-medium text-foreground">Placements</p>
+        <p className="text-[10px] text-muted">
+          Leave all unchecked for Advantage+ (Meta chooses). Or pick platforms
+          manually.
+        </p>
+        <div className="flex flex-wrap gap-1.5">
+          {PLACEMENT_OPTIONS.map((p) => {
+            const selected = selection.publisher_platforms.includes(p.id);
+            return (
+              <button
+                key={p.id}
+                type="button"
+                disabled={disabled}
+                onClick={() =>
+                  setSelection((prev) => ({
+                    ...prev,
+                    publisher_platforms: selected
+                      ? prev.publisher_platforms.filter((x) => x !== p.id)
+                      : [...prev.publisher_platforms, p.id],
+                  }))
+                }
+                className={cn(
+                  "rounded-md px-2 py-1 text-[11px] transition-colors",
+                  selected
+                    ? "bg-accent/15 text-foreground ring-1 ring-accent/40"
+                    : "bg-secondary/40 text-muted hover:bg-secondary/60",
+                )}
+              >
+                {p.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {selectedCount > 0 || selection.publisher_platforms.length > 0 ? (
         <p className="text-[11px] text-muted">
           Selected:{" "}
           {[
@@ -483,6 +595,9 @@ export function TargetingPickerCard({
             selection.locations.length
               ? `${selection.locations.length} location${selection.locations.length === 1 ? "" : "s"}`
               : null,
+            selection.publisher_platforms.length
+              ? `${selection.publisher_platforms.length} placement${selection.publisher_platforms.length === 1 ? "" : "s"}`
+              : null,
           ]
             .filter(Boolean)
             .join(" · ")}
@@ -494,10 +609,13 @@ export function TargetingPickerCard({
           type="button"
           size="sm"
           className="h-8"
-          disabled={disabled || selectedCount === 0}
+          disabled={
+            disabled ||
+            (selectedCount === 0 && selection.publisher_platforms.length === 0)
+          }
           onClick={() => onConfirm(selection)}
         >
-          Use selected targeting
+          Add to message
         </Button>
         <Button
           type="button"
@@ -507,7 +625,7 @@ export function TargetingPickerCard({
           disabled={disabled}
           onClick={onSkip}
         >
-          Skip advanced targeting
+          Add skip to message
         </Button>
       </div>
     </div>

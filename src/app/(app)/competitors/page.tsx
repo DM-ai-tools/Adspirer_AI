@@ -53,6 +53,8 @@ type MetaIntel = {
 
 function CompetitorsInner() {
   const searchParams = useSearchParams();
+  const workspaceVersion = searchParams.get("workspace") === "v2" ? "v2" : "v1";
+  const apiBase = workspaceVersion === "v2" ? "/api/v2" : "/api";
   const { clients, selectedClientId, setSelectedClientId } = useApp();
   const clientId = searchParams.get("clientId") || selectedClientId;
   const [services, setServices] = useState<ClientService[]>([]);
@@ -60,6 +62,7 @@ function CompetitorsInner() {
   const [brief, setBrief] = useState<CompetitorBrief | null>(null);
   const [metaIntel, setMetaIntel] = useState<MetaIntel[]>([]);
   const [busy, setBusy] = useState(false);
+  const [uploading, setUploading] = useState(false);
 
   useEffect(() => {
     if (searchParams.get("clientId")) {
@@ -99,7 +102,7 @@ function CompetitorsInner() {
       const data = await apiFetch<{
         brief: CompetitorBrief;
         meta_intel: MetaIntel[];
-      }>("/api/competitors/research", {
+      }>(`${apiBase}/competitors/research`, {
         method: "POST",
         body: JSON.stringify({ clientId, serviceId }),
       });
@@ -121,11 +124,42 @@ function CompetitorsInner() {
 
   const totalAds = metaIntel.reduce((sum, c) => sum + (c.ad_count ?? 0), 0);
 
+  async function uploadCompetitorSheet(file: File) {
+    if (!clientId) return;
+    setUploading(true);
+    try {
+      const form = new FormData();
+      form.set("clientId", clientId);
+      form.set("file", file);
+      const res = await fetch(`${apiBase}/competitors/upload`, {
+        method: "POST",
+        body: form,
+      });
+      const payload = await res.json().catch(() => null);
+      if (!res.ok) {
+        throw new Error(
+          payload?.error?.message ?? payload?.message ?? `Upload failed (${res.status})`,
+        );
+      }
+      toast.success(
+        `Imported ${payload.importedRows} competitors (${payload.inserted} new, ${payload.updated} updated).`,
+      );
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Upload failed");
+    } finally {
+      setUploading(false);
+    }
+  }
+
   return (
     <div>
       <PageHeader
         title="Competitor Intelligence"
-        description="Live Meta Ad Library intel via SociaVault — company pages, active ads, copy, and creative previews."
+        description={
+          workspaceVersion === "v2"
+            ? "V2 uses uploaded competitor sheets + SociaVault enrichment to drive direct Meta campaign creation and optimization."
+            : "Live Meta Ad Library intel via SociaVault — company pages, active ads, copy, and creative previews."
+        }
         actions={
           <div className="flex gap-2">
             <Select
@@ -165,6 +199,28 @@ function CompetitorsInner() {
             >
               {busy ? "Fetching Meta ads…" : "Run research"}
             </Button>
+            {workspaceVersion === "v2" ? (
+              <label className="inline-flex">
+                <input
+                  type="file"
+                  accept=".xlsx,.xls,.csv"
+                  className="hidden"
+                  disabled={!clientId || uploading}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) void uploadCompetitorSheet(file);
+                    e.currentTarget.value = "";
+                  }}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={!clientId || uploading}
+                >
+                  {uploading ? "Uploading…" : "Upload competitor sheet"}
+                </Button>
+              </label>
+            ) : null}
           </div>
         }
       />

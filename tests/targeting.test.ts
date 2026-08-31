@@ -1,9 +1,48 @@
 import { describe, expect, it } from "vitest";
+import { buildMetaTargeting } from "@/lib/meta/targeting-builder";
 import {
   targetingSelectionToCreateArgs,
   parseCustomAudiences,
   parseTargetingOptions,
 } from "@/lib/adspirer/targeting";
+
+describe("buildMetaTargeting", () => {
+  it("does not send radius on regions (Meta subcode 1487079)", () => {
+    const targeting = buildMetaTargeting({
+      locations: [
+        {
+          key: "1234567",
+          type: "region",
+          radius: 25,
+          distance_unit: "kilometer",
+        },
+      ],
+    });
+    const geo = targeting.geo_locations as {
+      regions?: Array<Record<string, unknown>>;
+    };
+    expect(geo.regions?.[0]).toEqual({ key: "1234567" });
+    expect(geo.regions?.[0]?.radius).toBeUndefined();
+  });
+
+  it("adds default position arrays when publisher_platforms are set", () => {
+    const targeting = buildMetaTargeting({
+      publisher_platforms: ["facebook", "instagram", "audience_network", "messenger"],
+      extra_args: {},
+    });
+    expect(targeting.publisher_platforms).toEqual([
+      "facebook",
+      "instagram",
+      "audience_network",
+      "messenger",
+    ]);
+    expect(targeting.facebook_positions).toBeTruthy();
+    expect(targeting.facebook_positions).not.toContain("video_feeds");
+    expect(targeting.instagram_positions).toBeTruthy();
+    expect(targeting.audience_network_positions).toBeTruthy();
+    expect(targeting.messenger_positions).toBeTruthy();
+  });
+});
 
 describe("targetingSelectionToCreateArgs", () => {
   it("maps picker selections into Adspirer create fields", () => {
@@ -13,6 +52,7 @@ describe("targetingSelectionToCreateArgs", () => {
       interests: [{ id: "6001", name: "Digital marketing" }],
       behaviors: [{ id: "7001", name: "Engaged shoppers" }],
       locations: [{ id: "AU", name: "Australia", key: "AU" }],
+      publisher_platforms: ["facebook", "instagram"],
     });
     expect(args.custom_audiences).toEqual(["1201"]);
     expect(args.interests).toEqual([
@@ -20,6 +60,7 @@ describe("targetingSelectionToCreateArgs", () => {
     ]);
     expect(args.behaviors).toEqual([{ id: "7001", name: "Engaged shoppers" }]);
     expect(args.locations).toEqual(["AU"]);
+    expect(args.publisher_platforms).toEqual(["facebook", "instagram"]);
   });
 
   it("sends country codes as strings and cities as keyed objects with radius", () => {
@@ -39,6 +80,7 @@ describe("targetingSelectionToCreateArgs", () => {
           distance_unit: "kilometer",
         },
       ],
+      publisher_platforms: [],
     });
     expect(args.locations).toEqual([
       "US",

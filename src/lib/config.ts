@@ -42,6 +42,10 @@ const envSchema = z.object({
   ADSPIRER_OAUTH_AUTHORIZE_URL: z.string().optional(),
   ADSPIRER_OAUTH_TOKEN_URL: z.string().optional(),
   ADSPIRER_REDIRECT_URI: z.string().optional(),
+  META_APP_ID: z.string().optional(),
+  META_APP_SECRET: z.string().optional(),
+  META_GRAPH_VERSION: z.string().default("v23.0"),
+  WORKSPACE_V2_ENABLED: boolFromEnv.default(false),
   R2_BUCKET: z.string().optional(),
   R2_ENDPOINT: z.string().optional(),
   R2_ACCESS_KEY_ID: z.string().optional(),
@@ -60,6 +64,7 @@ export type AppConfig = z.infer<typeof envSchema> & {
   hasFirecrawl: boolean;
   hasSociaVault: boolean;
   hasAdspirerMcp: boolean;
+  workspaceV2Enabled: boolean;
   adsExecutionMode: AdsExecutionMode;
 };
 
@@ -91,6 +96,10 @@ function readRawEnv(): Record<string, string | undefined> {
     ADSPIRER_OAUTH_AUTHORIZE_URL: process.env.ADSPIRER_OAUTH_AUTHORIZE_URL,
     ADSPIRER_OAUTH_TOKEN_URL: process.env.ADSPIRER_OAUTH_TOKEN_URL,
     ADSPIRER_REDIRECT_URI: process.env.ADSPIRER_REDIRECT_URI,
+    META_APP_ID: process.env.META_APP_ID,
+    META_APP_SECRET: process.env.META_APP_SECRET,
+    META_GRAPH_VERSION: process.env.META_GRAPH_VERSION,
+    WORKSPACE_V2_ENABLED: process.env.WORKSPACE_V2_ENABLED,
     R2_BUCKET: process.env.R2_BUCKET,
     R2_ENDPOINT: process.env.R2_ENDPOINT,
     R2_ACCESS_KEY_ID: process.env.R2_ACCESS_KEY_ID,
@@ -128,6 +137,7 @@ export function getConfig(): AppConfig {
     hasFirecrawl: Boolean(parsed.FIRECRAWL_API_KEY),
     hasSociaVault: Boolean(parsed.SOCIAVAULT_API_KEY),
     hasAdspirerMcp: Boolean(parsed.ADSPIRER_API_KEY || parsed.ADSPIRER_MCP_URL),
+    workspaceV2Enabled: parsed.WORKSPACE_V2_ENABLED,
     adsExecutionMode: parsed.ADS_EXECUTION_MODE,
   };
 

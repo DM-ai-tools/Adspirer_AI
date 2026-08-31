@@ -1,7 +1,8 @@
 import type { Approval } from "@/types";
 import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
-import { getProvider } from "@/lib/adspirer/client";
+import { getProvider, getProviderForBackend, resolveProvider } from "@/lib/adspirer/client";
+import type { MetaAdsProvider } from "@/lib/adspirer/provider";
 import {
   DuplicateExecutionError,
   ProviderUnavailableError,
@@ -18,6 +19,9 @@ import { nowIso } from "@/lib/utils";
 import { toApprovalInsert } from "@/lib/db/live-maps";
 import { completeTaskIfApprovalsTerminal } from "@/lib/workflow/bindings";
 import { logger } from "@/lib/observability/logger";
+import type { WorkspaceExecutionBackend } from "@/lib/runtime/workspace-context";
+import { resolveBudgetDaily } from "@/lib/meta/resolve-budget-daily";
+import { normalizeMetaApprovalArgs } from "@/lib/meta/normalize-approval-args";
 
 const executingKeys = new Set<string>();
 
@@ -78,6 +82,17 @@ export async function executeApprovedAction(input: {
     ...input.overrideArgs,
   };
 
+  const providerBackend =
+    typeof args.__provider_backend === "string"
+      ? (args.__provider_backend as WorkspaceExecutionBackend)
+      : null;
+
+  const enrichedArgs = await enrichMetaCampaignArgs(
+    approval.tool_name,
+    args,
+    providerBackend,
+  );
+
   const client =
     config.isDemoMode || !config.hasSupabase
       ? getDemoStore().clients.find((c) => c.id === approval.client_id)
@@ -87,8 +102,13 @@ export async function executeApprovedAction(input: {
     assertWithinBudgetCeiling(client, args, approval.budget_impact_cents);
   }
 
-  // Mode gate: production/sandbox must not silently fall back to mock.
-  if (config.adsExecutionMode === "production" || config.adsExecutionMode === "sandbox") {
+  // Mode gate: production/sandbox must not silently fall back to mock,
+  // unless this approval targets Workspace V2 meta_direct (Facebook OAuth).
+  if (
+    (config.adsExecutionMode === "production" ||
+      config.adsExecutionMode === "sandbox") &&
+    providerBackend !== "meta_direct"
+  ) {
     if (!config.hasAdspirerMcp) {
       throw new ProviderUnavailableError(
         `ADS_EXECUTION_MODE=${config.adsExecutionMode} requires ADSPIRER_MCP_URL`,
@@ -108,8 +128,12 @@ export async function executeApprovedAction(input: {
   await persist(working);
 
   try {
-    const provider = getProvider();
-    const result = await dispatchToProvider(approval.tool_name, args);
+    const provider = await resolveProvider(providerBackend);
+    const result = await dispatchToProvider(
+      approval.tool_name,
+      enrichedArgs,
+      provider,
+    );
 
     working = {
       ...working,
@@ -223,6 +247,34 @@ function optionalStringArray(value: unknown): string[] | undefined {
     : undefined;
 }
 
+async function enrichMetaCampaignArgs(
+  toolName: string,
+  args: Record<string, unknown>,
+  backend: WorkspaceExecutionBackend | null,
+): Promise<Record<string, unknown>> {
+  let next = normalizeMetaApprovalArgs(toolName, args);
+
+  const needsPage = [
+    "create_meta_image_campaign",
+    "create_meta_video_campaign",
+    "create_adset",
+    "create_ad",
+  ].includes(toolName);
+
+  if (backend !== "meta_direct" || !needsPage) return next;
+  if (optionalString(next.facebook_page_id)) return next;
+
+  const accountId =
+    optionalString(next.account_id) ?? optionalString(next.ad_account_id);
+  if (!accountId) return next;
+
+  const { resolveFacebookPageIdForAccount } = await import(
+    "@/lib/meta/resolve-page"
+  );
+  const pageId = await resolveFacebookPageIdForAccount(accountId);
+  return { ...next, facebook_page_id: pageId };
+}
+
 /**
  * Adspirer's create_meta_image_campaign / create_meta_video_campaign /
  * add_meta_ad_set accept far more than our typed core (interests, custom
@@ -274,8 +326,16 @@ function collectPassthrough(
 async function dispatchToProvider(
   toolName: string,
   args: Record<string, unknown>,
+  resolvedProvider?: MetaAdsProvider,
 ): Promise<unknown> {
-  const provider = getProvider();
+  const backend =
+    typeof args.__provider_backend === "string"
+      ? (args.__provider_backend as WorkspaceExecutionBackend)
+      : null;
+  delete args.__provider_backend;
+  const provider =
+    resolvedProvider ??
+    (backend ? getProviderForBackend(backend) : getProvider());
 
   switch (toolName) {
     case "update_adset_budget":
@@ -317,7 +377,7 @@ async function dispatchToProvider(
         ]),
         campaign_name: requireString(args, "campaign_name", toolName, ["name"]),
         objective: optionalString(args.objective),
-        budget_daily: optionalNumber(args.budget_daily),
+        budget_daily: resolveBudgetDaily(args) ?? optionalNumber(args.budget_daily),
         budget_lifetime: optionalNumber(args.budget_lifetime),
         end_time: optionalString(args.end_time),
         primary_text: requireString(args, "primary_text", toolName),
@@ -361,7 +421,7 @@ async function dispatchToProvider(
         ]),
         campaign_name: requireString(args, "campaign_name", toolName, ["name"]),
         objective: optionalString(args.objective),
-        budget_daily: optionalNumber(args.budget_daily),
+        budget_daily: resolveBudgetDaily(args) ?? optionalNumber(args.budget_daily),
         budget_lifetime: optionalNumber(args.budget_lifetime),
         end_time: optionalString(args.end_time),
         primary_text: requireString(args, "primary_text", toolName),
@@ -402,10 +462,7 @@ async function dispatchToProvider(
         campaign_id: requireString(normalized, "campaign_id", toolName),
         name:
           typeof normalized.name === "string" ? normalized.name : undefined,
-        budget_daily:
-          typeof normalized.budget_daily === "number"
-            ? normalized.budget_daily
-            : undefined,
+        budget_daily: resolveBudgetDaily(normalized),
         ad_type:
           normalized.ad_type === "video" || normalized.ad_type === "carousel"
             ? normalized.ad_type
@@ -437,6 +494,17 @@ async function dispatchToProvider(
         locations: Array.isArray(normalized.locations)
           ? normalized.locations
           : undefined,
+        publisher_platforms: optionalStringArray(
+          normalized.publisher_platforms,
+        ),
+        objective: optionalString(normalized.objective),
+        facebook_page_id: optionalString(normalized.facebook_page_id),
+        pixel_id: optionalString(normalized.pixel_id),
+        pixel_event_name: optionalString(normalized.pixel_event_name),
+        campaign_budget_optimization:
+          typeof normalized.campaign_budget_optimization === "boolean"
+            ? normalized.campaign_budget_optimization
+            : undefined,
         extra_args: collectPassthrough(normalized),
       });
     }
@@ -452,8 +520,12 @@ async function dispatchToProvider(
             : "image",
         primary_text: requireString(args, "primary_text", toolName),
         landing_page_url: requireString(args, "landing_page_url", toolName),
+        display_link: optionalString(args.display_link),
+        url_tags: optionalString(args.url_tags),
         headline:
           typeof args.headline === "string" ? args.headline : undefined,
+        description: optionalString(args.description),
+        call_to_action: optionalString(args.call_to_action),
         image_url:
           typeof args.image_url === "string" ? args.image_url : undefined,
         existing_image_hash:
@@ -464,6 +536,8 @@ async function dispatchToProvider(
         existing_video_id: optionalString(args.existing_video_id),
         thumbnail_url: optionalString(args.thumbnail_url),
         name: typeof args.name === "string" ? args.name : undefined,
+        facebook_page_id: optionalString(args.facebook_page_id),
+        instagram_account_id: optionalString(args.instagram_account_id),
       });
     case "pause_ad":
       return provider.pauseAd(String(args.account_id), String(args.ad_id));

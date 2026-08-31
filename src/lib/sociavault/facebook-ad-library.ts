@@ -71,6 +71,7 @@ export async function fetchMetaCompanyAds(input: {
   country?: string;
   status?: "ALL" | "ACTIVE" | "INACTIVE";
   limit?: number;
+  cursor?: string | null;
 }): Promise<{ ads: SociaVaultMetaAd[]; totalCount: number }> {
   const res = await sociavaultGet<CompanyAdsPayload>(
     "/v1/scrape/facebook-ad-library/company-ads",
@@ -80,6 +81,7 @@ export async function fetchMetaCompanyAds(input: {
       country: input.country ?? "ALL",
       status: input.status ?? "ACTIVE",
       trim: true,
+      cursor: input.cursor ?? undefined,
     },
   );
 
@@ -90,6 +92,41 @@ export async function fetchMetaCompanyAds(input: {
     ads: ads.slice(0, limit),
     totalCount: res.data?.searchResultsCount ?? ads.length,
   };
+}
+
+export async function fetchMetaCompanyAdsPage(input: {
+  pageId?: string;
+  companyName?: string;
+  country?: string;
+  status?: "ALL" | "ACTIVE" | "INACTIVE";
+  cursor?: string | null;
+}): Promise<{ ads: SociaVaultMetaAd[]; totalCount: number; cursor: string | null }> {
+  const res = await sociavaultGet<CompanyAdsPayload>(
+    "/v1/scrape/facebook-ad-library/company-ads",
+    {
+      pageId: input.pageId,
+      companyName: input.companyName,
+      country: input.country ?? "ALL",
+      status: input.status ?? "ACTIVE",
+      trim: true,
+      cursor: input.cursor ?? undefined,
+    },
+  );
+  const results = res.data?.results ?? {};
+  const ads = Object.values(results).filter((a) => a?.ad_archive_id);
+  return {
+    ads,
+    totalCount: res.data?.searchResultsCount ?? ads.length,
+    cursor: res.data?.cursor ?? null,
+  };
+}
+
+export function findNormalizedAdById(
+  ads: SociaVaultMetaAd[],
+  adArchiveId: string,
+) {
+  const found = ads.find((ad) => ad.ad_archive_id === adArchiveId);
+  return found ? normalizeMetaAd(found) : null;
 }
 
 export function normalizeMetaAd(ad: SociaVaultMetaAd) {

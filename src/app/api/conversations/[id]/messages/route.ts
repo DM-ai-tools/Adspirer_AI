@@ -5,6 +5,7 @@ import { getDemoStore } from "@/lib/demo/store";
 import { getCurrentUser } from "@/lib/security/auth";
 import { assertAuthenticated, assertClientAccess } from "@/lib/authz/assert";
 import { createTask, runTask } from "@/lib/agent/task-runner";
+import { createTaskV2, runTaskV2 } from "@/lib/agent/task-runner-v2";
 import { maybeAutoTitleConversation } from "@/lib/agent/title-service";
 import { nowIso } from "@/lib/utils";
 import type { Conversation, Message, Task } from "@/types";
@@ -21,9 +22,16 @@ import { reconcileConversationMessages } from "@/lib/agent/message-reconcile";
 const postSchema = z.object({
   content: z.string().min(1),
   runAgent: z.boolean().optional(),
+  /** V2: explicit act_* to query (must be mapped to the conversation's client). */
+  metaAccountId: z.string().optional(),
 });
 
 type RouteContext = { params: Promise<{ id: string }> };
+
+function isV2Request(request: Request): boolean {
+  const url = new URL(request.url);
+  return url.pathname.startsWith("/api/v2/") || url.searchParams.get("workspace") === "v2";
+}
 
 async function getConversation(id: string): Promise<Conversation> {
   const config = getConfig();
@@ -139,6 +147,7 @@ export async function GET(_request: Request, context: RouteContext) {
 }
 
 export async function POST(request: Request, context: RouteContext) {
+  const useV2 = isV2Request(request);
   const { id } = await context.params;
   const wantStream =
     request.headers.get("accept")?.includes("text/event-stream") ||
@@ -211,19 +220,29 @@ export async function POST(request: Request, context: RouteContext) {
   }
 
   // ChatGPT-style title from the first user request (OpenAI when configured).
-  conversation = await maybeAutoTitleConversation(conversation, body.content);
+  conversation = await maybeAutoTitleConversation(conversation, body.content, {
+    workspaceVersion: useV2 ? "v2" : "v1",
+  });
 
   if (body.runAgent === false) {
     return jsonOk({ message: userMessage, task: null, conversation }, 201);
   }
 
-  let task = await createTask({
-    clientId: conversation.client_id,
-    createdBy: user.id,
-    title: body.content.slice(0, 120),
-    goal: body.content,
-    conversationId: id,
-  });
+  let task = useV2
+    ? await createTaskV2({
+        clientId: conversation.client_id,
+        createdBy: user.id,
+        title: body.content.slice(0, 120),
+        goal: body.content,
+        conversationId: id,
+      })
+    : await createTask({
+        clientId: conversation.client_id,
+        createdBy: user.id,
+        title: body.content.slice(0, 120),
+        goal: body.content,
+        conversationId: id,
+      });
   await linkConversationTask(id, task.id);
 
   const assistantMessage: Message = {
@@ -246,7 +265,8 @@ export async function POST(request: Request, context: RouteContext) {
 
   if (!wantStream) {
     return withApiHandler(async () => {
-      task = await runTask(task.id, {
+      task = await (useV2 ? runTaskV2 : runTask)(task.id, {
+        metaAccountId: body.metaAccountId,
         onProgress: async (event) => {
           if (event.summary != null) {
             assistantMessage.content = event.summary;
@@ -311,7 +331,8 @@ export async function POST(request: Request, context: RouteContext) {
         send("task", { task });
 
         let lastPersist = 0;
-        task = await runTask(task.id, {
+        task = await (useV2 ? runTaskV2 : runTask)(task.id, {
+          metaAccountId: body.metaAccountId,
           onProgress: async (event) => {
             send("progress", {
               phase: event.phase,

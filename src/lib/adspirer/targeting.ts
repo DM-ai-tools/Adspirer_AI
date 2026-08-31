@@ -52,10 +52,12 @@ export type CampaignTargetingSelection = {
   interests: Array<{ id: string; name: string }>;
   behaviors: Array<{ id: string; name: string }>;
   locations: TargetingLocationSelection[];
+  /** facebook | instagram | audience_network | messenger — empty = Advantage+ */
+  publisher_platforms: string[];
 };
 
-/** Meta location keys that need `type` (and support a radius) on create. */
-const RADIUS_LOCATION_TYPES = new Set(["city", "region", "zip", "place"]);
+/** Meta location keys that support a radius (cities only). */
+const RADIUS_LOCATION_TYPES = new Set(["city"]);
 
 export function emptyTargetingSelection(): CampaignTargetingSelection {
   return {
@@ -64,6 +66,7 @@ export function emptyTargetingSelection(): CampaignTargetingSelection {
     interests: [],
     behaviors: [],
     locations: [],
+    publisher_platforms: [],
   };
 }
 
@@ -102,15 +105,20 @@ export function targetingSelectionToCreateArgs(
         return key.toUpperCase();
       }
       if (!key) return l.name;
-      const radius = typeof l.radius === "number" && l.radius > 0 ? l.radius : null;
+      const radius =
+        typeof l.radius === "number" && l.radius > 0 ? l.radius : null;
+      const resolvedType = type || "city";
       return {
         key,
-        type: RADIUS_LOCATION_TYPES.has(type) ? type : type || "city",
-        ...(radius
+        type: resolvedType,
+        ...(radius && RADIUS_LOCATION_TYPES.has(resolvedType)
           ? { radius, distance_unit: l.distance_unit ?? "kilometer" }
           : {}),
       };
     });
+  }
+  if (selection.publisher_platforms.length) {
+    args.publisher_platforms = selection.publisher_platforms;
   }
   return args;
 }

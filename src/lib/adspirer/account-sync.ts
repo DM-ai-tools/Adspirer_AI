@@ -1,10 +1,15 @@
 import { nanoid } from "nanoid";
 import type { ConnectedMetaAccount } from "@/types";
+import type { MetaAdsProvider } from "@/lib/adspirer/provider";
 import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
-import { getLiveAdspirerProvider, getProvider } from "@/lib/adspirer/client";
+import { getLiveAdspirerProvider, getProvider, resolveProvider } from "@/lib/adspirer/client";
 import { nowIso } from "@/lib/utils";
 import { logger } from "@/lib/observability/logger";
+import type { ConnectionSource } from "@/lib/adspirer/connection-source";
+
+export type { ConnectionSource } from "@/lib/adspirer/connection-source";
+export { getConnectionSources } from "@/lib/adspirer/connection-source";
 
 export interface SyncAccountsResult {
   upserted: ConnectedMetaAccount[];
@@ -12,13 +17,21 @@ export interface SyncAccountsResult {
 }
 
 /**
- * Pull accessible Meta accounts from the provider and upsert into
+ * Pull accessible Meta accounts from a provider and upsert into
  * connected_meta_accounts (demo store or Supabase).
  */
 export async function syncConnectedMetaAccounts(options?: {
   clientId?: string | null;
+  source?: ConnectionSource;
+  provider?: MetaAdsProvider;
 }): Promise<SyncAccountsResult> {
-  const provider = getLiveAdspirerProvider() ?? getProvider();
+  const source: ConnectionSource = options?.source ?? "adspirer";
+  const provider =
+    options?.provider ??
+    (source === "facebook_oauth"
+      ? await resolveProvider("meta_direct")
+      : getLiveAdspirerProvider() ?? getProvider());
+
   const accounts = await provider.listAccessibleAccounts();
   const ts = nowIso();
   const config = getConfig();
@@ -40,6 +53,7 @@ export async function syncConnectedMetaAccounts(options?: {
         existing.last_synced_at = ts;
         existing.updated_at = ts;
         if (options?.clientId) existing.client_id = options.clientId;
+        existing.raw = mergeSourceMeta(existing.raw, source, provider.name);
         upserted.push(existing);
       } else {
         const row: ConnectedMetaAccount = {
@@ -53,7 +67,7 @@ export async function syncConnectedMetaAccounts(options?: {
           access_status: "granted",
           access_method: "direct_grant",
           last_synced_at: ts,
-          raw: { synced_via: provider.name },
+          raw: mergeSourceMeta(null, source, provider.name),
           created_at: ts,
           updated_at: ts,
         };
@@ -65,12 +79,12 @@ export async function syncConnectedMetaAccounts(options?: {
     logger.info("Synced connected Meta accounts (demo)", {
       count: upserted.length,
       provider: provider.name,
+      source,
     });
 
     return { upserted, count: upserted.length };
   }
 
-  // Live Supabase path
   const { createAdminClient } = await import("@/lib/supabase/admin");
   const { mapConnectedMetaAccountRow } = await import("@/lib/adspirer/db-map");
   const supabase = createAdminClient();
@@ -83,7 +97,7 @@ export async function syncConnectedMetaAccounts(options?: {
 
     const { data: existingRow } = await supabase
       .from("connected_meta_accounts")
-      .select("id, account_name, mapped_client_id")
+      .select("id, account_name, mapped_client_id, raw_metadata")
       .eq("external_account_id", account.meta_account_id)
       .maybeSingle();
 
@@ -94,6 +108,9 @@ export async function syncConnectedMetaAccounts(options?: {
         : !looksLikeIdName(existingName)
           ? existingName
           : displayName;
+
+    const existingRaw =
+      (existingRow?.raw_metadata as Record<string, unknown> | null) ?? null;
 
     const payload = {
       mapped_client_id:
@@ -109,7 +126,7 @@ export async function syncConnectedMetaAccounts(options?: {
       status: "active" as const,
       last_synced_at: ts,
       updated_at: ts,
-      raw_metadata: { synced_via: provider.name },
+      raw_metadata: mergeSourceMeta(existingRaw, source, provider.name),
     };
 
     const { data, error } = await supabase
@@ -129,7 +146,6 @@ export async function syncConnectedMetaAccounts(options?: {
     const mapped = mapConnectedMetaAccountRow(data as Record<string, unknown>);
     upserted.push(mapped);
 
-    // Keep linked client label in sync when we finally learn the display name.
     if (mapped.client_id && !looksLikeIdName(resolvedName)) {
       await supabase
         .from("clients")
@@ -144,6 +160,27 @@ export async function syncConnectedMetaAccounts(options?: {
   }
 
   return { upserted, count: upserted.length };
+}
+
+function mergeSourceMeta(
+  existing: Record<string, unknown> | null | undefined,
+  source: ConnectionSource,
+  providerName: string,
+): Record<string, unknown> {
+  const prev = existing ?? {};
+  const prevSources = Array.isArray(prev.sources)
+    ? (prev.sources as string[])
+    : prev.synced_via
+      ? [String(prev.synced_via)]
+      : [];
+  const sources = [...new Set([...prevSources, source])];
+  return {
+    ...prev,
+    synced_via: source,
+    sources,
+    provider: providerName,
+    last_source_sync: source,
+  };
 }
 
 function looksLikeIdName(value: string | null | undefined): boolean {
