@@ -170,10 +170,54 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       },
     );
     const first = data.data?.[0] ?? {};
+    return this.mapInsightsRow(accountId, campaignId, "campaign", dateStart, dateStop, first);
+  }
+
+  async getAccountInsights(
+    accountId: string,
+    dateStart: string,
+    dateStop: string,
+  ): Promise<MetaInsights> {
+    const id = normalizeAccountId(accountId);
+    const data = await this.graph.get<{ data?: Array<Record<string, unknown>> }>(
+      `${id}/insights`,
+      {
+        fields:
+          "spend,impressions,clicks,ctr,cpc,reach,frequency,actions,cost_per_action_type",
+        time_range: JSON.stringify({ since: dateStart, until: dateStop }),
+        level: "account",
+      },
+    );
+    const first = data.data?.[0] ?? {};
+    return this.mapInsightsRow(id, id, "account", dateStart, dateStop, first);
+  }
+
+  private mapInsightsRow(
+    accountId: string,
+    entityId: string,
+    entityType: MetaInsights["entity_type"],
+    dateStart: string,
+    dateStop: string,
+    first: Record<string, unknown>,
+  ): MetaInsights {
+    const actions = Array.isArray(first.actions)
+      ? (first.actions as Array<{ action_type?: string; value?: string }>)
+      : [];
+    const purchase =
+      actions.find((a) => /purchase|omni_purchase/i.test(String(a.action_type))) ??
+      actions.find((a) => /lead|complete_registration|offsite_conversion/i.test(String(a.action_type)));
+    const conversions = purchase?.value != null ? Number(purchase.value) : undefined;
+    const cpaRows = Array.isArray(first.cost_per_action_type)
+      ? (first.cost_per_action_type as Array<{ action_type?: string; value?: string }>)
+      : [];
+    const cpaMatch = purchase
+      ? cpaRows.find((r) => r.action_type === purchase.action_type)
+      : undefined;
+
     return {
       account_id: normalizeAccountId(accountId),
-      entity_id: campaignId,
-      entity_type: "campaign",
+      entity_id: entityId,
+      entity_type: entityType,
       date_start: dateStart,
       date_stop: dateStop,
       spend: Number(first.spend ?? 0),
@@ -183,6 +227,9 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       cpc: Number(first.cpc ?? 0),
       reach: Number(first.reach ?? 0),
       frequency: Number(first.frequency ?? 0),
+      conversions,
+      cost_per_conversion:
+        cpaMatch?.value != null ? Number(cpaMatch.value) : undefined,
       raw: first,
     };
   }
@@ -527,6 +574,10 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     const accountId = normalizeAccountId(input.account_id);
     const { optimization_goal, billing_event } = optimizationForObjective(
       input.objective,
+      {
+        pixel_id: input.pixel_id,
+        extra_args: input.extra_args,
+      },
     );
     const targeting = buildMetaTargeting({
       age_min: input.age_min,
@@ -584,15 +635,28 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
 
   async createAd(input: CreateAdInput): Promise<MetaAd & { raw_text?: string }> {
     const accountId = normalizeAccountId(input.account_id);
-    const pageId = await this.resolveFacebookPageId(
-      input.account_id,
-      input.facebook_page_id,
-    );
+    let pageId: string;
+    try {
+      pageId = await this.resolveFacebookPageId(
+        input.account_id,
+        input.facebook_page_id,
+      );
+    } catch (error) {
+      this.rethrowStep("Resolve Facebook page", error);
+    }
+
     const isVideo =
       input.ad_type === "video" || input.video_url || input.existing_video_id;
     let videoId = input.existing_video_id;
     if (isVideo && !videoId && input.video_url) {
-      videoId = await this.uploadVideoFromUrl(input.account_id, input.video_url);
+      try {
+        videoId = await this.uploadVideoFromUrl(
+          input.account_id,
+          input.video_url,
+        );
+      } catch (error) {
+        this.rethrowStep("Upload video", error);
+      }
     }
     if (isVideo && !videoId) {
       throw new Error(
@@ -648,16 +712,27 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       creativeBody.url_tags = input.url_tags;
     }
 
-    const creative = await this.graph.post<{ id: string }>(
-      `${accountId}/adcreatives`,
-      creativeBody,
-    );
-    const ad = await this.graph.post<{ id: string }>(`${accountId}/ads`, {
-      name: input.name ?? "Ad",
-      adset_id: input.ad_set_id,
-      status: "PAUSED",
-      creative: JSON.stringify({ creative_id: creative.id }),
-    });
+    let creative: { id: string };
+    try {
+      creative = await this.graph.post<{ id: string }>(
+        `${accountId}/adcreatives`,
+        creativeBody,
+      );
+    } catch (error) {
+      this.rethrowStep("Create ad creative", error);
+    }
+
+    let ad: { id: string };
+    try {
+      ad = await this.graph.post<{ id: string }>(`${accountId}/ads`, {
+        name: input.name ?? "Ad",
+        adset_id: input.ad_set_id,
+        status: "PAUSED",
+        creative: JSON.stringify({ creative_id: creative.id }),
+      });
+    } catch (error) {
+      this.rethrowStep("Create ad", error);
+    }
     return {
       id: String(ad.id),
       adset_id: input.ad_set_id,
@@ -842,31 +917,80 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
   }
 
   async listAccessibleAccounts() {
-    const accountId = normalizeAccountId("me");
-    try {
-      const me = await this.graph.get<{ data?: Array<Record<string, unknown>> }>(
-        "me/adaccounts",
-        { fields: "id,name,currency,timezone_name,business", limit: 50 },
-      );
-      return (me.data ?? []).map((row) => ({
-        meta_account_id: String(row.id ?? ""),
-        meta_account_name: String(row.name ?? row.id ?? "Meta Account"),
+    const fields = "id,name,currency,timezone_name,business";
+    const byId = new Map<
+      string,
+      {
+        meta_account_id: string;
+        meta_account_name: string;
+        currency?: string;
+        timezone?: string;
+        business_id?: string;
+      }
+    >();
+
+    const addRow = (row: Record<string, unknown>) => {
+      const rawId = String(row.id ?? "").trim();
+      if (!rawId || rawId === "me") return;
+      const meta_account_id = rawId.startsWith("act_")
+        ? rawId
+        : `act_${rawId.replace(/^act_/, "")}`;
+      if (byId.has(meta_account_id)) return;
+      byId.set(meta_account_id, {
+        meta_account_id,
+        meta_account_name: String(row.name ?? meta_account_id),
         currency: typeof row.currency === "string" ? row.currency : undefined,
         timezone:
           typeof row.timezone_name === "string" ? row.timezone_name : undefined,
         business_id:
           row.business && typeof row.business === "object"
-            ? String((row.business as { id?: unknown }).id ?? "")
+            ? String((row.business as { id?: unknown }).id ?? "") || undefined
             : undefined,
-      }));
+      });
+    };
+
+    const addFromEdge = async (path: string) => {
+      let after: string | undefined;
+      do {
+        const res = await this.graph.get<{
+          data?: Array<Record<string, unknown>>;
+          paging?: { cursors?: { after?: string } };
+        }>(path, {
+          fields,
+          limit: 100,
+          ...(after ? { after } : {}),
+        });
+        for (const row of res.data ?? []) addRow(row);
+        after = res.paging?.cursors?.after;
+      } while (after);
+    };
+
+    try {
+      await addFromEdge("me/adaccounts");
     } catch {
-      return [
-        {
-          meta_account_id: accountId,
-          meta_account_name: "Meta account",
-        },
-      ];
+      // User may only have business-scoped access for some accounts.
     }
+
+    try {
+      const businesses = await this.graph.get<{
+        data?: Array<Record<string, unknown>>;
+      }>("me/businesses", { fields: "id,name", limit: 50 });
+      for (const biz of businesses.data ?? []) {
+        const businessId = String(biz.id ?? "").trim();
+        if (!businessId) continue;
+        for (const edge of ["owned_ad_accounts", "client_ad_accounts"] as const) {
+          try {
+            await addFromEdge(`${businessId}/${edge}`);
+          } catch {
+            // Skip businesses the token cannot read.
+          }
+        }
+      }
+    } catch {
+      // business_management may be missing on older tokens until reconnect.
+    }
+
+    return Array.from(byId.values());
   }
 }
 

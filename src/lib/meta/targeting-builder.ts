@@ -247,15 +247,43 @@ export function buildMetaTargeting(input: {
   return targeting;
 }
 
-export function optimizationForObjective(objective?: string): {
+function resolvePixelId(input: {
+  pixel_id?: string;
+  extra_args?: Record<string, unknown>;
+}): string | undefined {
+  const direct =
+    typeof input.pixel_id === "string" && input.pixel_id.trim()
+      ? input.pixel_id.trim()
+      : undefined;
+  const fromExtra =
+    typeof input.extra_args?.pixel_id === "string" &&
+    input.extra_args.pixel_id.trim()
+      ? input.extra_args.pixel_id.trim()
+      : undefined;
+  return direct ?? fromExtra;
+}
+
+export function optimizationForObjective(
+  objective?: string,
+  options?: { pixel_id?: string; extra_args?: Record<string, unknown> },
+): {
   optimization_goal: string;
   billing_event: string;
 } {
+  const hasPixel = Boolean(resolvePixelId(options ?? {}));
+
   switch ((objective ?? "OUTCOME_TRAFFIC").toUpperCase()) {
     case "OUTCOME_SALES":
     case "OUTCOME_LEADS":
+      // OFFSITE_CONVERSIONS requires pixel_id in promoted_object (subcode 1815143).
+      if (hasPixel) {
+        return {
+          optimization_goal: "OFFSITE_CONVERSIONS",
+          billing_event: "IMPRESSIONS",
+        };
+      }
       return {
-        optimization_goal: "OFFSITE_CONVERSIONS",
+        optimization_goal: "LINK_CLICKS",
         billing_event: "IMPRESSIONS",
       };
     case "OUTCOME_ENGAGEMENT":
@@ -290,11 +318,7 @@ export function buildPromotedObject(input: {
     (typeof input.extra_args?.facebook_page_id === "string"
       ? input.extra_args.facebook_page_id
       : undefined);
-  const pixelId =
-    input.pixel_id ??
-    (typeof input.extra_args?.pixel_id === "string"
-      ? input.extra_args.pixel_id
-      : undefined);
+  const pixelId = resolvePixelId(input);
   const eventName =
     input.pixel_event_name ??
     (typeof input.extra_args?.pixel_event_name === "string"

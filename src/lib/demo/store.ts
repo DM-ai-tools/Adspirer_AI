@@ -19,6 +19,7 @@ import type {
   Task,
   ToolCall,
   UserClientAccess,
+  WorkspaceDocument,
 } from "@/types";
 import { encryptToken } from "@/lib/security/token-vault";
 import { addDaysIso, addHoursIso, nowIso } from "@/lib/utils";
@@ -43,6 +44,7 @@ export interface DemoStore {
   recommendations: Recommendation[];
   notifications: Notification[];
   oauthPkceStates: OAuthPkceState[];
+  workspaceDocuments: WorkspaceDocument[];
   creativeDrafts?: import("@/lib/creatives/drafts").CreativeDraft[];
 }
 
@@ -51,7 +53,7 @@ type GlobalDemo = typeof globalThis & {
   __adspirerDemoStoreVersion?: number;
 };
 
-const DEMO_STORE_VERSION = 2;
+const DEMO_STORE_VERSION = 3;
 
 function id(prefix: string): string {
   return `${prefix}_${nanoid(10)}`;
@@ -579,6 +581,7 @@ function seedStore(): DemoStore {
     recommendations,
     notifications,
     oauthPkceStates: [],
+    workspaceDocuments: [],
   };
 }
 

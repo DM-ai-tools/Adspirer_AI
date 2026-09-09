@@ -24,8 +24,12 @@ export type GenerateCreativesInput = {
   count?: number;
   generateImages?: boolean;
   landingPageUrl?: string;
+  /** Preferred URL for brand colour / logo scrape when distinct from landing. */
+  brandUrl?: string;
   headline?: string;
   primaryText?: string;
+  /** Competitor / reference notes for art direction. */
+  referenceBrief?: string;
   analyzeBrand?: boolean;
 };
 
@@ -45,6 +49,7 @@ async function loadScope(input: GenerateCreativesInput) {
     name: string;
     brand_voice: string | null;
     brand_colors: string[] | null;
+    brand_guidelines?: string | null;
     website_url?: string | null;
     target_audience?: string | null;
     value_proposition?: string | null;
@@ -125,10 +130,9 @@ export async function generateCreativeDrafts(
   const landing =
     input.landingPageUrl || service?.landing_page_url || undefined;
 
-  // Where the campaign sends traffic and where the brand look comes from are
-  // different questions. Without this fallback a chat that never pasted a URL
-  // produced stills with no palette and no logo at all.
-  const brandSourceUrl = landing || client.website_url || undefined;
+  // Brand look: explicit brand URL, else landing, else client website.
+  const brandSourceUrl =
+    input.brandUrl || landing || client.website_url || undefined;
 
   let brandAnalysis = null as Awaited<
     ReturnType<typeof analyzeBrandFromUrl>
@@ -156,6 +160,23 @@ export async function generateCreativeDrafts(
   const serviceName = service?.name ?? "Brand offer";
   const conceptCount = Math.min(Math.max(input.count ?? 3, 1), 5);
 
+  const guidelinesNote = client.brand_guidelines?.trim()
+    ? `Brand guidelines: ${client.brand_guidelines.trim().slice(0, 600)}`
+    : null;
+  const referenceNote = input.referenceBrief?.trim()
+    ? `Reference / competitor recreate brief: ${input.referenceBrief
+        .trim()
+        .slice(0, 800)}`
+    : null;
+  const directionParts = [
+    brandAnalysis?.imagery_notes ?? null,
+    guidelinesNote,
+    referenceNote,
+  ].filter(Boolean);
+  const baseDirection = directionParts.length
+    ? directionParts.join(" | ")
+    : null;
+
   // Supplied copy means the operator wants the SAME ad rendered several ways,
   // so vary the art direction instead of rewriting their headline.
   const hasSuppliedCopy = Boolean(input.headline || input.primaryText);
@@ -173,7 +194,7 @@ export async function generateCreativeDrafts(
             client.value_proposition ||
             `${brandName} — ${serviceName}`,
           description: service?.description ?? serviceName,
-          baseDirection: brandAnalysis?.imagery_notes ?? null,
+          baseDirection,
           audience: client.target_audience,
           count: conceptCount,
         })

@@ -8,7 +8,7 @@ import {
 import { inferConversationFlow } from "@/lib/chat/infer-flow";
 
 describe("action-messages", () => {
-  it("composeCopyApprovedMessage stays user-facing", () => {
+  it("composeCopyApprovedMessage stays user-facing and copy-only", () => {
     const msg = composeCopyApprovedMessage({
       id: "A",
       angle: "benefit",
@@ -16,7 +16,8 @@ describe("action-messages", () => {
       primary_text: "P",
     });
     expect(msg).toContain("Approved ad copy variant A");
-    expect(msg).not.toMatch(/do not|targeting_picker/i);
+    expect(msg).toMatch(/copy only/i);
+    expect(msg).not.toMatch(/targeting_picker|create_meta_/i);
   });
 
   it("composeTargetingMessage has no creative next-step", () => {
@@ -62,7 +63,82 @@ describe("inferConversationFlow", () => {
     expect(flow).toBe("ad_copy");
   });
 
-  it("hides creative UI path unless create campaign", () => {
+  it("keeps copy-only after approval when the ask was only for copies", () => {
+    const flow = inferConversationFlow([
+      {
+        id: "1",
+        role: "user",
+        content:
+          "Create ad copies based on the uploaded competitors ad copy",
+        created_at: new Date().toISOString(),
+        conversation_id: "c1",
+        tool_call_id: null,
+        metadata: null,
+      },
+      {
+        id: "2",
+        role: "assistant",
+        content: "Here are variants",
+        created_at: new Date().toISOString(),
+        conversation_id: "c1",
+        tool_call_id: null,
+        metadata: null,
+      },
+      {
+        id: "3",
+        role: "user",
+        content:
+          "Approved ad copy variant copy_1 (benefit):\n- Headline: H\n\nI'm approving this copy only for now — not creating a campaign yet.",
+        created_at: new Date().toISOString(),
+        conversation_id: "c1",
+        tool_call_id: null,
+        metadata: null,
+      },
+    ]);
+    expect(flow).toBe("ad_copy");
+  });
+
+  it("keeps campaign flow after copy approval when create campaign was asked", () => {
+    const flow = inferConversationFlow([
+      {
+        id: "1",
+        role: "user",
+        content: "Create a Meta campaign for this account",
+        created_at: new Date().toISOString(),
+        conversation_id: "c1",
+        tool_call_id: null,
+        metadata: null,
+      },
+      {
+        id: "2",
+        role: "user",
+        content: "Approved ad copy variant A (benefit):\n- Headline: H",
+        created_at: new Date().toISOString(),
+        conversation_id: "c1",
+        tool_call_id: null,
+        metadata: null,
+      },
+    ]);
+    expect(flow).toBe("create_campaign");
+  });
+
+  it("detects standalone image generation without campaign create", () => {
+    const flow = inferConversationFlow([
+      {
+        id: "1",
+        role: "user",
+        content:
+          "Create an image based on this reference using https://example.com brand colours",
+        created_at: new Date().toISOString(),
+        conversation_id: "c1",
+        tool_call_id: null,
+        metadata: null,
+      },
+    ]);
+    expect(flow).toBe("creative_images");
+  });
+
+  it("detects explicit campaign format choice", () => {
     const flow = inferConversationFlow([
       {
         id: "1",

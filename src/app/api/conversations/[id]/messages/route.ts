@@ -124,12 +124,18 @@ export async function GET(_request: Request, context: RouteContext) {
     }
 
     let task: Task | null = null;
-    const needsReconcile =
-      Boolean(conversation.task_id) &&
-      messages.some(
-        (m) => m.role === "assistant" && m.metadata?.streaming,
+    // Only reconcile the in-flight / orphaned streaming assistant row for the
+    // conversation's latest task — never rewrite older turns' stored content.
+    const streamingForLatestTask = messages.filter((m) => {
+      if (m.role !== "assistant" || !m.metadata?.streaming) return false;
+      const taskId = m.metadata?.taskId;
+      return (
+        !taskId ||
+        !conversation.task_id ||
+        taskId === conversation.task_id
       );
-    if (needsReconcile && conversation.task_id) {
+    });
+    if (conversation.task_id && streamingForLatestTask.length > 0) {
       try {
         task = await getTask(conversation.task_id);
       } catch {
@@ -308,6 +314,12 @@ export async function POST(request: Request, context: RouteContext) {
             "string"
             ? (task.agent_state.report as { title: string }).title
             : null,
+        reportData:
+          task.agent_state?.report &&
+          typeof task.agent_state.report === "object" &&
+          "data" in (task.agent_state.report as object)
+            ? (task.agent_state.report as { data?: unknown }).data ?? null
+            : null,
       };
       await saveMessage(assistantMessage, task.id);
 
@@ -369,7 +381,8 @@ export async function POST(request: Request, context: RouteContext) {
                   label: event.label,
                   ui: taskUi ?? assistantMessage.metadata?.ui ?? null,
                 };
-                await saveMessage(assistantMessage, task.id);
+                // Fire-and-forget — awaiting DB writes stalls token flush to the client.
+                void saveMessage(assistantMessage, task.id).catch(() => undefined);
               }
             } else if (event.label) {
               const taskUi = event.task.agent_state?.ui ?? null;
@@ -428,6 +441,12 @@ export async function POST(request: Request, context: RouteContext) {
             typeof (task.agent_state.report as { title?: unknown }).title ===
               "string"
               ? (task.agent_state.report as { title: string }).title
+              : null,
+          reportData:
+            task.agent_state?.report &&
+            typeof task.agent_state.report === "object" &&
+            "data" in (task.agent_state.report as object)
+              ? (task.agent_state.report as { data?: unknown }).data ?? null
               : null,
         };
         await saveMessage(assistantMessage, task.id);

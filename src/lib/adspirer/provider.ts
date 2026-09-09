@@ -254,6 +254,12 @@ export interface MetaAdsProvider {
     dateStart: string,
     dateStop: string,
   ): Promise<MetaInsights>;
+  /** Account-level insights for a date range (optional — V2 Graph + mock). */
+  getAccountInsights?(
+    accountId: string,
+    dateStart: string,
+    dateStop: string,
+  ): Promise<MetaInsights>;
   listAdSets(accountId: string, campaignId?: string): Promise<MetaAdSet[]>;
   listAds(accountId: string, adSetId?: string): Promise<MetaAd[]>;
   analyzeAccount(accountId: string): Promise<{

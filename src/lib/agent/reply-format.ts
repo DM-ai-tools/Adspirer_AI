@@ -32,8 +32,10 @@ export type FormattedAdPicker = {
 
 export type FormattedImageChoice = {
   landing_page_url?: string;
+  brand_url?: string;
   headline?: string;
   primary_text?: string;
+  reference_notes?: string;
 };
 
 /** Image vs video campaign format picker (asked first in campaign intake). */
@@ -58,11 +60,19 @@ export type FormattedTargetingPicker = {
  */
 export function stripMachineJson(text: string): string {
   let out = text.replace(/```json\s*([\s\S]*?)```/gi, (full, body) => {
+    const trimmed = String(body).trim();
     try {
-      const parsed = JSON.parse(String(body).trim()) as Record<string, unknown>;
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
       if (isMachinePayload(parsed)) return "";
     } catch {
-      // keep unrecognized fenced blocks
+      // Malformed fence that is clearly a UI appendix — still hide from chat.
+      if (
+        /["']ui["']\s*:\s*["'](?:image_choice|format_choice|video_choice|service_picker|copy_picker|ad_picker|targeting_picker)["']/.test(
+          trimmed,
+        )
+      ) {
+        return "";
+      }
     }
     return full;
   });
@@ -916,14 +926,18 @@ export function extractImageChoice(text: string): FormattedImageChoice | null {
     const obj = parsed as {
       ui?: string;
       landing_page_url?: string;
+      brand_url?: string;
       headline?: string;
       primary_text?: string;
+      reference_notes?: string;
     };
     if (obj.ui !== "image_choice") continue;
     return {
       landing_page_url: obj.landing_page_url?.trim(),
+      brand_url: obj.brand_url?.trim(),
       headline: obj.headline?.trim(),
       primary_text: obj.primary_text?.trim(),
+      reference_notes: obj.reference_notes?.trim(),
     };
   }
   return null;

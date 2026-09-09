@@ -34,6 +34,8 @@ export type AdCopyBrief = {
   variants?: number;
   /** When refreshing fatigued creatives, force differentiation against live ads. */
   refresh?: boolean;
+  /** Competitor ads / uploaded docs to recreate or ground against. */
+  reference_material?: string;
 };
 
 export type GenerateMetaAdCopiesResult = {
@@ -145,6 +147,12 @@ export async function generateMetaAdCopies(input: {
           input.brief.refresh
             ? "Mode: fatigue REFRESH — differentiate hard against live creatives."
             : "Mode: net-new launch copy (still differentiate if live creatives exist).",
+          input.brief.reference_material
+            ? [
+                "SOURCE / COMPETITOR REFERENCE (recreate messaging for OUR brand; do not invent claims; do not clone trademarks):",
+                input.brief.reference_material.slice(0, 6000),
+              ].join("\n")
+            : null,
           `Generate ${count} distinct-angle variants.`,
           "",
           liveBlock,

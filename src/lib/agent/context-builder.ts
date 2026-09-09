@@ -1,12 +1,15 @@
 import type { Client, ClientService, CompetitorBrief } from "@/types";
 import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
-import {
-  getSelectedCreativeDraftAsync,
+import { getSelectedCreativeDraftAsync,
   listCreativeDraftsAsync,
   resolveImageUrlForAdspirer,
 } from "@/lib/creatives/drafts";
 import { getWorkspaceContext } from "@/lib/runtime/workspace-context";
+import {
+  formatDocumentsForContext,
+  loadDocumentsForContext,
+} from "@/lib/documents/service";
 import { buildClientBrandBlock } from "./prompts";
 
 export async function buildClientContext(
@@ -22,6 +25,10 @@ export async function buildClientContext(
   const services = await loadServices(clientId);
   const briefs = await loadBriefs(clientId);
   const meta = await loadMappedMetaAccounts(clientId);
+  const documents = await loadDocumentsForContext({
+    clientId,
+    conversationId,
+  }).catch(() => []);
   const selectedCreative = await getSelectedCreativeDraftAsync(clientId, {
     conversationId,
   }).catch(() => null);
@@ -103,6 +110,10 @@ export async function buildClientContext(
           )
           .join("\n")
       : "- (none)",
+    "",
+    "## Workspace documents",
+    "Operator-uploaded PDF / Word / Markdown (competitors, frameworks, briefs). Use these when summarizing or generating ads/creatives.",
+    formatDocumentsForContext(documents),
     "",
     "## Creative workflow (this conversation only)",
     selectedCreative

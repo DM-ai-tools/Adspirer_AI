@@ -9,6 +9,7 @@ const TOOL_POLICY: Record<string, ToolSafetyClass> = {
   // Diagnose
   list_campaigns: "diagnose",
   get_campaign_insights: "diagnose",
+  get_account_insights: "diagnose",
   list_adsets: "diagnose",
   list_ads: "diagnose",
   analyze_account: "diagnose",

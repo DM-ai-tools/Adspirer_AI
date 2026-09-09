@@ -30,6 +30,9 @@ export type {
   Recommendation,
   Notification,
   OAuthPkceState,
+  WorkspaceDocument,
+  WorkspaceDocKind,
+  WorkspaceDocStatus,
 } from "./database";
 
 export const ADS_EXECUTION_MODE = {

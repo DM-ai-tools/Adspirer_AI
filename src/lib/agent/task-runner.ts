@@ -30,6 +30,7 @@ import {
   completeStepsThrough,
   failStep,
   detectRequestIntent,
+  detectRequestIntentWithHistory,
   holdStepsForOperator,
   markRemainingSkipped,
   mentionsCreativeGeneration,
@@ -77,16 +78,25 @@ const CREATIVE_VARIANT_COUNT = 3;
 function stripUnstartedGenerationClaims(summary: string): string {
   const claim =
     /\b(?:generating|rendering|producing|creating)\b[^.\n]{0,60}\b(?:images?|stills?|visuals?|creatives?|variations?)\b/i;
+  const fakeReady =
+    /\b(?:here are|i(?:'|’)?ve (?:created|generated|made)|generated)\b[^.\n]{0,50}\b(?:image|creative|still|variation)/i;
   let changed = false;
 
   const lines = summary.split("\n").map((line) => {
-    if (line.includes("?") || !claim.test(line)) return line;
-    changed = true;
-    return /\bstage\b/i.test(line)
-      ? line
-          .replace(claim, "waiting on your image choice")
-          .replace(/\s+now(?=[\s.…]*$)/i, "")
-      : null;
+    if (line.includes("?")) return line;
+    if (claim.test(line)) {
+      changed = true;
+      return /\bstage\b/i.test(line)
+        ? line
+            .replace(claim, "waiting on your image choice")
+            .replace(/\s+now(?=[\s.…]*$)/i, "")
+        : null;
+    }
+    if (fakeReady.test(line) && !/\b(?:will|about to|starting)\b/i.test(line)) {
+      changed = true;
+      return null;
+    }
+    return line;
   });
 
   if (!changed) return summary;
@@ -147,6 +157,14 @@ function stripCreativesHandoff(summary: string): string {
       }
       if (/paste\b[^\n]*\bimage_url\b/i.test(line)) return false;
       if (/\breturn (here|to this chat)\b/i.test(line)) return false;
+      // Model often invents "here are 3 variations" before stills exist.
+      if (
+        /\b(?:here are|i(?:'|’)?ve (?:created|generated|made))\b[^.\n]{0,50}\b(?:image|creative|still|variation)/i.test(
+          line,
+        )
+      ) {
+        return false;
+      }
       return true;
     })
     .join("\n")
@@ -290,10 +308,30 @@ export async function runTask(
     }
 
     // Fetch Meta evidence BEFORE writing the answer (fixes "fetching…" placeholders).
+    const intent = detectRequestIntentWithHistory(
+      task.goal ?? task.title,
+      history,
+    );
+    const bareIntent = detectRequestIntent(task.goal ?? task.title);
+    if (intent !== bareIntent) {
+      const preserved = new Map(steps.map((s) => [s.id, s.state]));
+      steps = planTaskSteps(task.goal ?? task.title, intent).map((s) => ({
+        ...s,
+        state:
+          preserved.get(s.id) ??
+          (s.id === "queued" || s.id === "research" ? ("done" as const) : s.state),
+      }));
+      task.agent_state = {
+        ...(task.agent_state ?? {}),
+        steps,
+      };
+    }
     const gathered = await gatherDiagnoseEvidence({
       clientId: task.client_id,
       request: task.goal ?? task.title,
       conversationId: task.conversation_id,
+      history,
+      intent,
       onProgress: emit,
     });
 
@@ -317,14 +355,47 @@ export async function runTask(
       });
     }
 
-    const intent = detectRequestIntent(task.goal ?? task.title);
+    if (intent === "audit") {
+      if (gathered.auditBriefingIncomplete) {
+        steps = completeStepsThrough(steps, "list_campaigns");
+        if (steps.some((s) => s.id === "clarify_brief")) {
+          steps = activateStep(steps, "clarify_brief");
+        }
+      } else {
+        steps = completeStepsThrough(steps, "apply_framework");
+      }
+    }
+
     const wantsInlineCreatives =
       intent === "generate_creatives" ||
-      (intent === "create_campaign" &&
-        mentionsCreativeGeneration(task.goal ?? task.title));
+      mentionsCreativeGeneration(task.goal ?? task.title);
+
+    // Standalone image asks must show generate_creatives steps (not scrape).
+    // Do not rewrite a create_campaign plan that is also generating stills.
+    if (
+      intent === "generate_creatives" &&
+      !steps.some((s) => s.id === "generate_creatives")
+    ) {
+      const preserved = new Map(steps.map((s) => [s.id, s.state]));
+      steps = planTaskSteps(task.goal ?? task.title, "generate_creatives").map(
+        (s) => ({
+          ...s,
+          state:
+            preserved.get(s.id) ??
+            (s.id === "queued" || s.id === "research"
+              ? ("done" as const)
+              : s.state),
+        }),
+      );
+      task.agent_state = {
+        ...(task.agent_state ?? {}),
+        steps,
+      };
+    }
 
     let reportDraft: string | undefined;
     let reportTitle: string | undefined;
+    let reportData: import("@/lib/report/schema").AuditReport | undefined;
 
     if (intent === "export") {
       if (steps.some((s) => s.id === "gather")) {
@@ -332,7 +403,7 @@ export async function runTask(
       }
       await emit({
         phase: "draft_report",
-        label: "Drafting report with OpenAI…",
+        label: "Drafting structured audit report…",
         stepId: "draft_report",
       });
       const generated = await generateConversationReport({
@@ -343,6 +414,7 @@ export async function runTask(
       });
       reportDraft = generated.markdown;
       reportTitle = generated.title;
+      reportData = generated.report;
       if (steps.some((s) => s.id === "draft_report")) {
         steps = completeStepsThrough(steps, "draft_report");
       }
@@ -361,6 +433,7 @@ export async function runTask(
       toolEvidence: gathered.evidence,
       reportDraft,
       reportTitle,
+      reportData,
       history,
       correlationId,
       onProgress: emit,
@@ -403,7 +476,10 @@ export async function runTask(
         formatChoice: undefined,
       };
     }
-    if (gathered.targetingPicker?.account_id) {
+    if (
+      gathered.targetingPicker?.account_id &&
+      intent === "create_campaign"
+    ) {
       agentResult.ui = {
         ...(agentResult.ui ?? {}),
         targetingPicker:
@@ -427,13 +503,10 @@ export async function runTask(
       }
     }
     if (intent === "copy_approved") {
-      if (gathered.targetingPicker?.account_id) {
-        steps = completeStepsThrough(steps, "advanced_targeting");
-        if (steps.some((s) => s.id === "advanced_targeting")) {
-          steps = activateStep(steps, "advanced_targeting");
-        }
-      } else if (steps.some((s) => s.id === "creative_asset")) {
-        steps = activateStep(steps, "creative_asset");
+      // Copy-only approval: do not advance into targeting / campaign steps.
+      steps = completeStepsThrough(steps, "pick_copy");
+      if (steps.some((s) => s.id === "complete")) {
+        steps = activateStep(steps, "complete");
       }
     }
     if (intent === "optimize") {
@@ -486,27 +559,53 @@ export async function runTask(
 
         let cards: ReturnType<typeof toPublicDraft>[];
         let rendering: boolean;
+        let brandAnalysis: Awaited<
+          ReturnType<typeof startCreativeGeneration>
+        >["result"]["brandAnalysis"] = null;
+        let imageModel: string | undefined;
 
         if (inFlight.length) {
           cards = inFlight.map(toPublicDraft);
           rendering = true;
         } else {
+          const gatheredUi = gathered.imageChoice;
+          const agentUi = agentResult.ui?.imageChoice;
+          const imageUi = {
+            landing_page_url:
+              agentUi?.landing_page_url ??
+              gatheredUi?.landing_page_url ??
+              urlMatch?.[0],
+            brand_url:
+              agentUi?.brand_url ??
+              gatheredUi?.brand_url ??
+              agentUi?.landing_page_url ??
+              gatheredUi?.landing_page_url ??
+              urlMatch?.[0],
+            headline: agentUi?.headline ?? gatheredUi?.headline,
+            primary_text: agentUi?.primary_text ?? gatheredUi?.primary_text,
+            reference_notes:
+              agentUi?.reference_notes ?? gatheredUi?.reference_notes,
+          };
           const { result, runImages } = await startCreativeGeneration({
             clientId: task.client_id,
             conversationId,
             taskId: task.id,
-            landingPageUrl:
-              urlMatch?.[0] ?? agentResult.ui?.imageChoice?.landing_page_url,
-            headline: agentResult.ui?.imageChoice?.headline,
-            primaryText: agentResult.ui?.imageChoice?.primary_text,
+            landingPageUrl: imageUi.landing_page_url,
+            brandUrl: imageUi.brand_url,
+            headline: imageUi.headline,
+            primaryText: imageUi.primary_text,
+            referenceBrief: imageUi.reference_notes,
             count: CREATIVE_VARIANT_COUNT,
             generateImages: true,
+            analyzeBrand: true,
           });
           if (runImages) {
             runAfterResponse("chat-creative-images", runImages);
           }
           cards = result.concepts;
           rendering = Boolean(runImages);
+          brandAnalysis = result.brandAnalysis;
+          imageModel = result.imageModel;
           await emit({
             phase: "generating_creatives",
             label: rendering
@@ -532,13 +631,34 @@ export async function runTask(
         };
 
         const count = cards.length;
+        const brandLines: string[] = [];
+        if (brandAnalysis) {
+          brandLines.push(
+            `**Brand scrape** (${brandAnalysis.url}): ${
+              brandAnalysis.brand_name ?? brandAnalysis.title ?? "cues pulled"
+            }${
+              brandAnalysis.colors.length
+                ? ` · palette ${brandAnalysis.colors.slice(0, 4).join(", ")}`
+                : ""
+            }${brandAnalysis.logo_url ? " · logo found" : ""}.`,
+          );
+          if (brandAnalysis.summary?.trim()) {
+            brandLines.push(brandAnalysis.summary.trim().slice(0, 320));
+          }
+        }
         agentResult.summary = [
           stripCreativesHandoff(agentResult.summary),
           "",
+          ...brandLines,
+          brandLines.length ? "" : null,
           rendering
-            ? `Rendering ${count} creative variation${count === 1 ? "" : "s"} — same ad copy, different visual treatment. They fill in below as each still finishes (30–90s each). Generation runs on the server, so you can move to Creatives or Approvals and come back without losing it. Then pick one with **Use for campaign**, or **Rework** it.`
+            ? `Rendering **${count}** creative variation${count === 1 ? "" : "s"}${
+                imageModel ? ` with \`${imageModel}\`` : ""
+              } — same ad copy, different visual treatment. They fill in below as each still finishes (30–90s each). Generation runs on the server, so you can move to Creatives or Approvals and come back without losing it. Then pick one with **Use for campaign**, or **Rework** it.`
             : `Drafted ${count} creative concept${count === 1 ? "" : "s"}, but no stills were rendered because OpenAI image credentials are not configured.`,
-        ].join("\n");
+        ]
+          .filter((line): line is string => line !== null)
+          .join("\n");
         steps = completeStepsThrough(steps, "generate_creatives");
         if (steps.some((s) => s.id === "pick_creative")) {
           steps = activateStep(steps, "pick_creative");

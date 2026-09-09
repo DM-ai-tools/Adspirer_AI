@@ -17,8 +17,10 @@ const bodySchema = z.object({
   taskId: z.string().optional(),
   count: z.number().int().min(1).max(5).optional(),
   landingPageUrl: z.string().url().optional(),
+  brandUrl: z.string().url().optional(),
   headline: z.string().optional(),
   primaryText: z.string().optional(),
+  referenceBrief: z.string().max(4000).optional(),
   analyzeBrand: z.boolean().optional().default(true),
 });
 
@@ -36,8 +38,10 @@ export async function POST(request: Request) {
       taskId: body.taskId,
       count: body.count,
       landingPageUrl: body.landingPageUrl,
+      brandUrl: body.brandUrl,
       headline: body.headline,
       primaryText: body.primaryText,
+      referenceBrief: body.referenceBrief,
       analyzeBrand: body.analyzeBrand,
       generateImages: true,
     });

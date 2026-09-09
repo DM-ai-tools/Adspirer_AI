@@ -54,9 +54,20 @@ describe("buildMetaTargeting", () => {
 });
 
 describe("optimizationForObjective", () => {
-  it("maps sales to offsite conversions", () => {
+  it("maps sales to offsite conversions when pixel_id is set", () => {
+    expect(
+      optimizationForObjective("OUTCOME_SALES", {
+        pixel_id: "123456789",
+      }).optimization_goal,
+    ).toBe("OFFSITE_CONVERSIONS");
+  });
+
+  it("falls back to link clicks for sales/leads without a pixel", () => {
     expect(optimizationForObjective("OUTCOME_SALES").optimization_goal).toBe(
-      "OFFSITE_CONVERSIONS",
+      "LINK_CLICKS",
+    );
+    expect(optimizationForObjective("OUTCOME_LEADS").optimization_goal).toBe(
+      "LINK_CLICKS",
     );
   });
 });

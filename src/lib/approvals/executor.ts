@@ -22,6 +22,10 @@ import { logger } from "@/lib/observability/logger";
 import type { WorkspaceExecutionBackend } from "@/lib/runtime/workspace-context";
 import { resolveBudgetDaily } from "@/lib/meta/resolve-budget-daily";
 import { normalizeMetaApprovalArgs } from "@/lib/meta/normalize-approval-args";
+import {
+  normalizeCreateAdArgs,
+  resolveAdSetIdForCreateAd,
+} from "@/lib/meta/resolve-ad-set";
 
 const executingKeys = new Set<string>();
 
@@ -508,37 +512,56 @@ async function dispatchToProvider(
         extra_args: collectPassthrough(normalized),
       });
     }
-    case "create_ad":
+    case "create_ad": {
+      const normalized = normalizeCreateAdArgs(args);
+      const adSetId =
+        optionalString(normalized.ad_set_id) ??
+        optionalString(normalized.adset_id) ??
+        (await resolveAdSetIdForCreateAd(provider, normalized));
+      if (!adSetId) {
+        throw new Error(
+          'create_ad is missing "ad_set_id". Include ad_set_id, or campaign_name + ad_set_name so we can look up the ad set on Meta. Use Edit on the approval to add it, then approve again.',
+        );
+      }
       return provider.createAd({
-        account_id: requireString(args, "account_id", toolName, [
+        account_id: requireString(normalized, "account_id", toolName, [
           "ad_account_id",
         ]),
-        ad_set_id: requireString(args, "ad_set_id", toolName, ["adset_id"]),
+        ad_set_id: adSetId,
         ad_type:
-          args.ad_type === "video" || args.ad_type === "carousel"
-            ? args.ad_type
+          normalized.ad_type === "video" || normalized.ad_type === "carousel"
+            ? normalized.ad_type
             : "image",
-        primary_text: requireString(args, "primary_text", toolName),
-        landing_page_url: requireString(args, "landing_page_url", toolName),
-        display_link: optionalString(args.display_link),
-        url_tags: optionalString(args.url_tags),
+        primary_text: requireString(normalized, "primary_text", toolName),
+        landing_page_url: requireString(
+          normalized,
+          "landing_page_url",
+          toolName,
+        ),
+        display_link: optionalString(normalized.display_link),
+        url_tags: optionalString(normalized.url_tags),
         headline:
-          typeof args.headline === "string" ? args.headline : undefined,
-        description: optionalString(args.description),
-        call_to_action: optionalString(args.call_to_action),
-        image_url:
-          typeof args.image_url === "string" ? args.image_url : undefined,
-        existing_image_hash:
-          typeof args.existing_image_hash === "string"
-            ? args.existing_image_hash
+          typeof normalized.headline === "string"
+            ? normalized.headline
             : undefined,
-        video_url: optionalString(args.video_url),
-        existing_video_id: optionalString(args.existing_video_id),
-        thumbnail_url: optionalString(args.thumbnail_url),
-        name: typeof args.name === "string" ? args.name : undefined,
-        facebook_page_id: optionalString(args.facebook_page_id),
-        instagram_account_id: optionalString(args.instagram_account_id),
+        description: optionalString(normalized.description),
+        call_to_action: optionalString(normalized.call_to_action),
+        image_url:
+          typeof normalized.image_url === "string"
+            ? normalized.image_url
+            : undefined,
+        existing_image_hash:
+          typeof normalized.existing_image_hash === "string"
+            ? normalized.existing_image_hash
+            : undefined,
+        video_url: optionalString(normalized.video_url),
+        existing_video_id: optionalString(normalized.existing_video_id),
+        thumbnail_url: optionalString(normalized.thumbnail_url),
+        name: typeof normalized.name === "string" ? normalized.name : undefined,
+        facebook_page_id: optionalString(normalized.facebook_page_id),
+        instagram_account_id: optionalString(normalized.instagram_account_id),
       });
+    }
     case "pause_ad":
       return provider.pauseAd(String(args.account_id), String(args.ad_id));
     default:

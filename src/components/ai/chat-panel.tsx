@@ -26,6 +26,8 @@ import {
   GENERIC_FALLBACK_REPLY,
   humanizeAgentReply,
 } from "@/lib/agent/reply-format";
+import { looksLikeFullAuditMarkdown } from "@/lib/report/from-markdown";
+import { ChatDocumentAttachButton } from "@/components/workspace/documents-panel";
 import { useCreativeStatus } from "@/hooks/use-creative-status";
 import { TargetingPickerCard } from "@/components/ai/targeting-picker";
 import type {
@@ -46,6 +48,7 @@ import {
 import {
   inferConversationFlow,
   showCampaignCreativeUi,
+  showImageChoiceUi,
 } from "@/lib/chat/infer-flow";
 
 const SUGGESTIONS = [
@@ -82,8 +85,10 @@ type ParsedAssistant = {
   }> | null;
   imageChoice: {
     landing_page_url?: string;
+    brand_url?: string;
     headline?: string;
     primary_text?: string;
+    reference_notes?: string;
   } | null;
   formatChoice: { selected?: "image" | "video" | null } | null;
   videoChoice: {
@@ -180,8 +185,10 @@ function readMetaImageChoice(
     | {
         imageChoice?: {
           landing_page_url?: string;
+          brand_url?: string;
           headline?: string;
           primary_text?: string;
+          reference_notes?: string;
         };
       }
     | null
@@ -446,6 +453,13 @@ export function ChatPanel({
     Record<string, string>
   >({});
   const [startingCreatives, setStartingCreatives] = useState(false);
+  const [attachedNames, setAttachedNames] = useState<string[]>([]);
+  const [exportProgress, setExportProgress] = useState<{
+    format: "md" | "docx" | "pdf";
+    step: number;
+    label: string;
+    percent: number;
+  } | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   /** True when the user is near the bottom — only then do we follow new messages. */
@@ -530,33 +544,99 @@ export function ChatPanel({
     format: "md" | "docx" | "pdf",
     title: string,
     content: string,
+    report?: unknown,
   ) {
+    if (exportProgress) return;
+
+    const steps = [
+      { label: "Preparing report content…", percent: 12 },
+      { label: "Cleaning spacing & formatting…", percent: 32 },
+      { label: "Verifying professional layout…", percent: 55 },
+      { label: "Building download file…", percent: 78 },
+      { label: "Starting download…", percent: 92 },
+    ] as const;
+
+    setExportProgress({
+      format,
+      step: 0,
+      label: steps[0].label,
+      percent: steps[0].percent,
+    });
+
+    const advance = (index: number) => {
+      const s = steps[Math.min(index, steps.length - 1)];
+      setExportProgress({
+        format,
+        step: index,
+        label: s.label,
+        percent: s.percent,
+      });
+    };
+
+    // Give the progress UI a beat to paint before the network work starts.
+    await new Promise((r) => setTimeout(r, 280));
+    advance(1);
+    await new Promise((r) => setTimeout(r, 220));
+    advance(2);
+
     try {
       const response = await fetch(apiPath("/reports/export"), {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, content, format }),
+        body: JSON.stringify({ title, content, format, report }),
       });
+
+      advance(3);
+
       if (!response.ok) {
         const payload = await response.json().catch(() => null);
         throw new Error(payload?.error?.message ?? "Export failed");
       }
+
+      const quality = response.headers.get("X-Report-Quality") ?? "pass";
+      const score = response.headers.get("X-Report-Quality-Score");
       const blob = await response.blob();
       const disposition = response.headers.get("Content-Disposition") ?? "";
       const match = disposition.match(/filename="([^"]+)"/);
       const filename =
         match?.[1] ??
         `adspirer-report.${format === "docx" ? "doc" : format}`;
+
+      advance(4);
+      await new Promise((r) => setTimeout(r, 180));
+
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
       a.download = filename;
       a.click();
       URL.revokeObjectURL(url);
-      toast.success(`Downloaded ${filename}`);
+
+      setExportProgress({
+        format,
+        step: steps.length,
+        label: "Download ready",
+        percent: 100,
+      });
+      await new Promise((r) => setTimeout(r, 350));
+
+      if (quality === "pass") {
+        toast.success(`Downloaded ${filename}`, {
+          description: score
+            ? `Quality check passed (score ${score}).`
+            : "Quality check passed.",
+        });
+      } else {
+        toast.message(`Downloaded ${filename}`, {
+          description:
+            "Exported after cleanup — review spacing once if anything looks off.",
+        });
+      }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Export failed");
+    } finally {
+      setExportProgress(null);
     }
   }
 
@@ -631,6 +711,7 @@ export function ChatPanel({
     [messages],
   );
   const showCreativeUi = showCampaignCreativeUi(conversationFlow);
+  const showImageUi = showImageChoiceUi(conversationFlow);
 
   const parsedById = useMemo(() => {
     const map = new Map<string, ParsedAssistant>();
@@ -750,7 +831,38 @@ export function ChatPanel({
   }, [messages, parsedById, liveCreativeDrafts]);
 
   return (
-    <div className={cn("flex h-full min-h-0 flex-col", className)}>
+    <div className={cn("relative flex h-full min-h-0 flex-col", className)}>
+      {exportProgress ? (
+        <div
+          className="absolute inset-0 z-30 flex items-center justify-center bg-background/70 px-4 backdrop-blur-[2px]"
+          role="status"
+          aria-live="polite"
+          aria-busy="true"
+        >
+          <div className="w-full max-w-sm rounded-xl border border-border bg-card p-4 shadow-lg">
+            <div className="mb-3 flex items-center gap-2">
+              <Loader2 className="h-4 w-4 animate-spin text-accent" />
+              <p className="text-sm font-medium text-foreground">
+                Preparing{" "}
+                {exportProgress.format === "docx"
+                  ? "Word"
+                  : exportProgress.format.toUpperCase()}{" "}
+                report
+              </p>
+            </div>
+            <p className="mb-3 text-xs text-muted">{exportProgress.label}</p>
+            <div className="h-2 overflow-hidden rounded-full bg-secondary">
+              <div
+                className="h-full rounded-full bg-accent transition-[width] duration-300 ease-out"
+                style={{ width: `${exportProgress.percent}%` }}
+              />
+            </div>
+            <p className="mt-2 text-[11px] text-muted">
+              Cleaning text, verifying layout, then downloading — please wait.
+            </p>
+          </div>
+        </div>
+      ) : null}
       <div
         ref={scrollRef}
         onScroll={handleMessagesScroll}
@@ -813,22 +925,44 @@ export function ChatPanel({
               const displayText = parsed?.displayText ?? message.content;
               const isStreamingPlaceholder =
                 !displayText.trim() ||
-                displayText.trim() === GENERIC_FALLBACK_REPLY;
+                displayText.trim() === GENERIC_FALLBACK_REPLY ||
+                /^_(.+)_\s*$/.test(displayText.trim()) ||
+                displayText.trim() === "Writing reply…";
               const liveLabel =
                 typeof message.metadata?.label === "string"
                   ? message.metadata.label
                   : statusLabel;
               const isReport =
                 Boolean(message.metadata?.isReport) ||
-                /^#\s+.+/m.test(parsed?.displayText ?? "") &&
+                (/^#\s+.+/m.test(parsed?.displayText ?? "") &&
                   /\b(executive summary|recommendations|next steps|session report)\b/i.test(
                     parsed?.displayText ?? "",
-                  );
+                  )) ||
+                /\bMeta Ads Account Audit\b/i.test(
+                  parsed?.displayText ?? message.content,
+                );
               const reportTitle =
                 (typeof message.metadata?.reportTitle === "string" &&
                   message.metadata.reportTitle) ||
                 parsed?.displayText?.match(/^#\s+(.+)$/m)?.[1]?.trim() ||
                 "Adspirer report";
+              const reportData = message.metadata?.reportData ?? undefined;
+              // Prefer the body that still contains the full audit tables/headers.
+              // Humanized displayText used to win and drop campaign/KPI rows.
+              const rawBody = message.content || "";
+              const displayBody = parsed?.displayText || "";
+              const reportBody = (() => {
+                const rawOk = looksLikeFullAuditMarkdown(rawBody);
+                const displayOk = looksLikeFullAuditMarkdown(displayBody);
+                if (rawOk && !displayOk) return rawBody;
+                if (displayOk && !rawOk) return displayBody;
+                if (rawOk && displayOk) {
+                  return rawBody.length >= displayBody.length
+                    ? rawBody
+                    : displayBody;
+                }
+                return rawBody || displayBody;
+              })();
               const pendingApprovals = parsed?.pendingApprovalIds?.length
                 ? parsed.pendingApprovalIds
                 : Array.isArray(message.metadata?.pendingApprovalIds)
@@ -888,11 +1022,13 @@ export function ChatPanel({
                           size="sm"
                           variant="secondary"
                           className="h-7 gap-1 text-xs"
+                          disabled={Boolean(exportProgress)}
                           onClick={() =>
                             void exportReport(
                               "docx",
                               reportTitle,
-                              parsed?.displayText || message.content,
+                              reportBody,
+                              reportData,
                             )
                           }
                         >
@@ -903,11 +1039,13 @@ export function ChatPanel({
                           type="button"
                           size="sm"
                           className="h-7 gap-1 text-xs"
+                          disabled={Boolean(exportProgress)}
                           onClick={() =>
                             void exportReport(
                               "pdf",
                               reportTitle,
-                              parsed?.displayText || message.content,
+                              reportBody,
+                              reportData,
                             )
                           }
                         >
@@ -1196,6 +1334,7 @@ export function ChatPanel({
                     ) : null}
 
                     {!streaming &&
+                    showCreativeUi &&
                     targetingPicker &&
                     isLatestTargetingPicker &&
                     clientId ? (
@@ -1308,7 +1447,7 @@ export function ChatPanel({
                     ) : null}
 
                     {!streaming &&
-                    showCreativeUi &&
+                    showImageUi &&
                     imageChoice &&
                     isLatestImageChoice &&
                     !creativesRendering ? (
@@ -1318,7 +1457,11 @@ export function ChatPanel({
                         </p>
                         <p className="text-[11px] text-muted">
                           Provide your own URL, or generate stills here from your
-                          ad copy + landing page (brand colours / logo).
+                          ad copy
+                          {imageChoice.brand_url || imageChoice.landing_page_url
+                            ? ` + brand URL (${imageChoice.brand_url || imageChoice.landing_page_url})`
+                            : " + brand URL"}{" "}
+                          (colours / logo / guidelines).
                         </p>
                         <div className="flex flex-wrap gap-2">
                           <Button
@@ -1350,22 +1493,32 @@ export function ChatPanel({
                               void (async () => {
                                 setStartingCreatives(true);
                                 try {
-                                  await apiFetch(apiPath("/workflow/creatives/generate"), {
-                                    method: "POST",
-                                    body: JSON.stringify({
-                                      clientId,
-                                      conversationId,
-                                      taskId,
-                                      landingPageUrl: imageChoice.landing_page_url,
-                                      headline: imageChoice.headline,
-                                      primaryText: imageChoice.primary_text,
-                                      analyzeBrand: Boolean(
-                                        imageChoice.landing_page_url,
-                                      ),
-                                    }),
-                                  });
+                                  const brandOrLanding =
+                                    imageChoice.brand_url ||
+                                    imageChoice.landing_page_url;
+                                  await apiFetch(
+                                    apiPath("/workflow/creatives/generate"),
+                                    {
+                                      method: "POST",
+                                      body: JSON.stringify({
+                                        clientId,
+                                        conversationId,
+                                        taskId,
+                                        landingPageUrl:
+                                          imageChoice.landing_page_url,
+                                        brandUrl: imageChoice.brand_url,
+                                        headline: imageChoice.headline,
+                                        primaryText: imageChoice.primary_text,
+                                        referenceBrief:
+                                          imageChoice.reference_notes,
+                                        analyzeBrand: true,
+                                      }),
+                                    },
+                                  );
                                   toast.success(
-                                    "Generating creatives — they'll appear in this chat",
+                                    brandOrLanding
+                                      ? "Generating branded creatives — they'll appear in this chat"
+                                      : "Generating creatives — they'll appear in this chat",
                                   );
                                   refreshCreativeStatus();
                                   await onWorkflowRefresh?.();
@@ -1422,12 +1575,14 @@ export function ChatPanel({
                         </span>
                         <button
                           type="button"
-                          className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-muted hover:bg-secondary hover:text-foreground"
+                          disabled={Boolean(exportProgress)}
+                          className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-muted hover:bg-secondary hover:text-foreground disabled:opacity-50"
                           onClick={() =>
                             void exportReport(
                               "docx",
-                              "Adspirer report",
-                              parsed?.displayText || message.content,
+                              reportTitle,
+                              reportBody,
+                              reportData,
                             )
                           }
                         >
@@ -1436,12 +1591,14 @@ export function ChatPanel({
                         </button>
                         <button
                           type="button"
-                          className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-muted hover:bg-secondary hover:text-foreground"
+                          disabled={Boolean(exportProgress)}
+                          className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-muted hover:bg-secondary hover:text-foreground disabled:opacity-50"
                           onClick={() =>
                             void exportReport(
                               "pdf",
-                              "Adspirer report",
-                              parsed?.displayText || message.content,
+                              reportTitle,
+                              reportBody,
+                              reportData,
                             )
                           }
                         >
@@ -1450,12 +1607,14 @@ export function ChatPanel({
                         </button>
                         <button
                           type="button"
-                          className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-muted hover:bg-secondary hover:text-foreground"
+                          disabled={Boolean(exportProgress)}
+                          className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-muted hover:bg-secondary hover:text-foreground disabled:opacity-50"
                           onClick={() =>
                             void exportReport(
                               "md",
-                              "Adspirer report",
-                              parsed?.displayText || message.content,
+                              reportTitle,
+                              reportBody,
+                              reportData,
                             )
                           }
                         >
@@ -1479,38 +1638,63 @@ export function ChatPanel({
       </div>
 
       <form
-        className="shrink-0 flex gap-2 border-t border-border px-4 py-3"
+        className="shrink-0 flex flex-col gap-2 border-t border-border px-4 py-3"
         onSubmit={(e) => {
           e.preventDefault();
           void submit(input);
         }}
       >
-        <Textarea
-          ref={inputRef}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder={placeholder}
-          disabled={disabled || sending}
-          className="min-h-[52px] max-h-32 resize-none"
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              void submit(input);
-            }
-          }}
-        />
-        <Button
-          type="submit"
-          size="icon"
-          className="h-[52px] w-11 shrink-0"
-          disabled={disabled || sending || !input.trim()}
-        >
-          {sending ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Send className="h-4 w-4" />
-          )}
-        </Button>
+        {attachedNames.length ? (
+          <div className="flex flex-wrap gap-1.5">
+            {attachedNames.map((name) => (
+              <span
+                key={name}
+                className="inline-flex items-center rounded-md bg-accent/10 px-2 py-0.5 text-[10px] text-accent"
+              >
+                Attached: {name}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        <div className="flex gap-2">
+          <ChatDocumentAttachButton
+            clientId={clientId}
+            conversationId={conversationId}
+            apiBase={apiBase}
+            disabled={disabled || sending}
+            onUploaded={(filename) => {
+              setAttachedNames((prev) =>
+                prev.includes(filename) ? prev : [...prev.slice(-4), filename],
+              );
+            }}
+          />
+          <Textarea
+            ref={inputRef}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder={placeholder}
+            disabled={disabled || sending}
+            className="min-h-[52px] max-h-32 resize-none"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                void submit(input);
+              }
+            }}
+          />
+          <Button
+            type="submit"
+            size="icon"
+            className="h-[52px] w-11 shrink-0"
+            disabled={disabled || sending || !input.trim()}
+          >
+            {sending ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Send className="h-4 w-4" />
+            )}
+          </Button>
+        </div>
       </form>
     </div>
   );

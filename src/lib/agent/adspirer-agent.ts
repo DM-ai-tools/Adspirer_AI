@@ -7,7 +7,14 @@ import { getDemoStore } from "@/lib/demo/store";
 import { buildSystemPrompt } from "@/lib/agent/prompts";
 import { buildSystemPromptV2 } from "@/lib/agent/prompts-v2";
 import type { AgentHistoryMessage } from "@/lib/agent/history";
-import { detectRequestIntent, mentionsCreativeGeneration } from "@/lib/agent/task-plan";
+import { detectRequestIntent, detectRequestIntentWithHistory, mentionsCreativeGeneration } from "@/lib/agent/task-plan";
+import {
+  buildAuditClarifyingQuestion,
+  matchCampaignsByHints,
+  resolveAuditBrief,
+} from "@/lib/agent/audit-brief";
+import { META_AUDIT_FRAMEWORK } from "@/lib/agent/meta-audit-framework";
+import type { MetaCampaign, MetaInsights } from "@/lib/adspirer/provider";
 import {
   GENERIC_FALLBACK_REPLY,
   humanizeAgentReply,
@@ -84,8 +91,12 @@ export type AdPickerUi = {
 
 export type ImageChoiceUi = {
   landing_page_url?: string;
+  /** Prefer for brand colour / logo scrape when distinct from landing. */
+  brand_url?: string;
   headline?: string;
   primary_text?: string;
+  /** Competitor / reference guidance for art direction. */
+  reference_notes?: string;
 };
 
 export type FormatChoiceUi = {
@@ -152,6 +163,8 @@ export type AgentRunResult = {
   };
   report?: {
     title: string;
+    /** Structured audit payload for branded PDF/Word/MD export. */
+    data?: import("@/lib/report/schema").AuditReport;
   };
 };
 
@@ -161,6 +174,7 @@ export async function runAdspirerAgent(input: {
   toolEvidence?: string;
   reportDraft?: string;
   reportTitle?: string;
+  reportData?: import("@/lib/report/schema").AuditReport;
   history?: AgentHistoryMessage[];
   correlationId?: string;
   onProgress?: (event: AgentProgressEvent) => void | Promise<void>;
@@ -403,6 +417,7 @@ type WriterInput = {
   toolEvidence?: string;
   reportDraft?: string;
   reportTitle?: string;
+  reportData?: import("@/lib/report/schema").AuditReport;
   history?: AgentHistoryMessage[];
   correlationId?: string;
   onProgress?: (event: AgentProgressEvent) => void | Promise<void>;
@@ -412,11 +427,47 @@ function buildWriterMessages(input: WriterInput): {
   system: string;
   messages: Array<{ role: "assistant" | "user" | "system"; content: string }>;
 } {
-  const intent = detectRequestIntent(input.task.goal ?? input.task.title);
+  const intent = detectRequestIntentWithHistory(
+    input.task.goal ?? input.task.title,
+    input.history ?? [],
+  );
   const evidence = input.toolEvidence?.trim() || "(no live tool evidence yet)";
   const accountHint =
     evidence.match(/ID:\s*(act_[^\s]+)/)?.[1] ??
     evidence.match(/account_id["']?\s*[:=]\s*["']?(act_[^\s"']+)/i)?.[1];
+  const auditIncomplete = evidence.includes("### Audit briefing incomplete");
+  const auditReady = evidence.includes("### Meta audit framework");
+
+  const auditRules = auditIncomplete
+    ? [
+        "- Audit briefing is incomplete: ask ONLY for the missing fields from the evidence.",
+        "- Do NOT invent spend, findings, or a full audit yet.",
+        "- Do NOT propose optimize/execute tools.",
+      ]
+    : auditReady
+      ? [
+          "- Write a full Meta best-practice audit using the framework sections in the evidence.",
+          "- Lead with scope + period, then spend snapshot, what's working, needs improvement, and prioritized recommendations.",
+          "- Ground every claim in the live metrics provided; say Unknown when evidence is missing.",
+          "- Do NOT queue execute/optimize tools and do NOT change Meta yet.",
+          "- End by inviting the operator to ask to optimize a specific campaign or ad copy when ready.",
+        ]
+      : intent === "audit"
+        ? [
+            "- This is an audit request: clarify scope (account vs campaigns) and date range if missing, otherwise audit from evidence.",
+            "- Recommendations only — wait for an explicit optimize ask before mutations.",
+          ]
+        : [];
+
+  const optimizeRules =
+    intent === "optimize"
+      ? [
+          "- Operator explicitly asked to optimize: present recommendations and queue Approvals only for concrete EXECUTE changes.",
+          "- If no ad is selected yet, show ad_picker and wait.",
+        ]
+      : [
+          "- Do NOT start an optimize/execute workflow unless Detected intent is optimize (or they clearly asked to change Meta).",
+        ];
 
   const userTurn = input.reportDraft
     ? [
@@ -462,6 +513,8 @@ function buildWriterMessages(input: WriterInput): {
         "- When you queue Approvals, include a clear What's next checklist so the operator knows the workflow is paused for human review — not stuck.",
         "- Mention Approvals portal when proposing execute actions. Never claim Meta mutations applied yet.",
         "- If they asked for Word/PDF export, deliver a complete markdown report and tell them to use Export Word / Export PDF under the message.",
+        ...auditRules,
+        ...optimizeRules,
       ]
         .filter(Boolean)
         .join("\n");
@@ -593,23 +646,31 @@ async function finalizeWriterResult(args: {
             : {}),
         },
     report: input.reportDraft
-      ? { title: input.reportTitle ?? "Meta Ops session report" }
+      ? {
+          title: input.reportTitle ?? "Meta Ops session report",
+          data: input.reportData,
+        }
       : undefined,
   };
 }
 
 function liveReplyPreview(text: string): string {
   const trimmed = text.trim();
-  if (trimmed.startsWith("{") || trimmed.startsWith("[") || trimmed.startsWith("```json")) {
-    // Don't stream raw JSON into the bubble — wait for humanized final text
+  // Prefer any prose before machine JSON so the bubble grows smoothly.
+  const stripped = stripMachineJson(text).trim();
+  if (stripped && stripped !== GENERIC_FALLBACK_REPLY && stripped.length >= 8) {
+    return stripped;
+  }
+  if (
+    trimmed.startsWith("{") ||
+    trimmed.startsWith("[") ||
+    trimmed.startsWith("```json") ||
+    trimmed.startsWith("```")
+  ) {
     return "Writing reply…";
   }
-  const stripped = stripMachineJson(text);
-  if (stripped === GENERIC_FALLBACK_REPLY || stripped.length < 8) {
-    return "Writing reply…";
-  }
-  if (stripped.length >= 24) return stripped;
-  if (stripped.includes("?")) return stripped;
+  if (trimmed.length >= 12) return trimmed;
+  if (trimmed.includes("?")) return trimmed;
   return text.length > 0 ? text : "Writing reply…";
 }
 
@@ -619,6 +680,7 @@ async function runMockAgent(input: {
   toolEvidence?: string;
   reportDraft?: string;
   reportTitle?: string;
+  reportData?: import("@/lib/report/schema").AuditReport;
   correlationId?: string;
   onProgress?: (event: AgentProgressEvent) => void | Promise<void>;
 }): Promise<AgentRunResult> {
@@ -630,6 +692,61 @@ async function runMockAgent(input: {
 
   const intent = detectRequestIntent(input.task.goal ?? input.task.title);
   const evidence = input.toolEvidence?.trim();
+
+  if (evidence?.includes("### Audit briefing incomplete")) {
+    const summary =
+      "I can run a Meta Ads best-practice audit — reply with whether you want the **entire account** or **specific campaigns**, and a **date range** (e.g. last 30 days). I won't change anything until you ask to optimize.";
+    await input.onProgress?.({
+      phase: "write_report",
+      label: "Asking for audit details…",
+      stepId: "write_report",
+      summary,
+      delta: summary,
+    });
+    return {
+      summary,
+      messages: [{ role: "assistant", content: summary }],
+      toolCalls: [],
+      mode: "mock",
+    };
+  }
+
+  if (evidence?.includes("### Meta audit framework")) {
+    const spendLine =
+      evidence.match(/### Account spend[^\n]*\n- ([^\n]+)/)?.[1] ??
+      evidence.match(/Sum of listed campaign spend: (\$[0-9.]+)/)?.[1] ??
+      "see campaign performance section";
+    const summary = [
+      "## Meta Ads audit (demo)",
+      "",
+      "### Spend snapshot",
+      `- ${spendLine}`,
+      "",
+      "### What's working",
+      "- See live campaign performance evidence above for CTR/CPC winners.",
+      "",
+      "### Needs improvement",
+      "- Review low-efficiency high-spend campaigns against the best-practice framework.",
+      "",
+      "### Recommendations",
+      "- Prioritize creative refresh and budget reallocation on underperformers (advisory only).",
+      "",
+      "Say which campaign or ad copy you want to **optimize** when you're ready — I won't change Meta until then.",
+    ].join("\n");
+    await input.onProgress?.({
+      phase: "write_report",
+      label: "Writing audit…",
+      stepId: "write_report",
+      summary,
+      delta: summary,
+    });
+    return {
+      summary,
+      messages: [{ role: "assistant", content: summary }],
+      toolCalls: [],
+      mode: "mock",
+    };
+  }
 
   if (input.reportDraft) {
     const summary = [
@@ -649,7 +766,10 @@ async function runMockAgent(input: {
       messages: [{ role: "assistant", content: summary }],
       toolCalls: [],
       mode: "mock",
-      report: { title: input.reportTitle ?? "Meta Ops session report" },
+      report: {
+        title: input.reportTitle ?? "Meta Ops session report",
+        data: input.reportData,
+      },
     };
   }
 
@@ -722,7 +842,7 @@ async function runMockAgent(input: {
             `**${c.id} · ${c.angle}**\n- Headline: ${c.headline}\n- Primary: ${c.primary_text}`,
         ),
         "",
-        "After you approve a variant, choose targeting from the Meta dropdowns, then creative, then Approvals.",
+        "After you approve a variant, tell me if you want to create a campaign, generate images, or something else — I won't advance on my own.",
       ].join("\n");
       ui = { copyPicker: { copies } };
     } else {
@@ -746,10 +866,11 @@ async function runMockAgent(input: {
     const humanized = evidence ? humanizeAgentReply(evidence) : null;
     summary =
       humanized?.display ??
-      "Copy approved — choose custom audiences and detailed targeting from the dropdowns below.";
-    if (accountId) {
-      ui = { targetingPicker: { account_id: accountId } };
-    }
+      [
+        "Copy approved and ready to reuse.",
+        "",
+        "What would you like next? I can create a campaign with this copy, generate image creatives, write a video script, or leave it here until you decide.",
+      ].join("\n");
   } else if (intent === "optimize") {
     const humanized = evidence ? humanizeAgentReply(evidence) : null;
     summary = humanized?.display
@@ -886,13 +1007,55 @@ export function extractUrlFromText(text: string): string | null {
   return null;
 }
 
+/** Pull labeled headline / primary text from a freeform operator message. */
+export function extractAdCopyFromText(text: string): {
+  headline?: string;
+  primaryText?: string;
+} {
+  const headlineMatch = text.match(
+    /\bheadline\s*[:\-–—]\s*["“]?([^\n"”]{4,160})["”]?/i,
+  );
+  const primaryMatch = text.match(
+    /\bprimary(?:\s*text)?\s*[:\-–—]\s*["“]?([\s\S]{12,1200}?)["”]?(?=\n\s*(?:headline|cta|description|landing|url|https?:\/\/)|$)/i,
+  );
+  const headline = headlineMatch?.[1]?.trim().replace(/\s+/g, " ");
+  const primaryText = primaryMatch?.[1]
+    ?.trim()
+    .replace(/\s*\n\s*/g, " ")
+    .replace(/\s+/g, " ");
+  return {
+    ...(headline ? { headline } : {}),
+    ...(primaryText ? { primaryText } : {}),
+  };
+}
+
 export { resolvePrimaryAccountId } from "@/lib/adspirer/resolve-meta-account";
+
+function formatInsightMetrics(i: MetaInsights): string {
+  const parts = [
+    `spend $${i.spend.toFixed(2)}`,
+    `${i.impressions.toLocaleString()} imps`,
+    `${i.clicks.toLocaleString()} clicks`,
+    `CTR ${i.ctr.toFixed(2)}%`,
+    `CPC $${i.cpc.toFixed(2)}`,
+  ];
+  if (i.reach != null) parts.push(`reach ${i.reach.toLocaleString()}`);
+  if (i.frequency != null) parts.push(`freq ${i.frequency.toFixed(2)}`);
+  if (i.conversions != null) parts.push(`conv ${i.conversions}`);
+  if (i.cost_per_conversion != null) {
+    parts.push(`CPA $${i.cost_per_conversion.toFixed(2)}`);
+  }
+  return parts.join(" · ");
+}
 
 /** Collect live Meta evidence before the LLM writes the report. */
 export async function gatherDiagnoseEvidence(input: {
   clientId: string;
   request: string;
   conversationId?: string | null;
+  history?: AgentHistoryMessage[];
+  /** Pre-resolved intent (supports audit brief follow-ups). */
+  intent?: ReturnType<typeof detectRequestIntent>;
   onProgress?: (event: AgentProgressEvent) => void | Promise<void>;
 }): Promise<{
   accountId: string | null;
@@ -904,8 +1067,10 @@ export async function gatherDiagnoseEvidence(input: {
   formatChoice?: FormatChoiceUi;
   videoChoice?: VideoChoiceUi;
   targetingPicker?: TargetingPickerUi;
+  /** True when audit needs scope/dates/campaigns before full analysis. */
+  auditBriefingIncomplete?: boolean;
 }> {
-  const intent = detectRequestIntent(input.request);
+  const intent = input.intent ?? detectRequestIntent(input.request);
   const accountId = await resolvePrimaryAccountId(input.clientId);
   const toolCalls: AgentToolCallProposal[] = [];
   const sections: string[] = [];
@@ -915,6 +1080,7 @@ export async function gatherDiagnoseEvidence(input: {
   let formatChoice: FormatChoiceUi | undefined;
   let videoChoice: VideoChoiceUi | undefined;
   let targetingPicker: TargetingPickerUi | undefined;
+  let auditBriefingIncomplete = false;
 
   const targetingSubmitted =
     /\badvanced targeting selections\b/i.test(input.request) ||
@@ -941,8 +1107,10 @@ export async function gatherDiagnoseEvidence(input: {
   if (
     !accountId &&
     intent !== "ad_copy" &&
+    intent !== "generate_creatives" &&
     intent !== "scrape_services" &&
-    intent !== "optimize"
+    intent !== "optimize" &&
+    intent !== "copy_approved"
   ) {
     return {
       accountId: null,
@@ -1045,6 +1213,237 @@ export async function gatherDiagnoseEvidence(input: {
           `### Campaigns (${campaigns.length})\n${lines.join("\n")}`,
         );
       }
+
+      if (intent === "audit") {
+        const brief = resolveAuditBrief(input.request, input.history ?? []);
+        let effectiveMissing = [...brief.missing];
+        let matchedCampaigns: MetaCampaign[] = [];
+
+        if (brief.scope === "campaigns") {
+          matchedCampaigns = matchCampaignsByHints(campaigns, brief.campaignHints);
+          if (brief.campaignHints.length && matchedCampaigns.length === 0) {
+            if (!effectiveMissing.includes("campaigns")) {
+              effectiveMissing.push("campaigns");
+            }
+          } else if (matchedCampaigns.length > 0) {
+            effectiveMissing = effectiveMissing.filter((m) => m !== "campaigns");
+          }
+        }
+
+        const ready =
+          !effectiveMissing.includes("scope") &&
+          !effectiveMissing.includes("date_range") &&
+          !(
+            brief.scope === "campaigns" &&
+            (effectiveMissing.includes("campaigns") || matchedCampaigns.length === 0)
+          ) &&
+          Boolean(brief.dateStart && brief.dateStop);
+
+        if (!ready) {
+          auditBriefingIncomplete = true;
+          const askBrief = {
+            ...brief,
+            missing: effectiveMissing as typeof brief.missing,
+            ready: false,
+          };
+          sections.push(
+            [
+              "### Audit briefing incomplete",
+              `- Known scope: ${brief.scope ?? "unset"}`,
+              `- Campaign hints: ${brief.campaignHints.join(", ") || "(none)"}`,
+              `- Date range: ${brief.dateLabel ?? "unset"}`,
+              `- Missing: ${effectiveMissing.join(", ") || "none"}`,
+              "",
+              "Ask ONLY for the missing fields below. Do NOT invent an audit yet.",
+              "Do NOT queue optimize or execute tools.",
+              "",
+              buildAuditClarifyingQuestion(askBrief),
+              "",
+              campaigns.length
+                ? "You may briefly list a few live campaign names to help them pick (from Campaigns evidence)."
+                : "",
+            ]
+              .filter(Boolean)
+              .join("\n"),
+          );
+        } else {
+          await input.onProgress?.({
+            phase: "pull_insights",
+            label: "Pulling spend & performance…",
+            stepId: "pull_insights",
+          });
+
+          const dateStart = brief.dateStart!;
+          const dateStop = brief.dateStop!;
+          const dateLabel = brief.dateLabel ?? `${dateStart} → ${dateStop}`;
+
+          sections.push(
+            [
+              "### Audit brief (confirmed)",
+              `- Scope: ${brief.scope === "account" ? "Entire ad account" : "Selected campaigns"}`,
+              brief.scope === "campaigns"
+                ? `- Campaigns: ${matchedCampaigns.map((c) => `${c.name} (${c.id})`).join("; ")}`
+                : null,
+              `- Period: ${dateLabel} (${dateStart} → ${dateStop})`,
+            ]
+              .filter(Boolean)
+              .join("\n"),
+          );
+
+          if (provider.getAccountInsights && brief.scope === "account") {
+            try {
+              const accountInsights = await provider.getAccountInsights(
+                accountId,
+                dateStart,
+                dateStop,
+              );
+              toolCalls.push({
+                name: "get_account_insights",
+                args: {
+                  account_id: accountId,
+                  date_start: dateStart,
+                  date_stop: dateStop,
+                },
+                rationale: "Account spend for audit period",
+              });
+              sections.push(
+                `### Account spend (${dateLabel})\n- ${formatInsightMetrics(accountInsights)}`,
+              );
+            } catch (error) {
+              sections.push(
+                `### Account spend\n- Failed: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              );
+            }
+          }
+
+          const insightTargets: MetaCampaign[] =
+            brief.scope === "campaigns"
+              ? matchedCampaigns
+              : campaigns
+                  .filter((c) => c.status === "ACTIVE" || c.status === "PAUSED")
+                  .slice(0, 20);
+
+          const insightLines: string[] = [];
+          let totalSpend = 0;
+          for (const c of insightTargets) {
+            try {
+              const row = await provider.getCampaignInsights(
+                accountId,
+                c.id,
+                dateStart,
+                dateStop,
+              );
+              toolCalls.push({
+                name: "get_campaign_insights",
+                args: {
+                  account_id: accountId,
+                  campaign_id: c.id,
+                  date_start: dateStart,
+                  date_stop: dateStop,
+                },
+                rationale: `Insights for ${c.name}`,
+              });
+              totalSpend += row.spend;
+              insightLines.push(
+                `- ${c.name} (${c.id}) · ${c.status} · ${c.objective} · ${formatInsightMetrics(row)}`,
+              );
+            } catch (error) {
+              insightLines.push(
+                `- ${c.name} (${c.id}): insights failed — ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              );
+            }
+          }
+          sections.push(
+            [
+              `### Campaign performance (${dateLabel})`,
+              `- Campaigns scored: ${insightTargets.length}`,
+              `- Sum of listed campaign spend: $${totalSpend.toFixed(2)}`,
+              "",
+              ...insightLines,
+            ].join("\n"),
+          );
+
+          // Light ad sample for creative pillar
+          try {
+            const ads = await provider.listAds(accountId);
+            toolCalls.push({
+              name: "list_ads",
+              args: { account_id: accountId },
+              rationale: "Creative inventory sample for audit",
+            });
+            const scopedAds =
+              brief.scope === "campaigns"
+                ? ads.filter((a) =>
+                    matchedCampaigns.some((c) => c.id === a.campaign_id),
+                  )
+                : ads;
+            sections.push(
+              [
+                `### Ads sample (${Math.min(scopedAds.length, 25)} of ${scopedAds.length})`,
+                ...scopedAds.slice(0, 25).map(
+                  (a) =>
+                    `- ${a.name} (${a.id}) · ${a.status}${
+                      a.creative_summary ? ` — ${a.creative_summary}` : ""
+                    }`,
+                ),
+              ].join("\n"),
+            );
+          } catch (error) {
+            sections.push(
+              `### Ads sample\n- Failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
+
+          await input.onProgress?.({
+            phase: "apply_framework",
+            label: "Applying best-practice framework…",
+            stepId: "apply_framework",
+          });
+          sections.push(
+            [
+              "### Meta audit framework (apply to evidence above)",
+              META_AUDIT_FRAMEWORK,
+              "",
+              "### Writer instructions for this audit",
+              "- Produce the full audit in chat using the framework required sections.",
+              "- Quantify spend and call out what is working vs what needs improvement.",
+              "- Include prioritized optimization recommendations.",
+              "- Do NOT queue execute/optimize tools and do NOT claim you changed Meta.",
+              "- End by inviting the operator to say which campaign or ad copy to optimize when they are ready.",
+            ].join("\n"),
+          );
+
+          try {
+            const analysis = await provider.analyzeAccount(accountId);
+            toolCalls.push({
+              name: "analyze_account",
+              args: { account_id: accountId },
+              rationale: "Supplemental diagnostics",
+            });
+            sections.push(
+              [
+                "### Supplemental diagnostics",
+                ...analysis.findings.map((f) => `- ${f}`),
+                "",
+                "### Supplemental recommended actions",
+                ...analysis.recommended_actions.map((r) => `- ${r}`),
+              ].join("\n"),
+            );
+          } catch (error) {
+            sections.push(
+              `### Supplemental diagnostics\n- Failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
+        }
+      }
     } catch (error) {
       sections.push(
         `### Campaigns\n- Failed: ${
@@ -1056,10 +1455,8 @@ export async function gatherDiagnoseEvidence(input: {
 
   if (
     accountId &&
-    (intent === "audit" ||
-      intent === "budget" ||
-      intent === "general" ||
-      intent === "export")
+    intent !== "audit" &&
+    (intent === "budget" || intent === "general" || intent === "export")
   ) {
     await input.onProgress?.({
       phase: "diagnose",
@@ -1096,6 +1493,7 @@ export async function gatherDiagnoseEvidence(input: {
     Boolean(scrapeUrl) &&
     intent !== "ad_copy" &&
     intent !== "copy_approved" &&
+    intent !== "generate_creatives" &&
     (intent === "scrape_services" ||
       (intent === "create_campaign" &&
         /\b(scrape|services?|website)\b/i.test(input.request)));
@@ -1195,12 +1593,34 @@ export async function gatherDiagnoseEvidence(input: {
         variants: 3,
       };
 
+      try {
+        const { loadDocumentsForContext } = await import(
+          "@/lib/documents/service"
+        );
+        const docs = await loadDocumentsForContext({
+          clientId: input.clientId,
+          conversationId: input.conversationId ?? null,
+        });
+        if (docs.length) {
+          brief.reference_material = docs
+            .slice(0, 4)
+            .map(
+              (d) =>
+                `### ${d.filename} (${d.doc_kind})\n${(d.extracted_text || d.excerpt || "").slice(0, 4000)}`,
+            )
+            .join("\n\n");
+        }
+      } catch {
+        // Documents optional
+      }
+
       const hasEnough =
         Boolean(brief.offer && brief.audience) &&
-        (/\b(offer|audience|landing|for |targeting|generate|write|draft|copy)\b/i.test(
+        (/\b(offer|audience|landing|for |targeting|generate|write|draft|copy|recreate|competitor)\b/i.test(
           input.request,
         ) ||
           Boolean(brief.landing_page_url) ||
+          Boolean(brief.reference_material) ||
           brief.offer !== "Core offer");
 
       if (!hasEnough) {
@@ -1283,8 +1703,8 @@ export async function gatherDiagnoseEvidence(input: {
             ]),
             "Present copies in natural language. Append copy_picker JSON appendix for the UI.",
             "Do NOT scrape website services or create ad sets from this step.",
-            "Do NOT ask custom audience or detailed targeting questions — the operator picks those in the targeting picker after approving a variant.",
-            "When operator approves a variant, they will confirm targeting next, then creative, then Approvals.",
+            "Do NOT show targeting_picker, format_choice, or campaign intake.",
+            "After the operator picks a variant: acknowledge and ask what they want next (campaign, images, script, etc.). Do not proceed until they ask.",
           ]
             .filter(Boolean)
             .join("\n"),
@@ -1391,21 +1811,49 @@ export async function gatherDiagnoseEvidence(input: {
     }
   }
 
-  if (intent === "copy_approved" && accountId) {
-    targetingPicker = { account_id: accountId };
+  if (intent === "generate_creatives") {
+    const url = extractUrlFromText(input.request);
+    const copyFields = extractAdCopyFromText(input.request);
+    imageChoice = {
+      landing_page_url: url ?? undefined,
+      brand_url: url ?? undefined,
+      headline: copyFields.headline,
+      primary_text: copyFields.primaryText,
+    };
+    sections.push(
+      [
+        "### Standalone image / creative generation",
+        "Operator asked to generate ad images / creatives — not a full campaign.",
+        url
+          ? `Brand / reference URL detected: ${url} — the system will scrape brand colours/logo from it and render stills in this turn.`
+          : "If a brand or company URL was given earlier in chat or on the client record, use it for brand colours/logo. Ask only if no URL is available.",
+        copyFields.headline
+          ? `Headline on file: ${copyFields.headline}`
+          : "Use headline/primary_text from the request or approved copy when present.",
+        copyFields.primaryText
+          ? `Primary text on file: ${copyFields.primaryText.slice(0, 280)}${copyFields.primaryText.length > 280 ? "…" : ""}`
+          : null,
+        "Acknowledge briefly that brand scrape + GPT Image stills are starting.",
+        "Do NOT invent 'here are 3 variations' or dump image_choice JSON as the whole reply — stills attach as creative cards after generation.",
+        "Do NOT claim images are ready before generation completes.",
+        "If workspace documents / competitor ads are in context, treat them as visual or messaging reference — recreate style for OUR brand; do not copy logos or trademarked artwork.",
+        "After stills render: stop. Ask if they want to use one in a campaign — do not start targeting or campaign create.",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    );
+  }
+
+  if (intent === "copy_approved") {
     sections.push(
       [
         "### Ad copy approved",
-        "Operator approved a copy variant. Show targeting_picker only.",
-        `Append: {"ui":"targeting_picker","account_id":"${accountId}"}`,
-        "Do NOT scrape website services. Do NOT present service_picker or create ad sets.",
-        "Do NOT ask custom audience or detailed targeting as text questions — use the picker dropdowns.",
-        "After targeting is confirmed, stop and wait for the operator's next instruction. Do NOT show image_choice, video_choice, or creative generation unless they explicitly ask to create a campaign or add creatives.",
+        "Operator approved a copy variant for reuse.",
+        "Acknowledge the selection briefly.",
+        "Do NOT show targeting_picker, format_choice, image_choice, or video_choice.",
+        "Do NOT queue create_meta_* or scrape services.",
+        "Suggest 2–3 optional next steps (create campaign, generate images, write script) and wait for their choice.",
       ].join("\n"),
-    );
-  } else if (intent === "copy_approved" && !accountId) {
-    sections.push(
-      "### Ad copy approved\n- No mapped Meta account — map an ad account under Connections before targeting or create.",
     );
   }
 
@@ -1443,7 +1891,12 @@ export async function gatherDiagnoseEvidence(input: {
           ),
           "",
           "Present ad_picker UI. Wait for operator to pick an ad before deeper optimize calls.",
-        ].join("\n"),
+          isWorkspaceV2()
+            ? "V2: optimize from live Meta evidence + Approvals for mutations (no Adspirer MCP optimize tools required)."
+            : "",
+        ]
+          .filter(Boolean)
+          .join("\n"),
       );
 
       const known = ads.find((a) => input.request.includes(a.id));
@@ -1508,7 +1961,9 @@ export async function gatherDiagnoseEvidence(input: {
     }
   } else if (intent === "optimize" && !accountId) {
     sections.push(
-      "### Optimize\n- No mapped Meta account. Connect Adspirer and map an account first.",
+      isWorkspaceV2()
+        ? "### Optimize\n- No mapped Meta account. Connect Facebook, sync/map an ad account under Connections, then retry."
+        : "### Optimize\n- No mapped Meta account. Connect Adspirer and map an account first.",
     );
   }
 
@@ -1522,6 +1977,7 @@ export async function gatherDiagnoseEvidence(input: {
     formatChoice,
     videoChoice,
     targetingPicker,
+    auditBriefingIncomplete,
   };
 }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -13,6 +13,7 @@ import { ChatPanel } from "@/components/ai/chat-panel";
 import { ChatHistorySidebar } from "@/components/ai/chat-history-sidebar";
 import { TaskProgress } from "@/components/ai/task-progress";
 import { ApprovalCard } from "@/components/approvals/approval-card";
+import { DocumentsPanel } from "@/components/workspace/documents-panel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -30,6 +31,57 @@ import {
 } from "@/lib/agent/title-format";
 import { MetaConnectButton } from "@/components/meta-connect-button";
 import { handleMetaOAuthReturn } from "@/lib/meta/oauth-return";
+
+/**
+ * Soft-merge server messages into local state without remounting the whole list.
+ * Matches by id or metadata.serverId so optimistic/streaming rows stay stable.
+ */
+function mergeServerMessages(
+  local: Message[],
+  server: Message[],
+): Message[] {
+  if (!server.length) return local;
+  if (!local.length) return server;
+
+  const byId = new Map(server.map((m) => [m.id, m]));
+  const used = new Set<string>();
+  const merged = local.map((m) => {
+    const isTemp =
+      m.id.startsWith("local_") ||
+      m.id.startsWith("stream_") ||
+      Boolean(m.metadata?.streaming);
+    const serverId =
+      typeof m.metadata?.serverId === "string" ? m.metadata.serverId : null;
+    const match = byId.get(m.id) ?? (serverId ? byId.get(serverId) : undefined);
+    if (!match) return m;
+    used.add(match.id);
+    // Never clobber an in-flight optimistic / streaming bubble.
+    if (isTemp) {
+      return {
+        ...m,
+        metadata: {
+          ...(match.metadata ?? {}),
+          ...(m.metadata ?? {}),
+          serverId: match.id,
+          streaming: m.metadata?.streaming ?? false,
+        },
+      };
+    }
+    return {
+      ...match,
+      metadata: {
+        ...(match.metadata ?? {}),
+        ...(m.metadata ?? {}),
+        streaming: false,
+      },
+    };
+  });
+
+  for (const msg of server) {
+    if (!used.has(msg.id)) merged.push(msg);
+  }
+  return merged;
+}
 
 async function readSse(
   response: Response,
@@ -106,6 +158,7 @@ function WorkspaceInner({
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [bootstrapping, setBootstrapping] = useState(false);
   const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [statusLabel, setStatusLabel] = useState<string | null>(null);
   const [metaAccountStatus, setMetaAccountStatus] = useState<{
@@ -247,12 +300,14 @@ function WorkspaceInner({
 
   const refreshWorkflow = useCallback(async () => {
     if (!clientId || !conversationId) return;
+    // Never wipe the in-flight optimistic/streaming thread on focus.
+    if (sendingRef.current) return;
     const activeTaskId = task?.id ?? null;
     const msgRes = await apiFetch<{
       conversation: Conversation;
       messages: Message[];
     }>(apiPath(`/conversations/${conversationId}/messages`));
-    setMessages(msgRes.messages);
+    setMessages((prev) => mergeServerMessages(prev, msgRes.messages));
     await loadApprovals(clientId, activeTaskId);
     if (activeTaskId) {
       try {
@@ -395,6 +450,16 @@ function WorkspaceInner({
     [messages],
   );
 
+  // Keep latest values for the poller without restarting the interval on every delta.
+  const taskRef = useRef(task);
+  const messagesRef = useRef(messages);
+  useEffect(() => {
+    taskRef.current = task;
+  }, [task]);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
   useEffect(() => {
     if (!conversationId || !clientId) return;
 
@@ -407,14 +472,16 @@ function WorkspaceInner({
     const poll = async () => {
       if (cancelled) return;
       try {
+        const currentTask = taskRef.current;
+        const currentMessages = messagesRef.current;
         const taskId =
-          task?.id ??
-          (messages
+          currentTask?.id ??
+          (currentMessages
             .map((m) => m.metadata?.taskId)
             .find((id): id is string => typeof id === "string") ??
             null);
 
-        let nextTask = task;
+        let nextTask = currentTask;
         if (taskId) {
           const taskRes = await apiFetch<{ task: Task }>(
             `/api/tasks/${taskId}`,
@@ -423,13 +490,25 @@ function WorkspaceInner({
           if (!cancelled) setTask(nextTask);
         }
 
+        // While SSE is live, only refresh task progress — never wipe the chat.
+        if (sendingRef.current) {
+          if (
+            nextTask &&
+            (nextTask.status === "running" || nextTask.status === "queued") &&
+            typeof nextTask.agent_state?.statusLabel === "string"
+          ) {
+            setStatusLabel(nextTask.agent_state.statusLabel);
+          }
+          return;
+        }
+
         const msgRes = await apiFetch<{
           conversation: Conversation;
           messages: Message[];
         }>(apiPath(`/conversations/${conversationId}/messages`));
         if (cancelled) return;
 
-        setMessages(msgRes.messages);
+        setMessages((prev) => mergeServerMessages(prev, msgRes.messages));
 
         if (
           nextTask &&
@@ -439,6 +518,7 @@ function WorkspaceInner({
             setStatusLabel(nextTask.agent_state.statusLabel);
           }
         } else {
+          sendingRef.current = false;
           setSending(false);
           setStatusLabel(null);
         }
@@ -458,9 +538,7 @@ function WorkspaceInner({
     clientId,
     conversationId,
     hasStreamingMessage,
-    messages,
     sending,
-    task,
     task?.id,
     task?.status,
   ]);
@@ -528,15 +606,17 @@ function WorkspaceInner({
   async function sendMessage(content: string) {
     if (!conversationId || !clientId) return;
 
+    const clientUserId = `local_${Date.now()}`;
     const optimistic: Message = {
-      id: `local_${Date.now()}`,
+      id: clientUserId,
       conversation_id: conversationId,
       role: "user",
       content,
       tool_call_id: null,
-      metadata: null,
+      metadata: { clientTempId: clientUserId },
       created_at: new Date().toISOString(),
     };
+    // Keep React keys stable for the whole turn so bubbles don't remount.
     const streamingId = `stream_${Date.now()}`;
     const streamingMessage: Message = {
       id: streamingId,
@@ -544,11 +624,12 @@ function WorkspaceInner({
       role: "assistant",
       content: "",
       tool_call_id: null,
-      metadata: { streaming: true },
+      metadata: { streaming: true, clientTempId: streamingId },
       created_at: new Date().toISOString(),
     };
 
     setMessages((prev) => [...prev, optimistic, streamingMessage]);
+    sendingRef.current = true;
     setSending(true);
     setStatusLabel("Starting…");
 
@@ -594,6 +675,7 @@ function WorkspaceInner({
       }
 
       let assistantId = streamingId;
+      let finalTaskId: string | null = null;
 
       await readSse(response, {
         onEvent: (event, data) => {
@@ -614,8 +696,22 @@ function WorkspaceInner({
 
           if (event === "user_message") {
             const message = payload.message as Message;
+            // Keep the local React key; store server id in metadata.
             setMessages((prev) =>
-              prev.map((m) => (m.id === optimistic.id ? message : m)),
+              prev.map((m) =>
+                m.id === clientUserId
+                  ? {
+                      ...message,
+                      id: clientUserId,
+                      metadata: {
+                        ...(message.metadata ?? {}),
+                        ...(m.metadata ?? {}),
+                        serverId: message.id,
+                        clientTempId: clientUserId,
+                      },
+                    }
+                  : m,
+              ),
             );
           }
 
@@ -623,7 +719,22 @@ function WorkspaceInner({
             const message = payload.message as Message;
             assistantId = message.id;
             setMessages((prev) =>
-              prev.map((m) => (m.id === streamingId ? message : m)),
+              prev.map((m) =>
+                m.id === streamingId
+                  ? {
+                      ...message,
+                      id: streamingId,
+                      content: message.content || m.content,
+                      metadata: {
+                        ...(message.metadata ?? {}),
+                        ...(m.metadata ?? {}),
+                        streaming: true,
+                        serverId: message.id,
+                        clientTempId: streamingId,
+                      },
+                    }
+                  : m,
+              ),
             );
           }
 
@@ -733,6 +844,7 @@ function WorkspaceInner({
 
           if (event === "done") {
             const nextTask = payload.task as Task;
+            finalTaskId = nextTask?.id ?? null;
             const message = payload.message as Message;
             const nextConversation = payload.conversation as
               | Conversation
@@ -751,10 +863,36 @@ function WorkspaceInner({
                   ),
               );
             }
+            // One final in-place swap to the persisted message (stable enough).
             setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantId || m.id === streamingId ? message : m,
-              ),
+              prev.map((m) => {
+                if (m.id === streamingId || m.id === assistantId) {
+                  return {
+                    ...message,
+                    metadata: {
+                      ...(message.metadata ?? {}),
+                      streaming: false,
+                    },
+                  };
+                }
+                if (m.id === clientUserId) {
+                  const serverId =
+                    typeof m.metadata?.serverId === "string"
+                      ? m.metadata.serverId
+                      : null;
+                  return serverId
+                    ? {
+                        ...m,
+                        id: serverId,
+                        metadata: {
+                          ...(m.metadata ?? {}),
+                          streaming: false,
+                        },
+                      }
+                    : m;
+                }
+                return m;
+              }),
             );
             setStatusLabel(
               typeof nextTask.agent_state?.statusLabel === "string"
@@ -781,34 +919,18 @@ function WorkspaceInner({
         },
       });
 
-      const refreshed = await apiFetch<{
-        conversation: Conversation;
-        messages: Message[];
-      }>(apiPath(`/conversations/${conversationId}/messages`));
-      setMessages(refreshed.messages);
+      // Soft reconcile approvals/task — do NOT replace the whole message list
+      // (that remounts bubbles and causes the disappear/reappear glitch).
       await refreshConversationList(clientId);
-
-      const convTaskId = refreshed.conversation.task_id;
-      if (convTaskId) {
-        try {
-          const taskRes = await apiFetch<{ task: Task }>(
-            `/api/tasks/${convTaskId}`,
-          );
-          setTask(taskRes.task);
-          await loadApprovals(clientId, taskRes.task.id);
-        } catch {
-          await loadApprovals(clientId);
-        }
-      } else {
-        await loadApprovals(clientId);
-      }
+      await loadApprovals(clientId, finalTaskId);
       await refresh();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Send failed");
       setMessages((prev) =>
-        prev.filter((m) => m.id !== optimistic.id && m.id !== streamingId),
+        prev.filter((m) => m.id !== clientUserId && m.id !== streamingId),
       );
     } finally {
+      sendingRef.current = false;
       setSending(false);
       setStatusLabel(null);
     }
@@ -1037,6 +1159,11 @@ function WorkspaceInner({
                 </CardContent>
               </Card>
             )}
+            <DocumentsPanel
+              clientId={clientId}
+              conversationId={conversationId}
+              apiBase={apiBase}
+            />
           </div>
         </div>
       )}

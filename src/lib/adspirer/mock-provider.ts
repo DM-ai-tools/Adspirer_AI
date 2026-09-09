@@ -206,6 +206,51 @@ export class MockMetaAdsProvider implements MetaAdsProvider {
     };
   }
 
+  async getAccountInsights(
+    accountId: string,
+    dateStart: string,
+    dateStop: string,
+  ): Promise<MetaInsights> {
+    const campaigns = await this.listCampaigns(accountId);
+    let spend = 0;
+    let impressions = 0;
+    let clicks = 0;
+    let conversions = 0;
+    for (const c of campaigns.slice(0, 10)) {
+      const row = await this.getCampaignInsights(
+        accountId,
+        c.id,
+        dateStart,
+        dateStop,
+      );
+      spend += row.spend;
+      impressions += row.impressions;
+      clicks += row.clicks;
+      conversions += row.conversions ?? 0;
+    }
+    const ctr = impressions ? (clicks / impressions) * 100 : 0;
+    const cpc = clicks ? spend / clicks : 0;
+    return {
+      account_id: accountId,
+      entity_id: accountId,
+      entity_type: "account",
+      date_start: dateStart,
+      date_stop: dateStop,
+      spend: Number(spend.toFixed(2)),
+      impressions,
+      clicks,
+      ctr: Number(ctr.toFixed(2)),
+      cpc: Number(cpc.toFixed(2)),
+      reach: Math.round(impressions * 0.5),
+      frequency: 1.7,
+      conversions,
+      cost_per_conversion: conversions
+        ? Number((spend / conversions).toFixed(2))
+        : undefined,
+      raw: { demo: true, source: "MockMetaAdsProvider" },
+    };
+  }
+
   async listAdSets(accountId: string, campaignId?: string): Promise<MetaAdSet[]> {
     return getState().adsets.filter(
       (a) =>

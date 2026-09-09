@@ -263,7 +263,12 @@ export const createAdTool = registerTool({
     "Add a Meta ad to an ad set via Adspirer (requires approval). For video ads set ad_type=video and pass video_url or existing_video_id.",
   inputSchema: z.object({
     account_id: z.string().min(1),
-    ad_set_id: z.string().min(1),
+    ad_set_id: z.string().min(1).optional(),
+    adset_id: z.string().optional(),
+    campaign_id: z.string().optional(),
+    campaign_name: z.string().optional(),
+    ad_set_name: z.string().optional(),
+    ad_name: z.string().optional(),
     ad_type: z.enum(["image", "video", "carousel"]).optional(),
     primary_text: z.string().min(1),
     landing_page_url: z.string().url(),
@@ -274,7 +279,15 @@ export const createAdTool = registerTool({
     existing_video_id: z.string().optional(),
     thumbnail_url: z.string().url().optional(),
     name: z.string().optional(),
-  }),
+    facebook_page_id: z.string().optional(),
+  }).refine(
+    (v) =>
+      Boolean(v.ad_set_id || v.adset_id || (v.campaign_name && v.ad_set_name)),
+    {
+      message:
+        "Provide ad_set_id, or both campaign_name and ad_set_name for lookup",
+    },
+  ),
   async execute(args, ctx) {
     return requireAndExecute("create_ad", args, ctx);
   },

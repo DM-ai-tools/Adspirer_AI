@@ -15,7 +15,8 @@ type GraphErrorBody = {
 function formatGraphError(error: GraphErrorBody | undefined, fallback: string): string {
   if (!error) return fallback;
 
-  const hint = metaErrorHint(error.error_subcode);
+  const hint =
+    metaErrorHint(error.error_subcode) ?? metaErrorHintForCode(error.code);
   if (hint) return hint;
 
   const parts: string[] = [];
@@ -57,9 +58,26 @@ function metaErrorHint(subcode: number | undefined): string | null {
         "Meta requires is_adset_budget_sharing_enabled when budget is set on the ad set.",
         "This is handled automatically — retry approval; if it persists, contact support. (subcode 4834011)",
       ].join(" ");
+    case 1815143:
+      return [
+        "This ad set optimizes for off-site conversions but is missing a Meta Pixel.",
+        "Add pixel_id (and optional pixel_event_name, e.g. PURCHASE or LEAD) in the approval args,",
+        "or use objective OUTCOME_TRAFFIC for link-click optimization without a pixel. (subcode 1815143)",
+      ].join(" ");
     default:
       return null;
   }
+}
+
+function metaErrorHintForCode(code: number | undefined): string | null {
+  if (code === 2) {
+    return [
+      "Meta API is temporarily unavailable (code 2). Wait 1–2 minutes and approve again.",
+      "If it keeps failing, verify ad_set_id is the real ID from Ads Manager (not a placeholder),",
+      "and that landing_page_url is set. Video uploads to Meta can also trigger this — retry helps.",
+    ].join(" ");
+  }
+  return null;
 }
 
 export class MetaGraphClient {

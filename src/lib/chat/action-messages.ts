@@ -26,6 +26,8 @@ export function composeCopyApprovedMessage(picked: CopyVariant): string {
     `- Primary text: ${picked.primary_text}`,
     picked.description ? `- Description: ${picked.description}` : null,
     picked.cta ? `- CTA: ${picked.cta}` : null,
+    "",
+    "I'm approving this copy only for now — not creating a campaign yet.",
   ]
     .filter(Boolean)
     .join("\n");

@@ -1,3 +1,6 @@
+import type { AgentHistoryMessage } from "@/lib/agent/history";
+import { looksLikeAuditBriefReply } from "@/lib/agent/audit-brief";
+
 export type TaskStepState =
   | "pending"
   | "active"
@@ -48,9 +51,21 @@ export function detectRequestIntent(request: string): RequestIntent {
   ) {
     return "optimize";
   }
+  // Image / still generation before scrape or ad_copy — "create an image for
+  // this ad copy for URL …" must not become website scrape or copy-only.
+  if (
+    mentionsCreativeGeneration(text) ||
+    (/\b(generate|create|make|produce|design|render)\b/.test(text) &&
+      /\b(images?|creatives?|stills?|visuals?|ad\s*images?)\b/.test(text))
+  ) {
+    return "generate_creatives";
+  }
+  // Scrape only when the operator wants services/offerings pulled — not merely
+  // because a URL / "landing" / "website" appears next to image or copy work.
   if (
     /\b(https?:\/\/|www\.)\S+/i.test(text) &&
-    /\b(service|scrape|website|landing|url|offerings?)\b/.test(text)
+    /\b(scrape|services?|offerings?)\b/.test(text) &&
+    !/\b(images?|stills?|creatives?|visuals?)\b/.test(text)
   ) {
     return "scrape_services";
   }
@@ -82,14 +97,6 @@ export function detectRequestIntent(request: string): RequestIntent {
       /\b(headline|primary text|ad copy|copies)\b/.test(text))
   ) {
     return "ad_copy";
-  }
-  if (
-    /\b(generate|create|make|produce)\b.*\b(images?|creatives?|stills?|visuals?)\b/.test(
-      text,
-    ) ||
-    /\b(images?|creatives?|stills?)\b.*\b(generate|create|make)\b/.test(text)
-  ) {
-    return "generate_creatives";
   }
   if (
     /\b(create|launch|build|set up|setup|new)\b.*\b(campaign|ad set|adset|ads?)\b/.test(
@@ -124,6 +131,34 @@ export function detectRequestIntent(request: string): RequestIntent {
 }
 
 /**
+ * Same as detectRequestIntent, but keeps short follow-ups ("last 30 days",
+ * "entire account") on the audit path when the recent chat is mid-brief.
+ */
+export function detectRequestIntentWithHistory(
+  request: string,
+  history: AgentHistoryMessage[] = [],
+): RequestIntent {
+  const primary = detectRequestIntent(request);
+  if (primary !== "general") return primary;
+
+  const recent = history.slice(-10);
+  const assistantAskedAudit = recent.some(
+    (m) =>
+      m.role === "assistant" &&
+      /\b(audit|date range|entire ad account|specific campaign|best-practice audit)\b/i.test(
+        m.content,
+      ),
+  );
+  const userAskedAudit = recent.some(
+    (m) => m.role === "user" && detectRequestIntent(m.content) === "audit",
+  );
+  if ((assistantAskedAudit || userAskedAudit) && looksLikeAuditBriefReply(request)) {
+    return "audit";
+  }
+  return primary;
+}
+
+/**
  * Did the operator ask for generated ad imagery? Only their words may start a
  * batch — UI copy like "Generate images here" must not count.
  */
@@ -141,8 +176,11 @@ export function mentionsCreativeGeneration(
 /**
  * Build a request-specific progress checklist (ChatGPT-style dynamic steps).
  */
-export function planTaskSteps(request: string): TaskStep[] {
-  const intent = detectRequestIntent(request);
+export function planTaskSteps(
+  request: string,
+  intentOverride?: RequestIntent,
+): TaskStep[] {
+  const intent = intentOverride ?? detectRequestIntent(request);
   const base: TaskStep[] = [
     { id: "queued", label: "Queued", state: "pending" },
     { id: "research", label: "Context research", state: "pending" },
@@ -152,9 +190,23 @@ export function planTaskSteps(request: string): TaskStep[] {
     case "audit":
       return [
         ...base,
+        {
+          id: "clarify_brief",
+          label: "Confirm scope & date range",
+          state: "pending",
+        },
         { id: "fetch_overview", label: "Fetch account overview", state: "pending" },
         { id: "list_campaigns", label: "List Meta campaigns", state: "pending" },
-        { id: "diagnose", label: "Run account diagnostics", state: "pending" },
+        {
+          id: "pull_insights",
+          label: "Pull spend & performance",
+          state: "pending",
+        },
+        {
+          id: "apply_framework",
+          label: "Apply best-practice framework",
+          state: "pending",
+        },
         { id: "write_report", label: "Write audit report", state: "pending" },
         { id: "complete", label: "Complete", state: "pending" },
       ];
@@ -179,7 +231,7 @@ export function planTaskSteps(request: string): TaskStep[] {
         { id: "intake", label: "Collect creative brief", state: "pending" },
         { id: "generate_creatives", label: "Generate GPT Image stills", state: "pending" },
         { id: "pick_creative", label: "Review & select creative", state: "pending" },
-        { id: "complete", label: "Complete", state: "pending" },
+        { id: "complete", label: "Await next instruction", state: "pending" },
       ];
     case "create_campaign":
       return [
@@ -215,10 +267,8 @@ export function planTaskSteps(request: string): TaskStep[] {
     case "copy_approved":
       return [
         ...base,
-        { id: "advanced_targeting", label: "Custom audiences & detailed targeting", state: "pending" },
-        { id: "creative_asset", label: "Creative URL or generate", state: "pending" },
-        { id: "queue_create", label: "Queue campaign create (Approvals)", state: "pending" },
-        { id: "complete", label: "Complete", state: "pending" },
+        { id: "pick_copy", label: "Confirm approved copy", state: "pending" },
+        { id: "complete", label: "Await next instruction", state: "pending" },
       ];
     case "optimize":
       return [

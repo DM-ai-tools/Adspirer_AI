@@ -54,6 +54,8 @@ export type RecommendationStatus =
   | "expired";
 
 export type CompetitorBriefStatus = "pending" | "ready" | "failed";
+export type WorkspaceDocKind = "competitor" | "framework" | "brief" | "other";
+export type WorkspaceDocStatus = "ready" | "failed";
 
 export interface Profile {
   id: string;
@@ -329,5 +331,22 @@ export interface OAuthPkceState {
   created_by: string | null;
   expires_at: string;
   consumed_at: string | null;
+  created_at: string;
+}
+
+export interface WorkspaceDocument {
+  id: string;
+  client_id: string;
+  conversation_id: string | null;
+  uploaded_by: string | null;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+  storage_key: string | null;
+  extracted_text: string | null;
+  excerpt: string | null;
+  doc_kind: WorkspaceDocKind;
+  status: WorkspaceDocStatus;
+  error: string | null;
   created_at: string;
 }

@@ -6,10 +6,12 @@ import {
 } from "@/lib/agent/reply-format";
 import {
   reconcileAssistantMessage,
+  reconcileConversationMessages,
   resolveAssistantDisplay,
 } from "@/lib/agent/message-reconcile";
 import {
   holdStepsForOperator,
+  detectRequestIntent,
   mentionsCreativeGeneration,
   planTaskSteps,
 } from "@/lib/agent/task-plan";
@@ -137,6 +139,45 @@ describe("orphaned streaming rows recover from the linked task", () => {
     const fixed = reconcileAssistantMessage(baseMessage, doneTask);
     expect(fixed.metadata?.streaming).toBe(false);
     expect(fixed.content).toContain("Rendering **3**");
+  });
+
+  it("does not overwrite older assistant turns with the latest task summary", () => {
+    const older: Message = {
+      id: "msg_old",
+      conversation_id: "conv_1",
+      role: "assistant",
+      content: "Original audit findings for last 30 days.",
+      tool_call_id: null,
+      metadata: { streaming: false, taskId: "task_old" },
+      created_at: new Date().toISOString(),
+    };
+    const orphanStreaming: Message = {
+      ...baseMessage,
+      id: "msg_latest",
+    };
+    const reconciled = reconcileConversationMessages(
+      [older, orphanStreaming],
+      doneTask,
+    );
+    expect(reconciled[0].content).toBe(
+      "Original audit findings for last 30 days.",
+    );
+    expect(reconciled[1].content).toContain("Rendering **3**");
+    expect(reconciled[1].metadata?.streaming).toBe(false);
+  });
+
+  it("keeps finished same-task content instead of re-applying summary", () => {
+    const finished: Message = {
+      id: "msg_done",
+      conversation_id: "conv_1",
+      role: "assistant",
+      content: "Persisted reply that must stay put.",
+      tool_call_id: null,
+      metadata: { streaming: false, taskId: "task_1" },
+      created_at: new Date().toISOString(),
+    };
+    const fixed = reconcileAssistantMessage(finished, doneTask);
+    expect(fixed.content).toBe("Persisted reply that must stay put.");
   });
 
   it("resolves filler when only UI metadata is present", () => {
@@ -276,5 +317,46 @@ describe("list payloads do not need the inline still", () => {
     });
     expect(publicDraft.image_url).toContain("/api/creatives/assets/crd_test");
     expect(publicDraft.image_url).not.toMatch(/^data:/);
+  });
+});
+
+describe("image + URL requests are generate_creatives, not scrape", () => {
+  it("classifies create-image-for-ad-copy-with-URL as generate_creatives", () => {
+    expect(
+      detectRequestIntent(
+        "I want to create an image for this ad copy for URL https://trafficradius.com.au\nHeadline: Black Friday\nPrimary text: Book a consult.",
+      ),
+    ).toBe("generate_creatives");
+  });
+
+  it("still scrapes when the operator asks for website services", () => {
+    expect(
+      detectRequestIntent(
+        "Scrape services from https://trafficradius.com.au for ad sets",
+      ),
+    ).toBe("scrape_services");
+  });
+
+  it("plans GPT Image steps for standalone creative asks", () => {
+    const steps = planTaskSteps(
+      "create an image for this ad copy https://example.com",
+    );
+    expect(steps.find((s) => s.id === "generate_creatives")).toBeTruthy();
+    expect(steps.find((s) => s.id === "scrape_services")).toBeUndefined();
+  });
+
+  it("strips image_choice JSON (including malformed fences) from display", () => {
+    const ok = humanizeAgentReply(
+      'I am pulling brand colours from your landing page and starting GPT Image stills now.\n```json\n{"ui":"image_choice","landing_page_url":"https://example.com","headline":"Hi"}\n```',
+    );
+    expect(ok.display).toMatch(/brand colours|stills/i);
+    expect(ok.display).not.toContain("image_choice");
+    expect(ok.imageChoice?.landing_page_url).toBe("https://example.com");
+
+    const broken = humanizeAgentReply(
+      'Here are 3 image variations for your campaign creative.\n```json\n{"ui":"image_choice","primary_text":"He said "hello" too early"}\n```',
+    );
+    expect(broken.display).not.toContain('"ui"');
+    expect(broken.display).not.toContain("image_choice");
   });
 });

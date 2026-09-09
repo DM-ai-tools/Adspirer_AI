@@ -54,3 +54,5 @@ subdomains.txt
 
 
 certificates
+# Local object storage mock
+.data/
