@@ -23,6 +23,7 @@ import {
   optimizationForObjective,
 } from "@/lib/meta/targeting-builder";
 import { resolvePromotePageId, formatMissingPageHelp } from "@/lib/meta/resolve-page";
+import { logger } from "@/lib/observability/logger";
 
 function normalizeAccountId(accountId: string): string {
   return accountId.startsWith("act_") ? accountId : `act_${accountId}`;
@@ -55,6 +56,55 @@ function budgetToMinorUnits(budgetDaily?: number): number | undefined {
     return undefined;
   }
   return Math.round(budgetDaily * 100);
+}
+
+function lookbackWindow(days: number): { dateStart: string; dateStop: string } {
+  const stop = new Date();
+  const start = new Date();
+  start.setUTCDate(start.getUTCDate() - Math.max(1, days));
+  return {
+    dateStart: start.toISOString().slice(0, 10),
+    dateStop: stop.toISOString().slice(0, 10),
+  };
+}
+
+function extractConversionMetrics(row: Record<string, unknown>): {
+  conversions: number;
+  cpa: number | null;
+} {
+  const actions = Array.isArray(row.actions)
+    ? (row.actions as Array<{ action_type?: string; value?: string }>)
+    : [];
+  const purchase =
+    actions.find((a) =>
+      /purchase|omni_purchase/i.test(String(a.action_type ?? "")),
+    ) ??
+    actions.find((a) =>
+      /lead|complete_registration|offsite_conversion/i.test(
+        String(a.action_type ?? ""),
+      ),
+    );
+  const conversions =
+    purchase?.value != null ? Number(purchase.value) : 0;
+  const cpaRows = Array.isArray(row.cost_per_action_type)
+    ? (row.cost_per_action_type as Array<{
+        action_type?: string;
+        value?: string;
+      }>)
+    : [];
+  const cpaMatch = purchase
+    ? cpaRows.find((r) => r.action_type === purchase.action_type)
+    : undefined;
+  const cpa =
+    cpaMatch?.value != null
+      ? Number(cpaMatch.value)
+      : conversions > 0 && Number(row.spend ?? 0) > 0
+        ? Number(row.spend) / conversions
+        : null;
+  return {
+    conversions: Number.isFinite(conversions) ? conversions : 0,
+    cpa: cpa != null && Number.isFinite(cpa) ? cpa : null,
+  };
 }
 
 function mergeCampaignExtra(
@@ -867,9 +917,224 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     accountId: string,
     options: Record<string, unknown> = {},
   ): Promise<{ text: string; structured?: Record<string, unknown> | null }> {
+    const id = normalizeAccountId(accountId);
+    const lookbackDays = Math.min(
+      90,
+      Math.max(3, Number(options.lookback_days ?? 7) || 7),
+    );
+    const { dateStart, dateStop } = lookbackWindow(lookbackDays);
+    const adsets = await this.listAdSets(id);
+    const budgeted = adsets.filter((a) => a.daily_budget_cents > 0);
+    const pool =
+      budgeted.filter((a) => a.status === "ACTIVE").length > 0
+        ? budgeted.filter((a) => a.status === "ACTIVE")
+        : budgeted;
+
+    type Ranked = {
+      adset_id: string;
+      name: string;
+      status: string;
+      daily_budget_cents: number;
+      spend: number;
+      clicks: number;
+      ctr: number;
+      conversions: number;
+      cpa: number | null;
+      score: number;
+    };
+
+    const byId = new Map<string, Ranked>();
+    for (const a of pool) {
+      byId.set(a.id, {
+        adset_id: a.id,
+        name: a.name,
+        status: a.status,
+        daily_budget_cents: a.daily_budget_cents,
+        spend: 0,
+        clicks: 0,
+        ctr: 0,
+        conversions: 0,
+        cpa: null,
+        score: 0,
+      });
+    }
+
+    try {
+      const data = await this.graph.get<{
+        data?: Array<Record<string, unknown>>;
+      }>(`${id}/insights`, {
+        fields:
+          "adset_id,adset_name,spend,impressions,clicks,ctr,cpc,actions,cost_per_action_type,frequency",
+        level: "adset",
+        time_range: JSON.stringify({ since: dateStart, until: dateStop }),
+        limit: 100,
+      });
+      for (const row of data.data ?? []) {
+        const adsetId = String(row.adset_id ?? "");
+        if (!adsetId) continue;
+        const existing =
+          byId.get(adsetId) ??
+          ({
+            adset_id: adsetId,
+            name: String(row.adset_name ?? adsetId),
+            status: "UNKNOWN",
+            daily_budget_cents:
+              pool.find((a) => a.id === adsetId)?.daily_budget_cents ?? 0,
+            spend: 0,
+            clicks: 0,
+            ctr: 0,
+            conversions: 0,
+            cpa: null,
+            score: 0,
+          } satisfies Ranked);
+        const spend = Number(row.spend ?? 0);
+        const clicks = Number(row.clicks ?? 0);
+        const ctr = Number(row.ctr ?? 0);
+        const { conversions, cpa } = extractConversionMetrics(row);
+        existing.spend = spend;
+        existing.clicks = clicks;
+        existing.ctr = ctr;
+        existing.conversions = conversions;
+        existing.cpa = cpa;
+        if (!byId.has(adsetId) && existing.daily_budget_cents > 0) {
+          byId.set(adsetId, existing);
+        } else if (byId.has(adsetId)) {
+          byId.set(adsetId, existing);
+        }
+      }
+    } catch {
+      // Insights can fail on empty accounts; still propose from budgets alone.
+    }
+
+    const ranked = [...byId.values()].map((row) => {
+      let score = row.ctr;
+      if (row.conversions > 0 && row.cpa != null && row.cpa > 0) {
+        score = 1_000_000 / row.cpa + row.conversions * 10;
+      } else if (row.spend > 0 && row.conversions === 0) {
+        score = row.ctr - Math.min(50, row.spend);
+      }
+      return { ...row, score };
+    });
+    ranked.sort((a, b) => b.score - a.score);
+
+    const proposals: Array<{
+      tool: string;
+      args: Record<string, unknown>;
+      rationale: string;
+    }> = [];
+    const lines: string[] = [
+      `### Budget optimize (${id}) · ${dateStart} → ${dateStop}`,
+    ];
+
+    if (!ranked.length) {
+      lines.push("- No ad sets with a daily budget found to rebalance.");
+      return {
+        text: lines.join("\n"),
+        structured: { accountId: id, lookback_days: lookbackDays, proposals: [] },
+      };
+    }
+
+    const withSpend = ranked.filter((r) => r.spend > 0);
+    const winners = (withSpend.length ? withSpend : ranked).slice(0, 2);
+    const losers = [...(withSpend.length ? withSpend : ranked)]
+      .reverse()
+      .filter((r) => !winners.some((w) => w.adset_id === r.adset_id))
+      .slice(0, 2);
+
+    for (const w of winners) {
+      if (w.daily_budget_cents <= 0) continue;
+      const next = Math.max(
+        w.daily_budget_cents + 100,
+        Math.round(w.daily_budget_cents * 1.2),
+      );
+      if (next === w.daily_budget_cents) continue;
+      const rationale = w.conversions
+        ? `Scale ${w.name}: ${w.conversions} conv · CPA ${
+            w.cpa != null ? `$${w.cpa.toFixed(2)}` : "n/a"
+          } · +20% daily budget.`
+        : `Scale ${w.name}: stronger relative CTR/delivery · +20% daily budget.`;
+      proposals.push({
+        tool: "update_adset_budget",
+        args: {
+          account_id: id,
+          adset_id: w.adset_id,
+          daily_budget_cents: next,
+          previous_daily_budget_cents: w.daily_budget_cents,
+        },
+        rationale,
+      });
+      lines.push(
+        `- SCALE ${w.name} (${w.adset_id}): $${(w.daily_budget_cents / 100).toFixed(2)} → $${(next / 100).toFixed(2)}/day`,
+      );
+    }
+
+    for (const l of losers) {
+      if (l.daily_budget_cents <= 0) continue;
+      const wasted =
+        l.spend >= Math.max(10, l.daily_budget_cents / 100) &&
+        l.conversions === 0;
+      if (wasted && l.daily_budget_cents >= 500) {
+        const next = Math.max(
+          100,
+          Math.round(l.daily_budget_cents * 0.8),
+        );
+        if (next >= l.daily_budget_cents) continue;
+        const rationale = `Trim ${l.name}: $${l.spend.toFixed(2)} spend with 0 conversions in window · −20% daily budget.`;
+        proposals.push({
+          tool: "update_adset_budget",
+          args: {
+            account_id: id,
+            adset_id: l.adset_id,
+            daily_budget_cents: next,
+            previous_daily_budget_cents: l.daily_budget_cents,
+          },
+          rationale,
+        });
+        lines.push(
+          `- TRIM ${l.name} (${l.adset_id}): $${(l.daily_budget_cents / 100).toFixed(2)} → $${(next / 100).toFixed(2)}/day`,
+        );
+      }
+    }
+
+    if (!proposals.length) {
+      // Always surface at least one concrete mutate when budgets exist.
+      const primary = winners[0] ?? ranked[0];
+      if (primary?.daily_budget_cents > 0) {
+        const next = Math.max(
+          primary.daily_budget_cents + 100,
+          Math.round(primary.daily_budget_cents * 1.15),
+        );
+        proposals.push({
+          tool: "update_adset_budget",
+          args: {
+            account_id: id,
+            adset_id: primary.adset_id,
+            daily_budget_cents: next,
+            previous_daily_budget_cents: primary.daily_budget_cents,
+          },
+          rationale: `Rebalance toward ${primary.name} (+15% daily budget) pending operator approval.`,
+        });
+        lines.push(
+          `- PROPOSE ${primary.name} (${primary.adset_id}): $${(primary.daily_budget_cents / 100).toFixed(2)} → $${(next / 100).toFixed(2)}/day`,
+        );
+      }
+    }
+
+    lines.push(
+      "",
+      "These are proposals only. Queue `update_adset_budget` execute tools for Approvals — Meta is not changed until approved.",
+    );
+
     return {
-      text: `V2 recommendation for ${normalizeAccountId(accountId)}: rebalance daily budgets toward ad sets with lower CPA and stable frequency.`,
-      structured: { accountId, options },
+      text: lines.join("\n"),
+      structured: {
+        accountId: id,
+        lookback_days: lookbackDays,
+        date_start: dateStart,
+        date_stop: dateStop,
+        rankings: ranked.slice(0, 20),
+        proposals,
+      },
     };
   }
 
@@ -877,9 +1142,15 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     accountId: string,
     options: Record<string, unknown> = {},
   ): Promise<{ text: string; structured?: Record<string, unknown> | null }> {
+    const id = normalizeAccountId(accountId);
+    void options;
     return {
-      text: `V2 recommendation for ${normalizeAccountId(accountId)}: keep Advantage+ placements and trim low-performing right-column placements first.`,
-      structured: { accountId, options },
+      text: [
+        `### Placement optimize (${id})`,
+        "- Prefer Feed + Reels / Stories; review Audience Network and right-hand column if CTR is weak.",
+        "- Placement edits are advisory in V2 until a dedicated placement execute tool is queued; budget/pause changes cover most immediate wins.",
+      ].join("\n"),
+      structured: { accountId: id, proposals: [] },
     };
   }
 
@@ -887,9 +1158,98 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     accountId: string,
     options: Record<string, unknown> = {},
   ): Promise<{ text: string; structured?: Record<string, unknown> | null }> {
+    const id = normalizeAccountId(accountId);
+    const lookbackDays = Math.min(
+      90,
+      Math.max(3, Number(options.lookback_days ?? 14) || 14),
+    );
+    const { dateStart, dateStop } = lookbackWindow(lookbackDays);
+    const ads = await this.listAds(id);
+    const activeAds = ads.filter((a) => a.status === "ACTIVE");
+
+    const proposals: Array<{
+      tool: string;
+      args: Record<string, unknown>;
+      rationale: string;
+    }> = [];
+    const lines: string[] = [
+      `### Creative fatigue (${id}) · ${dateStart} → ${dateStop}`,
+    ];
+
+    try {
+      const data = await this.graph.get<{
+        data?: Array<Record<string, unknown>>;
+      }>(`${id}/insights`, {
+        fields:
+          "ad_id,ad_name,spend,impressions,clicks,ctr,frequency,actions",
+        level: "ad",
+        time_range: JSON.stringify({ since: dateStart, until: dateStop }),
+        limit: 50,
+      });
+      const rows = (data.data ?? [])
+        .map((row) => {
+          const adId = String(row.ad_id ?? "");
+          const frequency = Number(row.frequency ?? 0);
+          const ctr = Number(row.ctr ?? 0);
+          const spend = Number(row.spend ?? 0);
+          const impressions = Number(row.impressions ?? 0);
+          return {
+            ad_id: adId,
+            name: String(row.ad_name ?? adId),
+            frequency,
+            ctr,
+            spend,
+            impressions,
+            fatigued:
+              frequency >= 3.5 && ctr < 0.8 && impressions >= 1000 && spend > 0,
+          };
+        })
+        .filter((r) => r.ad_id);
+
+      const fatigued = rows.filter((r) => r.fatigued).slice(0, 3);
+      if (!fatigued.length) {
+        lines.push(
+          "- No clear fatigue signals (freq ≥ 3.5 with weak CTR) in the lookback window.",
+        );
+      }
+      for (const f of fatigued) {
+        const live = activeAds.find((a) => a.id === f.ad_id);
+        if (!live) {
+          lines.push(
+            `- ${f.name} (${f.ad_id}): freq ${f.frequency.toFixed(2)} · CTR ${f.ctr.toFixed(2)}% — already not ACTIVE.`,
+          );
+          continue;
+        }
+        const rationale = `Pause fatigued ad ${f.name}: frequency ${f.frequency.toFixed(2)}, CTR ${f.ctr.toFixed(2)}%.`;
+        proposals.push({
+          tool: "pause_ad",
+          args: { account_id: id, ad_id: f.ad_id },
+          rationale,
+        });
+        lines.push(
+          `- PAUSE ${f.name} (${f.ad_id}): freq ${f.frequency.toFixed(2)} · CTR ${f.ctr.toFixed(2)}%`,
+        );
+      }
+    } catch {
+      lines.push(
+        `- Could not load ad-level insights. Active ads on file: ${activeAds.length}.`,
+      );
+    }
+
+    lines.push(
+      "",
+      "Pause proposals require Approvals. Refresh creative separately via image generation if needed.",
+    );
+
     return {
-      text: `V2 fatigue scan for ${normalizeAccountId(accountId)}: rotate ads where frequency rises and CTR declines.`,
-      structured: { accountId, options },
+      text: lines.join("\n"),
+      structured: {
+        accountId: id,
+        lookback_days: lookbackDays,
+        date_start: dateStart,
+        date_stop: dateStop,
+        proposals,
+      },
     };
   }
 
@@ -902,18 +1262,214 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       limit?: number;
     } = {},
   ): Promise<MetaAdCreative[]> {
-    void options;
-    const ads = await this.listAds(accountId);
-    return ads.map((ad) => ({
-      ad_id: ad.id,
-      ad_name: ad.name,
-      campaign_id: ad.campaign_id,
-      adset_id: ad.adset_id,
-      headline: ad.creative_summary ?? null,
-      primary_text: null,
-      landing_page_url: null,
-      creative_type: "unknown",
-    }));
+    const id = normalizeAccountId(accountId);
+    const limit = Math.min(50, Math.max(1, options.limit ?? 30));
+    const path = options.ad_set_id
+      ? `${options.ad_set_id}/ads`
+      : options.campaign_id
+        ? `${options.campaign_id}/ads`
+        : `${id}/ads`;
+
+    const creativeFields =
+      "id,name,title,body,call_to_action_type,call_to_action,link_url,object_url,object_story_spec,asset_feed_spec,thumbnail_url,image_url,url_tags,effective_object_story_id,object_story_id";
+
+    const { extractCreativeDestination } = await import(
+      "@/lib/meta/extract-creative-destination"
+    );
+
+    const pagePostCache = new Map<string, Record<string, unknown> | null>();
+
+    const loadPagePost = async (
+      storyId: string | null,
+    ): Promise<Record<string, unknown> | null> => {
+      if (!storyId) return null;
+      if (pagePostCache.has(storyId)) return pagePostCache.get(storyId) ?? null;
+      try {
+        const post = await this.graph.get<Record<string, unknown>>(storyId, {
+          fields:
+            "id,call_to_action,link,message,attachments{unshimmed_url,url,title,description,target}",
+        });
+        pagePostCache.set(storyId, post);
+        return post;
+      } catch {
+        pagePostCache.set(storyId, null);
+        return null;
+      }
+    };
+
+    const mapRows = async (
+      rows: Array<Record<string, unknown>>,
+    ): Promise<MetaAdCreative[]> => {
+      const results: MetaAdCreative[] = [];
+      for (const row of rows) {
+        let creative =
+          row.creative && typeof row.creative === "object"
+            ? (row.creative as Record<string, unknown>)
+            : null;
+
+        const creativeId =
+          (creative && typeof creative.id === "string" && creative.id) ||
+          (typeof row.creative === "string" ? row.creative : null) ||
+          (typeof (row.creative as { id?: unknown } | null)?.id === "string"
+            ? String((row.creative as { id: string }).id)
+            : null);
+
+        // Always hydrate creative by id — nested expand is often incomplete.
+        if (creativeId) {
+          try {
+            const full = await this.graph.get<Record<string, unknown>>(
+              creativeId,
+              { fields: creativeFields },
+            );
+            creative = full;
+          } catch {
+            // keep nested expand
+          }
+        }
+
+        // The creative's own Website URL wins. Only consult the linked page post
+        // when the creative carries no destination at all (post links can be stale).
+        let extracted = extractCreativeDestination(creative);
+        if (!extracted.landing_page_url) {
+          const storyIdRaw =
+            (typeof creative?.effective_object_story_id === "string" &&
+              creative.effective_object_story_id) ||
+            (typeof creative?.object_story_id === "string" &&
+              creative.object_story_id) ||
+            null;
+          const pagePost = await loadPagePost(storyIdRaw);
+          if (pagePost) {
+            extracted = extractCreativeDestination(creative, pagePost);
+          }
+          if (!extracted.landing_page_url) {
+            // Surface the shape Meta actually returned instead of silently
+            // reporting "no destination" for an ad that has one in Ads Manager.
+            logger.warn("meta.creative_destination_missing", {
+              ad_id: String(row.id ?? ""),
+              creative_id: creativeId,
+              story_id: storyIdRaw,
+              creative_keys: creative ? Object.keys(creative) : [],
+              story_spec_keys: Object.keys(
+                (creative?.object_story_spec as Record<string, unknown>) ?? {},
+              ),
+            });
+          }
+        }
+
+        results.push({
+          ad_id: String(row.id ?? ""),
+          ad_name: String(row.name ?? "Ad"),
+          campaign_id: String(row.campaign_id ?? options.campaign_id ?? ""),
+          adset_id: String(row.adset_id ?? options.ad_set_id ?? ""),
+          headline: extracted.headline,
+          primary_text: extracted.primary_text,
+          call_to_action_type: extracted.call_to_action_type,
+          landing_page_url: extracted.landing_page_url,
+          image_url:
+            typeof creative?.image_url === "string"
+              ? creative.image_url
+              : typeof creative?.thumbnail_url === "string"
+                ? creative.thumbnail_url
+                : null,
+          creative_type: extracted.creative_type,
+          destination_source: extracted.destination_source,
+          destination_candidates: extracted.destination_candidates,
+          ad_status: typeof row.status === "string" ? row.status : null,
+          effective_status:
+            typeof row.effective_status === "string"
+              ? row.effective_status
+              : null,
+        });
+      }
+      return results;
+    };
+
+    const fetchAds = async (withStatusFilter: boolean) => {
+      const params: Record<string, string | number | boolean> = {
+        fields: `id,name,status,effective_status,campaign_id,adset_id,creative{${creativeFields}}`,
+        limit,
+      };
+      if (withStatusFilter) {
+        // Include paused — Website URL is creative config, not delivery.
+        params.filtering = JSON.stringify([
+          {
+            field: "effective_status",
+            operator: "IN",
+            value: [
+              "ACTIVE",
+              "PAUSED",
+              "CAMPAIGN_PAUSED",
+              "ADSET_PAUSED",
+              "PENDING_REVIEW",
+              "DISAPPROVED",
+              "PREAPPROVED",
+              "PENDING_BILLING_INFO",
+              "IN_PROCESS",
+              "WITH_ISSUES",
+            ],
+          },
+        ]);
+      }
+      return this.graph.get<{ data?: Array<Record<string, unknown>> }>(
+        path,
+        params,
+      );
+    };
+
+    try {
+      let data: { data?: Array<Record<string, unknown>> };
+      try {
+        data = await fetchAds(true);
+      } catch {
+        data = await fetchAds(false);
+      }
+      let results = await mapRows(data.data ?? []);
+
+      // If filtered call returned nothing, retry unfiltered (paused ads).
+      if (!results.length) {
+        data = await fetchAds(false);
+        results = await mapRows(data.data ?? []);
+      }
+
+      return results;
+    } catch {
+      // Last resort: list ads then hydrate each creative by id
+      try {
+        const ads = await this.listAds(
+          accountId,
+          options.ad_set_id,
+        );
+        const scoped = options.campaign_id
+          ? ads.filter((a) => a.campaign_id === options.campaign_id)
+          : ads;
+        const hydrated: MetaAdCreative[] = [];
+        for (const ad of scoped.slice(0, limit)) {
+          try {
+            const fullAd = await this.graph.get<Record<string, unknown>>(ad.id, {
+              fields: `id,name,status,effective_status,campaign_id,adset_id,creative{${creativeFields}}`,
+            });
+            const mapped = await mapRows([fullAd]);
+            if (mapped[0]) hydrated.push(mapped[0]);
+          } catch {
+            hydrated.push({
+              ad_id: ad.id,
+              ad_name: ad.name,
+              campaign_id: ad.campaign_id,
+              adset_id: ad.adset_id,
+              headline: null,
+              primary_text: null,
+              landing_page_url: null,
+              creative_type: "unknown",
+              ad_status: ad.status,
+              effective_status: null,
+            });
+          }
+        }
+        return hydrated;
+      } catch {
+        return [];
+      }
+    }
   }
 
   async listAccessibleAccounts() {

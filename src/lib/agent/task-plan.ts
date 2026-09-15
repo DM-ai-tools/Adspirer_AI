@@ -42,6 +42,20 @@ export function detectRequestIntent(request: string): RequestIntent {
   ) {
     return "out_of_scope";
   }
+  // Queue / apply optimized changes → Approvals path (before export "send report")
+  if (
+    /\b(send|queue|submit|put|push|add)\b[\s\S]{0,48}\bapprov/.test(text) ||
+    /\b(apply|implement|execute)\b[\s\S]{0,40}\b(optim|recommend|change|these|those)\b/.test(
+      text,
+    ) ||
+    /\b(don'?t|do not|can'?t|cannot|doesn'?t)\s+see\b[\s\S]{0,48}\bapprov/.test(
+      text,
+    ) ||
+    /\bnothing\b[\s\S]{0,24}\bapprov/.test(text) ||
+    /\bqueue (?:the |these |those )?(?:optim|change|recommend|budget)/.test(text)
+  ) {
+    return "optimize";
+  }
   if (
     /\b(optimiz|creative fatigue|refresh (the )?ad|improve (the )?ad|placement optim)\b/.test(
       text,
@@ -145,7 +159,7 @@ export function detectRequestIntentWithHistory(
   const assistantAskedAudit = recent.some(
     (m) =>
       m.role === "assistant" &&
-      /\b(audit|date range|entire ad account|specific campaign|best-practice audit)\b/i.test(
+      /\b(audit|date range|entire ad account|specific campaign|best-practice audit|competitor landing)\b/i.test(
         m.content,
       ),
   );
@@ -155,6 +169,24 @@ export function detectRequestIntentWithHistory(
   if ((assistantAskedAudit || userAskedAudit) && looksLikeAuditBriefReply(request)) {
     return "audit";
   }
+
+  const assistantOfferedOptimize = recent.some(
+    (m) =>
+      m.role === "assistant" &&
+      /\b(optimiz|recommendation|rebalance|budget|Approvals|pause|SCALE|TRIM)\b/i.test(
+        m.content,
+      ),
+  );
+  const userAskedOptimize = recent.some(
+    (m) => m.role === "user" && detectRequestIntent(m.content) === "optimize",
+  );
+  if (
+    (assistantOfferedOptimize || userAskedOptimize) &&
+    /\b(approv|queue|apply|implement|send|optim)/i.test(request)
+  ) {
+    return "optimize";
+  }
+
   return primary;
 }
 
@@ -192,7 +224,7 @@ export function planTaskSteps(
         ...base,
         {
           id: "clarify_brief",
-          label: "Confirm scope & date range",
+          label: "Confirm scope, dates & competitor LPs",
           state: "pending",
         },
         { id: "fetch_overview", label: "Fetch account overview", state: "pending" },
@@ -203,8 +235,13 @@ export function planTaskSteps(
           state: "pending",
         },
         {
+          id: "landing_pages",
+          label: "Analyse landing pages",
+          state: "pending",
+        },
+        {
           id: "apply_framework",
-          label: "Apply best-practice framework",
+          label: "Apply audit checklist",
           state: "pending",
         },
         { id: "write_report", label: "Write audit report", state: "pending" },

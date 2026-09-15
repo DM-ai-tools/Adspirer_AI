@@ -42,7 +42,16 @@ export interface MetaAdCreative {
   primary_text?: string | null;
   description?: string | null;
   call_to_action_type?: string | null;
+  /** Ads Manager Destination → Website URL (CTA / link_data.link), not display link. */
   landing_page_url?: string | null;
+  /** Which Graph field produced landing_page_url (debug / audit grounding). */
+  destination_source?: string | null;
+  /** Other destination candidates found on the creative/post (audit transparency). */
+  destination_candidates?: string[];
+  /** Configured ad status (ACTIVE / PAUSED) — destinations exist either way. */
+  ad_status?: string | null;
+  /** Meta effective_status (may be CAMPAIGN_PAUSED / ADSET_PAUSED). */
+  effective_status?: string | null;
   image_url?: string | null;
   creative_type?: string | null;
   spend?: number;

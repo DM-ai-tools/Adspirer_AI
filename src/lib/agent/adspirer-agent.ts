@@ -2,24 +2,47 @@ import type { LanguageModel } from "ai";
 import type { Task } from "@/types";
 import { getConfig } from "@/lib/config";
 import { getLiveAdspirerProvider, getProvider, resolveProvider } from "@/lib/adspirer/client";
-import type { MetaAdsProvider } from "@/lib/adspirer/provider";
+import type {
+  MetaAdsProvider,
+  MetaAdCreative,
+  MetaCampaign,
+  MetaInsights,
+} from "@/lib/adspirer/provider";
 import { getDemoStore } from "@/lib/demo/store";
 import { buildSystemPrompt } from "@/lib/agent/prompts";
 import { buildSystemPromptV2 } from "@/lib/agent/prompts-v2";
 import type { AgentHistoryMessage } from "@/lib/agent/history";
 import { detectRequestIntent, detectRequestIntentWithHistory, mentionsCreativeGeneration } from "@/lib/agent/task-plan";
 import {
+  wantsQueueApprovals,
+} from "@/lib/agent/optimize-queue";
+import { buildFullOptimizeProposals } from "@/lib/agent/optimize-proposals";
+import {
   buildAuditClarifyingQuestion,
   matchCampaignsByHints,
   resolveAuditBrief,
+  applyCompetitorUrlsFromDocuments,
 } from "@/lib/agent/audit-brief";
+import {
+  analyzeLandingPages,
+  formatLandingAnalysesForEvidence,
+} from "@/lib/landing/analyze-page";
+import { loadDocumentsForContext } from "@/lib/documents/service";
 import { META_AUDIT_FRAMEWORK } from "@/lib/agent/meta-audit-framework";
-import type { MetaCampaign, MetaInsights } from "@/lib/adspirer/provider";
 import {
   GENERIC_FALLBACK_REPLY,
   humanizeAgentReply,
   stripMachineJson,
 } from "@/lib/agent/reply-format";
+import {
+  buildAllowedUrlsMarker,
+  buildVerifiedDestinationsMarker,
+  destinationsWereFetched,
+  enforceVerifiedDestinations,
+  readAllowedUrlsMarker,
+  readVerifiedDestinationsMarker,
+  stripDestinationMarkers,
+} from "@/lib/landing/verified-destinations";
 import { logger } from "@/lib/observability/logger";
 import { getWorkspaceContext } from "@/lib/runtime/workspace-context";
 import { resolvePrimaryAccountId } from "@/lib/adspirer/resolve-meta-account";
@@ -436,7 +459,13 @@ function buildWriterMessages(input: WriterInput): {
     evidence.match(/ID:\s*(act_[^\s]+)/)?.[1] ??
     evidence.match(/account_id["']?\s*[:=]\s*["']?(act_[^\s"']+)/i)?.[1];
   const auditIncomplete = evidence.includes("### Audit briefing incomplete");
-  const auditReady = evidence.includes("### Meta audit framework");
+  const auditReady =
+    evidence.includes("### Audit brief (confirmed)") ||
+    evidence.includes("### Audit checklist");
+  const hasDestinationInventory = evidence.includes(
+    "### Ad CTA & destination inventory",
+  );
+  const auditToolsEnabled = evidence.includes("### Diagnose tools");
 
   const auditRules = auditIncomplete
     ? [
@@ -444,17 +473,29 @@ function buildWriterMessages(input: WriterInput): {
         "- Do NOT invent spend, findings, or a full audit yet.",
         "- Do NOT propose optimize/execute tools.",
       ]
-    : auditReady
+      : auditReady
       ? [
-          "- Write a full Meta best-practice audit using the framework sections in the evidence.",
-          "- Lead with scope + period, then spend snapshot, what's working, needs improvement, and prioritized recommendations.",
-          "- Ground every claim in the live metrics provided; say Unknown when evidence is missing.",
+          "- Write a full Meta Ads best-practice audit using the checklist sections in the evidence.",
+          "- Lead with scope + period, then spend snapshot, what's working, needs improvement, **Landing pages**, and prioritized recommendations.",
+          ...(hasDestinationInventory
+            ? [
+                "- In **Landing pages**, use ONLY Website URLs + CTA types from “Ad CTA & destination inventory” and scores from “Landing page analysis”.",
+                "- NEVER say destinations are unavailable because a campaign is paused or had no spend.",
+                "- NEVER use workspace-document / competitor-doc URLs as the own Meta destination (that caused wrong URLs like googleconsult vs googleaudit).",
+              ]
+            : [
+                "- You have diagnose tools. BEFORE writing Landing pages: call `get_meta_ad_creatives` (paused OK), then `analyze_landing_pages` with those Website URLs.",
+                "- Never invent destinations or use workspace-document URLs as own destinations.",
+              ]),
+          "- Ground every claim in the live metrics / scraped page evidence; say Unknown when evidence is missing.",
           "- Do NOT queue execute/optimize tools and do NOT change Meta yet.",
-          "- End by inviting the operator to ask to optimize a specific campaign or ad copy when ready.",
+          "- If competitor LPs were not provided, finish the own-LP audit and optionally invite them to paste competitor URLs later.",
+          "- End by inviting the operator to ask to optimize a specific campaign, ad copy, or landing page when ready.",
         ]
       : intent === "audit"
         ? [
             "- This is an audit request: clarify scope (account vs campaigns) and date range if missing, otherwise audit from evidence.",
+            "- Landing page analysis of Meta destinations is part of the initial audit — do not defer it.",
             "- Recommendations only — wait for an explicit optimize ask before mutations.",
           ]
         : [];
@@ -462,8 +503,12 @@ function buildWriterMessages(input: WriterInput): {
   const optimizeRules =
     intent === "optimize"
       ? [
-          "- Operator explicitly asked to optimize: present recommendations and queue Approvals only for concrete EXECUTE changes.",
-          "- If no ad is selected yet, show ad_picker and wait.",
+          "- Operator asked to optimize (or queue optimizations for Approvals).",
+          "- ONLY mark items as Ready to queue if they appear in Ready-to-queue EXECUTE proposals JSON.",
+          "- Typical queueable tools: update_adset_budget, resume_campaign, pause_ad, create_adset (broad/Advantage+).",
+          "- Creative refresh / Pixel verification stay waiting until the operator provides image / Pixel ID — never claim those were queued.",
+          "- When queuing: do NOT show ad_picker. Confirm separate Approvals cards for each tool.",
+          "- NEVER invent a 'known limitation' that tool calls did not fire.",
         ]
       : [
           "- Do NOT start an optimize/execute workflow unless Detected intent is optimize (or they clearly asked to change Meta).",
@@ -537,8 +582,25 @@ async function streamWriterText(args: {
   input: WriterInput;
 }): Promise<string> {
   const { model, providerLabel, input } = args;
-  const { streamText } = await import("ai");
+  const { streamText, stepCountIs } = await import("ai");
   const { system, messages } = buildWriterMessages(input);
+
+  const evidence = input.toolEvidence ?? "";
+  const auditToolsEnabled = evidence.includes("### Diagnose tools");
+
+  let tools: Awaited<ReturnType<typeof import("./diagnose-tools-ai").buildAuditDiagnoseToolSet>> | undefined;
+  if (auditToolsEnabled) {
+    const { buildAuditDiagnoseToolSet } = await import(
+      "@/lib/agent/diagnose-tools-ai"
+    );
+    tools = buildAuditDiagnoseToolSet({
+      clientId: input.task.client_id,
+      userId: input.task.created_by,
+      taskId: input.task.id,
+      conversationId: input.task.conversation_id,
+      correlationId: input.correlationId,
+    });
+  }
 
   // `textStream` only forwards text deltas — it drops error parts and ends
   // cleanly, so a failed call would otherwise look like an empty success and get
@@ -548,6 +610,28 @@ async function streamWriterText(args: {
     model,
     system,
     messages,
+    ...(tools
+      ? {
+          tools,
+          // Default stopWhen is 1 step (no tool loop) — allow multi-step diagnose fetches
+          stopWhen: stepCountIs(12),
+          onToolExecutionStart: async ({ toolCall }) => {
+            const toolName = String(toolCall.toolName ?? "");
+            const { humanToolProgressLabel } = await import(
+              "@/lib/tools/display-labels"
+            );
+            await input.onProgress?.({
+              phase: "write_report",
+              label: humanToolProgressLabel(toolName),
+              stepId:
+                toolName === "analyze_landing_pages" ||
+                toolName === "get_meta_ad_creatives"
+                  ? "landing_pages"
+                  : "pull_insights",
+            });
+          },
+        }
+      : {}),
     onError: ({ error }) => {
       streamError = error;
     },
@@ -603,6 +687,25 @@ async function finalizeWriterResult(args: {
     } else if (!/download|export|word|pdf/i.test(display)) {
       display = `${display.trim()}\n\n---\nUse **Download Word** / **Download PDF** under this message.`;
     }
+  }
+
+  display = stripDestinationMarkers(display);
+
+  const evidenceText = input.toolEvidence ?? "";
+  if (destinationsWereFetched(evidenceText)) {
+    const verifiedDestinations = readVerifiedDestinationsMarker(evidenceText);
+    const enforced = enforceVerifiedDestinations(display, {
+      verified: verifiedDestinations,
+      allowed: readAllowedUrlsMarker(evidenceText),
+      fetched: true,
+    });
+    if (enforced.replaced.length) {
+      logger.warn("agent.destination_url_corrected", {
+        replaced: enforced.replaced.slice(0, 5),
+        verified: verifiedDestinations.slice(0, 5),
+      });
+    }
+    display = enforced.text;
   }
 
   // Leave a bare sign-off untouched so the caller can still swap in a
@@ -711,7 +814,7 @@ async function runMockAgent(input: {
     };
   }
 
-  if (evidence?.includes("### Meta audit framework")) {
+  if (evidence?.includes("### Audit checklist")) {
     const spendLine =
       evidence.match(/### Account spend[^\n]*\n- ([^\n]+)/)?.[1] ??
       evidence.match(/Sum of listed campaign spend: (\$[0-9.]+)/)?.[1] ??
@@ -726,7 +829,7 @@ async function runMockAgent(input: {
       "- See live campaign performance evidence above for CTR/CPC winners.",
       "",
       "### Needs improvement",
-      "- Review low-efficiency high-spend campaigns against the best-practice framework.",
+      "- Review low-efficiency high-spend campaigns against the audit checklist.",
       "",
       "### Recommendations",
       "- Prioritize creative refresh and budget reallocation on underperformers (advisory only).",
@@ -1061,6 +1164,8 @@ export async function gatherDiagnoseEvidence(input: {
   accountId: string | null;
   evidence: string;
   toolCalls: AgentToolCallProposal[];
+  /** Concrete execute tools ready to queue when the operator asks for Approvals. */
+  executeProposals?: AgentToolCallProposal[];
   copyPicker?: CopyPickerUi;
   adPicker?: AdPickerUi;
   imageChoice?: ImageChoiceUi;
@@ -1073,6 +1178,7 @@ export async function gatherDiagnoseEvidence(input: {
   const intent = input.intent ?? detectRequestIntent(input.request);
   const accountId = await resolvePrimaryAccountId(input.clientId);
   const toolCalls: AgentToolCallProposal[] = [];
+  const executeProposals: AgentToolCallProposal[] = [];
   const sections: string[] = [];
   let copyPicker: CopyPickerUi | undefined;
   let adPicker: AdPickerUi | undefined;
@@ -1215,8 +1321,49 @@ export async function gatherDiagnoseEvidence(input: {
       }
 
       if (intent === "audit") {
-        const brief = resolveAuditBrief(input.request, input.history ?? []);
+        let brief = resolveAuditBrief(input.request, input.history ?? []);
+        // Competitor LP URLs only from competitor docs / spreadsheets — never scan
+        // brand/copy docs (those poisoned own destinations with googleconsult etc.).
+        try {
+          const docs = await loadDocumentsForContext({
+            clientId: input.clientId,
+            conversationId: input.conversationId,
+          });
+          const pinnedOrRecent = docs.slice(0, 8);
+          const competitorDocs = pinnedOrRecent.filter(
+            (d) =>
+              d.doc_kind === "competitor" ||
+              /\.(xlsx|xls|csv)$/i.test(d.filename),
+          );
+          if (competitorDocs.length) {
+            brief = applyCompetitorUrlsFromDocuments(
+              brief,
+              competitorDocs.map((d) => d.extracted_text || d.excerpt || ""),
+            );
+            sections.push(
+              [
+                "### Workspace documents (competitor / spreadsheet only — NOT own Meta Website URLs)",
+                "Do not use these as the campaign Destination → Website URL.",
+                ...competitorDocs.slice(0, 5).map(
+                  (d) =>
+                    `- ${d.filename} · kind=${d.doc_kind}${
+                      d.conversation_id ? " · this chat" : ""
+                    }`,
+                ),
+              ].join("\n"),
+            );
+          }
+        } catch {
+          // Documents optional
+        }
+
         let effectiveMissing = [...brief.missing];
+        // Competitor LPs are optional when unset — do not block the initial audit.
+        if (brief.competitorLanding === "unset") {
+          effectiveMissing = effectiveMissing.filter(
+            (m) => m !== "competitor_landing",
+          );
+        }
         let matchedCampaigns: MetaCampaign[] = [];
 
         if (brief.scope === "campaigns") {
@@ -1230,9 +1377,11 @@ export async function gatherDiagnoseEvidence(input: {
           }
         }
 
+        // Competitor LPs only block when operator promised URLs but none were found.
         const ready =
           !effectiveMissing.includes("scope") &&
           !effectiveMissing.includes("date_range") &&
+          !effectiveMissing.includes("competitor_landing") &&
           !(
             brief.scope === "campaigns" &&
             (effectiveMissing.includes("campaigns") || matchedCampaigns.length === 0)
@@ -1252,6 +1401,13 @@ export async function gatherDiagnoseEvidence(input: {
               `- Known scope: ${brief.scope ?? "unset"}`,
               `- Campaign hints: ${brief.campaignHints.join(", ") || "(none)"}`,
               `- Date range: ${brief.dateLabel ?? "unset"}`,
+              `- Competitor LPs: ${
+                brief.competitorLanding === "skip"
+                  ? "skip"
+                  : brief.competitorLanding === "provided"
+                    ? `${brief.competitorUrls.length} URL(s)`
+                    : "unset"
+              }`,
               `- Missing: ${effectiveMissing.join(", ") || "none"}`,
               "",
               "Ask ONLY for the missing fields below. Do NOT invent an audit yet.",
@@ -1285,6 +1441,11 @@ export async function gatherDiagnoseEvidence(input: {
                 ? `- Campaigns: ${matchedCampaigns.map((c) => `${c.name} (${c.id})`).join("; ")}`
                 : null,
               `- Period: ${dateLabel} (${dateStart} → ${dateStop})`,
+              `- Competitor LPs: ${
+                brief.competitorLanding === "skip"
+                  ? "skipped"
+                  : `${brief.competitorUrls.length} URL(s) provided`
+              }`,
             ]
               .filter(Boolean)
               .join("\n"),
@@ -1367,7 +1528,7 @@ export async function gatherDiagnoseEvidence(input: {
             ].join("\n"),
           );
 
-          // Light ad sample for creative pillar
+          // Light ad sample for creative pillar (LLM can deepen via tools)
           try {
             const ads = await provider.listAds(accountId);
             toolCalls.push({
@@ -1400,22 +1561,238 @@ export async function gatherDiagnoseEvidence(input: {
             );
           }
 
+          // Destination URLs + landing page analysis from Meta Graph (paused OK).
+          // Do this in preflight so the writer cannot invent pause excuses or
+          // substitute workspace-document URLs for Ads Manager Website URLs.
+          await input.onProgress?.({
+            phase: "landing_pages",
+            label: "Fetching ad destinations & analysing landing pages…",
+            stepId: "landing_pages",
+          });
+          try {
+            let creatives: MetaAdCreative[] = [];
+
+            if (provider.getAdCreatives) {
+              if (brief.scope === "campaigns" && matchedCampaigns.length) {
+                // Campaign-scoped only — never mix other campaigns' Website URLs.
+                const perCampaign = await Promise.all(
+                  matchedCampaigns.slice(0, 8).map((c) =>
+                    provider.getAdCreatives!(accountId, {
+                      campaign_id: c.id,
+                      limit: 40,
+                    }).catch(() => [] as MetaAdCreative[]),
+                  ),
+                );
+                const byAd = new Map<string, MetaAdCreative>();
+                for (const batch of perCampaign) {
+                  for (const row of batch) byAd.set(row.ad_id, row);
+                }
+                creatives = [...byAd.values()];
+              } else {
+                creatives = await provider.getAdCreatives(accountId, {
+                  limit: 50,
+                });
+              }
+            }
+
+            toolCalls.push({
+              name: "get_meta_ad_creatives",
+              args: {
+                account_id: accountId,
+                limit: 50,
+                ...(brief.scope === "campaigns" && matchedCampaigns[0]
+                  ? { campaign_id: matchedCampaigns[0].id }
+                  : {}),
+              },
+              rationale:
+                "Ads Manager Website URL / CTA destinations (includes paused; resolves page post)",
+            });
+
+            const scopedCreatives =
+              brief.scope === "campaigns"
+                ? creatives.filter((c) =>
+                    matchedCampaigns.some(
+                      (m) =>
+                        m.id === c.campaign_id ||
+                        String(m.id) === String(c.campaign_id),
+                    ),
+                  )
+                : creatives;
+
+            const perAdLines = scopedCreatives.slice(0, 40).map((c) => {
+              const cta = c.call_to_action_type?.trim() || "UNKNOWN";
+              const dest = c.landing_page_url?.trim();
+              const statusBits = [
+                c.ad_status ? `ad=${c.ad_status}` : null,
+                c.effective_status ? `effective=${c.effective_status}` : null,
+              ]
+                .filter(Boolean)
+                .join(" · ");
+              const alts =
+                c.destination_candidates?.filter(
+                  (u) => u.toLowerCase() !== dest?.toLowerCase(),
+                ) ?? [];
+              return `- Ad **${c.ad_name ?? c.ad_id}** (${c.ad_id})${
+                statusBits ? ` · ${statusBits}` : ""
+              } · ${c.creative_type ?? "creative"} · CTA: \`${cta}\` · Website URL: ${
+                dest && /^https?:\/\//i.test(dest)
+                  ? dest
+                  : "_not returned by Meta on this creative_"
+              }${
+                c.destination_source ? ` _(from ${c.destination_source})_` : ""
+              }${
+                alts.length
+                  ? `\n  - Other Meta candidates: ${alts.slice(0, 3).join(" · ")}`
+                  : ""
+              }`;
+            });
+
+            const byUrl = new Map<
+              string,
+              {
+                url: string;
+                ads: string[];
+                adContext: string;
+                ctaTypes: string[];
+              }
+            >();
+            for (const c of scopedCreatives) {
+              const url = c.landing_page_url?.trim();
+              if (!url || !/^https?:\/\//i.test(url)) continue;
+              const key = url.toLowerCase();
+              const existing = byUrl.get(key);
+              const adLabel = `${c.ad_name ?? c.ad_id}${
+                c.campaign_id ? ` · campaign ${c.campaign_id}` : ""
+              }`;
+              const ctx = [c.headline, c.primary_text, c.call_to_action_type]
+                .filter(Boolean)
+                .join(" — ");
+              if (existing) {
+                existing.ads.push(adLabel);
+                if (c.call_to_action_type) {
+                  existing.ctaTypes.push(c.call_to_action_type);
+                }
+                if (ctx && ctx.length > (existing.adContext?.length ?? 0)) {
+                  existing.adContext = ctx;
+                }
+              } else {
+                byUrl.set(key, {
+                  url,
+                  ads: [adLabel],
+                  adContext: ctx,
+                  ctaTypes: c.call_to_action_type
+                    ? [c.call_to_action_type]
+                    : [],
+                });
+              }
+            }
+
+            const destLines = [...byUrl.values()].slice(0, 20).map((row) => {
+              const ctas = [...new Set(row.ctaTypes)].join(", ") || "n/a";
+              return `- **${row.url}**\n  - CTA type(s): ${ctas}\n  - Used by: ${row.ads.slice(0, 4).join("; ")}${
+                row.ads.length > 4 ? "…" : ""
+              }`;
+            });
+
+            sections.push(
+              [
+                buildVerifiedDestinationsMarker(
+                  [...byUrl.values()].map((row) => row.url),
+                ),
+                buildAllowedUrlsMarker(brief.competitorUrls),
+                `### Ad CTA & destination inventory (${scopedCreatives.length} ads)`,
+                "SOURCE OF TRUTH for own landing pages = Ads Manager **Destination → Website URL** from Meta (creative + page post). Works when PAUSED.",
+                "Copy these Website URLs into Landing pages. NEVER invent. NEVER use workspace-document URLs (e.g. googleconsult from competitor copy) as this campaign's destination.",
+                perAdLines.length
+                  ? perAdLines.join("\n")
+                  : "- No ads returned for destination inventory.",
+                "",
+                `### Unique destination URLs (${byUrl.size})`,
+                destLines.length
+                  ? destLines.join("\n")
+                  : "- No https Website URLs parsed from Meta creatives yet.",
+              ].join("\n"),
+            );
+
+            const ownTargets = [...byUrl.values()].slice(0, 5).map((row) => ({
+              url: row.url,
+              role: "own" as const,
+              adContext: row.adContext || null,
+            }));
+            const competitorTargets =
+              brief.competitorLanding === "provided"
+                ? brief.competitorUrls.slice(0, 5).map((url) => ({
+                    url,
+                    role: "competitor" as const,
+                    adContext: null,
+                  }))
+                : [];
+
+            if (ownTargets.length || competitorTargets.length) {
+              const analyses = await analyzeLandingPages([
+                ...ownTargets,
+                ...competitorTargets,
+              ]);
+              sections.push(formatLandingAnalysesForEvidence(analyses));
+            } else {
+              sections.push(
+                [
+                  formatLandingAnalysesForEvidence([]),
+                  "",
+                  "### Landing page note",
+                  "- Meta returned ads but no Website URL on creatives — flag as a creative/destination gap.",
+                  "- NEVER claim this is because the campaign is paused (paused ads still have Website URLs when configured).",
+                  "- NEVER substitute a URL from workspace documents for the Meta destination.",
+                ].join("\n"),
+              );
+            }
+          } catch (error) {
+            sections.push(
+              `### Landing page analysis\n- Failed fetching Meta destinations: ${
+                error instanceof Error ? error.message : String(error)
+              }\n- Retry get_meta_ad_creatives; do not invent URLs or use workspace docs as own destinations.`,
+            );
+          }
+
+          sections.push(
+            [
+              "### Diagnose tools (optional enrichment)",
+              "Preflight already loaded overview, campaigns, insights, and Meta destination / LP analysis above.",
+              "You may call diagnose tools for extra detail, but Landing pages MUST use the **Ad CTA & destination inventory** Website URLs (not workspace documents).",
+              "Paused campaigns still have destinations — never say otherwise.",
+            ].join("\n"),
+          );
+
+          if (brief.competitorLanding === "unset") {
+            sections.push(
+              [
+                "### Competitor landing pages (optional)",
+                "- None provided yet — still analyse own Meta destinations now.",
+                "- After the audit, invite the operator to paste competitor LP URLs or upload Excel/CSV if they want a comparison.",
+              ].join("\n"),
+            );
+          }
+
           await input.onProgress?.({
             phase: "apply_framework",
-            label: "Applying best-practice framework…",
+            label: "Applying audit checklist…",
             stepId: "apply_framework",
           });
           sections.push(
             [
-              "### Meta audit framework (apply to evidence above)",
+              "### Audit checklist (apply to evidence above)",
               META_AUDIT_FRAMEWORK,
               "",
               "### Writer instructions for this audit",
-              "- Produce the full audit in chat using the framework required sections.",
+              "- Produce the full audit in chat using the checklist required sections.",
               "- Quantify spend and call out what is working vs what needs improvement.",
-              "- Include prioritized optimization recommendations.",
+              "- **REQUIRED section: Landing pages** — use Website URLs + CTA types from “Ad CTA & destination inventory” and scores from “Landing page analysis”.",
+              "- NEVER say destinations are unavailable because the campaign is paused or had $0 spend.",
+              "- NEVER use workspace-document URLs (e.g. competitor copy docs) as the campaign destination.",
+              "- If a destination URL is missing from Meta, say so and recommend fixing the CTA / Website URL in Ads Manager.",
+              "- Include prioritized recommendations covering both ads/budgets AND landing pages.",
               "- Do NOT queue execute/optimize tools and do NOT claim you changed Meta.",
-              "- End by inviting the operator to say which campaign or ad copy to optimize when they are ready.",
+              "- End by inviting the operator to say which campaign, ad copy, or landing page to optimize when they are ready.",
             ].join("\n"),
           );
 
@@ -1484,6 +1861,87 @@ export async function gatherDiagnoseEvidence(input: {
         `### Diagnostics\n- Failed: ${
           error instanceof Error ? error.message : String(error)
         }`,
+      );
+    }
+  }
+
+  // Follow-up asks like "what's the landing page URL?" are not audit intent, so
+  // fetch Meta destinations here too — otherwise the writer answers from chat
+  // history and repeats an earlier wrong URL.
+  const asksAboutLandingPage =
+    /\b(landing\s*page|destination\s*url|website\s*url|lp\s*url|destination\s*link)\b/i.test(
+      input.request,
+    );
+  if (
+    accountId &&
+    intent !== "audit" &&
+    asksAboutLandingPage &&
+    provider.getAdCreatives
+  ) {
+    await input.onProgress?.({
+      phase: "landing_pages",
+      label: "Fetching ad destinations & analysing landing pages…",
+      stepId: "landing_pages",
+    });
+    try {
+      const creatives = await provider.getAdCreatives(accountId, { limit: 50 });
+      toolCalls.push({
+        name: "get_meta_ad_creatives",
+        args: { account_id: accountId, limit: 50 },
+        rationale: "Ads Manager Website URLs for landing page answer",
+      });
+
+      const byUrl = new Map<string, { url: string; ads: string[] }>();
+      for (const c of creatives) {
+        const url = c.landing_page_url?.trim();
+        if (!url || !/^https?:\/\//i.test(url)) continue;
+        const key = url.toLowerCase();
+        const label = `${c.ad_name ?? c.ad_id}${
+          c.campaign_id ? ` · campaign ${c.campaign_id}` : ""
+        }`;
+        const existing = byUrl.get(key);
+        if (existing) existing.ads.push(label);
+        else byUrl.set(key, { url, ads: [label] });
+      }
+
+      sections.push(
+        [
+          buildVerifiedDestinationsMarker([...byUrl.values()].map((r) => r.url)),
+          `### Meta ad destinations (live from Graph · ${creatives.length} ads)`,
+          "SOURCE OF TRUTH = Ads Manager **Destination → Website URL**. Valid while PAUSED.",
+          "Answer only with these URLs. Never reuse a URL from earlier chat turns or workspace documents.",
+          ...creatives.slice(0, 25).map((c) => {
+            const dest = c.landing_page_url?.trim();
+            return `- **${c.ad_name ?? c.ad_id}** (${c.ad_id})${
+              c.campaign_id ? ` · campaign ${c.campaign_id}` : ""
+            } · CTA \`${c.call_to_action_type ?? "UNKNOWN"}\` · Website URL: ${
+              dest && /^https?:\/\//i.test(dest)
+                ? `${dest}${
+                    c.destination_source ? ` _(from ${c.destination_source})_` : ""
+                  }`
+                : "_not configured on this creative_"
+            }`;
+          }),
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      );
+
+      if (byUrl.size) {
+        const analyses = await analyzeLandingPages(
+          [...byUrl.values()].slice(0, 5).map((row) => ({
+            url: row.url,
+            role: "own" as const,
+            adContext: null,
+          })),
+        );
+        sections.push(formatLandingAnalysesForEvidence(analyses));
+      }
+    } catch (error) {
+      sections.push(
+        `### Meta ad destinations\n- Failed fetching destinations: ${
+          error instanceof Error ? error.message : String(error)
+        }\n- Say the fetch failed; never quote a URL from history or documents.`,
       );
     }
   }
@@ -1680,7 +2138,7 @@ export async function gatherDiagnoseEvidence(input: {
         sections.push(
           [
             "### Ad copy variants",
-            `- Framework: Adspirer Ad Copy Writing Room (${generated.framework_url})`,
+            `- Copy guide: ${generated.framework_url}`,
             `- Draft engine: ${generated.source}`,
             `- Brand: ${clientName}`,
             generated.grounded_in_live_creatives
@@ -1858,28 +2316,36 @@ export async function gatherDiagnoseEvidence(input: {
   }
 
   if (intent === "optimize" && accountId) {
+    const queueNow = wantsQueueApprovals(input.request);
     await input.onProgress?.({
-      phase: "list_ads",
-      label: "Listing Meta ads…",
-      stepId: "list_ads",
+      phase: "optimize",
+      label: "Building optimize proposals…",
+      stepId: "optimize",
     });
     try {
       const ads = await provider.listAds(accountId);
       toolCalls.push({
         name: "list_ads",
         args: { account_id: accountId },
-        rationale: "Ads for optimize picker",
+        rationale: "Ads inventory for optimize",
       });
-      adPicker = {
-        ads: ads.slice(0, 40).map((a) => ({
-          id: a.id,
-          name: a.name,
-          status: a.status,
-          creative_summary: a.creative_summary,
-          adset_id: a.adset_id,
-          campaign_id: a.campaign_id,
-        })),
-      };
+
+      const known = ads.find((a) => input.request.includes(a.id));
+      // Only show ad picker when the operator still needs to pick an ad for
+      // creative-focused work — never after / during an Approvals queue turn.
+      if (!queueNow && !known) {
+        adPicker = {
+          ads: ads.slice(0, 40).map((a) => ({
+            id: a.id,
+            name: a.name,
+            status: a.status,
+            creative_summary: a.creative_summary,
+            adset_id: a.adset_id,
+            campaign_id: a.campaign_id,
+          })),
+        };
+      }
+
       sections.push(
         [
           "### Ads inventory",
@@ -1890,68 +2356,94 @@ export async function gatherDiagnoseEvidence(input: {
               }`,
           ),
           "",
-          "Present ad_picker UI. Wait for operator to pick an ad before deeper optimize calls.",
+          known
+            ? `Operator focused ad: ${known.id} (${known.name}).`
+            : queueNow
+              ? "Approvals queue turn — do NOT show ad_picker UI."
+              : "Ad picker only if they still need to pick an ad for creative refresh.",
           isWorkspaceV2()
-            ? "V2: optimize from live Meta evidence + Approvals for mutations (no Adspirer MCP optimize tools required)."
+            ? "V2: optimize from live Meta Graph evidence; EXECUTE mutations go through Approvals."
             : "",
         ]
           .filter(Boolean)
           .join("\n"),
       );
 
-      const known = ads.find((a) => input.request.includes(a.id));
+      const bundle = await buildFullOptimizeProposals({
+        provider,
+        accountId,
+      });
+      // Also record diagnose tools for audit trail
+      toolCalls.push(
+        {
+          name: "optimize_meta_budget",
+          args: { account_id: accountId },
+          rationale: "Budget optimize",
+        },
+        {
+          name: "detect_meta_creative_fatigue",
+          args: { account_id: accountId },
+          rationale: "Creative fatigue",
+        },
+        {
+          name: "optimize_meta_placements",
+          args: { account_id: accountId },
+          rationale: "Placement optimize",
+        },
+      );
 
-      if (
-        known ||
-        /\b(run optimize|optimize selected|after pick)\b/i.test(input.request)
-      ) {
-        const adId = known?.id;
-        await input.onProgress?.({
-          phase: "optimize",
-          label: "Running Adspirer optimize tools…",
-          stepId: "optimize",
-        });
-        if (provider.detectCreativeFatigue) {
-          const fatigue = await provider.detectCreativeFatigue(accountId);
-          toolCalls.push({
-            name: "detect_meta_creative_fatigue",
-            args: { account_id: accountId },
-            rationale: "Creative fatigue",
-          });
-          sections.push(
-            `### Creative fatigue\n${fatigue.text}${
-              adId ? `\n\nFocus ad: ${adId} (${known?.name ?? ""})` : ""
-            }`,
-          );
-        }
-        if (provider.optimizeBudget) {
-          const budget = await provider.optimizeBudget(accountId);
-          toolCalls.push({
-            name: "optimize_meta_budget",
-            args: { account_id: accountId },
-            rationale: "Budget optimize",
-          });
-          sections.push(`### Budget optimize\n${budget.text}`);
-        }
-        if (provider.optimizePlacements) {
-          const placements = await provider.optimizePlacements(accountId);
-          toolCalls.push({
-            name: "optimize_meta_placements",
-            args: { account_id: accountId },
-            rationale: "Placement optimize",
-          });
-          sections.push(`### Placement optimize\n${placements.text}`);
-        }
+      executeProposals.push(...bundle.proposals);
+
+      sections.push(
+        [
+          "### Queueable optimizations (ONLY these may be marked Ready to queue)",
+          ...(bundle.queueableLines.length
+            ? bundle.queueableLines
+            : ["- (none — live Meta data did not yield concrete mutate args)"]),
+          "",
+          "### Needs operator input (NOT Ready to queue — do not claim Approvals will show these)",
+          ...bundle.blockedLines,
+        ].join("\n"),
+      );
+
+      if (executeProposals.length) {
         sections.push(
           [
-            "### Operator next steps",
-            adId
-              ? `Selected ad ${adId}: summarize Adspirer recommendations and queue any EXECUTE changes via Approvals.`
-              : "After they pick an ad, re-run optimize focused on that ad.",
-            "For creative refresh: open Creatives, generate from copy, Use for campaign, then queue create_ad with new image_url (PAUSED).",
+            "### Ready-to-queue EXECUTE proposals (structured)",
+            "Use these exact tool payloads. Do not invent different tools or IDs.",
+            "```json",
+            JSON.stringify(
+              executeProposals.map((p) => ({
+                tool: p.name,
+                args: p.args,
+                rationale: p.rationale,
+              })),
+              null,
+              2,
+            ),
+            "```",
+            queueNow
+              ? "Operator asked to send/queue for Approvals — the system will queue EVERY proposal above as separate Approvals items. Confirm in prose. Do NOT show ad_picker. Do NOT invent Reactivate/Advantage+/broad-ad-set rows that are not in this JSON."
+              : "Present only these as Ready to queue. Ask if they want them sent to Approvals. Creative refresh / Pixel stay waiting.",
+          ].join("\n"),
+        );
+      } else {
+        sections.push(
+          [
+            "### Ready-to-queue EXECUTE proposals",
+            "- No concrete execute mutations yet. Do not invent a fake Approvals queue or a 'known limitation'.",
           ].join("\n"),
         );
       }
+
+      sections.push(
+        [
+          "### Operator next steps",
+          queueNow
+            ? "Confirm each queued tool appears under Approvals (separate cards). Nothing is live until executed."
+            : "Summarize queueable vs blocked. If they ask to send for approval, queue only the structured EXECUTE tools.",
+        ].join("\n"),
+      );
     } catch (error) {
       sections.push(
         `### Optimize\n- Failed: ${
@@ -1971,6 +2463,7 @@ export async function gatherDiagnoseEvidence(input: {
     accountId,
     evidence: sections.join("\n\n"),
     toolCalls,
+    executeProposals: executeProposals.length ? executeProposals : undefined,
     copyPicker,
     adPicker,
     imageChoice,

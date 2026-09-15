@@ -1,3 +1,5 @@
+import { humanToolLabel } from "@/lib/tools/display-labels";
+
 export type FormattedToolCall = {
   name: string;
   args: Record<string, unknown>;
@@ -512,7 +514,7 @@ function synthesizeFromPayloads(
           : typeof t.args.campaign_name === "string"
             ? t.args.campaign_name
             : null;
-      return `${i + 1}. \`${t.name}\`${name ? ` — ${name}` : ""}${
+      return `${i + 1}. **${humanToolLabel(t.name)}**${name ? ` — ${name}` : ""}${
         t.rationale ? ` (${t.rationale})` : ""
       }`;
     });
@@ -556,7 +558,7 @@ export function jsonToReadableMarkdown(value: unknown, depth = 0): string {
         if (item && typeof item === "object") {
           const obj = item as Record<string, unknown>;
           if (typeof obj.tool === "string") {
-            return `- **${obj.tool}**${
+            return `- **${humanToolLabel(obj.tool)}**${
               typeof obj.rationale === "string" ? ` — ${obj.rationale}` : ""
             }`;
           }

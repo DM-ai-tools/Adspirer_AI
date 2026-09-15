@@ -17,6 +17,7 @@ const TOOL_POLICY: Record<string, ToolSafetyClass> = {
   scrape_website_services: "diagnose",
   generate_ad_copies: "diagnose",
   get_meta_ad_creatives: "diagnose",
+  analyze_landing_pages: "diagnose",
   analyze_brand_url: "diagnose",
   optimize_meta_budget: "diagnose",
   optimize_meta_placements: "diagnose",

@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { humanToolLabel } from "@/lib/tools/display-labels";
 
 function isBudgetChange(approval: Approval): boolean {
   return (
@@ -54,6 +55,15 @@ function proofLines(result: Record<string, unknown> | null): string[] {
   return lines;
 }
 
+/** Hide internal routing fields from the Approvals JSON panel. */
+function sanitizeApprovalArgsForDisplay(
+  args: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  if (!args || typeof args !== "object") return {};
+  const { __provider_backend: _backend, ...rest } = args;
+  return rest;
+}
+
 export function ApprovalCard({
   approval,
   clientName,
@@ -69,13 +79,16 @@ export function ApprovalCard({
 }) {
   const [busy, setBusy] = useState<"approve" | "reject" | "edit" | null>(null);
   const [editing, setEditing] = useState(false);
+  const displayArgs = sanitizeApprovalArgsForDisplay(
+    approval.edited_args ?? approval.proposed_args,
+  );
   const [editJson, setEditJson] = useState(
-    JSON.stringify(approval.edited_args ?? approval.proposed_args, null, 2),
+    JSON.stringify(displayArgs, null, 2),
   );
   const [rejectReason, setRejectReason] = useState("");
 
   const budgetHeavy = isBudgetChange(approval);
-  const args = approval.edited_args ?? approval.proposed_args;
+  const args = displayArgs;
   const pending =
     approval.status === "pending" || approval.status === "edited";
   const executed = approval.status === "executed";
@@ -103,8 +116,10 @@ export function ApprovalCard({
           onUpdated?.(details.approval);
           setEditJson(
             JSON.stringify(
-              details.approval.edited_args ??
-                details.approval.proposed_args,
+              sanitizeApprovalArgsForDisplay(
+                details.approval.edited_args ??
+                  details.approval.proposed_args,
+              ),
               null,
               2,
             ),
@@ -139,6 +154,14 @@ export function ApprovalCard({
     setBusy("edit");
     try {
       const editableInput = JSON.parse(editJson) as Record<string, unknown>;
+      const original = approval.edited_args ?? approval.proposed_args;
+      if (
+        original &&
+        typeof original.__provider_backend === "string" &&
+        editableInput.__provider_backend === undefined
+      ) {
+        editableInput.__provider_backend = original.__provider_backend;
+      }
       const data = await apiFetch<{ approval: Approval }>(
         `/api/approvals/${approval.id}/edit`,
         {
@@ -170,7 +193,7 @@ export function ApprovalCard({
         <div className="flex items-start justify-between gap-3">
           <div>
             <CardTitle className="text-sm font-semibold">
-              {approval.tool_name}
+              {humanToolLabel(approval.tool_name)}
             </CardTitle>
             <p className="mt-1 text-xs text-muted">
               {clientName ? `${clientName} · ` : ""}

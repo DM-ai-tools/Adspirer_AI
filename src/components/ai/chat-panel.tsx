@@ -26,6 +26,7 @@ import {
   GENERIC_FALLBACK_REPLY,
   humanizeAgentReply,
 } from "@/lib/agent/reply-format";
+import { humanToolLabel } from "@/lib/tools/display-labels";
 import { looksLikeFullAuditMarkdown } from "@/lib/report/from-markdown";
 import { ChatDocumentAttachButton } from "@/components/workspace/documents-panel";
 import { useCreativeStatus } from "@/hooks/use-creative-status";
@@ -381,7 +382,8 @@ function ToolProposalCards({ proposals }: { proposals: ToolProposal[] }) {
           className="rounded-lg border border-border bg-secondary/30 px-3 py-2"
         >
           <p className="text-xs font-medium text-foreground">
-            Proposed: <code className="font-mono text-accent">{p.tool}</code>
+            Proposed:{" "}
+            <span className="text-accent">{humanToolLabel(p.tool)}</span>
           </p>
           {p.rationale ? (
             <p className="mt-1 text-xs text-muted">{p.rationale}</p>

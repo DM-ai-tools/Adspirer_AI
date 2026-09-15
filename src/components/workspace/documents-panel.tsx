@@ -164,7 +164,7 @@ export function DocumentsPanel({
       </CardHeader>
       <CardContent className="space-y-2 px-3 pb-3 pt-0">
         <p className="text-[11px] text-muted">
-          PDF, Word, Excel, CSV, or Markdown — competitors, frameworks, briefs,
+          PDF, Word, Excel, CSV, or Markdown — briefs, brand docs, competitor notes,
           reports. Ask the agent to summarize or generate ads from them.
         </p>
         {loading ? (

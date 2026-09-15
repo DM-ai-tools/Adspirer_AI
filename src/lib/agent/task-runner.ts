@@ -38,6 +38,10 @@ import {
   setStepState,
   type TaskStep,
 } from "@/lib/agent/task-plan";
+import {
+  mergeExecuteProposals,
+  wantsQueueApprovals,
+} from "@/lib/agent/optimize-queue";
 import { nowIso } from "@/lib/utils";
 import { logger, newCorrelationId } from "@/lib/observability/logger";
 import { startCreativeGeneration } from "@/lib/creatives/service";
@@ -64,6 +68,11 @@ function stripFalseQueuedClaims(summary: string): string {
   return summary
     .replace(/\bqueued in Approvals\b/gi, "not yet queued")
     .replace(/### What's next[\s\S]*?(?=\n##|\n\*\*|$)/i, "")
+    .replace(
+      /Sorry for the confusion[\s\S]*?(?=\n\n|\n#|$)/i,
+      "",
+    )
+    .replace(/\bknown limitation\b[\s\S]{0,200}/gi, "")
     .trim();
 }
 
@@ -446,11 +455,21 @@ export async function runTask(
         copyPicker: agentResult.ui?.copyPicker ?? gathered.copyPicker,
       };
     }
-    if (gathered.adPicker?.ads?.length) {
+    const queueApprovalsTurn = wantsQueueApprovals(task.goal ?? task.title);
+    // Never re-attach ad picker on a queue-for-Approvals turn (or once we have
+    // execute proposals ready to queue) — it looks like the agent ignored the queue.
+    if (
+      gathered.adPicker?.ads?.length &&
+      !queueApprovalsTurn &&
+      !(gathered.executeProposals?.length && queueApprovalsTurn)
+    ) {
       agentResult.ui = {
         ...(agentResult.ui ?? {}),
         adPicker: agentResult.ui?.adPicker ?? gathered.adPicker,
       };
+    } else if (queueApprovalsTurn && agentResult.ui?.adPicker) {
+      const { adPicker: _drop, ...rest } = agentResult.ui;
+      agentResult.ui = Object.keys(rest).length ? rest : undefined;
     }
     if (gathered.imageChoice && !wantsInlineCreatives && !gathered.formatChoice) {
       agentResult.ui = {
@@ -725,6 +744,20 @@ export async function runTask(
       ? resolveImageUrlForAdspirer(selectedCreative)
       : null;
 
+    // When the operator asks to send/queue optimizations for Approvals, inject
+    // concrete execute proposals from live optimize evidence (LLM often only
+    // describes them in prose and Approvals stays empty).
+    const requestText = task.goal ?? task.title;
+    if (
+      wantsQueueApprovals(requestText) &&
+      (gathered.executeProposals?.length ?? 0) > 0
+    ) {
+      agentResult.toolCalls = mergeExecuteProposals(
+        agentResult.toolCalls,
+        gathered.executeProposals ?? [],
+      );
+    }
+
     for (const call of agentResult.toolCalls) {
       const safety = classify(call.name);
       const args =
@@ -796,11 +829,26 @@ export async function runTask(
         "**Could not queue approvals** — structured tool JSON was missing or blocked.",
         "Ask me to queue `create_adset` / `create_ad` again and I'll retry with valid payloads.",
       ].join("\n");
+    } else if (
+      wantsQueueApprovals(requestText) &&
+      pendingApprovalIds.length === 0 &&
+      !(gathered.executeProposals?.length ?? 0)
+    ) {
+      approvalSummary = [
+        stripFalseQueuedClaims(agentResult.summary),
+        "",
+        "**Could not queue Approvals** — live Meta optimize analysis did not produce concrete budget/pause mutations (no ad sets with daily budgets, or no fatigue signals).",
+        "Ask me to optimize again after campaigns are delivering, or name a specific ad set / ad to change.",
+      ].join("\n");
     } else if (pendingApprovalIds.length > 0) {
       approvalSummary = appendApprovalCta(agentResult.summary);
     }
 
     if (pendingApprovalIds.length > 0) {
+      if (agentResult.ui?.adPicker) {
+        const { adPicker: _dropPicker, ...uiRest } = agentResult.ui;
+        agentResult.ui = Object.keys(uiRest).length ? uiRest : undefined;
+      }
       if (steps.some((s) => s.id === "approval")) {
         steps = setStepState(steps, "approval", "active");
       }

@@ -34,9 +34,29 @@ export async function apiFetch<T>(
     return (await response.text()) as T;
   }
 
-  const payload = (await response.json()) as
-    | ApiSuccessBody<T>
-    | ApiErrorBody;
+  const raw = await response.text();
+  let payload: ApiSuccessBody<T> | ApiErrorBody | null = null;
+  try {
+    payload = raw ? (JSON.parse(raw) as ApiSuccessBody<T> | ApiErrorBody) : null;
+  } catch {
+    const looksHtml = /^\s*<!DOCTYPE|^\s*<html/i.test(raw);
+    throw new ApiClientError(
+      looksHtml
+        ? `API route not found or returned a page instead of JSON (${response.status}): ${path}`
+        : `Invalid JSON from ${path} (${response.status})`,
+      response.status === 404 ? "NOT_FOUND" : "INVALID_RESPONSE",
+      response.status,
+      { preview: raw.slice(0, 120) },
+    );
+  }
+
+  if (!payload || typeof payload !== "object" || !("ok" in payload)) {
+    throw new ApiClientError(
+      `Unexpected response from ${path}`,
+      "INVALID_RESPONSE",
+      response.status,
+    );
+  }
 
   if (!payload.ok) {
     throw new ApiClientError(

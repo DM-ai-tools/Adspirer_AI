@@ -18,7 +18,6 @@ export async function proxy(request: NextRequest) {
     pathname.startsWith("/workspace-v2") ||
     pathname.startsWith("/approvals") ||
     pathname.startsWith("/monitoring") ||
-    pathname.startsWith("/competitors") ||
     pathname.startsWith("/creatives") ||
     pathname.startsWith("/audit") ||
     pathname.startsWith("/admin");
@@ -95,7 +94,6 @@ export const config = {
     "/workspace-v2/:path*",
     "/approvals/:path*",
     "/monitoring/:path*",
-    "/competitors/:path*",
     "/creatives/:path*",
     "/audit/:path*",
     "/admin/:path*",

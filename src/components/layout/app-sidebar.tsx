@@ -8,7 +8,6 @@ import {
   Bot,
   ShieldCheck,
   Activity,
-  Radar,
   Palette,
   ScrollText,
   UserCog,
@@ -39,7 +38,6 @@ const MAIN_NAV: NavItem[] = [
   { href: "/workspace-v2", label: "Workspace V2 (A/B)", icon: Sparkles },
   { href: "/approvals", label: "Approvals", icon: ShieldCheck },
   { href: "/monitoring", label: "Monitoring", icon: Activity },
-  { href: "/competitors", label: "Competitor Intelligence", icon: Radar },
   { href: "/creatives", label: "Creatives", icon: Palette },
   { href: "/audit", label: "Audit Log", icon: ScrollText },
 ];

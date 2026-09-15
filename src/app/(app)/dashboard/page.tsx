@@ -22,6 +22,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useApp } from "@/components/layout/app-provider";
+import { humanToolLabel } from "@/lib/tools/display-labels";
 
 type DashboardData = {
   stats: {
@@ -194,7 +195,9 @@ export default function DashboardPage() {
                   className="block rounded-lg border border-border-subtle bg-secondary/30 px-3 py-2.5 transition-colors hover:border-accent/40"
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <p className="text-sm font-medium">{approval.tool_name}</p>
+                    <p className="text-sm font-medium">
+                      {humanToolLabel(approval.tool_name)}
+                    </p>
                     <Badge variant="warning">pending</Badge>
                   </div>
                   <p className="mt-1 line-clamp-2 text-xs text-muted">

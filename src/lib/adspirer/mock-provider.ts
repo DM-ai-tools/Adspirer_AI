@@ -573,14 +573,32 @@ export class MockMetaAdsProvider implements MetaAdsProvider {
   }
 
   async optimizeBudget(accountId: string) {
+    const adsets = getState().adsets.filter((a) => a.account_id === accountId);
+    const target = adsets.find((a) => a.status === "ACTIVE") ?? adsets[0];
+    const proposals =
+      target && target.daily_budget_cents > 0
+        ? [
+            {
+              tool: "update_adset_budget",
+              args: {
+                account_id: accountId,
+                adset_id: target.id,
+                daily_budget_cents: Math.round(target.daily_budget_cents * 1.2),
+                previous_daily_budget_cents: target.daily_budget_cents,
+              },
+              rationale: `Demo: scale ${target.name} +20% daily budget.`,
+            },
+          ]
+        : [];
     return {
       text: [
         `### Budget optimization (demo) for ${accountId}`,
-        "- Shift +15% daily budget toward top ROAS ad set.",
-        "- Cap under-delivering prospecting at current spend.",
-        "DEMO DATA — connect live Adspirer for real optimize_meta_budget.",
+        target
+          ? `- SCALE ${target.name} (${target.id}): $${(target.daily_budget_cents / 100).toFixed(0)} → $${((target.daily_budget_cents * 1.2) / 100).toFixed(0)}/day`
+          : "- No demo ad sets with budget.",
+        "DEMO DATA — connect live Meta for real optimize_meta_budget.",
       ].join("\n"),
-      structured: { demo: true, tool: "optimize_meta_budget" },
+      structured: { demo: true, tool: "optimize_meta_budget", proposals },
     };
   }
 
@@ -591,12 +609,22 @@ export class MockMetaAdsProvider implements MetaAdsProvider {
         "- Prefer Feed + Reels; reduce Audience Network share.",
         "DEMO DATA — connect live Adspirer for real optimize_meta_placements.",
       ].join("\n"),
-      structured: { demo: true, tool: "optimize_meta_placements" },
+      structured: { demo: true, tool: "optimize_meta_placements", proposals: [] },
     };
   }
 
   async detectCreativeFatigue(accountId: string) {
     const ads = getState().ads.filter((a) => a.account_id === accountId);
+    const fatigued = ads[0];
+    const proposals = fatigued
+      ? [
+          {
+            tool: "pause_ad",
+            args: { account_id: accountId, ad_id: fatigued.id },
+            rationale: `Demo: pause fatigued ad ${fatigued.name}.`,
+          },
+        ]
+      : [];
     return {
       text: [
         `### Creative fatigue (demo) for ${accountId}`,
@@ -609,6 +637,7 @@ export class MockMetaAdsProvider implements MetaAdsProvider {
       structured: {
         demo: true,
         ads: ads.map((a) => ({ id: a.id, name: a.name })),
+        proposals,
       },
     };
   }

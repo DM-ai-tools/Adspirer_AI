@@ -8,14 +8,13 @@ import { getConnectionSources } from "@/lib/adspirer/connection-source";
 import { getConfig } from "@/lib/config";
 import { jsonOk, withApiHandler } from "@/lib/api/response";
 
+type RouteContext = { params: Promise<{ clientId: string }> };
+
 /**
  * GET /api/v2/clients/:clientId/meta-account
  * Workspace V2: which ad account chat will use for this client.
  */
-export async function GET(
-  _request: Request,
-  context: { params: Promise<{ clientId: string }> },
-) {
+export async function GET(_request: Request, context: RouteContext) {
   return withApiHandler(async () => {
     const user = await getCurrentUser();
     assertAuthenticated(user);

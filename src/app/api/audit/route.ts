@@ -8,6 +8,7 @@ import {
 } from "@/lib/authz/assert";
 import { isAdmin } from "@/lib/security/roles";
 import { jsonOk, withApiHandler } from "@/lib/api/response";
+import { humanToolLabel } from "@/lib/tools/display-labels";
 
 export type AuditEvent = {
   id: string;
@@ -36,7 +37,7 @@ function buildDemoAuditEvents(): AuditEvent[] {
       type: `approval.${a.status}`,
       client_id: a.client_id,
       actor_id: a.reviewed_by ?? a.requested_by,
-      summary: `${a.tool_name} → ${a.status}`,
+      summary: `${humanToolLabel(a.tool_name)} → ${a.status}`,
       payload: {
         approvalId: a.id,
         toolName: a.tool_name,
@@ -54,7 +55,7 @@ function buildDemoAuditEvents(): AuditEvent[] {
       type: `tool.${t.safety_class}`,
       client_id: task?.client_id ?? null,
       actor_id: task?.created_by ?? null,
-      summary: `${t.tool_name} (${t.safety_class})`,
+      summary: `${humanToolLabel(t.tool_name)} (${t.safety_class})`,
       payload: {
         toolCallId: t.id,
         toolName: t.tool_name,
@@ -123,7 +124,7 @@ async function buildLiveAuditEvents(limit: number): Promise<AuditEvent[]> {
       actor_id:
         (a.reviewed_by as string | null) ??
         (a.requested_by as string | null),
-      summary: `${String(a.tool_name ?? "tool")} → ${String(a.status)}`,
+      summary: `${humanToolLabel(String(a.tool_name ?? "tool"))} → ${String(a.status)}`,
       payload: {
         approvalId: a.id,
         toolName: a.tool_name,
@@ -140,7 +141,7 @@ async function buildLiveAuditEvents(limit: number): Promise<AuditEvent[]> {
       type: `tool.${String(t.tool_type ?? t.status ?? "call")}`,
       client_id: (t.client_id as string) ?? null,
       actor_id: null,
-      summary: `${String(t.tool_name)} (${String(t.tool_type ?? t.status)})`,
+      summary: `${humanToolLabel(String(t.tool_name))} (${String(t.tool_type ?? t.status)})`,
       payload: {
         toolCallId: t.id,
         toolName: t.tool_name,

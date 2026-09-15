@@ -1,6 +1,13 @@
 import type { AgentHistoryMessage } from "@/lib/agent/history";
+import {
+  extractHttpUrls,
+  isCompetitorLandingSkip,
+  isCompetitorLandingYesPending,
+} from "@/lib/landing/urls";
 
 export type AuditScope = "account" | "campaigns";
+
+export type CompetitorLandingChoice = "unset" | "skip" | "provided";
 
 export type AuditBrief = {
   scope: AuditScope | null;
@@ -9,7 +16,11 @@ export type AuditBrief = {
   dateStart: string | null;
   dateStop: string | null;
   dateLabel: string | null;
-  missing: Array<"scope" | "campaigns" | "date_range">;
+  /** Whether competitor LPs should be compared */
+  competitorLanding: CompetitorLandingChoice;
+  /** Competitor landing page URLs from chat (Excel URLs merged at gather time) */
+  competitorUrls: string[];
+  missing: Array<"scope" | "campaigns" | "date_range" | "competitor_landing">;
   ready: boolean;
 };
 
@@ -106,7 +117,6 @@ function parseScope(text: string): {
   const lower = text.toLowerCase();
   const campaignHints: string[] = [];
 
-  // Explicit account-wide
   if (
     /\b(entire|whole|full|complete)\s+(ad\s+)?account\b/.test(lower) ||
     /\ball\s+campaigns\b/.test(lower) ||
@@ -119,7 +129,6 @@ function parseScope(text: string): {
     return { scope: "account", campaignHints: [] };
   }
 
-  // Named campaigns: "campaign X", "campaigns A and B"
   const named = [
     ...text.matchAll(
       /\bcampaigns?\s+["“]?([^"”\n,]+?)["”]?(?=\s+and\s+|\s*,|\s*$|\s+for\b|\s+from\b|\s+last\b|\s+in\b)/gi,
@@ -132,7 +141,6 @@ function parseScope(text: string): {
     }
   }
 
-  // "for TR AUDIT FINAL" style
   const forNamed =
     /\b(?:for|on)\s+(?:the\s+)?(?:campaign\s+)?["“]?([A-Za-z0-9][^"”\n]{2,80}?)["”]?\s*(?=$|\.|,|\blast\b|\bfrom\b|\bto\b)/i.exec(
       text,
@@ -148,7 +156,6 @@ function parseScope(text: string): {
     }
   }
 
-  // Meta campaign ids
   const ids = [...text.matchAll(/\b(120\d{10,})\b/g)].map((m) => m[1]);
   for (const id of ids) {
     if (!campaignHints.includes(id)) campaignHints.push(id);
@@ -159,11 +166,59 @@ function parseScope(text: string): {
   }
 
   if (/\bcampaigns?\b/.test(lower) && !/\baccount\b/.test(lower)) {
-    // Ambiguous: mentioned campaigns but not which — still campaigns scope
     return { scope: "campaigns", campaignHints };
   }
 
   return { scope: null, campaignHints: [] };
+}
+
+function parseCompetitorLanding(text: string): {
+  choice: CompetitorLandingChoice;
+  urls: string[];
+} {
+  const urls = extractHttpUrls(text);
+  if (urls.length) {
+    return { choice: "provided", urls };
+  }
+  if (isCompetitorLandingSkip(text)) {
+    return { choice: "skip", urls: [] };
+  }
+  // "yes" / "I'll upload" alone → still unset (need URLs or a file)
+  if (isCompetitorLandingYesPending(text)) {
+    return { choice: "unset", urls: [] };
+  }
+  return { choice: "unset", urls: [] };
+}
+
+function finalizeBrief(partial: {
+  scope: AuditScope | null;
+  campaignHints: string[];
+  dateStart: string | null;
+  dateStop: string | null;
+  dateLabel: string | null;
+  competitorLanding: CompetitorLandingChoice;
+  competitorUrls: string[];
+}): AuditBrief {
+  const missing: AuditBrief["missing"] = [];
+  if (!partial.scope) missing.push("scope");
+  if (partial.scope === "campaigns" && partial.campaignHints.length === 0) {
+    missing.push("campaigns");
+  }
+  if (!partial.dateStart || !partial.dateStop) missing.push("date_range");
+  // Competitor LPs are optional — do not block the initial audit.
+  // Only treat as missing when they said they would provide URLs but none were found.
+  if (
+    partial.competitorLanding === "provided" &&
+    partial.competitorUrls.length === 0
+  ) {
+    missing.push("competitor_landing");
+  }
+
+  return {
+    ...partial,
+    missing,
+    ready: missing.length === 0,
+  };
 }
 
 function mergeBriefs(parts: AuditBrief[]): AuditBrief {
@@ -172,6 +227,8 @@ function mergeBriefs(parts: AuditBrief[]): AuditBrief {
   let dateStart: string | null = null;
   let dateStop: string | null = null;
   let dateLabel: string | null = null;
+  let competitorLanding: CompetitorLandingChoice = "unset";
+  const competitorUrls: string[] = [];
 
   for (const part of parts) {
     if (part.scope) scope = part.scope;
@@ -185,50 +242,52 @@ function mergeBriefs(parts: AuditBrief[]): AuditBrief {
       dateStop = part.dateStop;
       dateLabel = part.dateLabel;
     }
+    if (part.competitorLanding === "skip") {
+      competitorLanding = "skip";
+    } else if (part.competitorLanding === "provided") {
+      competitorLanding = "provided";
+    }
+    for (const u of part.competitorUrls) {
+      if (!competitorUrls.some((x) => x.toLowerCase() === u.toLowerCase())) {
+        competitorUrls.push(u);
+      }
+    }
   }
 
-  const missing: AuditBrief["missing"] = [];
-  if (!scope) missing.push("scope");
-  if (scope === "campaigns" && campaignHints.length === 0) {
-    missing.push("campaigns");
+  if (competitorUrls.length && competitorLanding === "unset") {
+    competitorLanding = "provided";
   }
-  if (!dateStart || !dateStop) missing.push("date_range");
 
-  return {
+  return finalizeBrief({
     scope,
     campaignHints,
     dateStart,
     dateStop,
     dateLabel,
-    missing,
-    ready: missing.length === 0,
-  };
+    competitorLanding,
+    competitorUrls,
+  });
 }
 
 function briefFromText(text: string): AuditBrief {
   const { scope, campaignHints } = parseScope(text);
   const range = parseDateRangeFromText(text);
-  const missing: AuditBrief["missing"] = [];
-  if (!scope) missing.push("scope");
-  if (scope === "campaigns" && campaignHints.length === 0) {
-    missing.push("campaigns");
-  }
-  if (!range) missing.push("date_range");
+  const competitor = parseCompetitorLanding(text);
 
-  return {
+  return finalizeBrief({
     scope,
     campaignHints,
     dateStart: range?.dateStart ?? null,
     dateStop: range?.dateStop ?? null,
     dateLabel: range?.dateLabel ?? null,
-    missing,
-    ready: missing.length === 0,
-  };
+    competitorLanding: competitor.choice,
+    competitorUrls: competitor.urls,
+  });
 }
 
 /**
- * Resolve audit scope + date range from the latest message, filling gaps from
- * recent chat turns so short replies ("last 30 days") complete a prior brief.
+ * Resolve audit scope + date range + competitor LP choice from the latest
+ * message, filling gaps from recent chat turns.
  */
 export function resolveAuditBrief(
   request: string,
@@ -236,50 +295,87 @@ export function resolveAuditBrief(
 ): AuditBrief {
   const recentUser = history
     .filter((m) => m.role === "user")
-    .slice(-6)
+    .slice(-8)
     .map((m) => m.content);
   const parts = [...recentUser, request].map(briefFromText);
   return mergeBriefs(parts);
 }
 
+/**
+ * Merge URLs found in uploaded workspace documents (Excel/CSV/etc.) into the brief.
+ */
+export function applyCompetitorUrlsFromDocuments(
+  brief: AuditBrief,
+  documentTexts: string[],
+): AuditBrief {
+  const fromDocs = documentTexts.flatMap((t) => extractHttpUrls(t, 30));
+  if (!fromDocs.length) return brief;
+  const competitorUrls = [...brief.competitorUrls];
+  for (const u of fromDocs) {
+    if (!competitorUrls.some((x) => x.toLowerCase() === u.toLowerCase())) {
+      competitorUrls.push(u);
+    }
+  }
+  return finalizeBrief({
+    ...brief,
+    competitorLanding: "provided",
+    competitorUrls,
+  });
+}
+
 export function buildAuditClarifyingQuestion(brief: AuditBrief): string {
   const lines: string[] = [
-    "I can run a **Meta Ads best-practice audit** — I just need a couple of details first:",
+    "I can run a **Meta Ads best-practice audit** (including your ad destination / landing pages) — I just need a couple of details first:",
     "",
   ];
 
+  let n = 0;
+  const step = (text: string) => {
+    n += 1;
+    lines.push(`${n}. ${text}`);
+  };
+
   if (brief.missing.includes("scope")) {
-    lines.push(
-      "1. **Scope** — should I audit the **entire ad account**, or only **specific campaign(s)**?",
+    step(
+      "**Scope** — should I audit the **entire ad account**, or only **specific campaign(s)**?",
     );
   }
   if (brief.missing.includes("campaigns")) {
-    lines.push(
-      `${brief.missing.includes("scope") ? "2" : "1"}. **Which campaigns?** Name them (or paste campaign IDs). I can list live campaigns if helpful.`,
+    step(
+      "**Which campaigns?** Name them (or paste campaign IDs). I can list live campaigns if helpful.",
     );
   }
   if (brief.missing.includes("date_range")) {
-    const n =
-      1 +
-      (brief.missing.includes("scope") ? 1 : 0) +
-      (brief.missing.includes("campaigns") ? 1 : 0);
-    lines.push(
-      `${n}. **Date range** — e.g. last 7 days, last 30 days, this month, or \`YYYY-MM-DD\` to \`YYYY-MM-DD\`.`,
+    step(
+      "**Date range** — e.g. last 7 days, last 30 days, this month, or `YYYY-MM-DD` to `YYYY-MM-DD`.",
+    );
+  }
+  if (brief.missing.includes("competitor_landing")) {
+    step(
+      [
+        "**Competitor landing pages** — you said you wanted to compare, but I don’t have URLs yet.",
+        "   - **Paste** competitor landing page URLs, or",
+        "   - **Upload an Excel/CSV** (paperclip) with landing page / URL columns, or",
+        "   - Reply **skip** to continue without competitor comparison.",
+      ].join("\n"),
     );
   }
 
   lines.push(
     "",
-    "Reply with the missing piece(s) and I’ll run the full audit (spend, what’s working, what to improve, and recommendations). I won’t change any campaigns until you explicitly ask to **optimize**.",
+    "Reply with the missing piece(s) and I’ll run the full audit (spend, creatives, **your Meta landing pages**, what’s working, what to improve, recommendations). Competitor LP comparison is optional — you can add URLs later. I won’t change any campaigns until you explicitly ask to **optimize**.",
   );
   return lines.join("\n");
 }
 
-/** Short replies that complete an in-progress audit brief (scope / dates / names). */
+/** Short replies that complete an in-progress audit brief (scope / dates / LPs). */
 export function looksLikeAuditBriefReply(text: string): boolean {
   const t = text.trim();
-  if (!t || t.length > 400) return false;
+  if (!t || t.length > 800) return false;
   if (parseDateRangeFromText(t)) return true;
+  if (extractHttpUrls(t).length > 0) return true;
+  if (isCompetitorLandingSkip(t)) return true;
+  if (isCompetitorLandingYesPending(t)) return true;
   if (
     /\b(entire|whole|full|complete)\s+(ad\s+)?account\b/i.test(t) ||
     /\ball\s+campaigns\b/i.test(t) ||

@@ -143,11 +143,13 @@ After they approve/execute, show **proof** IDs in prose.
 
 ### Optimize (Adspirer)
 When the operator asks to optimize:
-1. List live ads from evidence and append:
+1. Use live ads / ad set evidence. Optionally append:
 {"ui":"ad_picker","ads":[{"id":"...","name":"...","status":"...","creative_summary":"..."}]}
-2. After they pick an ad, use Adspirer diagnose tools evidence: optimize_meta_budget, optimize_meta_placements, detect_meta_creative_fatigue (scoped to the account; call out the selected ad).
-3. Present recommendations in prose. Queue EXECUTE mutations (budget/pause/create refreshed ad with new image_url or video_url) via Approvals only — never claim applied yet.
-4. For creative refresh on **image** ads: generate replacement stills inline in this chat; once the operator picks one, its image_url is attached to create_ad automatically. For **video** ads, ask for a new video_url / existing_video_id (no generation).
+2. Use diagnose tools evidence: optimize_meta_budget, optimize_meta_placements, detect_meta_creative_fatigue.
+3. Present recommendations in prose with real IDs and amounts from evidence.
+4. When they ask to send/queue/apply for Approvals (or say Approvals is empty): append EXECUTE JSON from Ready-to-queue proposals (\`update_adset_budget\`, \`pause_ad\`, …). Never invent a "known limitation" that tools did not fire.
+5. Queue EXECUTE mutations via Approvals only — never claim applied yet.
+6. For creative refresh on **image** ads: generate replacement stills inline in this chat; once the operator picks one, its image_url is attached to create_ad automatically. For **video** ads, ask for a new video_url / existing_video_id (no generation).
 
 ### Stage B — Website services
 Ask for the website URL if missing. When scrape evidence is present, summarize services in prose (numbered list), then append service_picker JSON at the end for the UI.

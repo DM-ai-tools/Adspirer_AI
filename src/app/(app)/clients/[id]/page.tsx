@@ -6,7 +6,6 @@ import { useParams, useSearchParams } from "next/navigation";
 import type {
   Approval,
   Client,
-  CompetitorBrief,
   MonitoringFinding,
   Recommendation,
   Task,
@@ -26,6 +25,20 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
+import {
+  humanApprovalStatus,
+  humanRecommendationStatus,
+  humanToolLabel,
+} from "@/lib/tools/display-labels";
+
+type AccountUpdate = {
+  id: string;
+  at: string;
+  kind: "optimization" | "recommendation" | "task";
+  title: string;
+  detail: string;
+  status: string;
+};
 
 export default function ClientDetailPage() {
   const params = useParams<{ id: string }>();
@@ -38,7 +51,7 @@ export default function ClientDetailPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [findings, setFindings] = useState<MonitoringFinding[]>([]);
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
-  const [briefs, setBriefs] = useState<CompetitorBrief[]>([]);
+  const [accountUpdates, setAccountUpdates] = useState<AccountUpdate[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -57,6 +70,7 @@ export default function ClientDetailPage() {
           apiFetch<{
             findings: MonitoringFinding[];
             recommendations: Recommendation[];
+            accountUpdates?: AccountUpdate[];
           }>(`/api/monitoring/${clientId}`),
         ]);
 
@@ -65,6 +79,7 @@ export default function ClientDetailPage() {
       setTasks(tasksRes.tasks);
       setFindings(monitoringRes.findings);
       setRecommendations(monitoringRes.recommendations);
+      setAccountUpdates(monitoringRes.accountUpdates ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load client");
     } finally {
@@ -153,7 +168,6 @@ export default function ClientDetailPage() {
           <TabsTrigger value="workspace">Workspace</TabsTrigger>
           <TabsTrigger value="campaigns">Campaigns</TabsTrigger>
           <TabsTrigger value="monitoring">Monitoring</TabsTrigger>
-          <TabsTrigger value="competitors">Competitors</TabsTrigger>
           <TabsTrigger value="creatives">Creatives</TabsTrigger>
           <TabsTrigger value="approvals">Approvals</TabsTrigger>
           <TabsTrigger value="audit">Audit Log</TabsTrigger>
@@ -225,72 +239,137 @@ export default function ClientDetailPage() {
         <TabsContent value="campaigns">
           <Card>
             <CardContent className="p-6 text-sm text-muted">
-              Campaign inventory is loaded via diagnose tools in Workspace.
-              Run an account audit to surface live (demo) Meta structure.
+              Campaign inventory is loaded when you run an account audit in Workspace.
             </CardContent>
           </Card>
         </TabsContent>
 
-        <TabsContent value="monitoring" className="space-y-3">
-          {findings.length === 0 ? (
-            <p className="text-sm text-muted">No monitoring findings.</p>
-          ) : (
-            findings.map((f, idx) => (
-              <Card key={`${f.code}-${idx}`}>
-                <CardContent className="flex items-start justify-between gap-3 p-4">
-                  <div>
-                    <p className="text-sm font-medium">{f.title}</p>
-                    <p className="mt-1 text-sm text-muted">{f.detail}</p>
-                  </div>
-                  <Badge
-                    variant={
-                      f.severity === "critical"
-                        ? "danger"
-                        : f.severity === "warning"
-                          ? "warning"
-                          : "secondary"
-                    }
-                  >
-                    {f.severity}
-                  </Badge>
-                </CardContent>
-              </Card>
-            ))
-          )}
-          {recommendations.length > 0 ? (
-            <div className="space-y-2 pt-2">
-              <p className="text-sm font-medium">Recommendations</p>
-              {recommendations.map((r) => (
-                <Card key={r.id}>
-                  <CardContent className="p-4">
-                    <p className="text-sm font-medium">{r.title}</p>
-                    <p className="mt-1 text-sm text-muted">{r.description}</p>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          ) : null}
-        </TabsContent>
-
-        <TabsContent value="competitors">
+        <TabsContent value="monitoring" className="space-y-4">
           <Card>
-            <CardContent className="flex items-center justify-between gap-4 p-6">
-              <div>
-                <p className="font-medium">Competitor intelligence</p>
+            <CardHeader>
+              <CardTitle className="text-base">Account updates</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {accountUpdates.length === 0 ? (
                 <p className="text-sm text-muted">
-                  Research briefs for client services.
+                  No account changes recorded yet. Applied optimizations and
+                  recommendations will appear here.
                 </p>
-              </div>
-              <Button asChild variant="outline">
-                <Link href={`/competitors?clientId=${client.id}`}>
-                  Open competitors
-                </Link>
-              </Button>
+              ) : (
+                accountUpdates.slice(0, 12).map((u) => (
+                  <div
+                    key={u.id}
+                    className="rounded-lg border border-border-subtle px-3 py-2"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-medium">{u.title}</p>
+                      <Badge variant="secondary">{u.status}</Badge>
+                    </div>
+                    <p className="mt-1 text-xs text-muted">{u.detail}</p>
+                    <p className="mt-1 font-mono text-[10px] text-muted">
+                      {formatRelative(u.at)}
+                    </p>
+                  </div>
+                ))
+              )}
             </CardContent>
           </Card>
-          {briefs.length > 0 ? (
-            <pre className="mt-3 text-xs">{JSON.stringify(briefs, null, 2)}</pre>
-          ) : null}
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Findings</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {findings.length === 0 ? (
+                  <p className="text-sm text-muted">No snapshot findings yet.</p>
+                ) : (
+                  findings.map((f, idx) => (
+                    <div
+                      key={`${f.code}-${idx}`}
+                      className="rounded-lg border border-border-subtle px-3 py-2"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-medium">{f.title}</p>
+                        <Badge
+                          variant={
+                            f.severity === "critical"
+                              ? "danger"
+                              : f.severity === "warning"
+                                ? "warning"
+                                : "secondary"
+                          }
+                        >
+                          {f.severity}
+                        </Badge>
+                      </div>
+                      <p className="mt-1 text-xs text-muted">{f.detail}</p>
+                    </div>
+                  ))
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">
+                  Recommendations & optimizations
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {recommendations.length === 0 &&
+                approvals.filter((a) =>
+                  ["executed", "approved", "pending"].includes(a.status),
+                ).length === 0 ? (
+                  <p className="text-sm text-muted">
+                    No recommendations or optimizations yet.
+                  </p>
+                ) : (
+                  <>
+                    {recommendations.map((r) => (
+                      <div
+                        key={r.id}
+                        className="rounded-lg border border-border-subtle px-3 py-2"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-sm font-medium">{r.title}</p>
+                          <Badge variant="secondary">
+                            {humanRecommendationStatus(r.status)}
+                          </Badge>
+                        </div>
+                        <p className="mt-1 text-xs text-muted">{r.description}</p>
+                      </div>
+                    ))}
+                    {approvals
+                      .filter((a) =>
+                        ["executed", "approved", "pending", "failed"].includes(
+                          a.status,
+                        ),
+                      )
+                      .slice(0, 8)
+                      .map((a) => (
+                        <div
+                          key={a.id}
+                          className="rounded-lg border border-border-subtle px-3 py-2"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-sm font-medium">
+                              {humanToolLabel(a.tool_name)}
+                            </p>
+                            <Badge variant="secondary">
+                              {humanApprovalStatus(a.status)}
+                            </Badge>
+                          </div>
+                          <p className="mt-1 text-xs text-muted">
+                            {a.rationale ?? "Optimization awaiting or applied."}
+                          </p>
+                        </div>
+                      ))}
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          </div>
         </TabsContent>
 
         <TabsContent value="creatives">

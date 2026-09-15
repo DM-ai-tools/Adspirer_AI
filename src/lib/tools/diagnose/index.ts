@@ -1,8 +1,22 @@
 import { z } from "zod";
 import { registerTool } from "@/lib/tools/registry";
-import { getLiveAdspirerProvider, getProvider } from "@/lib/adspirer/client";
+import {
+  getLiveAdspirerProvider,
+  getProvider,
+  resolveProvider,
+} from "@/lib/adspirer/client";
+import { getWorkspaceContext } from "@/lib/runtime/workspace-context";
+import type { MetaAdsProvider } from "@/lib/adspirer/provider";
 
-function adsProvider() {
+/**
+ * Workspace V2 uses meta_direct (OAuth Graph). Never prefer Adspirer MCP here —
+ * MCP lookback/active filters miss paused-campaign Website URLs.
+ */
+async function adsProvider(): Promise<MetaAdsProvider> {
+  const backend = getWorkspaceContext()?.backend ?? null;
+  if (backend === "meta_direct") {
+    return resolveProvider("meta_direct");
+  }
   return getLiveAdspirerProvider() ?? getProvider();
 }
 
@@ -15,7 +29,7 @@ export const listCampaignsTool = registerTool({
   description: "List Meta campaigns for an ad account",
   inputSchema: accountIdSchema,
   async execute(args) {
-    return adsProvider().listCampaigns(args.account_id);
+    return (await adsProvider()).listCampaigns(args.account_id);
   },
 });
 
@@ -29,7 +43,7 @@ export const getCampaignInsightsTool = registerTool({
     date_stop: z.string().min(1),
   }),
   async execute(args) {
-    return adsProvider().getCampaignInsights(
+    return (await adsProvider()).getCampaignInsights(
       args.account_id,
       args.campaign_id,
       args.date_start,
@@ -46,7 +60,7 @@ export const listAdsetsTool = registerTool({
     campaign_id: z.string().optional(),
   }),
   async execute(args) {
-    return adsProvider().listAdSets(args.account_id, args.campaign_id);
+    return (await adsProvider()).listAdSets(args.account_id, args.campaign_id);
   },
 });
 
@@ -58,7 +72,7 @@ export const listAdsTool = registerTool({
     adset_id: z.string().optional(),
   }),
   async execute(args) {
-    return adsProvider().listAds(args.account_id, args.adset_id);
+    return (await adsProvider()).listAds(args.account_id, args.adset_id);
   },
 });
 
@@ -67,7 +81,7 @@ export const analyzeAccountTool = registerTool({
   description: "Run a diagnostic analysis of a Meta ad account",
   inputSchema: accountIdSchema,
   async execute(args) {
-    return adsProvider().analyzeAccount(args.account_id);
+    return (await adsProvider()).analyzeAccount(args.account_id);
   },
 });
 
@@ -76,7 +90,7 @@ export const getAccountOverviewTool = registerTool({
   description: "Get a high-level overview of a Meta ad account",
   inputSchema: accountIdSchema,
   async execute(args) {
-    return adsProvider().getAccountOverview(args.account_id);
+    return (await adsProvider()).getAccountOverview(args.account_id);
   },
 });
 
@@ -141,7 +155,7 @@ export const generateAdCopiesTool = registerTool({
 export const getMetaAdCreativesTool = registerTool({
   name: "get_meta_ad_creatives",
   description:
-    "Adspirer get_meta_ad_creatives — live Meta headlines, primary text, media URLs, and creative performance for copy grounding / fatigue refresh",
+    "Fetch Meta ads + creatives including Ads Manager Destination Website URL (landing_page_url), CTA type, headline, and primary text. Includes PAUSED / CAMPAIGN_PAUSED / ADSET_PAUSED ads — destination URLs are creative configuration, NOT delivery metrics, and do NOT require the campaign to be active or to have spend in a date window. Use during audits before analyze_landing_pages. Prefer landing_page_url; never invent destinations.",
   inputSchema: z.object({
     account_id: z.string().min(1),
     lookback_days: z.number().int().optional(),
@@ -150,7 +164,7 @@ export const getMetaAdCreativesTool = registerTool({
     limit: z.number().int().min(1).max(50).optional(),
   }),
   async execute(args) {
-    const provider = adsProvider();
+    const provider = await adsProvider();
     if (!provider.getAdCreatives) {
       throw new Error("get_meta_ad_creatives is not available on this provider");
     }
@@ -158,8 +172,58 @@ export const getMetaAdCreativesTool = registerTool({
       lookback_days: args.lookback_days ?? 30,
       campaign_id: args.campaign_id,
       ad_set_id: args.ad_set_id,
-      limit: args.limit ?? 20,
+      limit: args.limit ?? 40,
     });
+  },
+});
+
+export const getAccountInsightsTool = registerTool({
+  name: "get_account_insights",
+  description:
+    "Get account-level spend/performance insights for a date range (YYYY-MM-DD).",
+  inputSchema: z.object({
+    account_id: z.string().min(1),
+    date_start: z.string().min(1),
+    date_stop: z.string().min(1),
+  }),
+  async execute(args) {
+    const provider = await adsProvider();
+    if (!provider.getAccountInsights) {
+      throw new Error("get_account_insights is not available on this provider");
+    }
+    return provider.getAccountInsights(
+      args.account_id,
+      args.date_start,
+      args.date_stop,
+    );
+  },
+});
+
+export const analyzeLandingPagesTool = registerTool({
+  name: "analyze_landing_pages",
+  description:
+    "Scrape and score landing page URLs for a Meta audit. Pass own destinations from get_meta_ad_creatives.landing_page_url (Ads Manager Website URL) and optional competitor URLs. Do not pass Facebook CDN, display links, or invented URLs.",
+  inputSchema: z.object({
+    pages: z
+      .array(
+        z.object({
+          url: z.string().url(),
+          role: z.enum(["own", "competitor"]),
+          ad_context: z.string().optional(),
+        }),
+      )
+      .min(1)
+      .max(10),
+  }),
+  async execute(args) {
+    const { analyzeLandingPages } = await import("@/lib/landing/analyze-page");
+    return analyzeLandingPages(
+      args.pages.map((p) => ({
+        url: p.url,
+        role: p.role,
+        adContext: p.ad_context ?? null,
+      })),
+    );
   },
 });
 
@@ -184,7 +248,7 @@ export const optimizeMetaBudgetTool = registerTool({
     objective: z.string().optional(),
   }),
   async execute(args) {
-    const provider = adsProvider();
+    const provider = await adsProvider();
     if (!provider.optimizeBudget) {
       throw new Error("optimize_meta_budget is not available on this provider");
     }
@@ -205,7 +269,7 @@ export const optimizeMetaPlacementsTool = registerTool({
     objective: z.string().optional(),
   }),
   async execute(args) {
-    const provider = adsProvider();
+    const provider = await adsProvider();
     if (!provider.optimizePlacements) {
       throw new Error(
         "optimize_meta_placements is not available on this provider",
@@ -226,7 +290,7 @@ export const detectMetaCreativeFatigueTool = registerTool({
     account_id: z.string().min(1),
   }),
   async execute(args) {
-    const provider = adsProvider();
+    const provider = await adsProvider();
     if (!provider.detectCreativeFatigue) {
       throw new Error(
         "detect_meta_creative_fatigue is not available on this provider",

@@ -10,6 +10,7 @@ import {
   formatDocumentsForContext,
   loadDocumentsForContext,
 } from "@/lib/documents/service";
+import { humanToolLabel } from "@/lib/tools/display-labels";
 import { buildClientBrandBlock } from "./prompts";
 
 export async function buildClientContext(
@@ -131,7 +132,7 @@ export async function buildClientContext(
     "## Recent approval decisions",
     recentApprovals.length
       ? recentApprovals
-          .map((a) => `- ${a.tool_name} · ${a.status}${a.execution_error ? ` · error=${a.execution_error}` : ""}`)
+          .map((a) => `- ${humanToolLabel(a.tool_name)} · ${a.status}${a.execution_error ? ` · error=${a.execution_error}` : ""}`)
           .join("\n")
       : "- (none)",
   ];
