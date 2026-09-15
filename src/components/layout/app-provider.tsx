@@ -10,6 +10,7 @@ import {
 } from "react";
 import type { Client, Profile } from "@/types";
 import { apiFetch } from "@/lib/api-client";
+import { sanitizeClientFacingText } from "@/lib/client-facing";
 
 type AuthUser = {
   id: string;
@@ -156,11 +157,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             error && typeof error === "object" && "status" in error
               ? Number((error as { status: unknown }).status)
               : undefined;
-          const message =
-            error instanceof Error ? error.message : String(error ?? "");
+          const message = sanitizeClientFacingText(
+            error instanceof Error ? error.message : String(error ?? ""),
+          );
 
-          if (/schema|profiles is missing|migration/i.test(message)) {
-            setBootError(message);
+          if (/schema|user profiles is missing|migration|database setup/i.test(message)) {
+            setBootError(
+              "Workspace data isn’t ready yet. Contact your administrator to finish setup.",
+            );
           } else if (
             status === 401 ||
             /unauthor|unauthenticated/i.test(message)

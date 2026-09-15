@@ -29,7 +29,6 @@ const DEMO_USERS = [
 
 type AuthMode = {
   demoMode: boolean;
-  hasSupabase: boolean;
 };
 
 export default function LoginPageClient() {
@@ -46,9 +45,9 @@ export default function LoginPageClient() {
     (async () => {
       try {
         const data = await apiFetch<AuthMode>("/api/auth/mode");
-        if (!cancelled) setMode(data);
+        if (!cancelled) setMode({ demoMode: Boolean(data.demoMode) });
       } catch {
-        if (!cancelled) setMode({ demoMode: true, hasSupabase: false });
+        if (!cancelled) setMode({ demoMode: true });
       }
     })();
     return () => {
@@ -163,10 +162,10 @@ export default function LoginPageClient() {
               <h2 className="text-lg font-semibold">Sign in</h2>
               <p className="mt-1 text-sm text-muted">
                 {loadingMode
-                  ? "Loading auth mode…"
+                  ? "Loading…"
                   : demoMode
                     ? "Choose a demo persona to enter the ops console."
-                    : "Use your Supabase account email and password."}
+                    : "Sign in with your work email and password."}
               </p>
             </div>
             {demoMode ? (
@@ -210,9 +209,8 @@ export default function LoginPageClient() {
                 })}
               </div>
               <p className="mt-5 rounded-lg border border-border-subtle bg-secondary/40 px-3 py-2 text-xs leading-relaxed text-muted">
-                Demo mode uses seeded clients and mock Meta data. Set{" "}
-                <span className="font-mono">DEMO_MODE=false</span> with Supabase
-                credentials for real auth.
+                Demo mode uses sample clients and mock Meta data so you can
+                explore the workspace safely.
               </p>
             </>
           ) : (
@@ -297,11 +295,8 @@ export default function LoginPageClient() {
               </form>
 
               <p className="mt-5 rounded-lg border border-border-subtle bg-secondary/40 px-3 py-2 text-xs leading-relaxed text-muted">
-                Use <strong>Register</strong> to create an account (email is
-                auto-confirmed for this app). Then set{" "}
-                <span className="font-mono">role = admin</span> on your row in
-                Supabase <span className="font-mono">profiles</span> if you need
-                Admin pages.
+                Use <strong>Register</strong> to create an account. Ask your
+                workspace admin if you need access to Admin pages.
               </p>
             </>
           )}

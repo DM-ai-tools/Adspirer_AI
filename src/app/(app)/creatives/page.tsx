@@ -64,7 +64,7 @@ type DetectedBrand = {
 
 const GENERATION_STEPS = [
   { key: "concepts", label: "Analyze brand & build concepts" },
-  { key: "images", label: "Render GPT Image stills" },
+  { key: "images", label: "Render image stills" },
 ] as const;
 
 function CreativesInner() {
@@ -187,13 +187,13 @@ function CreativesInner() {
         toast.message(
           data.openaiConfigured
             ? "Concepts ready — images were not requested"
-            : "Concepts ready — set OPENAI_API_KEY for GPT Image stills",
+            : "Concepts ready — image generation isn’t configured yet. Ask your administrator to enable it.",
         );
         return;
       }
 
       toast.success(
-        `Rendering ${data.concepts.length} stills with ${data.imageModel ?? "gpt-image-2"} — you can leave this page`,
+        `Rendering ${data.concepts.length} stills — you can leave this page`,
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : "Generation failed";
@@ -414,7 +414,7 @@ function CreativesInner() {
                     {progress.failed + progress.stalled > 0
                       ? ` · ${progress.failed + progress.stalled} failed`
                       : ""}
-                    {" · "}GPT Image takes 30–90s each. This runs on the server —
+                    {" · "}Each still takes 30–90s. This runs in the background —
                     you can switch pages or close the tab.
                   </p>
                 ) : null}
@@ -440,7 +440,7 @@ function CreativesInner() {
                   {detectedBrand.brand_name ?? client.name}
                 </p>
                 <p className="text-xs text-muted">
-                  Official branding extracted by Firecrawl
+                  Official branding extracted from your website
                 </p>
               </div>
             </div>
@@ -461,7 +461,7 @@ function CreativesInner() {
                     <p className="font-mono text-sm">{color}</p>
                     <p className="mt-1 text-xs text-muted">
                       {detectedBrand?.source === "firecrawl_branding"
-                        ? "Firecrawl brand color"
+                        ? "Website brand color"
                         : "Saved brand color"}{" "}
                       · {detectedBrand?.brand_name ?? client.name}
                     </p>

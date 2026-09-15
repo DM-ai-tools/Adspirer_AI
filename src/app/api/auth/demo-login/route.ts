@@ -14,7 +14,7 @@ export async function POST(request: Request) {
   return withApiHandler(async () => {
     const config = getConfig();
     if (!config.isDemoMode && config.hasSupabase) {
-      throw new AuthorizationError("Demo login is only available in DEMO_MODE", {
+      throw new AuthorizationError("Demo login is only available in demo mode", {
         statusHint: 403,
       });
     }

@@ -266,7 +266,7 @@ export function planTaskSteps(
       return [
         ...base,
         { id: "intake", label: "Collect creative brief", state: "pending" },
-        { id: "generate_creatives", label: "Generate GPT Image stills", state: "pending" },
+        { id: "generate_creatives", label: "Generate image stills", state: "pending" },
         { id: "pick_creative", label: "Review & select creative", state: "pending" },
         { id: "complete", label: "Await next instruction", state: "pending" },
       ];
@@ -280,7 +280,7 @@ export function planTaskSteps(
         { id: "queue_create", label: "Queue campaign create (Approvals)", state: "pending" },
         { id: "proof_campaign", label: "Confirm campaign proof IDs", state: "pending" },
         { id: "ask_website", label: "Ask for website URL", state: "pending" },
-        { id: "scrape_services", label: "Scrape services (Firecrawl)", state: "pending" },
+        { id: "scrape_services", label: "Scan website services", state: "pending" },
         { id: "pick_services", label: "Operator picks services", state: "pending" },
         { id: "queue_adsets_ads", label: "Queue ad sets + ads", state: "pending" },
         { id: "complete", label: "Complete", state: "pending" },

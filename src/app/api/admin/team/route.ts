@@ -84,9 +84,9 @@ export async function POST(request: Request) {
     let authUserId: string | null = null;
     let delivery: "invite_email" | "created_no_email" = "invite_email";
     let message =
-      "Invite email sent via Supabase. They can set a password from the email link.";
+      "Invite email sent. They can set a password from the email link.";
 
-    // Prefer real invite email when Supabase Auth email is configured.
+    // Prefer real invite email when auth email delivery is configured.
     const invite = await admin.auth.admin.inviteUserByEmail(email, {
       data: { full_name: fullName, role: body.role },
       redirectTo: `${config.APP_URL}/login`,
@@ -114,7 +114,7 @@ export async function POST(request: Request) {
       authUserId = created.data.user.id;
       delivery = "created_no_email";
       message =
-        "User created in Supabase Auth (invite email unavailable). Share a password reset from Supabase Auth, or have them use Register with the same email.";
+        "User created, but the invite email could not be sent. Ask them to register with the same email, or reset their password from Sign in.";
       // Temp password is intentionally not returned in API responses.
       void tempPassword;
     }

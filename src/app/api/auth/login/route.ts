@@ -16,7 +16,7 @@ export async function POST(request: Request) {
     const config = getConfig();
     if (config.isDemoMode || !config.hasSupabase) {
       throw new AuthorizationError(
-        "Supabase login is disabled while DEMO_MODE is on. Set DEMO_MODE=false.",
+        "Email sign-in is unavailable in demo mode. Use a demo persona, or ask your administrator to enable live sign-in.",
         { statusHint: 400 },
       );
     }
@@ -49,7 +49,7 @@ export async function POST(request: Request) {
     if (error || !data.user) {
       throw new AuthorizationError(
         error?.message === "Invalid login credentials"
-          ? "Invalid email or password. If you just registered, use Register again to recover the account, or reset the password in Supabase Auth."
+          ? "Invalid email or password. If you just registered, try Register again or ask your administrator to reset your password."
           : (error?.message ?? "Invalid email or password"),
         { statusHint: 401 },
       );

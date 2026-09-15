@@ -20,11 +20,8 @@ function ShellInner({ children }: { children: React.ReactNode }) {
             onRetry={() => void refresh()}
           />
           <p className="mt-4 text-center text-sm text-muted">
-            Open Supabase → SQL Editor, paste{" "}
-            <code className="font-mono text-xs">
-              supabase/migrations/00001_foundation.sql
-            </code>
-            , run it, then retry.
+            Workspace data isn’t ready yet. Contact your administrator to finish
+            setup, then retry.
           </p>
         </div>
       </div>

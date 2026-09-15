@@ -20,7 +20,7 @@ export async function POST(request: Request) {
     const config = getConfig();
     if (config.isDemoMode || !config.hasSupabase) {
       throw new AuthorizationError(
-        "Registration requires DEMO_MODE=false and Supabase credentials.",
+        "Registration is unavailable in demo mode. Ask your administrator to enable live accounts.",
         { statusHint: 400 },
       );
     }

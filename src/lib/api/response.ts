@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { ZodError, type ZodType } from "zod";
 import { isAppError } from "@/lib/errors";
+import { sanitizeClientFacingText } from "@/lib/client-facing";
 
 export type ApiSuccessBody<T> = {
   ok: true;
@@ -54,7 +55,7 @@ export function jsonError(
         ok: false,
         error: {
           code: error.code,
-          message: error.message,
+          message: sanitizeClientFacingText(error.message),
           details: error.details,
         },
       },
@@ -81,7 +82,7 @@ export function jsonError(
         ok: false,
         error: {
           code: status === 404 ? "NOT_FOUND" : "INTERNAL_ERROR",
-          message,
+          message: sanitizeClientFacingText(message),
         },
       },
       { status },

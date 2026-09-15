@@ -1,4 +1,5 @@
 import type { ApiErrorBody, ApiSuccessBody } from "@/lib/api/response";
+import { sanitizeClientFacingText } from "@/lib/client-facing";
 
 export class ApiClientError extends Error {
   code: string;
@@ -6,7 +7,7 @@ export class ApiClientError extends Error {
   details?: unknown;
 
   constructor(message: string, code: string, status: number, details?: unknown) {
-    super(message);
+    super(sanitizeClientFacingText(message));
     this.name = "ApiClientError";
     this.code = code;
     this.status = status;

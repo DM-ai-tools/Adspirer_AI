@@ -334,7 +334,7 @@ export default function ConnectionsPortalPage() {
             <div>
               <CardTitle className="text-base">Adspirer</CardTitle>
               <p className="mt-1 text-sm text-muted">
-                Workspace V1 · MCP / API key path
+                Workspace V1 · Adspirer connection
               </p>
             </div>
             <Badge
@@ -347,7 +347,7 @@ export default function ConnectionsPortalPage() {
             <p className="text-sm text-muted">
               {apiKeyConfigured
                 ? "API key configured. Link Meta at adspirer.ai, then sync."
-                : "Connect OAuth or set ADSPIRER_API_KEY, then sync Meta accounts."}
+                : "Connect OAuth or configure your Adspirer API key, then sync Meta accounts."}
             </p>
             <div className="flex flex-wrap gap-2">
               <Button
@@ -392,7 +392,7 @@ export default function ConnectionsPortalPage() {
             <div>
               <CardTitle className="text-base">Facebook OAuth</CardTitle>
               <p className="mt-1 text-sm text-muted">
-                Workspace V2 · direct Meta Graph API
+                Workspace V2 · Facebook Business connection
               </p>
             </div>
             <Badge variant={metaStatus.connected ? "default" : "secondary"}>
