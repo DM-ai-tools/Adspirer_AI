@@ -133,6 +133,26 @@ describe("evaluateCheckpoints", () => {
   });
 });
 
+describe("scoring", () => {
+  it("weights by severity, halves warnings, and leaves note-only areas unscored", () => {
+    const card = evaluateCheckpoints(trAccount(), { now: NOW });
+    const scored = card.checkpoints.filter((c) => c.status !== "info" && c.status !== "not_checked");
+    const weights = { critical: 10, high: 6, medium: 3, low: 1 } as const;
+    const possible = scored.reduce((s, c) => s + weights[c.severity], 0);
+    const earned = scored.reduce(
+      (s, c) => s + (c.status === "pass" ? weights[c.severity] : c.status === "warn" ? weights[c.severity] / 2 : 0),
+      0,
+    );
+    expect(card.possible).toBe(possible);
+    expect(card.earned).toBe(earned);
+    expect(card.score).toBe(Math.round((earned / possible) * 100));
+    for (const area of card.byCategory) {
+      if (area.possible === 0) expect(area.score).toBeNull();
+      else expect(area.score).toBe(Math.round((area.earned / area.possible) * 100));
+    }
+  });
+});
+
 describe("adSetsWithSilentTracking", () => {
   it("lists ad sets whose optimisation event didn't fire this week", () => {
     const silent = adSetsWithSilentTracking(trAccount());
@@ -147,7 +167,13 @@ describe("scorecard rendering", () => {
     const card = evaluateCheckpoints(snap, { now: NOW });
     const md = renderScorecardMarkdown(card, snap);
     expect(md).toMatch(/^## Audit checklist/);
-    expect(md).toContain("| ID | Checkpoint | Result | Severity | Evidence | Fix |");
+    expect(md).toContain("### How the score works");
+    expect(md).toContain("| Area | Score | Points | Checkpoints in this area | What lowered the score |");
+    expect(md).toContain("| ID | Checkpoint | Result | Points | Evidence | Fix |");
+    // Each area lists its checkpoints and what cost it points.
+    expect(md).toMatch(/\| Account structure \| \d+\/100 \| [\d.]+ of [\d.]+ \| [^|]*S1 Fail[^|]*\| S1 Fail \(−10\)/);
+    expect(md).toContain("### Account structure —");
+    expect(md).toMatch(/\| S1 \| Live campaigns have live ad sets \| Fail · Critical \| 0 of 10 \|/);
     // Pipes inside names must not break the table.
     expect(md).not.toContain("TR | Lead Gen");
     const evidence = renderScorecardEvidence(card, snap);

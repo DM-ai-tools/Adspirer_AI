@@ -56,8 +56,16 @@ export type AuditScorecard = {
     pass: number;
     warn: number;
     fail: number;
-    score: number;
+    /** Notes and not-checked items — listed, but they don't affect the score. */
+    unscored: number;
+    earned: number;
+    possible: number;
+    /** null when the area has no scored checkpoints (only notes). */
+    score: number | null;
   }>;
+  /** Points earned / possible across all scored checkpoints. */
+  earned: number;
+  possible: number;
   /** Failures and warnings, most severe and most expensive first. */
   priorities: Checkpoint[];
 };
@@ -96,7 +104,35 @@ const EVENT_NAME: Record<string, string> = {
 };
 
 const SEVERITY_RANK: Record<CheckpointSeverity, number> = { critical: 0, high: 1, medium: 2, low: 3 };
-const SEVERITY_WEIGHT: Record<CheckpointSeverity, number> = { critical: 10, high: 6, medium: 3, low: 1 };
+/**
+ * Scoring: each checkpoint is worth points by severity. Pass earns all of
+ * them, a warning half, a fail none. Notes and "not checked" items are shown
+ * but not scored. Area and overall scores = points earned ÷ points possible.
+ */
+export const SEVERITY_POINTS: Record<CheckpointSeverity, number> = {
+  critical: 10,
+  high: 6,
+  medium: 3,
+  low: 1,
+};
+
+export const GRADE_BANDS = [
+  { grade: "A", min: 90 },
+  { grade: "B", min: 75 },
+  { grade: "C", min: 60 },
+  { grade: "D", min: 40 },
+  { grade: "F", min: 0 },
+] as const;
+
+/** Points a checkpoint earned out of its possible points; null when not scored. */
+export function checkpointPoints(c: Checkpoint): { earned: number; possible: number } | null {
+  if (c.status === "info" || c.status === "not_checked") return null;
+  const possible = SEVERITY_POINTS[c.severity];
+  return {
+    possible,
+    earned: c.status === "pass" ? possible : c.status === "warn" ? possible / 2 : 0,
+  };
+}
 
 function spendOf(p: PeriodPerformance | null | undefined) {
   return p?.spendCents ?? 0;
@@ -141,7 +177,6 @@ export function evaluateCheckpoints(
   };
   const days = snap.period.days;
   const totalSpend = spendOf(snap.totals);
-  const campaignName = new Map(snap.campaigns.map((c) => [c.id, c.name]));
   const pixelById = new Map(snap.pixels.map((p) => [p.id, p]));
   const lookalikeIds = new Set(snap.audiences.filter((a) => a.subtype === "LOOKALIKE").map((a) => a.id));
   const audienceById = new Map(snap.audiences.map((a) => [a.id, a]));
@@ -807,33 +842,44 @@ export function evaluateCheckpoints(
   const counts: Record<CheckpointStatus, number> = { pass: 0, warn: 0, fail: 0, info: 0, not_checked: 0 };
   for (const c of cp) counts[c.status] += 1;
 
-  const scoreOf = (items: Checkpoint[]) => {
-    let max = 0;
-    let got = 0;
+  const pointsOf = (items: Checkpoint[]) => {
+    let earned = 0;
+    let possible = 0;
     for (const c of items) {
-      if (c.status === "info" || c.status === "not_checked") continue;
-      const w = SEVERITY_WEIGHT[c.severity];
-      max += w;
-      got += c.status === "pass" ? w : c.status === "warn" ? w * 0.5 : 0;
+      const pts = checkpointPoints(c);
+      if (!pts) continue;
+      earned += pts.earned;
+      possible += pts.possible;
     }
-    return max ? Math.round((got / max) * 100) : 100;
+    return {
+      earned,
+      possible,
+      score: possible ? Math.round((earned / possible) * 100) : null,
+    };
   };
-  const score = scoreOf(cp);
+  const overall = pointsOf(cp);
+  const score = overall.score ?? 100;
   const categories = [...new Set(cp.map((c) => c.category))];
 
   return {
     score,
-    grade: score >= 90 ? "A" : score >= 75 ? "B" : score >= 60 ? "C" : score >= 40 ? "D" : "F",
+    grade: GRADE_BANDS.find((b) => score >= b.min)!.grade,
+    earned: overall.earned,
+    possible: overall.possible,
     checkpoints: cp,
     counts,
     byCategory: categories.map((category) => {
       const items = cp.filter((c) => c.category === category);
+      const pts = pointsOf(items);
       return {
         category,
         pass: items.filter((c) => c.status === "pass").length,
         warn: items.filter((c) => c.status === "warn").length,
         fail: items.filter((c) => c.status === "fail").length,
-        score: scoreOf(items),
+        unscored: items.filter((c) => c.status === "info" || c.status === "not_checked").length,
+        earned: pts.earned,
+        possible: pts.possible,
+        score: pts.score,
       };
     }),
     priorities: cp
