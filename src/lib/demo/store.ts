@@ -53,7 +53,7 @@ type GlobalDemo = typeof globalThis & {
   __adspirerDemoStoreVersion?: number;
 };
 
-const DEMO_STORE_VERSION = 3;
+const DEMO_STORE_VERSION = 4;
 
 function id(prefix: string): string {
   return `${prefix}_${nanoid(10)}`;
@@ -68,8 +68,8 @@ function seedStore(): DemoStore {
   const profiles: Profile[] = [
     {
       id: adminId,
-      email: "admin@adspirer.ai",
-      full_name: "Adspirer Admin",
+      email: "admin@spendsmith.demo",
+      full_name: "Spendsmith Admin",
       role: "admin",
       avatar_url: null,
       is_active: true,
@@ -78,8 +78,8 @@ function seedStore(): DemoStore {
     },
     {
       id: operatorId,
-      email: "operator@adspirer.ai",
-      full_name: "Adspirer Operator",
+      email: "operator@spendsmith.demo",
+      full_name: "Spendsmith Operator",
       role: "operator",
       avatar_url: null,
       is_active: true,
@@ -549,7 +549,7 @@ function seedStore(): DemoStore {
       connected_meta_account_id: "meta_acc_ct_1",
       access_method: "business_manager_partner",
       status: "requested",
-      instructions: "Invite Adspirer BM as partner with Ads management.",
+      instructions: "Invite the Spendsmith BM as partner with Ads management.",
       recipient_email: "ads@clicktrends.example",
       sent_at: ts,
       sent_manually: true,

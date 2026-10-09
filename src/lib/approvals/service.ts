@@ -4,10 +4,11 @@ import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
 import { assertNotBlocked } from "@/lib/tools/policy";
 import {
+  assertApprovalNotExpired,
   assertTransition,
   assertWithinBudgetCeiling,
 } from "@/lib/approvals/validator";
-import { AuthorizationError } from "@/lib/errors";
+import { AuthorizationError, DuplicateExecutionError } from "@/lib/errors";
 import { addHoursIso, nowIso } from "@/lib/utils";
 import { logger } from "@/lib/observability/logger";
 import {
@@ -173,7 +174,7 @@ export async function edit(input: {
     updated_at: ts,
   };
 
-  return saveApproval(updated);
+  return saveApproval(updated, approval.status);
 }
 
 async function transitionApproval(
@@ -185,6 +186,9 @@ async function transitionApproval(
 ): Promise<Approval> {
   const approval = await getApproval(approvalId);
   assertTransition(approval.status, to);
+  // Refuse to approve an expired proposal up front — otherwise it would sit in
+  // "approved" after the executor rejects it and vanish from the review queue.
+  if (to === "approved") assertApprovalNotExpired(approval);
 
   if (!reviewedBy) {
     throw new AuthorizationError("reviewedBy is required");
@@ -203,7 +207,7 @@ async function transitionApproval(
     updated_at: ts,
   };
 
-  const saved = await saveApproval(updated);
+  const saved = await saveApproval(updated, approval.status);
   const { saveLearning } = await import("@/lib/agent/learning");
   await saveLearning({
     clientId: saved.client_id,
@@ -244,9 +248,24 @@ export async function getApproval(approvalId: string): Promise<Approval> {
   return mapApprovalRow(data as Record<string, unknown>);
 }
 
-async function saveApproval(approval: Approval): Promise<Approval> {
+/**
+ * Persist a reviewed approval. The update only applies while the row is still
+ * in `expectedStatus`, so two reviewers (or a double click across the rail and
+ * the inline card) cannot both move the same approval forward.
+ */
+async function saveApproval(
+  approval: Approval,
+  expectedStatus: Approval["status"],
+): Promise<Approval> {
   const config = getConfig();
   if (config.isDemoMode || !config.hasSupabase) {
+    const current = getDemoStore().approvals.find((a) => a.id === approval.id);
+    if (current && current.status !== expectedStatus) {
+      throw new DuplicateExecutionError(
+        "This approval was already handled by someone else. Refresh to see its latest status.",
+        { approvalId: approval.id, status: current.status },
+      );
+    }
     return persistDemoApproval(approval);
   }
   const { createAdminClient } = await import("@/lib/supabase/admin");
@@ -255,8 +274,15 @@ async function saveApproval(approval: Approval): Promise<Approval> {
     .from("approvals")
     .update(toApprovalInsert(approval))
     .eq("id", approval.id)
+    .eq("status", expectedStatus)
     .select("*")
-    .single();
+    .maybeSingle();
   if (error) throw new Error(`Failed to update approval: ${error.message}`);
+  if (!data) {
+    throw new DuplicateExecutionError(
+      "This approval was already handled by someone else. Refresh to see its latest status.",
+      { approvalId: approval.id, expectedStatus },
+    );
+  }
   return mapApprovalRow(data as Record<string, unknown>);
 }

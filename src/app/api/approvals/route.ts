@@ -1,7 +1,11 @@
 import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
 import { getCurrentUser } from "@/lib/security/auth";
-import { assertAuthenticated, assertClientAccess } from "@/lib/authz/assert";
+import {
+  assertAuthenticated,
+  assertClientAccess,
+  getAccessibleClientIds,
+} from "@/lib/authz/assert";
 import { isAdmin } from "@/lib/security/roles";
 import { APPROVAL_STATUSES, type Approval } from "@/types";
 import { jsonOk, withApiHandler } from "@/lib/api/response";
@@ -60,7 +64,12 @@ export async function GET(request: Request) {
       .from("approvals")
       .select("*")
       .order("created_at", { ascending: false });
-    if (clientId) query = query.eq("client_id", clientId);
+    if (clientId) {
+      query = query.eq("client_id", clientId);
+    } else {
+      const allowed = await getAccessibleClientIds(user);
+      if (allowed) query = query.in("client_id", allowed);
+    }
     if (statuses.length === 1) query = query.eq("status", statuses[0]);
     else if (statuses.length > 1) query = query.in("status", statuses);
     const { data, error } = await query;

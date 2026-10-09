@@ -1,166 +1,179 @@
+import { schedules } from "@trigger.dev/sdk";
 import { getConfig } from "@/lib/config";
-import { getDemoStore } from "@/lib/demo/store";
-import { getProvider } from "@/lib/adspirer/client";
-import { analyzeSnapshots } from "@/lib/monitoring/analyzer";
-import { addDaysIso, nowIso } from "@/lib/utils";
 import { logger } from "@/lib/observability/logger";
-import type { MonitoringSnapshot, Recommendation } from "@/types";
+import { runWithWorkspaceContext } from "@/lib/runtime/workspace-context";
+import type { AccountHealth } from "@/lib/monitoring/health";
+import { getClientHealth, persistHealthSnapshot } from "@/lib/monitoring/service";
 import { defineJobTask } from "./optional-task";
+
+/**
+ * Daily account health check. Read-only on Meta: it records a snapshot (so the
+ * Monitoring page has a trend) and alerts the client's team when an account
+ * turns "at risk". It never pauses, edits or spends anything.
+ */
 
 export type MonitorClientPayload = {
   clientId: string;
-  /** Same key within a window skips duplicate snapshot insert. */
-  idempotencyKey?: string;
+  /** Comparison window in days (7 by default). */
+  days?: 7 | 14 | 30;
 };
 
 export type MonitorClientResult = {
   clientId: string;
-  snapshotId: string | null;
+  status: AccountHealth["status"] | null;
+  score: number | null;
   findingsCount: number;
-  summary: string;
+  alerted: boolean;
   skipped: boolean;
+  message?: string;
 };
 
-/**
- * Diagnose-only monitoring job. Never mutates campaigns/budgets.
- */
-export async function runMonitorClient(
-  payload: MonitorClientPayload,
-): Promise<MonitorClientResult> {
-  const { clientId } = payload;
-  const idempotencyKey =
-    payload.idempotencyKey ??
-    `monitor:${clientId}:${new Date().toISOString().slice(0, 10)}`;
-  const snapshotId = `snap_${idempotencyKey.replace(/[^a-zA-Z0-9]/g, "_").slice(0, 48)}`;
-
-  const config = getConfig();
-  const store = getDemoStore();
-
-  if (config.isDemoMode || !config.hasSupabase) {
-    const already = store.monitoringSnapshots.find((s) => s.id === snapshotId);
-    if (already) {
-      const baseline = store.monitoringSnapshots
-        .filter((s) => s.client_id === clientId && s.id !== already.id)
-        .sort(
-          (a, b) =>
-            new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
-        )[0];
-      const analysis = analyzeSnapshots({ current: already, baseline });
-      return {
-        clientId,
-        snapshotId: already.id,
-        findingsCount: analysis.findings.length,
-        summary: analysis.summary,
-        skipped: true,
-      };
-    }
-  }
-
-  const provider = getProvider();
-  const accounts =
-    config.isDemoMode || !config.hasSupabase
-      ? store.connectedMetaAccounts.filter((a) => a.client_id === clientId)
-      : [];
-
-  const metaAccountId =
-    accounts[0]?.meta_account_id ??
-    (await provider.listAccessibleAccounts())[0]?.meta_account_id;
-
-  if (!metaAccountId) {
-    return {
-      clientId,
-      snapshotId: null,
-      findingsCount: 0,
-      summary: "No connected Meta account to monitor.",
-      skipped: true,
-    };
-  }
-
-  const analysisResult = await provider.analyzeAccount(metaAccountId);
-  const overview = analysisResult.overview;
-  const prior =
-    config.isDemoMode || !config.hasSupabase
-      ? store.monitoringSnapshots
-          .filter((s) => s.client_id === clientId)
-          .sort(
-            (a, b) =>
-              new Date(b.created_at).getTime() -
-              new Date(a.created_at).getTime(),
-          )[0]
-      : null;
-
-  const ts = nowIso();
-  const snapshot: MonitoringSnapshot = {
-    id: snapshotId,
-    client_id: clientId,
-    meta_account_id: metaAccountId,
-    period_start: addDaysIso(-7),
-    period_end: ts,
-    metrics: {
-      spend: overview.spend_7d,
-      impressions: prior?.metrics.impressions ?? 0,
-      clicks: prior?.metrics.clicks ?? 0,
-      ctr: prior?.metrics.ctr ?? 0,
-      cpc: prior?.metrics.cpc ?? 0,
-      leads: prior?.metrics.leads ?? 0,
-      cpl: prior?.metrics.cpl ?? 0,
-      frequency: prior?.metrics.frequency ?? 0,
-      reach: prior?.metrics.reach ?? 0,
-    },
-    findings: [],
-    created_at: ts,
-  };
-
-  const analysis = analyzeSnapshots({ current: snapshot, baseline: prior });
-  snapshot.findings = analysis.findings;
-
-  if (config.isDemoMode || !config.hasSupabase) {
-    const idx = store.monitoringSnapshots.findIndex((s) => s.id === snapshotId);
-    if (idx >= 0) store.monitoringSnapshots[idx] = snapshot;
-    else store.monitoringSnapshots.push(snapshot);
-
-    for (const finding of analysis.findings) {
-      if (finding.severity === "info") continue;
-      const recId = `rec_${snapshotId}_${finding.code}`.replace(
-        /[^a-zA-Z0-9_]/g,
-        "_",
-      );
-      if (store.recommendations.some((r) => r.id === recId)) continue;
-      const rec: Recommendation = {
-        id: recId,
-        client_id: clientId,
-        task_id: null,
-        title: finding.title,
-        description: finding.detail,
-        category: "monitoring",
-        status: "open",
-        proposed_tool: null,
-        proposed_args: null,
-        created_by: null,
-        created_at: ts,
-        updated_at: ts,
-      };
-      store.recommendations.push(rec);
-    }
-  }
-
-  logger.info("Monitor client completed", {
-    clientId,
-    snapshotId,
-    findings: analysis.findings.length,
-    idempotencyKey,
-  });
-
-  return {
-    clientId,
-    snapshotId,
-    findingsCount: analysis.findings.length,
-    summary: analysis.summary,
-    skipped: false,
-  };
+/** Users with a stored Facebook token, most recently connected first. */
+async function tokenHolders(): Promise<string[]> {
+  const { createAdminClient } = await import("@/lib/supabase/admin");
+  const { data } = await createAdminClient()
+    .from("meta_oauth_tokens")
+    .select("user_id")
+    .order("updated_at", { ascending: false })
+    .limit(5);
+  return (data ?? []).map((r) => r.user_id as string);
 }
 
-export const monitorClientTask = defineJobTask(
-  "monitor-client",
-  runMonitorClient,
-);
+/** Admins plus everyone assigned to the client. */
+async function clientTeam(clientId: string): Promise<string[]> {
+  const { createAdminClient } = await import("@/lib/supabase/admin");
+  const supabase = createAdminClient();
+  const [{ data: admins }, { data: assigned }] = await Promise.all([
+    supabase.from("profiles").select("id").eq("role", "admin").eq("is_active", true),
+    supabase.from("user_client_access").select("user_id").eq("client_id", clientId),
+  ]);
+  return [
+    ...new Set([
+      ...(admins ?? []).map((r) => r.id as string),
+      ...(assigned ?? []).map((r) => r.user_id as string),
+    ]),
+  ];
+}
+
+/** One alert per client per day, only for accounts at risk. */
+async function alertTeam(clientId: string, clientName: string, health: AccountHealth): Promise<boolean> {
+  if (health.status !== "at_risk") return false;
+  const { createAdminClient } = await import("@/lib/supabase/admin");
+  const supabase = createAdminClient();
+  const today = new Date().toISOString().slice(0, 10);
+  const { count } = await supabase
+    .from("notifications")
+    .select("id", { count: "exact", head: true })
+    .eq("client_id", clientId)
+    .eq("type", "monitoring_alert")
+    .gte("created_at", `${today}T00:00:00Z`);
+  if ((count ?? 0) > 0) return false;
+
+  const critical = health.findings.filter((f) => f.severity === "critical").map((f) => f.title);
+  const body =
+    (critical.length ? critical : health.findings.map((f) => f.title)).slice(0, 3).join(" · ") ||
+    "Account health dropped.";
+  const users = await clientTeam(clientId);
+  if (!users.length) return false;
+  const { error } = await supabase.from("notifications").insert(
+    users.map((user_id) => ({
+      user_id,
+      client_id: clientId,
+      type: "monitoring_alert",
+      title: `${clientName}: account at risk (score ${health.score})`,
+      body,
+      href: `/monitoring?clientId=${clientId}`,
+    })),
+  );
+  if (error) throw new Error(error.message);
+  return true;
+}
+
+export async function runMonitorClient(payload: MonitorClientPayload): Promise<MonitorClientResult> {
+  const { clientId } = payload;
+  const days = payload.days ?? 7;
+  const base = { clientId, status: null, score: null, findingsCount: 0, alerted: false };
+  const config = getConfig();
+  if (config.isDemoMode || !config.hasSupabase) {
+    return { ...base, skipped: true, message: "Demo mode: monitoring uses sample data." };
+  }
+
+  const { createAdminClient } = await import("@/lib/supabase/admin");
+  const { data: client } = await createAdminClient()
+    .from("clients")
+    .select("name")
+    .eq("id", clientId)
+    .maybeSingle();
+
+  // Background jobs have no session: try each stored Facebook token until one
+  // can read the client's ad account.
+  let lastMessage = "No user has connected Facebook yet.";
+  for (const userId of await tokenHolders()) {
+    const result = await runWithWorkspaceContext(
+      { version: "v2", backend: "meta_direct", actingUserId: userId },
+      () => getClientHealth({ userId, clientId, days, fresh: true }),
+    );
+    if (result.state === "no_account") {
+      return { ...base, skipped: true, message: result.message };
+    }
+    if (result.state !== "ok") {
+      lastMessage = result.message;
+      continue;
+    }
+    const health = result.health;
+    await persistHealthSnapshot(clientId, health);
+    const alerted = await alertTeam(clientId, String(client?.name ?? "Client"), health);
+    logger.info("monitoring.client_checked", {
+      clientId,
+      score: health.score,
+      status: health.status,
+      findings: health.findings.length,
+      alerted,
+    });
+    return {
+      clientId,
+      status: health.status,
+      score: health.score,
+      findingsCount: health.findings.length,
+      alerted,
+      skipped: false,
+    };
+  }
+  return { ...base, skipped: true, message: lastMessage };
+}
+
+export const monitorClientTask = defineJobTask("monitor-client", runMonitorClient);
+
+/** Every morning (08:00 Sydney, 21:00 UTC): check every mapped client. */
+export const monitorAllClientsTask = schedules.task({
+  id: "monitor-all-clients",
+  cron: "0 21 * * *",
+  run: async () => {
+    const config = getConfig();
+    if (config.isDemoMode || !config.hasSupabase) return { checked: 0 };
+    const { createAdminClient } = await import("@/lib/supabase/admin");
+    const { data } = await createAdminClient()
+      .from("connected_meta_accounts")
+      .select("mapped_client_id")
+      .eq("access_status", "granted")
+      .not("mapped_client_id", "is", null);
+    const clientIds = [...new Set((data ?? []).map((r) => r.mapped_client_id as string))];
+    const results: MonitorClientResult[] = [];
+    // Sequential: one account at a time keeps well inside Meta rate limits.
+    for (const clientId of clientIds) {
+      try {
+        results.push(await runMonitorClient({ clientId }));
+      } catch (error) {
+        logger.error("monitoring.client_failed", {
+          clientId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return {
+      checked: results.filter((r) => !r.skipped).length,
+      atRisk: results.filter((r) => r.status === "at_risk").length,
+      alerted: results.filter((r) => r.alerted).length,
+    };
+  },
+});

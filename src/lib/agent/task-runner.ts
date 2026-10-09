@@ -202,6 +202,8 @@ export async function createTask(input: {
   title: string;
   goal?: string | null;
   conversationId?: string | null;
+  /** Extra agent_state fields (e.g. workspace backend) saved with the task. */
+  agentState?: Record<string, unknown>;
 }): Promise<Task> {
   const ts = nowIso();
   const config = getConfig();
@@ -219,6 +221,7 @@ export async function createTask(input: {
     agent_state: {
       phase: "queued",
       steps: planTaskSteps(input.goal ?? input.title),
+      ...(input.agentState ?? {}),
     },
     error_message: null,
     paused_at: null,
@@ -268,6 +271,27 @@ export async function runTask(
     task,
   });
 
+  // Progress saves are serialized and coalesced: while one write is in flight,
+  // further events just mark the task dirty and the next write picks up the
+  // latest state. Token deltas never wait on the database.
+  let saveChain: Promise<void> = Promise.resolve();
+  let saveQueued = false;
+  const queueSave = (): Promise<void> => {
+    if (saveQueued) return saveChain;
+    saveQueued = true;
+    saveChain = saveChain.then(async () => {
+      saveQueued = false;
+      try {
+        await saveTask(task);
+      } catch (error) {
+        log.warn("Progress save failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+    return saveChain;
+  };
+
   const emit = async (event: AgentProgressEvent) => {
     if (event.stepId) {
       steps = activateStep(steps, event.stepId);
@@ -281,11 +305,10 @@ export async function runTask(
       ...(event.ui != null ? { ui: event.ui } : {}),
     };
     task.updated_at = nowIso();
-    if (
-      event.delta == null ||
-      (event.summary?.length ?? 0) % 240 < (event.delta?.length ?? 0)
-    ) {
-      await saveTask(task);
+    if (event.delta == null) {
+      await queueSave();
+    } else if ((event.summary?.length ?? 0) % 240 < event.delta.length) {
+      void queueSave();
     }
     await options?.onProgress?.({ ...event, task });
   };
@@ -344,13 +367,18 @@ export async function runTask(
       onProgress: emit,
     });
 
-    for (const call of gathered.toolCalls) {
-      const safety = classify(call.name);
-      const toolCall = await recordToolCall(task, call.name, safety, call.args);
-      toolCall.completed_at = nowIso();
-      toolCall.result = { queued_by: "preflight" };
-      await saveToolCall(toolCall, task.client_id);
-    }
+    // One bulk write for the whole preflight batch (was 2 round trips each).
+    await saveToolCalls(
+      gathered.toolCalls.map((call) => {
+        const ts = nowIso();
+        return {
+          ...newToolCall(task, call.name, classify(call.name), call.args),
+          result: { queued_by: "preflight" },
+          completed_at: ts,
+        };
+      }),
+      task.client_id,
+    );
 
     if (gathered.toolCalls.some((c) => c.name === "scrape_website_services")) {
       steps = completeStepsThrough(steps, "scrape_services");
@@ -884,13 +912,15 @@ export async function runTask(
         task,
       });
 
-      await captureTaskLearning({
-        clientId: task.client_id,
-        taskId: task.id,
-        status: task.status,
-        summary: approvalSummary,
-        userId: task.created_by,
-      });
+      runAfterResponse("task-learning", () =>
+        captureTaskLearning({
+          clientId: task.client_id,
+          taskId: task.id,
+          status: task.status,
+          summary: approvalSummary,
+          userId: task.created_by,
+        }),
+      );
 
       await saveLearning({
         clientId: task.client_id,
@@ -988,14 +1018,17 @@ export async function runTask(
       steps,
     };
     task.updated_at = nowIso();
+    await saveChain;
     await saveTask(task);
-    await captureTaskLearning({
-      clientId: task.client_id,
-      taskId: task.id,
-      status: task.status,
-      summary: agentResult.summary,
-      userId: task.created_by,
-    });
+    runAfterResponse("task-learning", () =>
+      captureTaskLearning({
+        clientId: task.client_id,
+        taskId: task.id,
+        status: task.status,
+        summary: agentResult.summary,
+        userId: task.created_by,
+      }),
+    );
     await options?.onProgress?.({
       phase: "completed",
       label: finalLabel,
@@ -1020,14 +1053,17 @@ export async function runTask(
       steps,
     };
     task.updated_at = nowIso();
+    await saveChain;
     await saveTask(task);
-    await captureTaskLearning({
-      clientId: task.client_id,
-      taskId: task.id,
-      status: task.status,
-      error: message,
-      userId: task.created_by,
-    });
+    runAfterResponse("task-learning", () =>
+      captureTaskLearning({
+        clientId: task.client_id,
+        taskId: task.id,
+        status: task.status,
+        error: message,
+        userId: task.created_by,
+      }),
+    );
     log.error("Task failed", { error: message });
     throw error;
   }
@@ -1095,14 +1131,14 @@ function estimateBudgetImpact(
   return estimateMetaBudgetImpactCents(toolName, args);
 }
 
-async function recordToolCall(
+function newToolCall(
   task: Task,
   toolName: string,
   safety: ReturnType<typeof classify>,
   args: Record<string, unknown>,
-): Promise<ToolCall> {
+): ToolCall {
   const config = getConfig();
-  const toolCall: ToolCall = {
+  return {
     id:
       config.isDemoMode || !config.hasSupabase
         ? `toolcall_${nanoid(10)}`
@@ -1118,6 +1154,15 @@ async function recordToolCall(
     started_at: nowIso(),
     completed_at: null,
   };
+}
+
+async function recordToolCall(
+  task: Task,
+  toolName: string,
+  safety: ReturnType<typeof classify>,
+  args: Record<string, unknown>,
+): Promise<ToolCall> {
+  const toolCall = newToolCall(task, toolName, safety, args);
   await saveToolCall(toolCall, task.client_id);
   return toolCall;
 }
@@ -1158,6 +1203,23 @@ async function saveTask(task: Task): Promise<Task> {
     .single();
   if (error) throw new Error(error.message);
   return mapTaskRow(data as Record<string, unknown>);
+}
+
+async function saveToolCalls(
+  toolCalls: ToolCall[],
+  clientId: string,
+): Promise<void> {
+  if (!toolCalls.length) return;
+  const config = getConfig();
+  if (config.isDemoMode || !config.hasSupabase) {
+    for (const toolCall of toolCalls) await saveToolCall(toolCall, clientId);
+    return;
+  }
+  const { createAdminClient } = await import("@/lib/supabase/admin");
+  const { error } = await createAdminClient()
+    .from("tool_calls")
+    .upsert(toolCalls.map((toolCall) => toToolCallInsert(toolCall, clientId)));
+  if (error) throw new Error(error.message);
 }
 
 async function saveToolCall(

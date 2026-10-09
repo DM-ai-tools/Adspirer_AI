@@ -1,6 +1,12 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Report exports read the embedded PDF fonts from disk at runtime; make sure
+  // serverless deployments ship them with the export function.
+  outputFileTracingIncludes: {
+    "/api/reports/export": ["./public/fonts/**/*"],
+    "/api/v2/reports/export": ["./public/fonts/**/*"],
+  },
   // Faster cold compiles / tree-shaking for icon & UI barrels in both
   // webpack and Turbopack.
   experimental: {

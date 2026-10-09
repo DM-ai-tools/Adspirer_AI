@@ -1,7 +1,7 @@
 import type { Approval } from "@/types";
 import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
-import { getProvider, getProviderForBackend, resolveProvider } from "@/lib/adspirer/client";
+import { resolveProvider } from "@/lib/adspirer/client";
 import type { MetaAdsProvider } from "@/lib/adspirer/provider";
 import {
   DuplicateExecutionError,
@@ -81,46 +81,6 @@ export async function executeApprovedAction(input: {
     });
   }
 
-  const args = {
-    ...effectiveApprovalArgs(approval),
-    ...input.overrideArgs,
-  };
-
-  const providerBackend =
-    typeof args.__provider_backend === "string"
-      ? (args.__provider_backend as WorkspaceExecutionBackend)
-      : null;
-
-  const enrichedArgs = await enrichMetaCampaignArgs(
-    approval.tool_name,
-    args,
-    providerBackend,
-  );
-
-  const client =
-    config.isDemoMode || !config.hasSupabase
-      ? getDemoStore().clients.find((c) => c.id === approval.client_id)
-      : null;
-
-  if (client) {
-    assertWithinBudgetCeiling(client, args, approval.budget_impact_cents);
-  }
-
-  // Mode gate: production/sandbox must not silently fall back to mock,
-  // unless this approval targets Workspace V2 meta_direct (Facebook OAuth).
-  if (
-    (config.adsExecutionMode === "production" ||
-      config.adsExecutionMode === "sandbox") &&
-    providerBackend !== "meta_direct"
-  ) {
-    if (!config.hasAdspirerMcp) {
-      throw new ProviderUnavailableError(
-        `ADS_EXECUTION_MODE=${config.adsExecutionMode} requires ADSPIRER_MCP_URL`,
-        { mode: config.adsExecutionMode },
-      );
-    }
-  }
-
   executingKeys.add(idempotencyKey);
   assertTransition(approval.status, "executing");
 
@@ -129,9 +89,56 @@ export async function executeApprovedAction(input: {
     status: "executing",
     updated_at: nowIso(),
   };
-  await persist(working);
+  // Claim the approval before any slow work (page lookups, provider calls).
+  // The conditional write is the cross-process guard: two concurrent approve
+  // clicks can both pass the checks above, but only one claim succeeds.
+  try {
+    await claimForExecution(working, approval.status);
+  } catch (error) {
+    executingKeys.delete(idempotencyKey);
+    throw error;
+  }
 
   try {
+    const args = {
+      ...effectiveApprovalArgs(approval),
+      ...input.overrideArgs,
+    };
+
+    const providerBackend =
+      typeof args.__provider_backend === "string"
+        ? (args.__provider_backend as WorkspaceExecutionBackend)
+        : null;
+
+    const enrichedArgs = await enrichMetaCampaignArgs(
+      approval.tool_name,
+      args,
+      providerBackend,
+    );
+
+    const client =
+      config.isDemoMode || !config.hasSupabase
+        ? getDemoStore().clients.find((c) => c.id === approval.client_id)
+        : null;
+
+    if (client) {
+      assertWithinBudgetCeiling(client, args, approval.budget_impact_cents);
+    }
+
+    // Live executions only ever go to Meta directly. resolveProvider() throws
+    // rather than falling back to mock data, so nothing "succeeds" silently.
+    if (
+      (config.adsExecutionMode === "production" ||
+        config.adsExecutionMode === "sandbox") &&
+      providerBackend &&
+      providerBackend !== "meta_direct"
+    ) {
+      throw new ProviderUnavailableError(
+        "This approval was created for a backend that is no longer supported. Ask the agent to propose it again.",
+        { backend: providerBackend },
+      );
+    }
+
     const provider = await resolveProvider(providerBackend);
     const result = await dispatchToProvider(
       approval.tool_name,
@@ -256,7 +263,7 @@ async function enrichMetaCampaignArgs(
   args: Record<string, unknown>,
   backend: WorkspaceExecutionBackend | null,
 ): Promise<Record<string, unknown>> {
-  let next = normalizeMetaApprovalArgs(toolName, args);
+  const next = normalizeMetaApprovalArgs(toolName, args);
 
   const needsPage = [
     "create_meta_image_campaign",
@@ -338,8 +345,7 @@ async function dispatchToProvider(
       : null;
   delete args.__provider_backend;
   const provider =
-    resolvedProvider ??
-    (backend ? getProviderForBackend(backend) : getProvider());
+    resolvedProvider ?? (await resolveProvider(backend));
 
   switch (toolName) {
     case "update_adset_budget":
@@ -584,7 +590,7 @@ function normalizeCreateAdSetArgs(
     "";
   const primary =
     (typeof args.primary_text === "string" && args.primary_text.trim()) ||
-    `${name} — Learn more. Created via Adspirer AI (paused).`;
+    `${name} — Learn more.`;
 
   if (!landing || !/^https?:\/\//i.test(landing)) {
     throw new Error(
@@ -620,6 +626,37 @@ function summarizeExecutionProof(toolName: string, result: unknown): string {
     return `Executed ${toolName} successfully (PAUSED entities). Proof: ${ids.join(", ")}. After campaign creates, ask for website URL → scrape services → create ad sets/ads.`;
   }
   return `Executed ${toolName} successfully. Report returned IDs/status as proof; keep new entities PAUSED and continue the builder stages.`;
+}
+
+/** Move an approval to `executing` only if it is still in `expectedStatus`. */
+async function claimForExecution(
+  approval: Approval,
+  expectedStatus: Approval["status"],
+): Promise<void> {
+  const config = getConfig();
+  const conflict = () =>
+    new DuplicateExecutionError("Approval execution already in progress", {
+      approvalId: approval.id,
+      idempotencyKey: approval.idempotency_key,
+    });
+
+  if (config.isDemoMode || !config.hasSupabase) {
+    const current = getDemoStore().approvals.find((a) => a.id === approval.id);
+    if (current && current.status !== expectedStatus) throw conflict();
+    await persist(approval);
+    return;
+  }
+  const { createAdminClient } = await import("@/lib/supabase/admin");
+  const supabase = createAdminClient();
+  const { data, error } = await supabase
+    .from("approvals")
+    .update(toApprovalInsert(approval))
+    .eq("id", approval.id)
+    .eq("status", expectedStatus)
+    .select("id")
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!data) throw conflict();
 }
 
 async function persist(approval: Approval): Promise<void> {

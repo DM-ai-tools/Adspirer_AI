@@ -33,11 +33,16 @@ export type CreativeDraft = {
   description: string | null;
   cta: string | null;
   creative_direction: string | null;
-  image_url: string | null;
-  image_b64: string | null;
+  /**
+   * The three fields below are `undefined` when the row was read without
+   * them (list/card queries skip them — `image_b64` alone can be several MB).
+   * Writes leave undefined columns untouched instead of nulling them.
+   */
+  image_url?: string | null;
+  image_b64?: string | null;
   image_mime: string;
   image_model: string | null;
-  image_prompt: string | null;
+  image_prompt?: string | null;
   image_status: CreativeImageStatus;
   image_error: string | null;
   landing_page_url: string | null;
@@ -61,6 +66,11 @@ type UpsertInput = Omit<
 
 type DraftFilters = { conversationId?: string; taskId?: string };
 
+/** Column value, or undefined when the query did not select it. */
+function loaded(row: Record<string, unknown>, key: string): string | null | undefined {
+  return key in row ? ((row[key] as string | null) ?? null) : undefined;
+}
+
 function mapRow(row: Record<string, unknown>): CreativeDraft {
   return {
     id: String(row.id),
@@ -75,11 +85,11 @@ function mapRow(row: Record<string, unknown>): CreativeDraft {
     description: (row.description as string | null) ?? null,
     cta: (row.cta as string | null) ?? null,
     creative_direction: (row.creative_direction as string | null) ?? null,
-    image_url: (row.image_url as string | null) ?? null,
-    image_b64: (row.image_b64 as string | null) ?? null,
+    image_url: loaded(row, "image_url"),
+    image_b64: loaded(row, "image_b64"),
     image_mime: String(row.image_mime ?? "image/png"),
     image_model: (row.image_model as string | null) ?? null,
-    image_prompt: (row.image_prompt as string | null) ?? null,
+    image_prompt: loaded(row, "image_prompt"),
     image_status: (row.image_status as CreativeImageStatus) ?? "pending",
     image_error: (row.image_error as string | null) ?? null,
     landing_page_url: (row.landing_page_url as string | null) ?? null,
@@ -95,7 +105,7 @@ function mapRow(row: Record<string, unknown>): CreativeDraft {
 }
 
 function toRow(draft: CreativeDraft): Record<string, unknown> {
-  return {
+  const row: Record<string, unknown> = {
     id: draft.id,
     client_id: draft.client_id,
     service_id: draft.service_id,
@@ -123,6 +133,12 @@ function toRow(draft: CreativeDraft): Record<string, unknown> {
     created_at: draft.created_at,
     updated_at: draft.updated_at,
   };
+  // Never write a column we didn't load — that used to wipe sibling drafts'
+  // images whenever one creative was selected.
+  for (const key of Object.keys(row)) {
+    if (row[key] === undefined) delete row[key];
+  }
+  return row;
 }
 
 function memoryStore(): CreativeDraft[] {
@@ -233,17 +249,25 @@ export async function listCreativeDraftsAsync(
   return (data ?? []).map((row) => mapRow(row as Record<string, unknown>));
 }
 
+/**
+ * One draft. Skips the inline image bytes unless `withImageData` is set —
+ * only the asset route and the Cloudinary upload need them.
+ */
 export async function getCreativeDraftAsync(
   id: string,
+  options?: { withImageData?: boolean },
 ): Promise<CreativeDraft | null> {
   if (shouldUseMemoryStore()) {
     return memoryStore().find((d) => d.id === id) ?? null;
   }
 
+  const columns: string = options?.withImageData
+    ? "*"
+    : `${SELECTED_COLUMNS},image_prompt`;
   const supabase = await adminClient();
   const { data, error } = await supabase
     .from("creative_drafts")
-    .select("*")
+    .select(columns)
     .eq("id", id)
     .maybeSingle();
   if (error) {
@@ -253,7 +277,7 @@ export async function getCreativeDraftAsync(
     }
     throw new Error(error.message);
   }
-  return data ? mapRow(data as Record<string, unknown>) : null;
+  return data ? mapRow(data as unknown as Record<string, unknown>) : null;
 }
 
 function mergeDraft(
@@ -262,9 +286,13 @@ function mergeDraft(
 ): CreativeDraft {
   const ts = nowIso();
   if (existing) {
+    // Spread only fields the caller actually set; `undefined` means "unchanged".
+    const changes = Object.fromEntries(
+      Object.entries(input).filter(([, value]) => value !== undefined),
+    ) as UpsertInput;
     return {
       ...existing,
-      ...input,
+      ...changes,
       id: existing.id,
       created_at: existing.created_at,
       updated_at: ts,
@@ -309,6 +337,7 @@ function mergeDraft(
 export async function upsertCreativeDraftAsync(
   input: UpsertInput,
 ): Promise<CreativeDraft> {
+  // Light read: heavy columns stay undefined and are therefore not rewritten.
   const existing = input.id ? await getCreativeDraftAsync(input.id) : null;
   const draft = mergeDraft(input, existing);
 
@@ -422,7 +451,7 @@ export function resolveImageUrlForAdspirer(draft: CreativeDraft): string | null 
   return hostedHttpUrl(draft.image_url) ?? (
     isInlineImage(draft) || draft.image_status === "succeeded"
       ? publicCreativeAssetUrl(draft.id)
-      : draft.image_url
+      : (draft.image_url ?? null)
   );
 }
 

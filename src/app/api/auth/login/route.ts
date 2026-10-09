@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
-import { createAdminClient } from "@/lib/supabase/admin";
 import { getConfig } from "@/lib/config";
 import { authUserFromIdentity } from "@/lib/security/auth";
 import { AuthorizationError } from "@/lib/errors";
@@ -23,35 +22,26 @@ export async function POST(request: Request) {
 
     const body = await parseBody(request, bodySchema);
     const supabase = await createClient();
-    let { data, error } = await supabase.auth.signInWithPassword({
+    const { data, error } = await supabase.auth.signInWithPassword({
       email: body.email,
       password: body.password,
     });
 
-    // Common Supabase gotcha: Confirm email is ON → unconfirmed users get
-    // "Invalid login credentials". Auto-confirm existing user once, then retry.
-    if (error && /invalid login credentials/i.test(error.message)) {
-      const admin = createAdminClient();
-      const existing = await findUserByEmail(admin, body.email);
-      if (existing && !existing.email_confirmed_at) {
-        await admin.auth.admin.updateUserById(existing.id, {
-          email_confirm: true,
-        });
-        const retry = await supabase.auth.signInWithPassword({
-          email: body.email,
-          password: body.password,
-        });
-        data = retry.data;
-        error = retry.error;
-      }
-    }
-
     if (error || !data.user) {
+      const raw = error?.message ?? "";
+      const unreachable =
+        /fetch failed/i.test(raw) ||
+        error?.name === "AuthRetryableFetchError" ||
+        error?.status === 0;
       throw new AuthorizationError(
-        error?.message === "Invalid login credentials"
-          ? "Invalid email or password. If you just registered, try Register again or ask your administrator to reset your password."
-          : (error?.message ?? "Invalid email or password"),
-        { statusHint: 401 },
+        unreachable
+          ? "Sign-in service is unreachable. The account host could not be contacted, so the password was not checked."
+          : raw === "Invalid login credentials"
+            ? "Invalid email or password. Ask your administrator to reset your password if you can't sign in."
+            : /email not confirmed/i.test(raw)
+              ? "This email hasn't been confirmed yet. Use the link in your invite email, or ask your administrator to resend it."
+              : "Sign-in failed. Please try again.",
+        { statusHint: unreachable ? 503 : 401 },
       );
     }
 
@@ -74,22 +64,4 @@ export async function POST(request: Request) {
       },
     });
   });
-}
-
-async function findUserByEmail(
-  admin: ReturnType<typeof createAdminClient>,
-  email: string,
-) {
-  const normalized = email.toLowerCase();
-  for (let page = 1; page <= 5; page += 1) {
-    const { data, error } = await admin.auth.admin.listUsers({
-      page,
-      perPage: 200,
-    });
-    if (error) break;
-    const found = data.users.find((u) => u.email?.toLowerCase() === normalized);
-    if (found) return found;
-    if (data.users.length < 200) break;
-  }
-  return null;
 }

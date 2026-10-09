@@ -607,7 +607,7 @@ export class MockMetaAdsProvider implements MetaAdsProvider {
       text: [
         `### Placement optimization (demo) for ${accountId}`,
         "- Prefer Feed + Reels; reduce Audience Network share.",
-        "DEMO DATA — connect live Adspirer for real optimize_meta_placements.",
+        "DEMO DATA — connect a live Meta account for real placement optimisation.",
       ].join("\n"),
       structured: { demo: true, tool: "optimize_meta_placements", proposals: [] },
     };

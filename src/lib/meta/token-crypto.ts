@@ -1,5 +1,6 @@
 import { getConfig } from "@/lib/config";
 import { randomBytes, createCipheriv, createDecipheriv } from "crypto";
+import { assertKeyIsNotPublicDemo } from "@/lib/security/token-vault";
 
 const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 12;
@@ -16,6 +17,7 @@ function getKey(): Buffer {
       "TOKEN_ENCRYPTION_KEY must be 64 hex characters (32 bytes)",
     );
   }
+  assertKeyIsNotPublicDemo(key);
   return key;
 }
 

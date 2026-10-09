@@ -107,6 +107,24 @@ export function toMessageInsert(
   };
 }
 
+/**
+ * Tool outputs are raw Meta API payloads and can reach hundreds of KB. They
+ * are kept for the audit trail, not replayed to the model, so store a capped
+ * copy instead of letting them grow the database without bound.
+ */
+const TOOL_OUTPUT_MAX_CHARS = 20_000;
+
+export function capToolOutput(output: unknown): unknown {
+  if (output == null) return output;
+  const json = JSON.stringify(output);
+  if (json.length <= TOOL_OUTPUT_MAX_CHARS) return output;
+  return {
+    truncated: true,
+    original_chars: json.length,
+    preview: json.slice(0, TOOL_OUTPUT_MAX_CHARS),
+  };
+}
+
 export function toToolCallInsert(
   toolCall: ToolCall,
   clientId: string,
@@ -128,7 +146,7 @@ export function toToolCallInsert(
     tool_name: toolCall.tool_name,
     tool_type: toolCall.safety_class as ToolSafetyClass,
     input: toolCall.arguments,
-    output: toolCall.result,
+    output: capToolOutput(toolCall.result),
     status,
     error: toolCall.error_message,
     started_at: toolCall.started_at,

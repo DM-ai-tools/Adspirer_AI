@@ -37,8 +37,8 @@ Adspirer AI supports two local development paths. Prefer **DEMO_MODE** until you
 
 4. Demo identities (from the in-memory store):
 
-   - Admin: `admin@adspirer.ai`
-   - Operator: `operator@adspirer.ai`
+   - Admin: `admin@spendsmith.demo`
+   - Operator: `operator@spendsmith.demo`
 
 You do **not** need Docker, the Supabase CLI, or `seed.sql`. Demo clients (TrafficRadius, ClickTrends, Modern Dental Centre) are created in code and labeled **DEMO DATA**.
 
@@ -88,8 +88,8 @@ You do **not** need Docker, the Supabase CLI, or `seed.sql`. Demo clients (Traff
 
    | Role | Email | UUID |
    |---|---|---|
-   | admin | `admin@adspirer.ai` | `a1111111-1111-4111-8111-111111111111` |
-   | operator | `operator@adspirer.ai` | `a2222222-2222-4222-8222-222222222222` |
+   | admin | `admin@spendsmith.demo` | `a1111111-1111-4111-8111-111111111111` |
+   | operator | `operator@spendsmith.demo` | `a2222222-2222-4222-8222-222222222222` |
 
    Local demo passwords (auth block only): `demo-password-admin` / `demo-password-operator`.
 

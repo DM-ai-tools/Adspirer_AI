@@ -76,3 +76,29 @@ export async function assertClientAccess(
     });
   }
 }
+
+/**
+ * Client ids the user may read. `null` means unrestricted (admin).
+ * List endpoints use this when no `clientId` filter is supplied so operators
+ * never receive rows for clients they are not assigned to.
+ */
+export async function getAccessibleClientIds(
+  user: AuthUser,
+): Promise<string[] | null> {
+  if (isAdmin(user.profile)) return null;
+
+  const config = getConfig();
+  if (config.isDemoMode || !config.hasSupabase) {
+    return getDemoStore()
+      .userClientAccess.filter((a) => a.user_id === user.id)
+      .map((a) => a.client_id);
+  }
+
+  const { createAdminClient } = await import("@/lib/supabase/admin");
+  const { data, error } = await createAdminClient()
+    .from("user_client_access")
+    .select("client_id")
+    .eq("user_id", user.id);
+  if (error) throw new Error(error.message);
+  return (data ?? []).map((row) => row.client_id as string);
+}

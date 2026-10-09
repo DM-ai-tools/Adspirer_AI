@@ -27,7 +27,7 @@ export default function AdminSettingsPage() {
     <div className="mx-auto max-w-2xl">
       <PageHeader
         title="Settings"
-        description="Environment and policy defaults for this Adspirer workspace."
+        description="Environment and policy defaults for this Spendsmith workspace."
       />
 
       <div className="space-y-4">

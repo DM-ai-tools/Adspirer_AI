@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import JSZip from "jszip";
 import { parseAuditReport } from "@/lib/report/schema";
 import { renderAuditReportMarkdown } from "@/lib/report/md/AuditReportMd";
 import { renderAuditReportDocxHtml } from "@/lib/report/docx/AuditReportDocx";
@@ -85,7 +86,7 @@ describe("structured audit report template", () => {
 
   it("emits branded Word HTML without markdown hashes as headings", () => {
     const html = renderAuditReportDocxHtml(sample);
-    expect(html).toContain("ADSPIRER AI");
+    expect(html).toContain("SPENDSMITH");
     expect(html).toContain("Bottom line");
     expect(html).toContain("TR AUDIT FINAL");
     expect(html).not.toMatch(/## Account snapshot/);
@@ -142,22 +143,24 @@ Objective: OUTCOME_LEADS
 
     const out = await exportReportPayload({
       format: "docx",
-      title: "Adspirer report",
+      title: "Spendsmith report",
       content: auditBody,
       report: sample,
     });
-    expect(out.contentType).toContain("msword");
+    expect(out.contentType).toContain("wordprocessingml");
     expect(out.filename.toLowerCase()).toContain("tr-internal-marketing");
-    const html = String(out.body);
-    expect(html).toContain("Active campaigns");
-    expect(html).toContain(">2<");
-    expect(html).toContain("Paused campaigns");
-    expect(html).toContain(">55<");
-    expect(html).toContain("$27.18");
-    expect(html).toContain("TR AUDIT FINAL");
-    expect(html).toContain("No conversion tracking");
-    expect(html).toContain("Approve budget increase");
+    expect(out.filename.endsWith(".docx")).toBe(true);
+    const zip = await JSZip.loadAsync(out.body as Uint8Array);
+    const xml = await zip.file("word/document.xml")!.async("string");
+    // Each table cell is its own paragraph — join them with " | ".
+    const text = xml.replace(/<\/w:p>/g, " | ").replace(/<[^>]+>/g, "");
+    expect(text).toContain("Active campaigns | 2 |");
+    expect(text).toContain("Paused campaigns | 55 |");
+    expect(text).toContain("$27.18");
+    expect(text).toContain("TR AUDIT FINAL");
+    expect(text).toContain("No conversion tracking");
+    expect(text).toContain("Approve budget increase");
     // Must not be the empty structured stub path
-    expect(html).not.toContain("No campaigns in evidence");
+    expect(text).not.toContain("No campaigns in evidence");
   }, 30_000);
 });

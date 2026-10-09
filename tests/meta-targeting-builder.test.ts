@@ -37,10 +37,11 @@ describe("buildMetaTargeting", () => {
       ],
     });
     expect(targeting.custom_audiences).toEqual([{ id: "1201" }]);
+    // Ids only: Meta resolves names itself and rejects stale/mismatched names.
     expect(targeting.flexible_spec).toEqual([
       {
-        interests: [{ id: "6001", name: "Fitness" }],
-        behaviors: [{ id: "7001", name: "Engaged shoppers" }],
+        interests: [{ id: "6001" }],
+        behaviors: [{ id: "7001" }],
       },
     ]);
     expect(targeting.publisher_platforms).toEqual(["facebook", "instagram"]);

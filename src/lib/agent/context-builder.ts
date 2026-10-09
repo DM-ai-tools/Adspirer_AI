@@ -5,7 +5,6 @@ import { getSelectedCreativeDraftAsync,
   listCreativeDraftsAsync,
   resolveImageUrlForAdspirer,
 } from "@/lib/creatives/drafts";
-import { getWorkspaceContext } from "@/lib/runtime/workspace-context";
 import {
   formatDocumentsForContext,
   loadDocumentsForContext,
@@ -17,55 +16,53 @@ export async function buildClientContext(
   clientId: string,
   options?: { conversationId?: string | null },
 ): Promise<string> {
-  const client = await loadClient(clientId);
+  const conversationId = options?.conversationId ?? null;
+  // Independent reads — run them together rather than one round trip at a time.
+  const [
+    client,
+    services,
+    briefs,
+    meta,
+    documents,
+    selectedCreative,
+    drafts,
+  ] = await Promise.all([
+    loadClient(clientId),
+    loadServices(clientId),
+    loadBriefs(clientId),
+    loadMappedMetaAccounts(clientId),
+    loadDocumentsForContext({ clientId, conversationId }).catch(() => []),
+    getSelectedCreativeDraftAsync(clientId, { conversationId }).catch(
+      () => null,
+    ),
+    listCreativeDraftsAsync(clientId, {
+      conversationId: conversationId ?? undefined,
+    }).catch(() => []),
+  ]);
   if (!client) {
     return `Client id ${clientId} not found.`;
   }
-
-  const conversationId = options?.conversationId ?? null;
-  const services = await loadServices(clientId);
-  const briefs = await loadBriefs(clientId);
-  const meta = await loadMappedMetaAccounts(clientId);
-  const documents = await loadDocumentsForContext({
-    clientId,
-    conversationId,
-  }).catch(() => []);
-  const selectedCreative = await getSelectedCreativeDraftAsync(clientId, {
-    conversationId,
-  }).catch(() => null);
-  const recentDrafts = (
-    await listCreativeDraftsAsync(clientId, {
-      conversationId: conversationId ?? undefined,
-    }).catch(() => [])
-  ).slice(0, 3);
+  const recentDrafts = drafts.slice(0, 3);
   const recentApprovals = loadRecentApprovals(clientId);
-  const isV2 = getWorkspaceContext()?.version === "v2";
 
   const sections = [
-    "## Workspace mode",
-    isV2
-      ? [
-          "- Version: Workspace V2 (Meta-direct)",
-          "- Backend: Facebook OAuth → Meta Graph API (NOT Adspirer MCP)",
-          "- If asked about Adspirer: say V2 does not use Adspirer; V1 does.",
-          meta.length
-            ? [
-                `- Mapped Meta accounts for this client: ${meta.length}`,
-                ...meta.map(
-                  (m) =>
-                    `  · ${m.meta_account_name} (${m.meta_account_id}) · access=${m.access_status}`,
-                ),
-                `- Primary account for API calls: ${
-                  meta.find((m) => m.access_status === "granted")
-                    ?.meta_account_name ?? "(none granted)"
-                }`,
-              ].join("\n")
-            : "- No Meta account mapped yet — Connect Facebook + map under Connections",
-        ].join("\n")
-      : [
-          "- Version: Workspace V1 (Adspirer)",
-          "- Backend: Adspirer MCP / API when configured",
-        ].join("\n"),
+    "## Meta connection",
+    [
+      "- Access: the operator's Facebook login → Meta Graph API",
+      meta.length
+        ? [
+            `- Mapped Meta accounts for this client: ${meta.length}`,
+            ...meta.map(
+              (m) =>
+                `  · ${m.meta_account_name} (${m.meta_account_id}) · access=${m.access_status}`,
+            ),
+            `- Primary account for API calls: ${
+              meta.find((m) => m.access_status === "granted")
+                ?.meta_account_name ?? "(none granted)"
+            }`,
+          ].join("\n")
+        : "- No Meta account mapped yet — Connect Facebook + map under Connections",
+    ].join("\n"),
     "",
     "## Brand context",
     buildClientBrandBlock(client),

@@ -8,6 +8,11 @@ import {
   upsertCreativeDraftAsync,
   type CreativeDraft,
 } from "@/lib/creatives/drafts";
+import {
+  isCloudinaryConfigured,
+  uploadCreativeImage,
+} from "@/lib/creatives/cloudinary";
+import { logger } from "@/lib/observability/logger";
 
 export type DraftImageResult = {
   draft: CreativeDraft;
@@ -76,20 +81,51 @@ export async function generateImageForDraft(
   }
 
   const succeeded = image.status === "succeeded";
+  const inlineSource = image.b64
+    ? `data:${image.mime || "image/png"};base64,${image.b64}`
+    : image.imageUrl?.startsWith("data:")
+      ? image.imageUrl
+      : null;
+
+  // Store generated stills in Cloudinary, not Postgres: a base64 PNG is
+  // 2–4 MB per draft and was the fastest way to exhaust the database quota.
+  let cloudUrl: string | null = null;
+  let cloudMime: string | null = null;
+  if (succeeded && inlineSource && isCloudinaryConfigured()) {
+    try {
+      const uploaded = await uploadCreativeImage({
+        draftId: existing.id,
+        clientId: existing.client_id,
+        headline: existing.headline,
+        source: inlineSource,
+      });
+      cloudUrl = uploaded.url;
+      cloudMime = uploaded.mime;
+    } catch (error) {
+      // Keep the still inline so the operator still gets it; select retries.
+      logger.warn("creative.cloudinary_upload_failed", {
+        draftId: existing.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   const hostedUrl =
-    image.imageUrl &&
+    cloudUrl ??
+    (image.imageUrl &&
     /^https?:\/\//i.test(image.imageUrl) &&
     !image.imageUrl.startsWith("data:")
       ? image.imageUrl
-      : image.b64 || image.imageUrl?.startsWith("data:")
+      : inlineSource
         ? publicCreativeAssetUrl(existing.id)
-        : image.imageUrl;
+        : image.imageUrl);
 
   const draft = await upsertCreativeDraftAsync({
     ...existing,
     id: existing.id,
     image_url: hostedUrl,
-    image_b64: image.b64,
+    image_b64: cloudUrl ? null : image.b64,
+    ...(cloudMime ? { image_mime: cloudMime } : {}),
     image_model: image.model,
     image_prompt: image.prompt,
     image_status: image.status,
@@ -105,9 +141,8 @@ export async function generateImageForDraft(
   });
 
   const displayUrl =
-    image.b64 || image.imageUrl?.startsWith("data:")
-      ? publicCreativeAssetUrl(draft.id)
-      : image.imageUrl;
+    cloudUrl ??
+    (inlineSource ? publicCreativeAssetUrl(draft.id) : image.imageUrl);
 
   return {
     draft,

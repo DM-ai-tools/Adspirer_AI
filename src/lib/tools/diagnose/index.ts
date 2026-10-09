@@ -1,23 +1,11 @@
 import { z } from "zod";
 import { registerTool } from "@/lib/tools/registry";
-import {
-  getLiveAdspirerProvider,
-  getProvider,
-  resolveProvider,
-} from "@/lib/adspirer/client";
-import { getWorkspaceContext } from "@/lib/runtime/workspace-context";
+import { resolveProvider } from "@/lib/adspirer/client";
 import type { MetaAdsProvider } from "@/lib/adspirer/provider";
 
-/**
- * Workspace V2 uses meta_direct (OAuth Graph). Never prefer Adspirer MCP here —
- * MCP lookback/active filters miss paused-campaign Website URLs.
- */
+/** Live → Meta Graph with the operator's Facebook token; demo → mock data. */
 async function adsProvider(): Promise<MetaAdsProvider> {
-  const backend = getWorkspaceContext()?.backend ?? null;
-  if (backend === "meta_direct") {
-    return resolveProvider("meta_direct");
-  }
-  return getLiveAdspirerProvider() ?? getProvider();
+  return resolveProvider();
 }
 
 const accountIdSchema = z.object({

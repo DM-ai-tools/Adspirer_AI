@@ -23,6 +23,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useApp } from "@/components/layout/app-provider";
 import { humanToolLabel } from "@/lib/tools/display-labels";
+import { MetaAccountSummary } from "@/components/dashboard/meta-account-summary";
 
 type DashboardData = {
   stats: {
@@ -77,13 +78,15 @@ export default function DashboardPage() {
     <div>
       <PageHeader
         title="Overview"
-        description="Agency-wide pulse across clients, agent tasks, and approvals."
+        description="Ad account health, spend and budgets — plus agent tasks and approvals across your clients."
         actions={
           <Button asChild>
             <Link href="/workspace">Open workspace</Link>
           </Button>
         }
       />
+
+      <MetaAccountSummary />
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard

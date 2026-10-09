@@ -1,22 +1,24 @@
 import { getConfig } from "@/lib/config";
 import type { MetaAdsProvider } from "./provider";
 import { MockMetaAdsProvider } from "./mock-provider";
-import { AdspirerMCPProvider } from "./mcp-provider";
 import { MetaGraphProviderV2 } from "@/lib/meta/provider-v2";
 import { getUserMetaToken } from "@/lib/meta/get-user-token";
+import { ProviderUnavailableError } from "@/lib/errors";
 import {
   getWorkspaceContext,
   type WorkspaceExecutionBackend,
 } from "@/lib/runtime/workspace-context";
 
-let cached: MetaAdsProvider | null = null;
-let cachedLive: MetaAdsProvider | null = null;
+let cachedMock: MetaAdsProvider | null = null;
 
 /**
- * Resolve Meta ads provider from ADS_EXECUTION_MODE.
- * - mock → MockMetaAdsProvider (safe default for mutations)
- * - sandbox / production → AdspirerMCPProvider (requires ADSPIRER_API_KEY)
- * - meta_direct → MetaGraphProviderV2 (requires OAuth token)
+ * Resolve the Meta ads provider.
+ * - meta_direct → MetaGraphProviderV2 with the operator's Facebook OAuth token
+ *   (every live request — see workspace-context's live default)
+ * - demo mode → MockMetaAdsProvider
+ *
+ * Live mode never falls back to mock data: a missing backend is an error, so
+ * an approval can't "succeed" without touching Meta.
  */
 function getProviderByBackend(
   backend: WorkspaceExecutionBackend | null,
@@ -30,26 +32,16 @@ function getProviderByBackend(
     }
     return new MetaGraphProviderV2(metaAccessToken);
   }
-  if (cached) return cached;
 
   const config = getConfig();
-  switch (config.adsExecutionMode) {
-    case "mock":
-      cached = new MockMetaAdsProvider();
-      break;
-    case "sandbox":
-    case "production":
-      if (!config.ADSPIRER_API_KEY) {
-        cached = new MockMetaAdsProvider();
-        break;
-      }
-      cached = new AdspirerMCPProvider();
-      break;
-    default:
-      cached = new MockMetaAdsProvider();
+  if (config.isDemoMode || !config.hasSupabase) {
+    cachedMock ??= new MockMetaAdsProvider();
+    return cachedMock;
   }
-
-  return cached;
+  throw new ProviderUnavailableError(
+    "No Meta connection for this request. Connect Facebook in the Workspace header and try again.",
+    { backend },
+  );
 }
 
 /** Sync helper — only use when token is already known or backend is not meta_direct. */
@@ -67,13 +59,12 @@ export function getProviderForBackend(
 
 /**
  * Async resolver that loads the current user's Meta OAuth token when the
- * workspace backend is meta_direct (Workspace V2).
+ * workspace backend is meta_direct.
  */
 export async function resolveProvider(
   backendOverride?: WorkspaceExecutionBackend | null,
 ): Promise<MetaAdsProvider> {
-  const backend =
-    backendOverride ?? getWorkspaceContext()?.backend ?? null;
+  const backend = backendOverride ?? getWorkspaceContext()?.backend ?? null;
   if (backend === "meta_direct") {
     const { accessToken } = await getUserMetaToken();
     return getProviderByBackend(backend, accessToken);
@@ -81,18 +72,6 @@ export async function resolveProvider(
   return getProviderByBackend(backend);
 }
 
-/**
- * Live Adspirer provider for diagnose/sync when an API key is configured,
- * regardless of ADS_EXECUTION_MODE (mutations still go through getProvider()).
- */
-export function getLiveAdspirerProvider(): MetaAdsProvider | null {
-  const config = getConfig();
-  if (!config.ADSPIRER_API_KEY) return null;
-  if (!cachedLive) cachedLive = new AdspirerMCPProvider();
-  return cachedLive;
-}
-
 export function resetProviderCache(): void {
-  cached = null;
-  cachedLive = null;
+  cachedMock = null;
 }

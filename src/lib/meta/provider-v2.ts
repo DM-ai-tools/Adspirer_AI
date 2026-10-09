@@ -24,6 +24,13 @@ import {
 } from "@/lib/meta/targeting-builder";
 import { resolvePromotePageId, formatMissingPageHelp } from "@/lib/meta/resolve-page";
 import { logger } from "@/lib/observability/logger";
+import { centsToMetaMinor, metaMinorToCents } from "@/lib/meta/currency";
+
+export {
+  centsToMetaMinor,
+  metaCurrencyOffset,
+  metaMinorToCents,
+} from "@/lib/meta/currency";
 
 function normalizeAccountId(accountId: string): string {
   return accountId.startsWith("act_") ? accountId : `act_${accountId}`;
@@ -49,6 +56,18 @@ function audienceApproximateCount(row: Record<string, unknown>): number | null {
     return row.approximate_count;
   }
   return null;
+}
+
+function formatMoney(cents: number, currency: string): string {
+  try {
+    return new Intl.NumberFormat("en", {
+      style: "currency",
+      currency,
+      maximumFractionDigits: 2,
+    }).format(cents / 100);
+  } catch {
+    return `${(cents / 100).toFixed(2)} ${currency}`;
+  }
 }
 
 function budgetToMinorUnits(budgetDaily?: number): number | undefined {
@@ -129,8 +148,30 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
   readonly name = "MetaGraphProviderV2";
   private readonly graph: MetaGraphClient;
 
+  /** Per-request caches: a provider instance lives for one API call / turn. */
+  private readonly currencyByAccount = new Map<string, Promise<string>>();
+  private readonly campaignsByAccount = new Map<string, Promise<MetaCampaign[]>>();
+
   constructor(accessToken: string) {
     this.graph = new MetaGraphClient(accessToken);
+  }
+
+  /** Account currency (cached); budgets are converted with its offset. */
+  async accountCurrency(accountId: string): Promise<string> {
+    const id = normalizeAccountId(accountId);
+    let pending = this.currencyByAccount.get(id);
+    if (!pending) {
+      pending = this.graph
+        .get<{ currency?: string }>(id, { fields: "currency" })
+        .then((row) => String(row.currency ?? "USD"))
+        .catch(() => "USD");
+      this.currencyByAccount.set(id, pending);
+    }
+    return pending;
+  }
+
+  private invalidateCampaigns(accountId: string): void {
+    this.campaignsByAccount.delete(normalizeAccountId(accountId));
   }
 
   private async resolveFacebookPageId(
@@ -168,6 +209,18 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
 
   async listCampaigns(accountId: string): Promise<MetaCampaign[]> {
     const id = normalizeAccountId(accountId);
+    // The overview and the audit both list campaigns; share one fetch.
+    let pending = this.campaignsByAccount.get(id);
+    if (!pending) {
+      pending = this.fetchCampaigns(id);
+      this.campaignsByAccount.set(id, pending);
+      pending.catch(() => this.campaignsByAccount.delete(id));
+    }
+    return pending;
+  }
+
+  private async fetchCampaigns(id: string): Promise<MetaCampaign[]> {
+    const currencyPromise = this.accountCurrency(id);
     const rows: Array<Record<string, unknown>> = [];
     let after: string | undefined;
 
@@ -187,6 +240,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       if (!after || !(data.data?.length)) break;
     }
 
+    const currency = await currencyPromise;
     return rows.map((row) => ({
       id: String(row.id ?? ""),
       account_id: id,
@@ -194,9 +248,13 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       status: String(row.status ?? "PAUSED") as MetaCampaign["status"],
       objective: String(row.objective ?? "OUTCOME_TRAFFIC"),
       daily_budget_cents:
-        row.daily_budget != null ? Number(row.daily_budget) : undefined,
+        row.daily_budget != null
+          ? metaMinorToCents(Number(row.daily_budget), currency)
+          : undefined,
       lifetime_budget_cents:
-        row.lifetime_budget != null ? Number(row.lifetime_budget) : undefined,
+        row.lifetime_budget != null
+          ? metaMinorToCents(Number(row.lifetime_budget), currency)
+          : undefined,
       created_time:
         typeof row.created_time === "string" ? row.created_time : undefined,
       updated_time:
@@ -288,21 +346,32 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     const path = campaignId
       ? `${campaignId}/adsets`
       : `${normalizeAccountId(accountId)}/adsets`;
-    const data = await this.graph.get<{ data?: Array<Record<string, unknown>> }>(
-      path,
-      {
+    const currencyPromise = this.accountCurrency(accountId);
+    // Follow paging — accounts with >100 ad sets were silently truncated.
+    const rows: Array<Record<string, unknown>> = [];
+    let after: string | undefined;
+    for (let page = 0; page < 10; page++) {
+      const data = await this.graph.get<{
+        data?: Array<Record<string, unknown>>;
+        paging?: { cursors?: { after?: string }; next?: string };
+      }>(path, {
         fields:
           "id,name,status,campaign_id,daily_budget,optimization_goal,billing_event,targeting",
         limit: 100,
-      },
-    );
-    return (data.data ?? []).map((row) => ({
+        ...(after ? { after } : {}),
+      });
+      rows.push(...(data.data ?? []));
+      after = data.paging?.next ? data.paging?.cursors?.after : undefined;
+      if (!after) break;
+    }
+    const currency = await currencyPromise;
+    return rows.map((row) => ({
       id: String(row.id ?? ""),
       campaign_id: String(row.campaign_id ?? campaignId ?? ""),
       account_id: normalizeAccountId(accountId),
       name: String(row.name ?? "Ad Set"),
       status: String(row.status ?? "PAUSED") as MetaAdSet["status"],
-      daily_budget_cents: Number(row.daily_budget ?? 0),
+      daily_budget_cents: metaMinorToCents(Number(row.daily_budget ?? 0), currency),
       optimization_goal:
         typeof row.optimization_goal === "string"
           ? row.optimization_goal
@@ -381,10 +450,15 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
   }
 
   async updateAdSetBudget(input: UpdateAdSetBudgetInput): Promise<MetaAdSet> {
+    const currency = await this.accountCurrency(input.account_id);
     await this.graph.post(`${input.adset_id}`, {
-      daily_budget: String(input.daily_budget_cents),
+      daily_budget: String(centsToMetaMinor(input.daily_budget_cents, currency)),
     });
-    const adsets = await this.listAdSets(input.account_id);
+    // The change has already succeeded on Meta; a failed re-read must not
+    // turn it into a reported failure (and a duplicate on retry).
+    const adsets = await this.listAdSets(input.account_id).catch(
+      () => [] as MetaAdSet[],
+    );
     return (
       adsets.find((a) => a.id === input.adset_id) ?? {
         id: input.adset_id,
@@ -399,7 +473,10 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
 
   async pauseCampaign(accountId: string, campaignId: string): Promise<MetaCampaign> {
     await this.graph.post(campaignId, { status: "PAUSED" });
-    const campaigns = await this.listCampaigns(accountId);
+    this.invalidateCampaigns(accountId);
+    const campaigns = await this.listCampaigns(accountId).catch(
+      () => [] as MetaCampaign[],
+    );
     return campaigns.find((c) => c.id === campaignId) ?? {
       id: campaignId,
       account_id: normalizeAccountId(accountId),
@@ -414,7 +491,10 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     campaignId: string,
   ): Promise<MetaCampaign> {
     await this.graph.post(campaignId, { status: "ACTIVE" });
-    const campaigns = await this.listCampaigns(accountId);
+    this.invalidateCampaigns(accountId);
+    const campaigns = await this.listCampaigns(accountId).catch(
+      () => [] as MetaCampaign[],
+    );
     return campaigns.find((c) => c.id === campaignId) ?? {
       id: campaignId,
       account_id: normalizeAccountId(accountId),
@@ -434,7 +514,10 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       special_ad_categories: JSON.stringify(input.special_ad_categories ?? []),
     };
     if (hasCampaignBudget) {
-      body.daily_budget = String(input.daily_budget_cents);
+      const currency = await this.accountCurrency(accountId);
+      body.daily_budget = String(
+        centsToMetaMinor(input.daily_budget_cents!, currency),
+      );
     } else {
       // Meta Marketing API v24+: required when budget lives on ad sets (not CBO).
       body.is_adset_budget_sharing_enabled =
@@ -444,6 +527,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       `${accountId}/campaigns`,
       body,
     );
+    this.invalidateCampaigns(accountId);
     return {
       id: String(res.id),
       account_id: accountId,
@@ -662,7 +746,10 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
           "Missing daily ad set budget — set budget_daily or daily_budget (e.g. 5 for £5/day) in the approval args.",
         );
       }
-      body.daily_budget = String(Math.round(budget * 100));
+      const currency = await this.accountCurrency(accountId);
+      body.daily_budget = String(
+        centsToMetaMinor(Math.round(budget * 100), currency),
+      );
     }
     if (promoted) {
       body.promoted_object = JSON.stringify(promoted);
@@ -923,7 +1010,12 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       Math.max(3, Number(options.lookback_days ?? 7) || 7),
     );
     const { dateStart, dateStop } = lookbackWindow(lookbackDays);
-    const adsets = await this.listAdSets(id);
+    const [adsets, currency] = await Promise.all([
+      this.listAdSets(id),
+      this.accountCurrency(id),
+    ]);
+    const money = (cents: number) => formatMoney(cents, currency);
+    let insightsError: string | null = null;
     const budgeted = adsets.filter((a) => a.daily_budget_cents > 0);
     const pool =
       budgeted.filter((a) => a.status === "ACTIVE").length > 0
@@ -1002,8 +1094,10 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
           byId.set(adsetId, existing);
         }
       }
-    } catch {
-      // Insights can fail on empty accounts; still propose from budgets alone.
+    } catch (error) {
+      // Without performance data we can still show budgets, but must not
+      // recommend moving money (that would be a guess dressed up as analysis).
+      insightsError = error instanceof Error ? error.message : String(error);
     }
 
     const ranked = [...byId.values()].map((row) => {
@@ -1025,6 +1119,21 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     const lines: string[] = [
       `### Budget optimize (${id}) · ${dateStart} → ${dateStop}`,
     ];
+
+    if (insightsError) {
+      lines.push(
+        `- Performance data could not be loaded (${insightsError}). No budget changes are proposed until it can be read — try again shortly.`,
+      );
+      return {
+        text: lines.join("\n"),
+        structured: {
+          accountId: id,
+          lookback_days: lookbackDays,
+          proposals: [],
+          insights_error: insightsError,
+        },
+      };
+    }
 
     if (!ranked.length) {
       lines.push("- No ad sets with a daily budget found to rebalance.");
@@ -1050,7 +1159,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       if (next === w.daily_budget_cents) continue;
       const rationale = w.conversions
         ? `Scale ${w.name}: ${w.conversions} conv · CPA ${
-            w.cpa != null ? `$${w.cpa.toFixed(2)}` : "n/a"
+            w.cpa != null ? money(Math.round(w.cpa * 100)) : "n/a"
           } · +20% daily budget.`
         : `Scale ${w.name}: stronger relative CTR/delivery · +20% daily budget.`;
       proposals.push({
@@ -1064,7 +1173,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
         rationale,
       });
       lines.push(
-        `- SCALE ${w.name} (${w.adset_id}): $${(w.daily_budget_cents / 100).toFixed(2)} → $${(next / 100).toFixed(2)}/day`,
+        `- SCALE ${w.name} (${w.adset_id}): ${money(w.daily_budget_cents)} → ${money(next)}/day`,
       );
     }
 
@@ -1079,7 +1188,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
           Math.round(l.daily_budget_cents * 0.8),
         );
         if (next >= l.daily_budget_cents) continue;
-        const rationale = `Trim ${l.name}: $${l.spend.toFixed(2)} spend with 0 conversions in window · −20% daily budget.`;
+        const rationale = `Trim ${l.name}: ${money(Math.round(l.spend * 100))} spend with 0 conversions in window · −20% daily budget.`;
         proposals.push({
           tool: "update_adset_budget",
           args: {
@@ -1091,7 +1200,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
           rationale,
         });
         lines.push(
-          `- TRIM ${l.name} (${l.adset_id}): $${(l.daily_budget_cents / 100).toFixed(2)} → $${(next / 100).toFixed(2)}/day`,
+          `- TRIM ${l.name} (${l.adset_id}): ${money(l.daily_budget_cents)} → ${money(next)}/day`,
         );
       }
     }
@@ -1115,7 +1224,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
           rationale: `Rebalance toward ${primary.name} (+15% daily budget) pending operator approval.`,
         });
         lines.push(
-          `- PROPOSE ${primary.name} (${primary.adset_id}): $${(primary.daily_budget_cents / 100).toFixed(2)} → $${(next / 100).toFixed(2)}/day`,
+          `- PROPOSE ${primary.name} (${primary.adset_id}): ${money(primary.daily_budget_cents)} → ${money(next)}/day`,
         );
       }
     }
@@ -1297,35 +1406,40 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       }
     };
 
+    const creativeIdOf = (row: Record<string, unknown>): string | null => {
+      const nested =
+        row.creative && typeof row.creative === "object"
+          ? (row.creative as Record<string, unknown>)
+          : null;
+      return (
+        (nested && typeof nested.id === "string" && nested.id) ||
+        (typeof row.creative === "string" ? row.creative : null)
+      );
+    };
+
     const mapRows = async (
       rows: Array<Record<string, unknown>>,
     ): Promise<MetaAdCreative[]> => {
+      // Always hydrate creatives by id — the nested expand is often
+      // incomplete — but in one batched request instead of one per ad.
+      let hydrated: Record<string, Record<string, unknown>> = {};
+      try {
+        hydrated = await this.graph.getByIds<Record<string, unknown>>(
+          rows.map(creativeIdOf).filter((id): id is string => Boolean(id)),
+          { fields: creativeFields },
+        );
+      } catch {
+        // keep nested expands
+      }
+
       const results: MetaAdCreative[] = [];
       for (const row of rows) {
-        let creative =
-          row.creative && typeof row.creative === "object"
+        const creativeId = creativeIdOf(row);
+        const creative: Record<string, unknown> | null =
+          (creativeId ? hydrated[creativeId] : undefined) ??
+          (row.creative && typeof row.creative === "object"
             ? (row.creative as Record<string, unknown>)
-            : null;
-
-        const creativeId =
-          (creative && typeof creative.id === "string" && creative.id) ||
-          (typeof row.creative === "string" ? row.creative : null) ||
-          (typeof (row.creative as { id?: unknown } | null)?.id === "string"
-            ? String((row.creative as { id: string }).id)
             : null);
-
-        // Always hydrate creative by id — nested expand is often incomplete.
-        if (creativeId) {
-          try {
-            const full = await this.graph.get<Record<string, unknown>>(
-              creativeId,
-              { fields: creativeFields },
-            );
-            creative = full;
-          } catch {
-            // keep nested expand
-          }
-        }
 
         // The creative's own Website URL wins. Only consult the linked page post
         // when the creative carries no destination at all (post links can be stale).

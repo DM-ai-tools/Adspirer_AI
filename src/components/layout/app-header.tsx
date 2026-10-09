@@ -122,7 +122,7 @@ export function AppHeader() {
             <SelectValue
               placeholder={
                 clients.length === 0
-                  ? "No clients yet — add from Adspirer"
+                  ? "No clients yet — add one under Clients"
                   : "Select a client account"
               }
             />

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertAdmin,
   assertClientAccess,
+  getAccessibleClientIds,
 } from "@/lib/authz/assert";
 import { AuthorizationError, ClientAccessError } from "@/lib/errors";
 import { getDemoStore, resetDemoStore } from "@/lib/demo/store";
@@ -83,5 +84,31 @@ describe("authorization", () => {
     expect(() => assertAdmin({ profile: admin } as never)).not.toThrow();
     expect(() => assertAdmin(operator)).toThrow(AuthorizationError);
     expect(() => assertAdmin(null)).toThrow(AuthorizationError);
+  });
+});
+
+describe("getAccessibleClientIds", () => {
+  it("is unrestricted for admins", async () => {
+    resetDemoStore();
+    const admin = getDemoStore().profiles.find((p) => p.role === "admin")!;
+    await expect(
+      getAccessibleClientIds({ id: admin.id, email: admin.email, profile: admin }),
+    ).resolves.toBeNull();
+  });
+
+  it("returns only assigned clients for operators", async () => {
+    resetDemoStore();
+    const store = getDemoStore();
+    const operator = store.profiles.find((p) => p.role === "operator")!;
+    const assigned = store.userClientAccess
+      .filter((a) => a.user_id === operator.id)
+      .map((a) => a.client_id);
+    const ids = await getAccessibleClientIds({
+      id: operator.id,
+      email: operator.email,
+      profile: operator,
+    });
+    expect(ids).toEqual(assigned);
+    expect(ids).not.toContain("client_orphan_unassigned");
   });
 });

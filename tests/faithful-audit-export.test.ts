@@ -100,7 +100,7 @@ describe("faithful audit export", () => {
   });
 
   it("Word HTML keeps snapshot KPIs and both campaigns", () => {
-    const html = exportWordHtml("Adspirer report", FULL_AUDIT);
+    const html = exportWordHtml("Spendsmith report", FULL_AUDIT);
     expect(html).toContain("TR Internal Marketing");
     expect(html).toContain("Active campaigns");
     expect(html).toContain(">2<");
@@ -116,7 +116,7 @@ describe("faithful audit export", () => {
   });
 
   it("markdown download keeps the full body", () => {
-    const md = exportMarkdown("Adspirer report", FULL_AUDIT);
+    const md = exportMarkdown("Spendsmith report", FULL_AUDIT);
     expect(md).toContain("Active campaigns | 2");
     expect(md).toContain("Paused campaigns | 55");
     expect(md).toContain("120249137049080685");
@@ -127,7 +127,7 @@ describe("faithful audit export", () => {
   it("PDF payload is a real PDF with account slug filename", async () => {
     const out = await exportReportPayload({
       format: "pdf",
-      title: "Adspirer report",
+      title: "Spendsmith report",
       content: FULL_AUDIT,
     });
     expect(out.contentType).toBe("application/pdf");

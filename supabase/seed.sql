@@ -1,5 +1,5 @@
 -- =============================================================================
--- Adspirer AI — DEMO DATA seed
+-- Spendsmith — DEMO DATA seed
 -- =============================================================================
 -- CLEARLY LABELED DEMO DATA — do not use in production migrations.
 --
@@ -58,11 +58,11 @@ insert into auth.users (
   'a1111111-1111-4111-8111-111111111111',
   'authenticated',
   'authenticated',
-  'admin@adspirer.ai',
+  'admin@spendsmith.demo',
   crypt('demo-password-admin', gen_salt('bf')),
   timezone('utc', now()),
   '{"provider":"email","providers":["email"]}'::jsonb,
-  '{"full_name":"Adspirer Admin","role":"admin"}'::jsonb,
+  '{"full_name":"Spendsmith Admin","role":"admin"}'::jsonb,
   timezone('utc', now()),
   timezone('utc', now()),
   '',
@@ -75,11 +75,11 @@ insert into auth.users (
   'a2222222-2222-4222-8222-222222222222',
   'authenticated',
   'authenticated',
-  'operator@adspirer.ai',
+  'operator@spendsmith.demo',
   crypt('demo-password-operator', gen_salt('bf')),
   timezone('utc', now()),
   '{"provider":"email","providers":["email"]}'::jsonb,
-  '{"full_name":"Adspirer Operator","role":"operator"}'::jsonb,
+  '{"full_name":"Spendsmith Operator","role":"operator"}'::jsonb,
   timezone('utc', now()),
   timezone('utc', now()),
   '',
@@ -102,7 +102,7 @@ insert into auth.identities (
 (
   'a1111111-1111-4111-8111-111111111111',
   'a1111111-1111-4111-8111-111111111111',
-  jsonb_build_object('sub', 'a1111111-1111-4111-8111-111111111111', 'email', 'admin@adspirer.ai'),
+  jsonb_build_object('sub', 'a1111111-1111-4111-8111-111111111111', 'email', 'admin@spendsmith.demo'),
   'email',
   'a1111111-1111-4111-8111-111111111111',
   timezone('utc', now()),
@@ -112,7 +112,7 @@ insert into auth.identities (
 (
   'a2222222-2222-4222-8222-222222222222',
   'a2222222-2222-4222-8222-222222222222',
-  jsonb_build_object('sub', 'a2222222-2222-4222-8222-222222222222', 'email', 'operator@adspirer.ai'),
+  jsonb_build_object('sub', 'a2222222-2222-4222-8222-222222222222', 'email', 'operator@spendsmith.demo'),
   'email',
   'a2222222-2222-4222-8222-222222222222',
   timezone('utc', now()),
@@ -131,14 +131,14 @@ insert into public.profiles (id, email, full_name, role, is_active)
 values
   (
     'a1111111-1111-4111-8111-111111111111',
-    'admin@adspirer.ai',
+    'admin@spendsmith.demo',
     'Adspirer Admin',
     'admin',
     true
   ),
   (
     'a2222222-2222-4222-8222-222222222222',
-    'operator@adspirer.ai',
+    'operator@spendsmith.demo',
     'Adspirer Operator',
     'operator',
     true

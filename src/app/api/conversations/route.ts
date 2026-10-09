@@ -3,7 +3,11 @@ import { z } from "zod";
 import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
 import { getCurrentUser } from "@/lib/security/auth";
-import { assertAuthenticated, assertClientAccess } from "@/lib/authz/assert";
+import {
+  assertAuthenticated,
+  assertClientAccess,
+  getAccessibleClientIds,
+} from "@/lib/authz/assert";
 import { isAdmin } from "@/lib/security/roles";
 import { nowIso } from "@/lib/utils";
 import type { Conversation } from "@/types";
@@ -61,6 +65,9 @@ export async function GET(request: Request) {
     if (clientId) {
       await assertClientAccess(user.id, clientId);
       query = query.eq("client_id", clientId);
+    } else {
+      const allowed = await getAccessibleClientIds(user);
+      if (allowed) query = query.in("client_id", allowed);
     }
     const { data, error } = await query;
     if (error) throw new Error(error.message);

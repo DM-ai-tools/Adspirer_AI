@@ -1,7 +1,10 @@
 import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
 import { getCurrentUser } from "@/lib/security/auth";
-import { assertAuthenticated } from "@/lib/authz/assert";
+import {
+  assertAuthenticated,
+  getAccessibleClientIds,
+} from "@/lib/authz/assert";
 import { isAdmin } from "@/lib/security/roles";
 import { mapApprovalRow, mapTaskRow } from "@/lib/db/live-maps";
 import { jsonOk, withApiHandler } from "@/lib/api/response";
@@ -72,9 +75,43 @@ export async function GET() {
 
     const { createAdminClient } = await import("@/lib/supabase/admin");
     const supabase = createAdminClient();
+    // null = admin (all clients); otherwise every query is scoped to the
+    // operator's assigned clients so the dashboard never shows other tenants.
+    const allowed = await getAccessibleClientIds(user);
+    const ids = allowed ?? [];
+    const TASK_LIST_COLUMNS =
+      "id, client_id, user_id, conversation_id, title, user_request, status, error_message, paused_at, completed_at, created_at, updated_at";
 
-    // Connected = synced Meta accounts that are mapped to a client.
-    // Also count unmapped synced accounts so Adspirer sync shows up on the dashboard.
+    const clientsQ = supabase
+      .from("clients")
+      .select("id", { count: "exact", head: true });
+    const mappedQ = supabase
+      .from("connected_meta_accounts")
+      .select("id", { count: "exact", head: true })
+      .not("mapped_client_id", "is", null);
+    const syncedQ = supabase
+      .from("connected_meta_accounts")
+      .select("id", { count: "exact", head: true });
+    const pendingCountQ = supabase
+      .from("approvals")
+      .select("id", { count: "exact", head: true })
+      .eq("status", "pending");
+    const activeTasksQ = supabase
+      .from("tasks")
+      .select("id", { count: "exact", head: true })
+      .in("status", ["queued", "running", "waiting_approval", "paused"]);
+    const recentTasksQ = supabase
+      .from("tasks")
+      .select(TASK_LIST_COLUMNS)
+      .order("updated_at", { ascending: false })
+      .limit(5);
+    const pendingRowsQ = supabase
+      .from("approvals")
+      .select("*")
+      .eq("status", "pending")
+      .order("created_at", { ascending: false })
+      .limit(10);
+
     const [
       { count: clients },
       { count: mappedAccounts },
@@ -85,33 +122,14 @@ export async function GET() {
       { data: approvalRows },
       { count: unreadNotifications },
     ] = await Promise.all([
-      supabase.from("clients").select("id", { count: "exact", head: true }),
-      supabase
-        .from("connected_meta_accounts")
-        .select("id", { count: "exact", head: true })
-        .not("mapped_client_id", "is", null),
-      supabase
-        .from("connected_meta_accounts")
-        .select("id", { count: "exact", head: true }),
-      supabase
-        .from("approvals")
-        .select("id", { count: "exact", head: true })
-        .eq("status", "pending"),
-      supabase
-        .from("tasks")
-        .select("id", { count: "exact", head: true })
-        .in("status", ["queued", "running", "waiting_approval", "paused"]),
-      supabase
-        .from("tasks")
-        .select("*")
-        .order("updated_at", { ascending: false })
-        .limit(5),
-      supabase
-        .from("approvals")
-        .select("*")
-        .eq("status", "pending")
-        .order("created_at", { ascending: false })
-        .limit(10),
+      allowed ? clientsQ.in("id", ids) : clientsQ,
+      allowed ? mappedQ.in("mapped_client_id", ids) : mappedQ,
+      // Unmapped synced accounts belong to no client — admins only.
+      allowed ? syncedQ.in("mapped_client_id", ids) : syncedQ,
+      allowed ? pendingCountQ.in("client_id", ids) : pendingCountQ,
+      allowed ? activeTasksQ.in("client_id", ids) : activeTasksQ,
+      allowed ? recentTasksQ.in("client_id", ids) : recentTasksQ,
+      allowed ? pendingRowsQ.in("client_id", ids) : pendingRowsQ,
       supabase
         .from("notifications")
         .select("id", { count: "exact", head: true })

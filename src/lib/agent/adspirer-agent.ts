@@ -1,7 +1,7 @@
-import type { LanguageModel } from "ai";
+import type { LanguageModel, ModelMessage, SystemModelMessage } from "ai";
 import type { Task } from "@/types";
 import { getConfig } from "@/lib/config";
-import { getLiveAdspirerProvider, getProvider, resolveProvider } from "@/lib/adspirer/client";
+import { resolveProvider } from "@/lib/adspirer/client";
 import type {
   MetaAdsProvider,
   MetaAdCreative,
@@ -9,8 +9,10 @@ import type {
   MetaInsights,
 } from "@/lib/adspirer/provider";
 import { getDemoStore } from "@/lib/demo/store";
-import { buildSystemPrompt } from "@/lib/agent/prompts";
-import { buildSystemPromptV2 } from "@/lib/agent/prompts-v2";
+import {
+  buildStaticSystemPromptV2,
+  buildSystemPromptV2,
+} from "@/lib/agent/prompts-v2";
 import type { AgentHistoryMessage } from "@/lib/agent/history";
 import { detectRequestIntent, detectRequestIntentWithHistory, mentionsCreativeGeneration } from "@/lib/agent/task-plan";
 import {
@@ -44,31 +46,24 @@ import {
   stripDestinationMarkers,
 } from "@/lib/landing/verified-destinations";
 import { logger } from "@/lib/observability/logger";
-import { getWorkspaceContext } from "@/lib/runtime/workspace-context";
 import { resolvePrimaryAccountId } from "@/lib/adspirer/resolve-meta-account";
 
 function activeSystemPrompt(clientContext: string): string {
-  return getWorkspaceContext()?.version === "v2"
-    ? buildSystemPromptV2(clientContext)
-    : buildSystemPrompt(clientContext);
+  return buildSystemPromptV2(clientContext);
 }
 
-function isWorkspaceV2(): boolean {
-  return getWorkspaceContext()?.version === "v2";
-}
+/** Anthropic prompt-cache breakpoint (ignored by other providers). */
+const CACHE_BREAKPOINT = {
+  anthropic: { cacheControl: { type: "ephemeral" as const } },
+};
 
-/** V2 → OAuth Meta Graph; V1 → Adspirer MCP when available, else mode provider. */
+/** Live → Meta Graph with the operator's Facebook token; demo → mock data. */
 async function resolveAgentProvider(): Promise<MetaAdsProvider> {
-  if (isWorkspaceV2()) {
-    return resolveProvider("meta_direct");
-  }
-  return getLiveAdspirerProvider() ?? getProvider();
+  return resolveProvider();
 }
 
 function noMappedAccountMessage(): string {
-  return isWorkspaceV2()
-    ? "No granted Meta account is mapped to this client. Connect Facebook, sync accounts under Connections, then Add as client / Map — and select that client in Workspace V2."
-    : "No granted Meta account is mapped to this client. Map one under Connections (Adspirer).";
+  return "No granted Meta account is mapped to this client. Connect Facebook, sync accounts under Connections, then Add as client / Map — and select that client in the Workspace.";
 }
 
 export type AgentToolCallProposal = {
@@ -203,6 +198,17 @@ export async function runAdspirerAgent(input: {
   onProgress?: (event: AgentProgressEvent) => void | Promise<void>;
 }): Promise<AgentRunResult> {
   const config = getConfig();
+
+  // Export turns already have a finished, structured report rendered to
+  // markdown. Asking Claude to re-type it added 30–60s and could drift from the
+  // structured data that the PDF/Word export uses — present the draft as-is.
+  if (input.reportDraft?.trim()) {
+    return finalizeWriterResult({
+      text: "",
+      input,
+      mode: config.hasAnthropic ? "anthropic" : "openai",
+    });
+  }
 
   if (config.hasAnthropic && config.ANTHROPIC_API_KEY) {
     try {
@@ -447,7 +453,10 @@ type WriterInput = {
 };
 
 function buildWriterMessages(input: WriterInput): {
-  system: string;
+  /** Same for every client and turn — cached. */
+  systemStatic: string;
+  /** Client brand, research memo, documents. */
+  systemContext: string;
   messages: Array<{ role: "assistant" | "user" | "system"; content: string }>;
 } {
   const intent = detectRequestIntentWithHistory(
@@ -551,7 +560,7 @@ function buildWriterMessages(input: WriterInput): {
         "- JSON is only an optional appendix at the very end for tool proposals or service_picker.",
         "- Never say \"fetching data\", \"stand by\", or \"results incoming\".",
         "- Prefer concrete findings, tables, and recommendations from the evidence.",
-        "- If evidence is thin/failed, say exactly what failed and what the operator should check (Adspirer connection / Meta account mapping).",
+        "- If evidence is thin/failed, say exactly what failed and what the operator should check (Facebook connection / Meta account mapping).",
         "- If proposing execute change(s), explain in prose first, then append one JSON block per tool at the end:",
         '```json\n{"tool":"create_meta_image_campaign"|"create_meta_video_campaign","args":{...},"rationale":"..."}\n```',
         "- For scrape/services: list services in prose, then append service_picker JSON at the end (not instead of prose).",
@@ -565,7 +574,10 @@ function buildWriterMessages(input: WriterInput): {
         .join("\n");
 
   return {
-    system: activeSystemPrompt(input.clientContext),
+    systemStatic: buildStaticSystemPromptV2(),
+    systemContext: input.clientContext
+      ? `## Additional context\n${input.clientContext}`
+      : "",
     messages: [
       ...(input.history ?? []).map((m) => ({
         role: m.role,
@@ -583,7 +595,24 @@ async function streamWriterText(args: {
 }): Promise<string> {
   const { model, providerLabel, input } = args;
   const { streamText, stepCountIs } = await import("ai");
-  const { system, messages } = buildWriterMessages(input);
+  const { systemStatic, systemContext, messages } = buildWriterMessages(input);
+  // Two cache breakpoints: the static instructions (shared by every request)
+  // and the end of this turn's prompt, so each step of the diagnose tool loop
+  // re-reads history + evidence from cache instead of re-billing it.
+  // AI SDK v7 only accepts system content via `instructions`.
+  const instructions: SystemModelMessage[] = [
+    { role: "system", content: systemStatic, providerOptions: CACHE_BREAKPOINT },
+    ...(systemContext
+      ? [{ role: "system" as const, content: systemContext }]
+      : []),
+  ];
+  const turnMessages = messages.filter((m) => m.role !== "system");
+  const lastIndex = turnMessages.length - 1;
+  const modelMessages = turnMessages.map((m, i) =>
+    (i === lastIndex
+      ? { ...m, providerOptions: CACHE_BREAKPOINT }
+      : m) as ModelMessage,
+  );
 
   const evidence = input.toolEvidence ?? "";
   const auditToolsEnabled = evidence.includes("### Diagnose tools");
@@ -608,8 +637,8 @@ async function streamWriterText(args: {
   let streamError: unknown = null;
   const result = streamText({
     model,
-    system,
-    messages,
+    instructions,
+    messages: modelMessages,
     ...(tools
       ? {
           tools,
@@ -911,7 +940,7 @@ async function runMockAgent(input: {
       "- **B Website services** — waiting for campaign proof",
       "- **C Ad sets + ads** — waiting",
       "",
-      "I can create a **PAUSED** Meta image or video campaign on the connected account via Adspirer.",
+      "I can create a **PAUSED** Meta image or video campaign on the connected account.",
       "First: do you want an **image** or **video** ad/campaign?",
       accountId ? `\nMapped account: \`${accountId}\`` : "",
     ]
@@ -980,7 +1009,7 @@ async function runMockAgent(input: {
       ? [
           humanized.display,
           "",
-          "Pick an ad below (or reply with the ad id), then I’ll run Adspirer optimize tools.",
+          "Pick an ad below (or reply with the ad id), then I’ll run the optimize tools.",
         ].join("\n")
       : (evidence ?? "No ads found to optimize yet.");
     if (humanized?.adPicker?.ads?.length) {
@@ -1000,7 +1029,7 @@ async function runMockAgent(input: {
       : [
           "### Meta Ads report",
           "I couldn't gather live Meta data for this client yet.",
-          "Check Adspirer Connection → synced Meta accounts are mapped to this client, then ask again to audit.",
+          "Check Connections → synced Meta accounts are mapped to this client, then ask again to audit.",
         ].join("\n");
   }
 
@@ -1134,6 +1163,38 @@ export function extractAdCopyFromText(text: string): {
 
 export { resolvePrimaryAccountId } from "@/lib/adspirer/resolve-meta-account";
 
+const INSIGHTS_CONCURRENCY = 5;
+
+/**
+ * Start a request now and await it later. The no-op catch stops an early
+ * rejection from being reported as unhandled before the caller awaits it;
+ * awaiting the returned promise still throws.
+ */
+function background<T>(promise: Promise<T>): Promise<T> {
+  promise.catch(() => undefined);
+  return promise;
+}
+
+/** Map with at most `limit` calls in flight; results keep input order. */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await fn(items[index]!);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, worker),
+  );
+  return results;
+}
+
 function formatInsightMetrics(i: MetaInsights): string {
   const parts = [
     `spend $${i.spend.toFixed(2)}`,
@@ -1233,11 +1294,7 @@ export async function gatherDiagnoseEvidence(input: {
       accountId,
       evidence: `### Provider\n- Failed to resolve Meta access: ${
         error instanceof Error ? error.message : String(error)
-      }${
-        isWorkspaceV2()
-          ? "\n- Connect Facebook OAuth in Workspace V2 / Connections, then retry."
-          : ""
-      }`,
+      }\n- Connect Facebook in the Workspace header or under Connections, then retry.`,
       toolCalls,
     };
   }
@@ -1245,6 +1302,19 @@ export async function gatherDiagnoseEvidence(input: {
   if (intent === "out_of_scope") {
     return { accountId, evidence: "Request appears out of Meta Ads scope.", toolCalls };
   }
+
+  const wantsCampaignList = Boolean(
+    accountId &&
+      (intent === "audit" ||
+        intent === "list_campaigns" ||
+        intent === "budget" ||
+        intent === "general" ||
+        intent === "export"),
+  );
+  // Start the campaign list now so it loads while the overview does.
+  const campaignsPromise = wantsCampaignList
+    ? background(provider.listCampaigns(accountId!))
+    : null;
 
   if (accountId) {
     await input.onProgress?.({
@@ -1283,21 +1353,14 @@ export async function gatherDiagnoseEvidence(input: {
     );
   }
 
-  if (
-    accountId &&
-    (intent === "audit" ||
-      intent === "list_campaigns" ||
-      intent === "budget" ||
-      intent === "general" ||
-      intent === "export")
-  ) {
+  if (accountId && campaignsPromise) {
     await input.onProgress?.({
       phase: "list_campaigns",
       label: "Listing Meta campaigns…",
       stepId: "list_campaigns",
     });
     try {
-      const campaigns = await provider.listCampaigns(accountId);
+      const campaigns = await campaignsPromise;
       toolCalls.push({
         name: "list_campaigns",
         args: { account_id: accountId },
@@ -1451,6 +1514,31 @@ export async function gatherDiagnoseEvidence(input: {
               .join("\n"),
           );
 
+          // Ads and creatives don't depend on insights — fetch them in parallel.
+          const adsPromise = background(provider.listAds(accountId));
+          const creativesPromise = background(
+            (async (): Promise<MetaAdCreative[]> => {
+              if (!provider.getAdCreatives) return [];
+              if (brief.scope === "campaigns" && matchedCampaigns.length) {
+                // Campaign-scoped only — never mix other campaigns' Website URLs.
+                const perCampaign = await Promise.all(
+                  matchedCampaigns.slice(0, 8).map((c) =>
+                    provider.getAdCreatives!(accountId, {
+                      campaign_id: c.id,
+                      limit: 40,
+                    }).catch(() => [] as MetaAdCreative[]),
+                  ),
+                );
+                const byAd = new Map<string, MetaAdCreative>();
+                for (const batch of perCampaign) {
+                  for (const row of batch) byAd.set(row.ad_id, row);
+                }
+                return [...byAd.values()];
+              }
+              return provider.getAdCreatives(accountId, { limit: 50 });
+            })(),
+          );
+
           if (provider.getAccountInsights && brief.scope === "account") {
             try {
               const accountInsights = await provider.getAccountInsights(
@@ -1488,14 +1576,30 @@ export async function gatherDiagnoseEvidence(input: {
 
           const insightLines: string[] = [];
           let totalSpend = 0;
-          for (const c of insightTargets) {
-            try {
-              const row = await provider.getCampaignInsights(
-                accountId,
-                c.id,
-                dateStart,
-                dateStop,
-              );
+          // A few at a time: fast, but well inside Meta's per-account rate limits.
+          const insightResults = await mapWithConcurrency(
+            insightTargets,
+            INSIGHTS_CONCURRENCY,
+            async (c) => {
+              try {
+                return {
+                  ok: true as const,
+                  row: await provider.getCampaignInsights(
+                    accountId,
+                    c.id,
+                    dateStart,
+                    dateStop,
+                  ),
+                };
+              } catch (error) {
+                return { ok: false as const, error };
+              }
+            },
+          );
+          for (const [index, c] of insightTargets.entries()) {
+            const outcome = insightResults[index]!;
+            if (outcome.ok) {
+              const row = outcome.row;
               toolCalls.push({
                 name: "get_campaign_insights",
                 args: {
@@ -1510,7 +1614,8 @@ export async function gatherDiagnoseEvidence(input: {
               insightLines.push(
                 `- ${c.name} (${c.id}) · ${c.status} · ${c.objective} · ${formatInsightMetrics(row)}`,
               );
-            } catch (error) {
+            } else {
+              const error = outcome.error;
               insightLines.push(
                 `- ${c.name} (${c.id}): insights failed — ${
                   error instanceof Error ? error.message : String(error)
@@ -1530,7 +1635,7 @@ export async function gatherDiagnoseEvidence(input: {
 
           // Light ad sample for creative pillar (LLM can deepen via tools)
           try {
-            const ads = await provider.listAds(accountId);
+            const ads = await adsPromise;
             toolCalls.push({
               name: "list_ads",
               args: { account_id: accountId },
@@ -1570,30 +1675,7 @@ export async function gatherDiagnoseEvidence(input: {
             stepId: "landing_pages",
           });
           try {
-            let creatives: MetaAdCreative[] = [];
-
-            if (provider.getAdCreatives) {
-              if (brief.scope === "campaigns" && matchedCampaigns.length) {
-                // Campaign-scoped only — never mix other campaigns' Website URLs.
-                const perCampaign = await Promise.all(
-                  matchedCampaigns.slice(0, 8).map((c) =>
-                    provider.getAdCreatives!(accountId, {
-                      campaign_id: c.id,
-                      limit: 40,
-                    }).catch(() => [] as MetaAdCreative[]),
-                  ),
-                );
-                const byAd = new Map<string, MetaAdCreative>();
-                for (const batch of perCampaign) {
-                  for (const row of batch) byAd.set(row.ad_id, row);
-                }
-                creatives = [...byAd.values()];
-              } else {
-                creatives = await provider.getAdCreatives(accountId, {
-                  limit: 50,
-                });
-              }
-            }
+            const creatives = await creativesPromise;
 
             toolCalls.push({
               name: "get_meta_ad_creatives",
@@ -2116,13 +2198,13 @@ export async function gatherDiagnoseEvidence(input: {
             refresh: brief.refresh,
           },
           rationale:
-            "Adspirer Ad Copy Writing Room skill — Meta variants grounded in live creatives when available",
+            "Ad Copy Writing Room framework — Meta variants grounded in live creatives when available",
         });
         if (accountId && generated.grounded_in_live_creatives) {
           toolCalls.push({
             name: "get_meta_ad_creatives",
             args: { account_id: accountId, lookback_days: 30 },
-            rationale: "Grounded copy against live Meta creatives via Adspirer",
+            rationale: "Grounded copy against live Meta creatives",
           });
         }
         copyPicker = {
@@ -2142,10 +2224,10 @@ export async function gatherDiagnoseEvidence(input: {
             `- Draft engine: ${generated.source}`,
             `- Brand: ${clientName}`,
             generated.grounded_in_live_creatives
-              ? `- Grounded in ${generated.live_creative_count} live Meta creative(s) via Adspirer get_meta_ad_creatives`
+              ? `- Grounded in ${generated.live_creative_count} live Meta creative(s) via get_meta_ad_creatives`
               : accountId
                 ? "- No live creatives returned — wrote net-new angles"
-                : "- No mapped Meta account — wrote from brief only (map account in Admin → Adspirer for live grounding)",
+                : "- No mapped Meta account — wrote from brief only (map an account under Connections for live grounding)",
             brief.landing_page_url
               ? `- Landing: ${brief.landing_page_url}`
               : null,
@@ -2361,9 +2443,7 @@ export async function gatherDiagnoseEvidence(input: {
             : queueNow
               ? "Approvals queue turn — do NOT show ad_picker UI."
               : "Ad picker only if they still need to pick an ad for creative refresh.",
-          isWorkspaceV2()
-            ? "V2: optimize from live Meta Graph evidence; EXECUTE mutations go through Approvals."
-            : "",
+          "Optimize from live Meta Graph evidence; EXECUTE mutations go through Approvals.",
         ]
           .filter(Boolean)
           .join("\n"),
@@ -2453,9 +2533,7 @@ export async function gatherDiagnoseEvidence(input: {
     }
   } else if (intent === "optimize" && !accountId) {
     sections.push(
-      isWorkspaceV2()
-        ? "### Optimize\n- No mapped Meta account. Connect Facebook, sync/map an ad account under Connections, then retry."
-        : "### Optimize\n- No mapped Meta account. Connect Adspirer and map an account first.",
+      "### Optimize\n- No mapped Meta account. Connect Facebook, sync/map an ad account under Connections, then retry.",
     );
   }
 
@@ -2486,7 +2564,7 @@ export async function createAdspirerMastraAgent(clientContext: string) {
 
   return new Agent({
     id: "adspirer-agent",
-    name: "Adspirer Agent",
+    name: "Spendsmith Agent",
     instructions: activeSystemPrompt(clientContext),
     model: anthropic(config.ANTHROPIC_MODEL),
   });

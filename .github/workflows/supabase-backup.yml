@@ -1,0 +1,81 @@
+name: Supabase backup & keepalive
+
+# Free-plan Supabase has no automatic backups and pauses after 7 days without
+# activity. This runs daily: it pings the API (keeps the project awake) and
+# stores an encrypted database dump as a workflow artifact.
+#
+# Required repository secrets (Settings → Secrets and variables → Actions):
+#   SUPABASE_DB_URL      Session pooler connection string, with password
+#                        (Supabase → Project → Connect → Session pooler)
+#   SUPABASE_URL         https://<project-ref>.supabase.co
+#   SUPABASE_ANON_KEY    the anon/public key
+#   BACKUP_PASSPHRASE    long random passphrase used to encrypt the dump
+# Restore steps: docs/BACKUPS.md
+
+on:
+  schedule:
+    - cron: "17 3 * * *" # daily, 03:17 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supabase-backup
+  cancel-in-progress: false
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping Supabase API
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          set -euo pipefail
+          status=$(curl -sS -o /dev/null -w "%{http_code}" \
+            "$SUPABASE_URL/rest/v1/" -H "apikey: $SUPABASE_ANON_KEY")
+          echo "Supabase REST answered HTTP $status"
+          # 200/401/404 all prove the project is up; 5xx or 000 means trouble.
+          case "$status" in 2*|401|404) ;; *) exit 1 ;; esac
+
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Dump roles, schema and data
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -euo pipefail
+          mkdir -p dump
+          supabase db dump --db-url "$SUPABASE_DB_URL" -f dump/roles.sql --role-only
+          supabase db dump --db-url "$SUPABASE_DB_URL" -f dump/schema.sql
+          supabase db dump --db-url "$SUPABASE_DB_URL" -f dump/data.sql --use-copy --data-only
+          ls -lh dump
+
+      - name: Encrypt
+        env:
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          stamp=$(date -u +%Y-%m-%dT%H%MZ)
+          tar -czf "spendsmith-db-$stamp.tar.gz" dump
+          gpg --batch --yes --symmetric --cipher-algo AES256 \
+            --passphrase "$BACKUP_PASSPHRASE" \
+            -o "spendsmith-db-$stamp.tar.gz.gpg" "spendsmith-db-$stamp.tar.gz"
+          rm -rf dump "spendsmith-db-$stamp.tar.gz"
+          echo "ARCHIVE=spendsmith-db-$stamp.tar.gz.gpg" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE }}
+          path: ${{ env.ARCHIVE }}
+          retention-days: 30
+          if-no-files-found: error

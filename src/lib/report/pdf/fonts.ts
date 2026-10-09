@@ -16,6 +16,11 @@ export function ensureReportFonts(): void {
     family: "Inter",
     fonts: [
       { src: fontPath("Inter-Regular.ttf"), fontWeight: 400 },
+      {
+        src: fontPath("Inter-Italic.ttf"),
+        fontWeight: 400,
+        fontStyle: "italic",
+      },
       { src: fontPath("Inter-Medium.ttf"), fontWeight: 500 },
       { src: fontPath("Inter-SemiBold.ttf"), fontWeight: 600 },
       { src: fontPath("Inter-Bold.ttf"), fontWeight: 700 },
@@ -29,6 +34,10 @@ export function ensureReportFonts(): void {
     ],
   });
 
-  // Disable aggressive hyphenation — mid-word breaks look cheap on paper.
-  Font.registerHyphenationCallback((word) => [word]);
+  // No syllable hyphenation — mid-word breaks look cheap on paper. Very long
+  // tokens (URLs, IDs) are the exception: let them break into chunks so they
+  // wrap inside table cells instead of running past the edge.
+  Font.registerHyphenationCallback((word) =>
+    word.length > 40 ? (word.match(/.{1,24}/g) ?? [word]) : [word],
+  );
 }

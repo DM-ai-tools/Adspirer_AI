@@ -3,7 +3,7 @@ import type { ConnectedMetaAccount } from "@/types";
 import type { MetaAdsProvider } from "@/lib/adspirer/provider";
 import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
-import { getLiveAdspirerProvider, getProvider, resolveProvider } from "@/lib/adspirer/client";
+import { resolveProvider } from "@/lib/adspirer/client";
 import { nowIso } from "@/lib/utils";
 import { logger } from "@/lib/observability/logger";
 import type { ConnectionSource } from "@/lib/adspirer/connection-source";
@@ -25,12 +25,12 @@ export async function syncConnectedMetaAccounts(options?: {
   source?: ConnectionSource;
   provider?: MetaAdsProvider;
 }): Promise<SyncAccountsResult> {
-  const source: ConnectionSource = options?.source ?? "adspirer";
+  const source: ConnectionSource = options?.source ?? "facebook_oauth";
   const provider =
     options?.provider ??
     (source === "facebook_oauth"
       ? await resolveProvider("meta_direct")
-      : getLiveAdspirerProvider() ?? getProvider());
+      : await resolveProvider());
 
   const accounts = await provider.listAccessibleAccounts();
   const ts = nowIso();
@@ -146,11 +146,12 @@ export async function syncConnectedMetaAccounts(options?: {
     const mapped = mapConnectedMetaAccountRow(data as Record<string, unknown>);
     upserted.push(mapped);
 
+    // Keep the client's cached account label fresh, but never rename the
+    // client itself — operators name clients, not the ad account.
     if (mapped.client_id && !looksLikeIdName(resolvedName)) {
       await supabase
         .from("clients")
         .update({
-          name: resolvedName,
           meta_account_name: resolvedName,
           meta_account_id: account.meta_account_id,
           updated_at: ts,

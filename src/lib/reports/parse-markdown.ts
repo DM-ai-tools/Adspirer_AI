@@ -60,7 +60,8 @@ export function repairGluedProse(text: string): string {
       .replace(/\bnull\b/gi, "")
       .replace(/([A-Za-z])(?:undefined|null)\b/gi, "$1")
       .replace(/\b(?:undefined|null)([A-Za-z])/gi, "$1")
-      .replace(/([a-z])([A-Z][a-z]+)/g, "$1 $2")
+      // No generic camelCase split: it broke brand names (TikTok, LinkedIn,
+      // YouTube, WhatsApp, iPhone). Only the known "<word>Meta" merge below.
       // High-frequency audit merges from Meta reports
       .replace(/\b(campaign)(list|or|in|active|fatigues|named|is)\b/gi, "$1 $2")
       .replace(/\b(and)(delivering|iteration|delivery)\b/gi, "$1 $2")
@@ -68,11 +69,14 @@ export function repairGluedProse(text: string): string {
       .replace(/\b(page)(have|so)\b/gi, "$1 $2")
       .replace(/\b(aligned)(with)\b/gi, "$1 $2")
       .replace(/\b(gen)(objective)\b/gi, "$1 $2")
-      .replace(/\b(lead)(gen)\b/gi, "$1 $2")
-      .replace(/\b(ad)(set)\b/gi, "$1 $2")
       .replace(/\b(no)(dis[a-z]+|approvals?|policy)\b/gi, "$1 $2")
       .replace(/([a-z])(Meta)\b/g, "$1 $2")
-      .replace(/([a-z]{4,}?)(for|to)(?=[\s\-,.;:!]|$)/gi, "$1 $2")
+      // Specific "<word>for/to" merges only — a generic rule split real words
+      // like Toronto, tomato and manifesto.
+      .replace(
+        /\b(benchmark|room|budget|campaign|account|time|ready|need|plan|reason)(for|to)\b/gi,
+        "$1 $2",
+      )
       .replace(/([a-z]{4,})(namingis)\b/gi, "$1 naming is")
       .replace(/([a-z]{4,})(naming)\b/gi, "$1 $2")
       .replace(/[^\S\n]{2,}/g, " ")
@@ -111,7 +115,14 @@ export function spaceAdjacentSpans(spans: InlineSpan[]): InlineSpan[] {
   return out.length ? out : [{ type: "text", text: "" }];
 }
 
-/** Normalize curly quotes / mojibake / emoji that break Latin-1 PDF fonts. */
+/** Emoji and pictographs (incl. variation selectors / keycaps) — no report font draws them. */
+const EMOJI = /[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{FE0F}\u{20E3}]/gu;
+
+/**
+ * Normalise text for exports. Unicode is kept (→, –, ₹, €, accented names) —
+ * the PDF uses an embedded Unicode font and Word/Excel handle it natively.
+ * Only emoji, control characters and mojibake are removed.
+ */
 export function sanitizeReportText(input: string): string {
   let out = String(input ?? "")
     // Convert exotic spaces FIRST — deleting them glued words together
@@ -120,7 +131,6 @@ export function sanitizeReportText(input: string): string {
     .replace(/\r\n/g, "\n")
     .replace(/[\u2018\u2019\u201A]/g, "'")
     .replace(/[\u201C\u201D\u201E]/g, '"')
-    .replace(/[\u2013\u2014]/g, "-")
     .replace(/\u2026/g, "...")
     // Common UTF-8→Latin1 mojibake for emoji / checkmarks
     .replace(/â€[™œ]/g, "'")
@@ -128,14 +138,10 @@ export function sanitizeReportText(input: string): string {
     .replace(/âœ…|âœ”|âœ“|âœ¨/g, "")
     .replace(/â\x9c\x85/g, "")
     .replace(/â[^\x00-\x7F]*/g, "")
-    .replace(/[^\x09\x0A\x0D\x20-\x7E\u00A0-\u00FF]/g, (ch) => {
-      // Keep latin supplement; drop other symbols that Helvetica can't draw
-      const code = ch.codePointAt(0) ?? 0;
-      if (code >= 0xa0 && code <= 0xff) return ch;
-      // Any leftover separator-class char → space, never delete
-      if (/\p{Z}/u.test(ch)) return " ";
-      return "";
-    });
+    // Emoji next to text (🟢 Active) → just the text, never a gap or glyph box.
+    .replace(new RegExp(`${EMOJI.source}+\\s?`, "gu"), "")
+    // Control characters (keep tab / newline).
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, "");
 
   out = ensureMarkdownEmphasisSpacing(out);
   out = repairGluedProse(out);
@@ -184,6 +190,17 @@ function splitTableRow(line: string): string[] {
   return trimmed.split("|").map((c) =>
     sanitizeReportText(c.trim().replace(/\*\*/g, "")),
   );
+}
+
+/**
+ * Markdown has no escape for "|" in cells, and Meta campaign names often use
+ * it ("TR | Lead Gen | Sep 2026"). When a row has more cells than the header,
+ * the extras came from the first column — fold them back into it.
+ */
+export function fitRowToHeader(cells: string[], columns: number): string[] {
+  if (columns < 1 || cells.length <= columns) return cells;
+  const overflow = cells.length - columns;
+  return [cells.slice(0, overflow + 1).join(" | "), ...cells.slice(overflow + 1)];
 }
 
 export function parseMarkdownToBlocks(markdown: string): ReportBlock[] {
@@ -266,7 +283,7 @@ export function parseMarkdownToBlocks(markdown: string): ReportBlock[] {
           i += 1;
           continue;
         }
-        rows.push(splitTableRow(lines[i]));
+        rows.push(fitRowToHeader(splitTableRow(lines[i]), headers.length));
         i += 1;
       }
       blocks.push({ type: "table", headers, rows });

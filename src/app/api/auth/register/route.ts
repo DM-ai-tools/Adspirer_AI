@@ -26,6 +26,7 @@ export async function POST(request: Request) {
     }
 
     const body = await parseBody(request, bodySchema);
+    assertSignupDomainAllowed(body.email, config.SIGNUP_ALLOWED_DOMAINS);
     const admin = createAdminClient();
     const fullName = body.fullName ?? body.email.split("@")[0];
 
@@ -36,42 +37,23 @@ export async function POST(request: Request) {
         email_confirm: true,
         user_metadata: {
           full_name: fullName,
-          role: "operator",
         },
       });
 
     if (createError || !created.user) {
-      // User may already exist from a previous unconfirmed signup — confirm + set password
-      const existing = await findUserByEmail(admin, body.email);
-      if (!existing) {
-        throw new AuthorizationError(
-          createError?.message ?? "Registration failed",
-          { statusHint: 400 },
+      // Never touch an existing account from this unauthenticated endpoint —
+      // resetting its password here would let anyone take over any email.
+      const alreadyExists =
+        createError?.status === 422 ||
+        /already (been )?registered|already exists/i.test(
+          createError?.message ?? "",
         );
-      }
-
-      const { error: updateError } = await admin.auth.admin.updateUserById(
-        existing.id,
-        {
-          password: body.password,
-          email_confirm: true,
-          user_metadata: {
-            full_name: fullName,
-            role: existing.user_metadata?.role ?? "operator",
-          },
-        },
+      throw new AuthorizationError(
+        alreadyExists
+          ? "An account with this email already exists. Sign in instead, or ask your administrator to reset your password."
+          : "Registration failed. Please try again.",
+        { statusHint: alreadyExists ? 409 : 400 },
       );
-      if (updateError) {
-        throw new AuthorizationError(updateError.message, { statusHint: 400 });
-      }
-
-      await ensureProfile(admin, existing.id, body.email, fullName, true);
-      const sessionUser = await signInSession(body.email, body.password);
-      return jsonOk({
-        user: sessionUser,
-        recoveredExisting: true,
-        message: "Existing account recovered and signed in.",
-      });
     }
 
     await ensureProfile(admin, created.user.id, body.email, fullName, true);
@@ -83,24 +65,6 @@ export async function POST(request: Request) {
       message: "Account created. You are signed in.",
     });
   });
-}
-
-async function findUserByEmail(
-  admin: ReturnType<typeof createAdminClient>,
-  email: string,
-) {
-  const normalized = email.toLowerCase();
-  for (let page = 1; page <= 5; page += 1) {
-    const { data, error } = await admin.auth.admin.listUsers({
-      page,
-      perPage: 200,
-    });
-    if (error) break;
-    const found = data.users.find((u) => u.email?.toLowerCase() === normalized);
-    if (found) return found;
-    if (data.users.length < 200) break;
-  }
-  return null;
 }
 
 async function ensureProfile(
@@ -117,13 +81,37 @@ async function ensureProfile(
   const role =
     preferAdminIfFirst && (adminCount ?? 0) === 0 ? "admin" : "operator";
 
-  await admin.from("profiles").upsert({
-    id: userId,
-    email,
-    full_name: fullName,
-    role,
-    is_active: true,
-  });
+  // Only fills in a profile for a brand-new user; never overwrites an
+  // existing row (and therefore never changes an existing user's role).
+  await admin.from("profiles").upsert(
+    {
+      id: userId,
+      email,
+      full_name: fullName,
+      role,
+      is_active: true,
+    },
+    { onConflict: "id", ignoreDuplicates: true },
+  );
+  if (role === "admin") {
+    // The signup trigger may have inserted the row first as an operator.
+    await admin.from("profiles").update({ role }).eq("id", userId);
+  }
+}
+
+function assertSignupDomainAllowed(email: string, allowedDomains?: string) {
+  const domains = (allowedDomains ?? "")
+    .split(",")
+    .map((d) => d.trim().toLowerCase().replace(/^@/, ""))
+    .filter(Boolean);
+  if (!domains.length) return;
+  const domain = email.split("@")[1]?.toLowerCase() ?? "";
+  if (!domains.includes(domain)) {
+    throw new AuthorizationError(
+      "Self-registration is limited to your organisation's email domain. Ask an administrator to invite you.",
+      { statusHint: 403 },
+    );
+  }
 }
 
 async function signInSession(email: string, password: string) {

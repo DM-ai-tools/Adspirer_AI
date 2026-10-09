@@ -151,9 +151,11 @@ export function splitGluedToken(token: string): string {
 
   const lower = token.toLowerCase();
 
-  // Prefer longest left match that is a known word, with a fully known right side.
+  // Prefer longest left match that is a known word, with a fully known right
+  // side. The left part must be 3+ letters: two-letter splits turned real words
+  // into nonsense ("inactive" → "in active", "island" → "is land").
   let best: string | null = null;
-  for (let i = Math.min(lower.length - 2, 18); i >= 2; i -= 1) {
+  for (let i = Math.min(lower.length - 2, 18); i >= 3; i -= 1) {
     const left = lower.slice(0, i);
     const right = lower.slice(i);
     if (!WORD_SET.has(left)) continue;
@@ -165,10 +167,8 @@ export function splitGluedToken(token: string): string {
     best = `${token.slice(0, i)} ${rightOut}`;
     break;
   }
-  if (best) return best;
-
-  // camelCase / PascalCase
-  return token.replace(/([a-z])([A-Z])/g, "$1 $2");
+  // No camelCase fallback — it split brand names (TikTok → "Tik Tok").
+  return best ?? token;
 }
 
 /** Apply token splitting across prose while preserving markdown markers & URLs. */

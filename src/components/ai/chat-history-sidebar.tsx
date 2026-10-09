@@ -6,7 +6,7 @@ import { formatRelative } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-import { isV2ChatTitle, displayChatTitle } from "@/lib/agent/title-format";
+import { displayChatTitle } from "@/lib/agent/title-format";
 
 function conversationLabel(conversation: Conversation): string {
   return displayChatTitle(conversation.title);
@@ -67,7 +67,6 @@ export function ChatHistorySidebar({
             {conversations.map((conversation) => {
               const active = conversation.id === activeId;
               const deleting = deletingId === conversation.id;
-              const v2 = isV2ChatTitle(conversation.title);
               const label = conversationLabel(conversation);
               return (
                 <li key={conversation.id} className="group relative">
@@ -82,13 +81,8 @@ export function ChatHistorySidebar({
                         : "text-muted hover:bg-secondary/60 hover:text-foreground",
                     )}
                   >
-                    <p className="flex items-center gap-1.5 truncate pr-7 text-sm font-medium">
-                      {v2 ? (
-                        <span className="shrink-0 rounded bg-accent-muted px-1 py-px text-[9px] font-semibold uppercase tracking-wide text-accent">
-                          V2
-                        </span>
-                      ) : null}
-                      <span className="truncate">{label}</span>
+                    <p className="truncate pr-7 text-sm font-medium">
+                      {label}
                     </p>
                     <p className="mt-0.5 font-mono text-[10px] opacity-70">
                       {formatRelative(conversation.updated_at)}

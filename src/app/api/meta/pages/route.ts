@@ -22,7 +22,7 @@ export async function GET(request: Request) {
       (await resolvePrimaryAccountId(clientId));
     if (!accountId) {
       throw new Error(
-        "No Meta ad account is mapped to this client. Connect Facebook in Workspace V2 or map an account under Connections.",
+        "No Meta ad account is mapped to this client. Connect Facebook in the Workspace header, then map an account under Connections.",
       );
     }
 

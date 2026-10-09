@@ -1,9 +1,8 @@
 import { getCurrentUser } from "@/lib/security/auth";
 import { assertAuthenticated, assertClientAccess } from "@/lib/authz/assert";
-import { getLiveAdspirerProvider, getProvider, resolveProvider } from "@/lib/adspirer/client";
+import { resolveProvider } from "@/lib/adspirer/client";
 import { resolvePrimaryAccountId } from "@/lib/agent/adspirer-agent";
 import { jsonOk, withApiHandler } from "@/lib/api/response";
-import { getWorkspaceContext } from "@/lib/runtime/workspace-context";
 
 /**
  * GET /api/meta/audiences?clientId=…
@@ -23,14 +22,11 @@ export async function GET(request: Request) {
       (await resolvePrimaryAccountId(clientId));
     if (!accountId) {
       throw new Error(
-        "No Meta ad account is mapped to this client. Connect Facebook in Workspace V2 or map an account under Adspirer Connection.",
+        "No Meta ad account is mapped to this client. Connect Facebook in the Workspace header, then map an account under Connections.",
       );
     }
 
-    const provider =
-      getWorkspaceContext()?.version === "v2"
-        ? await resolveProvider()
-        : getLiveAdspirerProvider() ?? getProvider();
+    const provider = await resolveProvider();
     if (!provider.listCustomAudiences) {
       throw new Error("Custom audience listing is not available on this provider");
     }

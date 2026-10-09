@@ -4,8 +4,17 @@ import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
 import { getCurrentUser } from "@/lib/security/auth";
 import { assertAuthenticated, assertClientAccess } from "@/lib/authz/assert";
-import { createTask, runTask } from "@/lib/agent/task-runner";
-import { createTaskV2, runTaskV2 } from "@/lib/agent/task-runner-v2";
+import { createTask } from "@/lib/agent/task-runner";
+import { createTaskV2 } from "@/lib/agent/task-runner-v2";
+import {
+  runAgentTurn,
+  saveMessage,
+  type TurnEmit,
+} from "@/lib/agent/run-turn";
+import type {
+  RunAgentTurnPayload,
+  runAgentTurnTask,
+} from "../../../../../../trigger/run-agent-turn";
 import { maybeAutoTitleConversation } from "@/lib/agent/title-service";
 import { nowIso } from "@/lib/utils";
 import type { Conversation, Message, Task } from "@/types";
@@ -14,7 +23,6 @@ import {
   mapConversationRow,
   mapMessageRow,
   newEntityId,
-  toMessageInsert,
 } from "@/lib/db/live-maps";
 import { getTask } from "@/lib/agent/task-runner";
 import { reconcileConversationMessages } from "@/lib/agent/message-reconcile";
@@ -28,9 +36,94 @@ const postSchema = z.object({
 
 type RouteContext = { params: Promise<{ id: string }> };
 
-function isV2Request(request: Request): boolean {
-  const url = new URL(request.url);
-  return url.pathname.startsWith("/api/v2/") || url.searchParams.get("workspace") === "v2";
+/** Audits gather Meta data, scrape landing pages and run a multi-step model loop. */
+export const maxDuration = 300;
+
+/**
+ * Live workspaces always run against Meta directly with the operator's
+ * Facebook OAuth token; demo mode uses the mock provider.
+ */
+function usesMetaDirect(): boolean {
+  const config = getConfig();
+  return !(config.isDemoMode || !config.hasSupabase);
+}
+
+/** Background job turns: the route tails the DB this long before handing off. */
+const TAIL_BUDGET_MS = (maxDuration - 20) * 1000;
+/** If no worker starts the job by then, run the turn inline instead. */
+const JOB_START_TIMEOUT_MS = 20_000;
+
+function backgroundRunsEnabled(): boolean {
+  const config = getConfig();
+  return (
+    config.AGENT_BACKGROUND_RUNS &&
+    Boolean(config.TRIGGER_SECRET_KEY) &&
+    !(config.isDemoMode || !config.hasSupabase)
+  );
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function loadMessage(id: string): Promise<Message | null> {
+  const { createAdminClient } = await import("@/lib/supabase/admin");
+  const { data } = await createAdminClient()
+    .from("messages")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+  return data ? mapMessageRow(data as Record<string, unknown>) : null;
+}
+
+/**
+ * Stream a background turn by tailing the rows the job updates. Returns the
+ * settled task + message, "not_started" when no worker picked the job up, or
+ * null when the client left / the tail budget ran out (the job keeps going and
+ * the client's poller takes over).
+ */
+async function tailBackgroundTurn(input: {
+  taskId: string;
+  messageId: string;
+  send: TurnEmit;
+  isClosed: () => boolean;
+}): Promise<{ task: Task; message: Message } | "not_started" | null> {
+  const started = Date.now();
+  let lastStatusKey = "";
+  let lastContent = "";
+  while (!input.isClosed() && Date.now() - started < TAIL_BUDGET_MS) {
+    await sleep(900);
+    const [task, message] = await Promise.all([
+      getTask(input.taskId).catch(() => null),
+      loadMessage(input.messageId),
+    ]);
+    if (!task) continue;
+    if (task.status === "queued" && Date.now() - started > JOB_START_TIMEOUT_MS) {
+      return "not_started";
+    }
+    const label =
+      typeof task.agent_state?.statusLabel === "string"
+        ? task.agent_state.statusLabel
+        : "";
+    const phase =
+      typeof task.agent_state?.phase === "string" ? task.agent_state.phase : "";
+    const statusKey = `${task.status}|${phase}|${label}`;
+    if (statusKey !== lastStatusKey) {
+      lastStatusKey = statusKey;
+      input.send("progress", { phase, label, task });
+    }
+    if (message && message.content !== lastContent) {
+      lastContent = message.content;
+      input.send("delta", {
+        content: message.content,
+        label,
+        phase,
+        ui: task.agent_state?.ui ?? null,
+      });
+    }
+    if (message && message.metadata?.streaming === false) {
+      return { task, message };
+    }
+  }
+  return null;
 }
 
 async function getConversation(id: string): Promise<Conversation> {
@@ -50,23 +143,6 @@ async function getConversation(id: string): Promise<Conversation> {
   if (error) throw new Error(error.message);
   if (!data) throw new Error(`Conversation not found: ${id}`);
   return mapConversationRow(data as Record<string, unknown>);
-}
-
-async function saveMessage(message: Message, taskId?: string | null) {
-  const config = getConfig();
-  if (config.isDemoMode || !config.hasSupabase) {
-    const store = getDemoStore();
-    const idx = store.messages.findIndex((m) => m.id === message.id);
-    if (idx >= 0) store.messages[idx] = message;
-    else store.messages.push(message);
-    return;
-  }
-  const { createAdminClient } = await import("@/lib/supabase/admin");
-  const supabase = createAdminClient();
-  const { error } = await supabase
-    .from("messages")
-    .upsert(toMessageInsert(message, taskId));
-  if (error) throw new Error(error.message);
 }
 
 async function linkConversationTask(conversationId: string, taskId: string) {
@@ -153,7 +229,7 @@ export async function GET(_request: Request, context: RouteContext) {
 }
 
 export async function POST(request: Request, context: RouteContext) {
-  const useV2 = isV2Request(request);
+  const useV2 = usesMetaDirect();
   const { id } = await context.params;
   const wantStream =
     request.headers.get("accept")?.includes("text/event-stream") ||
@@ -215,41 +291,38 @@ export async function POST(request: Request, context: RouteContext) {
     created_at: ts,
   };
 
-  await saveMessage(userMessage);
-  if (!(config.isDemoMode || !config.hasSupabase)) {
-    const { createAdminClient } = await import("@/lib/supabase/admin");
-    const supabase = createAdminClient();
-    await supabase.from("conversations").update({ updated_at: ts }).eq("id", id);
-  } else {
-    const conv = getDemoStore().conversations.find((c) => c.id === id);
-    if (conv) conv.updated_at = ts;
-  }
+  const touchConversation = async () => {
+    if (!(config.isDemoMode || !config.hasSupabase)) {
+      const { createAdminClient } = await import("@/lib/supabase/admin");
+      const supabase = createAdminClient();
+      await supabase.from("conversations").update({ updated_at: ts }).eq("id", id);
+    } else {
+      const conv = getDemoStore().conversations.find((c) => c.id === id);
+      if (conv) conv.updated_at = ts;
+    }
+  };
 
-  // ChatGPT-style title from the first user request (OpenAI when configured).
-  conversation = await maybeAutoTitleConversation(conversation, body.content, {
-    workspaceVersion: useV2 ? "v2" : "v1",
-  });
+  // ChatGPT-style title from the first user request (an LLM call on the first
+  // message). It runs alongside the agent instead of delaying the stream.
+  const titled = maybeAutoTitleConversation(conversation, body.content).catch(
+    () => conversation,
+  );
+
+  await Promise.all([saveMessage(userMessage), touchConversation()]);
 
   if (body.runAgent === false) {
+    conversation = await titled;
     return jsonOk({ message: userMessage, task: null, conversation }, 201);
   }
 
-  let task = useV2
-    ? await createTaskV2({
-        clientId: conversation.client_id,
-        createdBy: user.id,
-        title: body.content.slice(0, 120),
-        goal: body.content,
-        conversationId: id,
-      })
-    : await createTask({
-        clientId: conversation.client_id,
-        createdBy: user.id,
-        title: body.content.slice(0, 120),
-        goal: body.content,
-        conversationId: id,
-      });
-  await linkConversationTask(id, task.id);
+  const taskInput = {
+    clientId: conversation.client_id,
+    createdBy: user.id,
+    title: body.content.slice(0, 120),
+    goal: body.content,
+    conversationId: id,
+  };
+  let task = useV2 ? await createTaskV2(taskInput) : await createTask(taskInput);
 
   const assistantMessage: Message = {
     id:
@@ -267,64 +340,30 @@ export async function POST(request: Request, context: RouteContext) {
     },
     created_at: nowIso(),
   };
-  await saveMessage(assistantMessage, task.id);
+  await Promise.all([
+    linkConversationTask(id, task.id),
+    saveMessage(assistantMessage, task.id),
+  ]);
+
+  const turnInput = {
+    taskId: task.id,
+    assistantMessage,
+    useMetaDirect: useV2,
+    metaAccountId: body.metaAccountId,
+  };
 
   if (!wantStream) {
+    conversation = await titled;
     return withApiHandler(async () => {
-      task = await (useV2 ? runTaskV2 : runTask)(task.id, {
-        metaAccountId: body.metaAccountId,
-        onProgress: async (event) => {
-          if (event.summary != null) {
-            assistantMessage.content = event.summary;
-            assistantMessage.metadata = {
-              ...(assistantMessage.metadata ?? {}),
-              taskId: task.id,
-              status: event.task.status,
-              streaming: true,
-              phase: event.phase,
-              label: event.label,
-            };
-            await saveMessage(assistantMessage, task.id);
-          }
-        },
-      });
-
-      const summary =
-        typeof task.agent_state?.summary === "string"
-          ? task.agent_state.summary
-          : assistantMessage.content || `Task ${task.status}`;
-
-      assistantMessage.content = summary;
-      assistantMessage.metadata = {
-        taskId: task.id,
-        status: task.status,
-        streaming: false,
-        pendingApprovalId:
-          typeof task.agent_state?.pending_approval_id === "string"
-            ? task.agent_state.pending_approval_id
-            : null,
-        pendingApprovalIds: Array.isArray(task.agent_state?.pending_approval_ids)
-          ? task.agent_state.pending_approval_ids
-          : null,
-        ui: task.agent_state?.ui ?? null,
-        isReport: Boolean(task.agent_state?.report),
-        reportTitle:
-          task.agent_state?.report &&
-          typeof (task.agent_state.report as { title?: unknown }).title ===
-            "string"
-            ? (task.agent_state.report as { title: string }).title
-            : null,
-        reportData:
-          task.agent_state?.report &&
-          typeof task.agent_state.report === "object" &&
-          "data" in (task.agent_state.report as object)
-            ? (task.agent_state.report as { data?: unknown }).data ?? null
-            : null,
-      };
-      await saveMessage(assistantMessage, task.id);
-
+      const result = await runAgentTurn(turnInput);
+      task = result.task;
       return jsonOk(
-        { message: userMessage, task, assistantMessage, conversation },
+        {
+          message: userMessage,
+          task,
+          assistantMessage: result.message,
+          conversation,
+        },
         201,
       );
     });
@@ -332,146 +371,76 @@ export async function POST(request: Request, context: RouteContext) {
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      const send = (event: string, data: unknown) => {
-        controller.enqueue(sseEncode(event, data));
+      // If the operator closes the tab, keep running the task to completion
+      // (it is persisted) and just stop writing to the dead stream.
+      let closed = false;
+      const send: TurnEmit = (event, data) => {
+        if (closed) return;
+        try {
+          controller.enqueue(sseEncode(event, data));
+        } catch {
+          closed = true;
+        }
       };
 
       try {
         send("user_message", { message: userMessage });
-        send("conversation", { conversation });
         send("assistant_message", { message: assistantMessage });
         send("task", { task });
-
-        let lastPersist = 0;
-        task = await (useV2 ? runTaskV2 : runTask)(task.id, {
-          metaAccountId: body.metaAccountId,
-          onProgress: async (event) => {
-            send("progress", {
-              phase: event.phase,
-              label: event.label,
-              task: event.task,
-              summary:
-                typeof event.summary === "string" ? event.summary : undefined,
-            });
-
-            if (event.delta || event.summary != null) {
-              const nextContent =
-                event.summary ??
-                (event.delta
-                  ? assistantMessage.content + event.delta
-                  : assistantMessage.content);
-              assistantMessage.content = nextContent;
-              const taskUi = event.task.agent_state?.ui ?? null;
-              send("delta", {
-                delta: event.delta ?? "",
-                content: assistantMessage.content,
-                label: event.label,
-                phase: event.phase,
-                ui: taskUi,
-              });
-              const now = Date.now();
-              if (now - lastPersist > 400) {
-                lastPersist = now;
-                assistantMessage.metadata = {
-                  ...(assistantMessage.metadata ?? {}),
-                  taskId: task.id,
-                  status: event.task.status,
-                  streaming: true,
-                  phase: event.phase,
-                  label: event.label,
-                  ui: taskUi ?? assistantMessage.metadata?.ui ?? null,
-                };
-                // Fire-and-forget — awaiting DB writes stalls token flush to the client.
-                void saveMessage(assistantMessage, task.id).catch(() => undefined);
-              }
-            } else if (event.label) {
-              const taskUi = event.task.agent_state?.ui ?? null;
-              // Live status in the bubble while tools run (no token stream yet)
-              const statusLine = `_${event.label}_`;
-              if (
-                !assistantMessage.content ||
-                assistantMessage.metadata?.liveStatus
-              ) {
-                assistantMessage.content = statusLine;
-                assistantMessage.metadata = {
-                  ...(assistantMessage.metadata ?? {}),
-                  taskId: task.id,
-                  status: event.task.status,
-                  streaming: true,
-                  phase: event.phase,
-                  label: event.label,
-                  liveStatus: true,
-                  ui: taskUi ?? assistantMessage.metadata?.ui ?? null,
-                };
-                send("delta", {
-                  delta: "",
-                  content: assistantMessage.content,
-                  label: event.label,
-                  phase: event.phase,
-                  ui: taskUi,
-                });
-              }
-            }
-          },
+        void titled.then((next) => {
+          conversation = next;
+          send("conversation", { conversation });
         });
 
-        const summary =
-          typeof task.agent_state?.summary === "string"
-            ? task.agent_state.summary
-            : assistantMessage.content || `Task ${task.status}`;
+        let settled: { task: Task; message: Message } | null = null;
 
-        assistantMessage.content = summary;
-        assistantMessage.metadata = {
-          taskId: task.id,
-          status: task.status,
-          streaming: false,
-          pendingApprovalId:
-            typeof task.agent_state?.pending_approval_id === "string"
-              ? task.agent_state.pending_approval_id
-              : null,
-          pendingApprovalIds: Array.isArray(
-            task.agent_state?.pending_approval_ids,
-          )
-            ? task.agent_state.pending_approval_ids
-            : null,
-          ui: task.agent_state?.ui ?? null,
-          isReport: Boolean(task.agent_state?.report),
-          reportTitle:
-            task.agent_state?.report &&
-            typeof (task.agent_state.report as { title?: unknown }).title ===
-              "string"
-              ? (task.agent_state.report as { title: string }).title
-              : null,
-          reportData:
-            task.agent_state?.report &&
-            typeof task.agent_state.report === "object" &&
-            "data" in (task.agent_state.report as object)
-              ? (task.agent_state.report as { data?: unknown }).data ?? null
-              : null,
-        };
-        await saveMessage(assistantMessage, task.id);
+        if (backgroundRunsEnabled()) {
+          // Long audits run as a Trigger.dev job; this stream just tails it.
+          const { tasks, runs } = await import("@trigger.dev/sdk");
+          const payload: RunAgentTurnPayload = { ...turnInput, userId: user.id };
+          const handle = await tasks.trigger<typeof runAgentTurnTask>(
+            "run-agent-turn",
+            payload,
+          );
+          const tailed = await tailBackgroundTurn({
+            taskId: task.id,
+            messageId: assistantMessage.id,
+            send,
+            isClosed: () => closed,
+          });
+          if (tailed === "not_started") {
+            // No worker picked it up (e.g. trigger dev not running): cancel
+            // so it can't run twice, then answer inline.
+            await runs.cancel(handle.id).catch(() => undefined);
+            settled = await runAgentTurn({ ...turnInput, emit: send });
+          } else {
+            settled = tailed;
+          }
+        } else {
+          settled = await runAgentTurn({ ...turnInput, emit: send });
+        }
 
-        send("done", {
-          task,
-          message: assistantMessage,
-          conversation,
-        });
+        if (settled) {
+          task = settled.task;
+          conversation = await titled;
+          send("done", {
+            task,
+            message: settled.message,
+            conversation,
+          });
+        }
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Agent run failed";
-        assistantMessage.content =
-          assistantMessage.content ||
-          `Something went wrong while processing that request: ${message}`;
-        assistantMessage.metadata = {
-          taskId: task.id,
-          status: "error",
-          streaming: false,
-          error: message,
-        };
-        await saveMessage(assistantMessage, task.id).catch(() => undefined);
         send("error", { message, taskId: task.id });
       } finally {
-        controller.close();
+        if (!closed) {
+          try {
+            controller.close();
+          } catch {
+            // already closed by the client
+          }
+        }
       }
     },
   });

@@ -14,13 +14,13 @@ import type { Profile } from "@/types";
 
 const DEMO_USERS = [
   {
-    email: "admin@adspirer.ai",
+    email: "admin@spendsmith.demo",
     label: "Continue as Admin",
     description: "Full access — team, connections, client access",
     icon: Shield,
   },
   {
-    email: "operator@adspirer.ai",
+    email: "operator@spendsmith.demo",
     label: "Continue as Operator",
     description: "Client workspace, approvals, and monitoring",
     icon: Bot,
@@ -137,7 +137,7 @@ export default function LoginPageClient() {
             AI Meta Ads Operations
           </div>
           <h1 className="text-5xl font-semibold tracking-tight text-foreground sm:text-6xl">
-            Adspirer AI
+            Spendsmith
           </h1>
           <p className="mt-4 text-lg leading-relaxed text-muted">
             Enterprise agent workspace for auditing Meta accounts, proposing

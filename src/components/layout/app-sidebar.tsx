@@ -35,7 +35,6 @@ const MAIN_NAV: NavItem[] = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
   { href: "/clients", label: "Clients", icon: Users },
   { href: "/workspace", label: "Workspace", icon: Bot },
-  { href: "/workspace-v2", label: "Workspace V2 (A/B)", icon: Sparkles },
   { href: "/approvals", label: "Approvals", icon: ShieldCheck },
   { href: "/monitoring", label: "Monitoring", icon: Activity },
   { href: "/creatives", label: "Creatives", icon: Palette },
@@ -44,7 +43,7 @@ const MAIN_NAV: NavItem[] = [
 
 const ADMIN_NAV: NavItem[] = [
   { href: "/admin/team", label: "Team", icon: UserCog },
-  { href: "/admin/adspirer", label: "Connections", icon: Plug },
+  { href: "/admin/connections", label: "Connections", icon: Plug },
   { href: "/admin/settings", label: "Settings", icon: Settings },
 ];
 
@@ -127,7 +126,7 @@ export function AppSidebar() {
         {!sidebarCollapsed ? (
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold tracking-tight text-foreground">
-              Adspirer AI
+              Spendsmith
             </p>
             <p className="truncate text-[10px] uppercase tracking-[0.14em] text-muted">
               Meta Ops
@@ -145,7 +144,7 @@ export function AppSidebar() {
                   ...item,
                   href:
                     selectedClientId &&
-                    (item.href === "/workspace" || item.href === "/workspace-v2")
+                    item.href === "/workspace"
                       ? `${item.href}?clientId=${encodeURIComponent(selectedClientId)}`
                       : item.href,
                 }}

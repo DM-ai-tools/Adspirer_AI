@@ -142,7 +142,7 @@ export function renderAuditReportDocxHtml(r: AuditReport): string {
 </head>
 <body>
   <div style="background:${C.teal900};color:${C.paper};padding:28px 32px;">
-    <div style="font-size:10px;letter-spacing:.16em;font-weight:700;color:${C.teal100};">ADSPIRER AI</div>
+    <div style="font-size:10px;letter-spacing:.16em;font-weight:700;color:${C.teal100};">SPENDSMITH</div>
     <h1 style="margin-top:16px;">${esc(r.meta.reportType)}</h1>
     <div style="color:${C.teal100};margin-top:6px;">${esc(r.meta.subtitle)}</div>
     <div style="margin-top:16px;font-size:12px;color:${C.mastMeta};">
@@ -188,7 +188,7 @@ export function renderAuditReportDocxHtml(r: AuditReport): string {
     <p style="font-size:11px;color:${C.ink500};border-top:1px solid ${C.hair};padding-top:12px;">
       <strong style="color:${C.ink900};">Methodology.</strong> ${esc(r.methodology)}
     </p>
-    <p style="font-size:10px;color:${C.ink500};letter-spacing:.08em;text-transform:uppercase;">Adspirer AI · Confidential</p>
+    <p style="font-size:10px;color:${C.ink500};letter-spacing:.08em;text-transform:uppercase;">Spendsmith · Confidential</p>
   </div>
 </body>
 </html>`;

@@ -18,10 +18,15 @@ export async function POST(_request: Request, context: RouteContext) {
     const existing = await getApproval(id);
     await assertClientAccess(user.id, existing.client_id);
 
-    const approved = await approve({
-      approvalId: id,
-      reviewedBy: user.id,
-    });
+    // An approval left in "approved" by an earlier failed run goes straight to
+    // execution; approving it again would be an invalid transition.
+    const approved =
+      existing.status === "approved"
+        ? existing
+        : await approve({
+            approvalId: id,
+            reviewedBy: user.id,
+          });
 
     try {
       const execution = await executeApprovedAction({

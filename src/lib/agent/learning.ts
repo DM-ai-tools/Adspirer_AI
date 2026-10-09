@@ -51,9 +51,21 @@ type ResearchInput = {
  * Gather prior tasks, approvals, feedback, and learnings, then synthesize a
  * short research brief the main agent should apply before analysis.
  */
+/**
+ * The memo summarises operator preferences, which change slowly. Re-using it
+ * for a few minutes removes an OpenAI round trip from the start of most turns.
+ */
+const RESEARCH_CACHE_TTL_MS = 10 * 60 * 1000;
+const researchCache = new Map<string, { memo: string; at: number }>();
+
 export async function buildContextResearch(
   input: ResearchInput,
 ): Promise<string> {
+  const cached = researchCache.get(input.clientId);
+  if (cached && Date.now() - cached.at < RESEARCH_CACHE_TTL_MS) {
+    return cached.memo;
+  }
+
   const [tasks, approvals, feedback, learnings] = await Promise.all([
     loadRecentTasks(input.clientId),
     loadRecentApprovals(input.clientId),
@@ -136,15 +148,16 @@ export async function buildContextResearch(
       ].join("\n"),
     });
 
-    return [
+    // The memo already distils the evidence; appending the raw blocks again
+    // only doubled the tokens sent on every model step.
+    const memo = [
       "## Context research (learned before analysis)",
       RESEARCH_SCOPE_RULE,
       "",
       text.trim(),
-      "",
-      "### Raw evidence snapshot",
-      evidenceBlocks,
     ].join("\n");
+    researchCache.set(input.clientId, { memo, at: Date.now() });
+    return memo;
   } catch (error) {
     logger.warn("OpenAI context research failed; using raw evidence", {
       error: error instanceof Error ? error.message : String(error),
@@ -372,20 +385,17 @@ async function loadRecentTasks(clientId: string) {
   const supabase = createAdminClient();
   const { data } = await supabase
     .from("tasks")
-    .select("title,status,error_message,agent_state,updated_at")
+    // Only the summary — not the whole agent_state blob (steps, ui, reports).
+    .select("title,status,error_message,summary:agent_state->>summary,updated_at")
     .eq("client_id", clientId)
     .order("updated_at", { ascending: false })
     .limit(8);
 
-  return (data ?? []).map((t) => ({
+  return ((data ?? []) as Array<Record<string, unknown>>).map((t) => ({
     title: String(t.title),
     status: String(t.status),
     error: (t.error_message as string | null) ?? null,
-    summary:
-      t.agent_state &&
-      typeof (t.agent_state as Record<string, unknown>).summary === "string"
-        ? String((t.agent_state as Record<string, unknown>).summary)
-        : null,
+    summary: typeof t.summary === "string" ? t.summary : null,
   }));
 }
 

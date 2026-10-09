@@ -34,14 +34,6 @@ const envSchema = z.object({
   FIRECRAWL_API_KEY: z.string().optional(),
   OPENAI_IMAGE_MODEL: z.string().default("gpt-image-2"),
   SOCIAVAULT_API_KEY: z.string().optional(),
-  ADSPIRER_MCP_URL: z.string().optional(),
-  ADSPIRER_API_KEY: z.string().optional(),
-  ADSPIRER_API_BASE_URL: z.string().optional(),
-  ADSPIRER_CLIENT_ID: z.string().optional(),
-  ADSPIRER_CLIENT_SECRET: z.string().optional(),
-  ADSPIRER_OAUTH_AUTHORIZE_URL: z.string().optional(),
-  ADSPIRER_OAUTH_TOKEN_URL: z.string().optional(),
-  ADSPIRER_REDIRECT_URI: z.string().optional(),
   META_APP_ID: z.string().optional(),
   META_APP_SECRET: z.string().optional(),
   META_GRAPH_VERSION: z.string().default("v23.0"),
@@ -54,6 +46,14 @@ const envSchema = z.object({
   CLOUDINARY_API_KEY: z.string().optional(),
   CLOUDINARY_API_SECRET: z.string().optional(),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+  // Comma-separated email domains allowed to self-register (e.g. "agency.com").
+  // Empty = any domain; new self-registered users are always operators with no
+  // client access until an admin assigns clients.
+  SIGNUP_ALLOWED_DOMAINS: z.string().optional(),
+  TRIGGER_SECRET_KEY: z.string().optional(),
+  // Run chat turns as Trigger.dev jobs instead of inside the web request.
+  // Needs the Trigger worker running (`npm run trigger:dev`, or deployed).
+  AGENT_BACKGROUND_RUNS: boolFromEnv.default(false),
 });
 
 export type AppConfig = z.infer<typeof envSchema> & {
@@ -63,7 +63,6 @@ export type AppConfig = z.infer<typeof envSchema> & {
   hasOpenAI: boolean;
   hasFirecrawl: boolean;
   hasSociaVault: boolean;
-  hasAdspirerMcp: boolean;
   workspaceV2Enabled: boolean;
   adsExecutionMode: AdsExecutionMode;
 };
@@ -88,14 +87,6 @@ function readRawEnv(): Record<string, string | undefined> {
     FIRECRAWL_API_KEY: process.env.FIRECRAWL_API_KEY,
     OPENAI_IMAGE_MODEL: process.env.OPENAI_IMAGE_MODEL,
     SOCIAVAULT_API_KEY: process.env.SOCIAVAULT_API_KEY,
-    ADSPIRER_MCP_URL: process.env.ADSPIRER_MCP_URL,
-    ADSPIRER_API_KEY: process.env.ADSPIRER_API_KEY,
-    ADSPIRER_API_BASE_URL: process.env.ADSPIRER_API_BASE_URL,
-    ADSPIRER_CLIENT_ID: process.env.ADSPIRER_CLIENT_ID,
-    ADSPIRER_CLIENT_SECRET: process.env.ADSPIRER_CLIENT_SECRET,
-    ADSPIRER_OAUTH_AUTHORIZE_URL: process.env.ADSPIRER_OAUTH_AUTHORIZE_URL,
-    ADSPIRER_OAUTH_TOKEN_URL: process.env.ADSPIRER_OAUTH_TOKEN_URL,
-    ADSPIRER_REDIRECT_URI: process.env.ADSPIRER_REDIRECT_URI,
     META_APP_ID: process.env.META_APP_ID,
     META_APP_SECRET: process.env.META_APP_SECRET,
     META_GRAPH_VERSION: process.env.META_GRAPH_VERSION,
@@ -108,6 +99,9 @@ function readRawEnv(): Record<string, string | undefined> {
     CLOUDINARY_API_KEY: process.env.CLOUDINARY_API_KEY,
     CLOUDINARY_API_SECRET: process.env.CLOUDINARY_API_SECRET,
     LOG_LEVEL: process.env.LOG_LEVEL,
+    SIGNUP_ALLOWED_DOMAINS: process.env.SIGNUP_ALLOWED_DOMAINS,
+    TRIGGER_SECRET_KEY: process.env.TRIGGER_SECRET_KEY,
+    AGENT_BACKGROUND_RUNS: process.env.AGENT_BACKGROUND_RUNS,
   };
 }
 
@@ -136,7 +130,6 @@ export function getConfig(): AppConfig {
     hasOpenAI: Boolean(parsed.OPENAI_API_KEY),
     hasFirecrawl: Boolean(parsed.FIRECRAWL_API_KEY),
     hasSociaVault: Boolean(parsed.SOCIAVAULT_API_KEY),
-    hasAdspirerMcp: Boolean(parsed.ADSPIRER_API_KEY || parsed.ADSPIRER_MCP_URL),
     workspaceV2Enabled: parsed.WORKSPACE_V2_ENABLED,
     adsExecutionMode: parsed.ADS_EXECUTION_MODE,
   };

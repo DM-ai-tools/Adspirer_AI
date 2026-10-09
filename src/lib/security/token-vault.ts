@@ -35,16 +35,46 @@ function decodeEncryptionKey(raw: string): Buffer {
   );
 }
 
+/**
+ * Demo-only key. It is committed to the repo, so anything encrypted with it is
+ * effectively plaintext — never use it outside DEMO_MODE / tests.
+ */
+export const PUBLIC_DEMO_KEY_HEX =
+  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+let warnedDemoKey = false;
+
+/**
+ * Refuse the committed demo key for live data. Production builds fail hard;
+ * local dev logs a loud warning so existing tokens still decrypt until the
+ * key is rotated with `scripts/rotate-token-key.mjs`.
+ */
+export function assertKeyIsNotPublicDemo(key: Buffer): void {
+  if (process.env.DEMO_MODE === "true") return;
+  if (!key.equals(Buffer.from(PUBLIC_DEMO_KEY_HEX, "hex"))) return;
+  const message =
+    "TOKEN_ENCRYPTION_KEY is the public demo key from the repo, so stored tokens are not protected. Generate a new key and run scripts/rotate-token-key.mjs.";
+  if (process.env.NODE_ENV === "production") {
+    throw new TokenVaultError(message);
+  }
+  if (!warnedDemoKey) {
+    warnedDemoKey = true;
+    console.warn(`[security] ${message}`);
+  }
+}
+
 function getKey(): Buffer {
   const raw = process.env.TOKEN_ENCRYPTION_KEY;
   if (!raw) {
     // Deterministic demo key only when DEMO_MODE is enabled — never for production ads.
     if (process.env.DEMO_MODE === "true" || process.env.ADS_EXECUTION_MODE === "mock") {
-      return Buffer.from("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "hex");
+      return Buffer.from(PUBLIC_DEMO_KEY_HEX, "hex");
     }
     throw new TokenVaultError("TOKEN_ENCRYPTION_KEY is required");
   }
-  return decodeEncryptionKey(raw);
+  const key = decodeEncryptionKey(raw);
+  assertKeyIsNotPublicDemo(key);
+  return key;
 }
 
 /**

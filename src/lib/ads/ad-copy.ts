@@ -1,7 +1,7 @@
 import { generateText } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { getConfig } from "@/lib/config";
-import { getLiveAdspirerProvider, getProvider } from "@/lib/adspirer/client";
+import { resolveProvider } from "@/lib/adspirer/client";
 import {
   ADSPIRER_AD_COPYWRITING_SOURCE,
   ADSPIRER_META_CTAS,
@@ -75,7 +75,7 @@ async function loadLiveCreatives(
 ): Promise<MetaAdCreative[]> {
   if (!accountId) return [];
   try {
-    const provider = getLiveAdspirerProvider() ?? getProvider();
+    const provider = await resolveProvider();
     if (!provider.getAdCreatives) return [];
     return await provider.getAdCreatives(accountId, {
       lookback_days: 30,
@@ -240,7 +240,7 @@ function heuristicCopies(
       description: clampDescription(offer),
       cta: "Learn More",
       rationale:
-        "Problem-agitate-solve angle from Adspirer Ad Copy Writing Room.",
+        "Problem-agitate-solve angle.",
       test_first: true,
     },
     {

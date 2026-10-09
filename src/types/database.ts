@@ -1,5 +1,5 @@
 /**
- * Domain types aligned with the Adspirer AI database schema.
+ * Domain types aligned with the Spendsmith database schema.
  * All timestamps are ISO-8601 strings unless noted.
  */
 

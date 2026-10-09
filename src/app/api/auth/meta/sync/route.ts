@@ -6,23 +6,16 @@ import { jsonOk, withApiHandler } from "@/lib/api/response";
 /**
  * POST /api/auth/meta/sync
  * Syncs ad accounts from the user's Facebook OAuth token into connected_meta_accounts.
+ * Mapping an account to a client is a separate, access-checked step
+ * (the admin "map account" flow) — this route never maps.
  */
-export async function POST(request: Request) {
+export async function POST() {
   return withApiHandler(async () => {
     const user = await getCurrentUser();
     assertAuthenticated(user);
 
-    let clientId: string | null = null;
-    try {
-      const body = (await request.json()) as { clientId?: string };
-      clientId = body.clientId ?? null;
-    } catch {
-      // empty body is fine
-    }
-
     const result = await syncConnectedMetaAccounts({
       source: "facebook_oauth",
-      clientId,
     });
 
     return jsonOk({ count: result.count, accounts: result.upserted });

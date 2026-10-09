@@ -1,9 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { parseMarkdownToBlocks, sanitizeReportText } from "@/lib/reports/parse-markdown";
+import JSZip from "jszip";
+import * as XLSX from "xlsx";
+import { extractText, getDocumentProxy } from "unpdf";
 import {
+  fitRowToHeader,
+  parseMarkdownToBlocks,
+  sanitizeReportText,
+} from "@/lib/reports/parse-markdown";
+import { columnAlignments, columnWeights } from "@/lib/reports/layout";
+import { toExcelCell } from "@/lib/reports/xlsx-document";
+import {
+  buildReportFilename,
+  exportDocx,
   exportMarkdown,
-  exportSimplePdf,
+  exportPdf,
+  exportReportPayload,
   exportWordHtml,
+  exportXlsx,
 } from "@/lib/reports/export";
 import {
   deglueReportProse,
@@ -114,7 +127,7 @@ describe("parseMarkdownToBlocks", () => {
 describe("exportWordHtml", () => {
   it("renders branded HTML without raw markdown markers in body tables", () => {
     const html = exportWordHtml("Campaign publish report", SAMPLE);
-    expect(html).toContain("Adspirer AI");
+    expect(html).toContain("Spendsmith");
     expect(html).toContain("<table>");
     expect(html).toContain("<th>");
     expect(html).toContain("TR Internal Marketing");
@@ -138,16 +151,109 @@ describe("exportWordHtml", () => {
   });
 });
 
-describe("exportSimplePdf", () => {
-  it("produces a multipage-capable PDF without 60-line truncation", () => {
-    const pdf = exportSimplePdf("Campaign publish report", SAMPLE);
-    const text = new TextDecoder().decode(pdf);
-    expect(text.startsWith("%PDF-1.4")).toBe(true);
-    expect(text).toContain("Helvetica-Bold");
-    expect(text).toContain("ADSPIRER AI");
+const UNICODE_SAMPLE = `## Findings
+
+CTR is above Meta benchmark for lead gen → scale budget from ₹500 to ₹750/day – review “weekly”.
+
+| Campaign | Spend | CTR |
+| --- | --- | --- |
+| TR | Lead Gen | Sep 2026 | $1,234.50 | 2.5% |
+| LeadGen Retargeting | $88.00 | 1.1% |
+`;
+
+async function pdfText(bytes: Uint8Array): Promise<string> {
+  const pdf = await getDocumentProxy(new Uint8Array(bytes));
+  const { text } = await extractText(pdf, { mergePages: true });
+  return text;
+}
+
+describe("exportPdf", () => {
+  it("typesets a real PDF with page numbers and readable text", async () => {
+    const pdf = await exportPdf("Campaign publish report", SAMPLE);
+    expect(new TextDecoder().decode(pdf.slice(0, 5))).toBe("%PDF-");
+    const text = await pdfText(pdf);
+    // The letter-spaced wordmark extracts as "S P E N D …".
+    expect(text.replace(/(?<=\b[A-Z]) (?=[A-Z]\b)/g, "")).toContain("SPENDSMITH");
     expect(text).toContain("TR Internal Marketing");
-    // Should not dump raw markdown hashes as the only formatting
-    expect(Buffer.byteLength(pdf)).toBeGreaterThan(800);
+    expect(text).toMatch(/Page 1 of \d/);
+    expect(text).not.toContain("## ");
+  }, 30_000);
+
+  it("keeps unicode symbols, word spacing and campaign names intact", async () => {
+    const text = await pdfText(await exportPdf("Audit", UNICODE_SAMPLE));
+    expect(text).toContain("benchmark for");
+    expect(text).toContain("→");
+    expect(text).toContain("₹500");
+    expect(text).toContain("LeadGen Retargeting");
+    expect(text).toContain("TR | Lead Gen | Sep 2026");
+  }, 30_000);
+});
+
+describe("exportDocx", () => {
+  it("builds a native .docx with tables, header row repeat and page numbers", async () => {
+    const bytes = await exportDocx("Campaign publish report", SAMPLE);
+    const zip = await JSZip.loadAsync(bytes);
+    const xml = await zip.file("word/document.xml")!.async("string");
+    expect(xml).toContain("TR Internal Marketing");
+    expect(xml).toContain("<w:tblHeader");
+    expect(xml).not.toContain("## ");
+    const footer = Object.keys(zip.files).find((f) => /word\/footer\d*\.xml/.test(f));
+    expect(footer).toBeTruthy();
+    expect(await zip.file(footer!)!.async("string")).toContain("NUMPAGES");
+  });
+});
+
+describe("exportXlsx", () => {
+  it("puts each table on its own sheet with numeric cells", () => {
+    const wb = XLSX.read(exportXlsx("Audit", UNICODE_SAMPLE), { type: "array" });
+    expect(wb.SheetNames[0]).toBe("Report");
+    expect(wb.SheetNames).toContain("Findings");
+    const sheet = wb.Sheets.Findings;
+    expect(sheet.A2.v).toBe("TR | Lead Gen | Sep 2026");
+    expect(sheet.B2).toMatchObject({ t: "n", v: 1234.5 });
+    expect(sheet.C2).toMatchObject({ t: "n", v: 0.025 });
+  });
+
+  it("converts money/percent and neutralises formula-looking text", () => {
+    expect(toExcelCell("-$12.40")).toMatchObject({ t: "n", v: -12.4 });
+    expect(toExcelCell("₹1,500")).toMatchObject({ t: "n", v: 1500 });
+    expect(toExcelCell("12%")).toMatchObject({ t: "n", v: 0.12 });
+    expect(toExcelCell("=HYPERLINK(\"x\")").v).toBe("'=HYPERLINK(\"x\")");
+    expect(toExcelCell("act_123").v).toBe("act_123");
+    expect(toExcelCell("0412 555 111")).toMatchObject({ t: "s" });
+  });
+});
+
+describe("exportReportPayload", () => {
+  it("returns proper filenames and content types per format", async () => {
+    expect(buildReportFilename("Weekly Audit", "docx")).toBe("weekly-audit.docx");
+    const xlsx = await exportReportPayload({ format: "xlsx", title: "Audit", content: SAMPLE });
+    expect(xlsx.filename.endsWith(".xlsx")).toBe(true);
+    expect(xlsx.contentType).toContain("spreadsheetml");
+    const docx = await exportReportPayload({ format: "docx", title: "Audit", content: SAMPLE });
+    expect(docx.contentType).toContain("wordprocessingml");
+  });
+});
+
+describe("table layout", () => {
+  it("folds '|' inside campaign names back into the first column", () => {
+    expect(fitRowToHeader(["TR", "Lead Gen", "Sep", "$5", "1%"], 3)).toEqual([
+      "TR | Lead Gen | Sep",
+      "$5",
+      "1%",
+    ]);
+    expect(fitRowToHeader(["a", "b"], 3)).toEqual(["a", "b"]);
+  });
+
+  it("right-aligns numeric columns and gives text columns more width", () => {
+    const rows = [
+      ["Prospecting broad — Sydney metro", "$1,234.50", "2.5%"],
+      ["Retargeting 30d site visitors", "$88.00", "1.1%"],
+    ];
+    expect(columnAlignments(rows, 3)).toEqual(["left", "right", "right"]);
+    const w = columnWeights(["Campaign", "Spend", "CTR"], rows);
+    expect(w.reduce((a, b) => a + b, 0)).toBeCloseTo(1);
+    expect(w[0]).toBeGreaterThan(w[1]);
   });
 });
 

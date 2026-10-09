@@ -55,6 +55,32 @@ function proofLines(result: Record<string, unknown> | null): string[] {
   return lines;
 }
 
+/** Old → new daily budget when the proposal carries both (cents). */
+function budgetDelta(
+  args: Record<string, unknown>,
+): { before: number; after: number; pct: number | null } | null {
+  const after = Number(args.daily_budget_cents);
+  const before = Number(args.previous_daily_budget_cents);
+  if (!Number.isFinite(after) || !Number.isFinite(before)) return null;
+  if (args.daily_budget_cents == null || args.previous_daily_budget_cents == null) {
+    return null;
+  }
+  return {
+    before,
+    after,
+    pct: before > 0 ? Math.round(((after - before) / before) * 100) : null,
+  };
+}
+
+function formatArgValue(value: unknown): string {
+  if (value == null) return "—";
+  if (typeof value === "object") {
+    const json = JSON.stringify(value);
+    return json.length > 60 ? `${json.slice(0, 57)}…` : json;
+  }
+  return String(value);
+}
+
 /** Hide internal routing fields from the Approvals JSON panel. */
 function sanitizeApprovalArgsForDisplay(
   args: Record<string, unknown> | null | undefined,
@@ -89,6 +115,7 @@ export function ApprovalCard({
 
   const budgetHeavy = isBudgetChange(approval);
   const args = displayArgs;
+  const delta = budgetDelta(args);
   const pending =
     approval.status === "pending" || approval.status === "edited";
   const executed = approval.status === "executed";
@@ -151,9 +178,15 @@ export function ApprovalCard({
   }
 
   async function handleEdit() {
+    let editableInput: Record<string, unknown>;
+    try {
+      editableInput = JSON.parse(editJson) as Record<string, unknown>;
+    } catch {
+      toast.error("The edited values aren't valid JSON — check commas and quotes.");
+      return;
+    }
     setBusy("edit");
     try {
-      const editableInput = JSON.parse(editJson) as Record<string, unknown>;
       const original = approval.edited_args ?? approval.proposed_args;
       if (
         original &&
@@ -226,13 +259,31 @@ export function ApprovalCard({
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <div>
               <p className="font-semibold">Budget change requires review</p>
-              <p className="mt-0.5 text-warning/80">
-                Impact:{" "}
-                <span className="font-mono">
-                  {formatCents(approval.budget_impact_cents)}
-                </span>
-                . Confirm the new daily budget before executing.
-              </p>
+              {delta ? (
+                <p className="mt-0.5 text-warning/90">
+                  Daily budget{" "}
+                  <span className="font-mono">{formatCents(delta.before)}</span>
+                  {" → "}
+                  <span className="font-mono font-semibold">
+                    {formatCents(delta.after)}
+                  </span>
+                  {delta.pct != null ? (
+                    <span className="font-mono">
+                      {" "}
+                      ({delta.pct > 0 ? "+" : ""}
+                      {delta.pct}%)
+                    </span>
+                  ) : null}
+                </p>
+              ) : (
+                <p className="mt-0.5 text-warning/80">
+                  Impact:{" "}
+                  <span className="font-mono">
+                    {formatCents(approval.budget_impact_cents)}
+                  </span>
+                  . Confirm the new daily budget before executing.
+                </p>
+              )}
             </div>
           </div>
         ) : null}
@@ -243,28 +294,34 @@ export function ApprovalCard({
           <p className="text-sm text-foreground/90">{approval.rationale}</p>
         ) : null}
 
-        {!compact ? (
-          editing ? (
-            <Textarea
-              value={editJson}
-              onChange={(e) => setEditJson(e.target.value)}
-              className="min-h-[140px] font-mono text-xs"
-            />
-          ) : (
-            <pre className="max-h-48 overflow-auto rounded-lg border border-border-subtle bg-secondary/50 p-3 font-mono text-[11px] leading-relaxed text-muted">
-              {JSON.stringify(args, null, 2)}
-            </pre>
-          )
+        {editing ? (
+          <Textarea
+            value={editJson}
+            onChange={(e) => setEditJson(e.target.value)}
+            aria-label="Edit proposed values (JSON)"
+            className="min-h-[140px] font-mono text-xs"
+          />
+        ) : !compact ? (
+          <pre className="max-h-48 overflow-auto rounded-lg border border-border-subtle bg-secondary/50 p-3 font-mono text-[11px] leading-relaxed text-muted">
+            {JSON.stringify(args, null, 2)}
+          </pre>
         ) : (
           <div className="rounded-lg border border-border-subtle bg-secondary/40 px-3 py-2 font-mono text-xs text-muted">
             {Object.entries(args)
               .slice(0, 4)
               .map(([k, v]) => (
                 <div key={k} className="flex justify-between gap-4">
-                  <span>{k}</span>
-                  <span className="text-foreground">{String(v)}</span>
+                  <span className="shrink-0">{k}</span>
+                  <span className="truncate text-foreground" title={formatArgValue(v)}>
+                    {formatArgValue(v)}
+                  </span>
                 </div>
               ))}
+            {Object.keys(args).length > 4 ? (
+              <p className="mt-1 text-[11px] text-muted">
+                +{Object.keys(args).length - 4} more — open Edit to see all
+              </p>
+            ) : null}
           </div>
         )}
 
@@ -375,7 +432,7 @@ export function ApprovalCard({
         !(typeof args.landing_page_url === "string" && args.landing_page_url) ? (
           <p className="text-[11px] text-warning">
             Missing landing_page_url — Edit and add a https:// URL before
-            approving (Adspirer requires it). Entities are created PAUSED, not
+            approving (Meta requires it). Entities are created PAUSED, not
             published.
           </p>
         ) : null}

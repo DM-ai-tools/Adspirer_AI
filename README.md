@@ -1,4 +1,4 @@
-# Adspirer AI
+# Spendsmith
 
 Autonomous Meta advertising intelligence and operations platform for agencies. Operators manage dozens of client Meta ad accounts through natural-language workspace chat, with a code-level policy gate that blocks Execute mutations until a human approves them.
 
@@ -11,7 +11,7 @@ npm install
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). No Supabase, Adspirer MCP, or Trigger.dev credentials are required for the mock demo path.
+Open [http://localhost:3000](http://localhost:3000). No Supabase, Facebook, or Trigger.dev credentials are required for the mock demo path.
 
 ## Live mode (Supabase auth + clients)
 
@@ -29,15 +29,15 @@ npm run typecheck
 
 | Role | Email |
 |------|--------|
-| Admin | `admin@adspirer.ai` |
-| Operator | `operator@adspirer.ai` |
+| Admin | `admin@spendsmith.demo` |
+| Operator | `operator@spendsmith.demo` |
 
-In DEMO_MODE, identity is selected via the demo login cookie (`adspirer_demo_user`). Seeded clients: **TrafficRadius**, **ClickTrends**, **Modern Dental Centre** (all labeled DEMO DATA).
+In DEMO_MODE, identity is selected via the demo login cookie (`adspirer_demo_user`, kept for existing sessions). Seeded clients: **TrafficRadius**, **ClickTrends**, **Modern Dental Centre** (all labeled DEMO DATA).
 
 ## Demo flow (steps 1–20, abbreviated)
 
 1. Admin logs in  
-2. Connect shared Adspirer service account  
+2. Connect Facebook under Connections  
 3. Sync accessible Meta accounts  
 4. Create **Modern Dental Centre**  
 5. Map its Meta account  
@@ -52,7 +52,7 @@ In DEMO_MODE, identity is selected via the demo login cookie (`adspirer_demo_use
 14. Approval card appears  
 15. Operator approves  
 16. Agent / task resumes  
-17. Execute reaches Adspirer (mock provider in DEMO_MODE)  
+17. Execute reaches Meta (mock provider in DEMO_MODE)  
 18. Result is recorded  
 19. UI shows change completed  
 20. Audit page shows full request → execution history  
@@ -66,7 +66,8 @@ In DEMO_MODE, identity is selected via the demo login cookie (`adspirer_demo_use
 | `TOKEN_ENCRYPTION_KEY` | 32-byte AES key (64-char hex or base64) |
 | `NEXT_PUBLIC_SUPABASE_*` / `SUPABASE_SERVICE_ROLE_KEY` | Live DB + auth |
 | `ANTHROPIC_API_KEY` | Claude / Mastra agent |
-| `ADSPIRER_*` | MCP URL + OAuth for live Adspirer |
+| `META_APP_ID` / `META_APP_SECRET` | Facebook OAuth app for direct Meta access |
+| `AGENT_BACKGROUND_RUNS` | Run chat turns as Trigger.dev jobs (needs the worker) |
 | `TRIGGER_SECRET_KEY` | Trigger.dev schedules |
 | `ACCESS_REQUEST_STALE_DAYS` | Stale access job threshold |
 | `APPROVAL_EXPIRY_HOURS` | Approval TTL |
@@ -83,13 +84,13 @@ API / authz + Zod
         │
  ├── Policy gate (diagnose | execute | blocked)
  ├── Approval service + budget ceiling + idempotency
- ├── Task runner (Mastra AdspirerAgent)
- └── MetaAdsProvider (Mock | Adspirer MCP)
+ ├── Task runner (inline, or a Trigger.dev job)
+ └── MetaAdsProvider (Mock | Meta Graph via Facebook OAuth)
         │
 Trigger.dev jobs (monitor, sync, stale access, token refresh, …)
 ```
 
-Hard rules: unknown tools are blocked; Execute never runs without an approved (or edited) approval; operators never see Adspirer tokens; client access is enforced server-side.
+Hard rules: unknown tools are blocked; Execute never runs without an approved (or edited) approval; operators never see stored Facebook tokens; client access is enforced server-side.
 
 ## Phase status
 
@@ -97,7 +98,7 @@ Hard rules: unknown tools are blocked; Execute never runs without an approved (o
 |-------|-------|--------|
 | 0 | Foundation: auth, profiles, roles, seed | Done (DEMO_MODE) |
 | 1 | Client management, brand, services | Done (API + demo store) |
-| 2 | Adspirer OAuth, token vault, account sync | Done (mock + interfaces) |
+| 2 | Facebook OAuth, token vault, account sync | Done |
 | 3 | Access requests, Gmail/manual, stale jobs | Done (mock Gmail + stale job) |
 | 4 | Mastra agent, diagnose tools, workspace | Done (mock agent path) |
 | 5 | Policy gate, approvals, budget, idempotency | Done + tests |
@@ -107,3 +108,9 @@ Hard rules: unknown tools are blocked; Execute never runs without an approved (o
 | 9 | Hardening, export, tests, production gate | In progress |
 
 Details: [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md).
+
+## Operations
+
+- Backups & keepalive: see [`docs/BACKUPS.md`](docs/BACKUPS.md).
+- Rotating `TOKEN_ENCRYPTION_KEY`: `scripts/rotate-token-key.mjs`.
+- Moving inline creative images to Cloudinary: `scripts/migrate-creatives-to-cloudinary.mjs`.

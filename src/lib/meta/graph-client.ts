@@ -70,6 +70,9 @@ function metaErrorHint(subcode: number | undefined): string | null {
 }
 
 function metaErrorHintForCode(code: number | undefined): string | null {
+  if (code === 190) {
+    return "Your Facebook connection has expired or was revoked. Reconnect Facebook (Connect Facebook in the workspace header) and try again. (code 190)";
+  }
   if (code === 2) {
     return [
       "Meta API is temporarily unavailable (code 2). Wait 1–2 minutes and approve again.",
@@ -80,11 +83,68 @@ function metaErrorHintForCode(code: number | undefined): string | null {
   return null;
 }
 
+/**
+ * Rate-limit / transient codes worth retrying for reads. 4/17/32/613 are app,
+ * user, page and custom throttles; 80000–80014 are Marketing API business-use
+ * throttles; 1/2 are temporary platform errors.
+ */
+function isRetryableGraphError(code: number | undefined, status: number): boolean {
+  if (status >= 500) return true;
+  if (code == null) return false;
+  return (
+    code === 1 ||
+    code === 2 ||
+    code === 4 ||
+    code === 17 ||
+    code === 32 ||
+    code === 613 ||
+    (code >= 80000 && code <= 80014)
+  );
+}
+
+const GRAPH_TIMEOUT_MS = 25_000;
+const GET_MAX_ATTEMPTS = 3;
+
+export class MetaGraphError extends Error {
+  constructor(
+    message: string,
+    readonly code: number | undefined,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "MetaGraphError";
+  }
+}
+
+async function readGraphJson(res: Response): Promise<Record<string, unknown>> {
+  const text = await res.text();
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    // Meta occasionally answers with an HTML error page during outages.
+    return {
+      error: {
+        message: `Meta returned an unexpected response (HTTP ${res.status}).`,
+        code: res.status >= 500 ? 2 : undefined,
+      },
+    };
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export class MetaGraphClient {
   private readonly version = getMetaGraphVersion();
   private readonly baseUrl = "https://graph.facebook.com";
 
   constructor(private readonly accessToken: string) {}
+
+  /** Bearer header keeps the token out of URLs (and any logged request lines). */
+  private authHeaders(): Record<string, string> {
+    return { Authorization: `Bearer ${this.accessToken}` };
+  }
 
   async get<T>(
     path: string,
@@ -95,23 +155,70 @@ export class MetaGraphClient {
       if (value == null) continue;
       qs.set(key, String(value));
     }
-    qs.set("access_token", this.accessToken);
-    const res = await fetch(
-      `${this.baseUrl}/${this.version}/${path}?${qs.toString()}`,
-      {
-        method: "GET",
-      },
-    );
-    const json = (await res.json()) as Record<string, unknown>;
-    if (!res.ok || json.error) {
-      throw new Error(
-        formatGraphError(
-          json.error as GraphErrorBody | undefined,
-          `Meta Graph GET failed (${res.status})`,
-        ),
+    const url = `${this.baseUrl}/${this.version}/${path}?${qs.toString()}`;
+
+    for (let attempt = 1; ; attempt += 1) {
+      let res: Response;
+      try {
+        res = await fetch(url, {
+          method: "GET",
+          headers: this.authHeaders(),
+          signal: AbortSignal.timeout(GRAPH_TIMEOUT_MS),
+        });
+      } catch (error) {
+        if (attempt < GET_MAX_ATTEMPTS) {
+          await sleep(500 * 2 ** (attempt - 1));
+          continue;
+        }
+        const timedOut =
+          error instanceof Error && error.name === "TimeoutError";
+        throw new MetaGraphError(
+          timedOut
+            ? "Meta took too long to respond. Try again, or narrow the date range."
+            : "Could not reach Meta. Check your connection and try again.",
+          undefined,
+          0,
+        );
+      }
+      const json = await readGraphJson(res);
+      if (res.ok && !json.error) return json as T;
+
+      const error = json.error as GraphErrorBody | undefined;
+      if (
+        attempt < GET_MAX_ATTEMPTS &&
+        isRetryableGraphError(error?.code, res.status)
+      ) {
+        // Exponential backoff with jitter: ~1s, ~2s.
+        await sleep(1000 * 2 ** (attempt - 1) + Math.random() * 250);
+        continue;
+      }
+      throw new MetaGraphError(
+        formatGraphError(error, `Meta Graph GET failed (${res.status})`),
+        error?.code,
+        res.status,
       );
     }
-    return json as T;
+  }
+
+  /**
+   * Fetch up to 50 objects in one request (`?ids=a,b,c`). Returns a map keyed
+   * by id; ids Meta could not return are simply absent.
+   */
+  async getByIds<T>(
+    ids: string[],
+    params: Record<string, GraphValue> = {},
+  ): Promise<Record<string, T>> {
+    const unique = [...new Set(ids.filter(Boolean))];
+    const out: Record<string, T> = {};
+    for (let i = 0; i < unique.length; i += 50) {
+      const chunk = unique.slice(i, i + 50);
+      const batch = await this.get<Record<string, T>>("", {
+        ...params,
+        ids: chunk.join(","),
+      });
+      Object.assign(out, batch);
+    }
+    return out;
   }
 
   async post<T>(
@@ -123,19 +230,24 @@ export class MetaGraphClient {
       if (value == null) continue;
       form.set(key, String(value));
     }
-    form.set("access_token", this.accessToken);
+    // Writes are never retried automatically: a timed-out create may still
+    // have succeeded on Meta's side, and repeating it would duplicate it.
     const res = await fetch(`${this.baseUrl}/${this.version}/${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: {
+        ...this.authHeaders(),
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
       body: form.toString(),
+      signal: AbortSignal.timeout(GRAPH_TIMEOUT_MS * 2),
     });
-    const json = (await res.json()) as Record<string, unknown>;
+    const json = await readGraphJson(res);
     if (!res.ok || json.error) {
-      throw new Error(
-        formatGraphError(
-          json.error as GraphErrorBody | undefined,
-          `Meta Graph POST failed (${res.status})`,
-        ),
+      const error = json.error as GraphErrorBody | undefined;
+      throw new MetaGraphError(
+        formatGraphError(error, `Meta Graph POST failed (${res.status})`),
+        error?.code,
+        res.status,
       );
     }
     return json as T;

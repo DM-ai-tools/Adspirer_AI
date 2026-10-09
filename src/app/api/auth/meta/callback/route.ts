@@ -3,6 +3,7 @@ import { getConfig } from "@/lib/config";
 import { cookies } from "next/headers";
 import { createClient } from "@/lib/supabase/server";
 import { encryptToken } from "@/lib/meta/token-crypto";
+import { invalidateUserMetaToken } from "@/lib/meta/get-user-token";
 import { logger } from "@/lib/observability/logger";
 
 export async function GET(request: NextRequest) {
@@ -22,7 +23,7 @@ export async function GET(request: NextRequest) {
   const safeReturn =
     returnTo && returnTo.startsWith("/") && !returnTo.startsWith("//")
       ? returnTo
-      : "/workspace-v2";
+      : "/workspace";
 
   const redirectWith = (params: Record<string, string>) => {
     const url = new URL(safeReturn, config.APP_URL);
@@ -120,15 +121,43 @@ export async function GET(request: NextRequest) {
     expiresIn = longData.expires_in ?? 5184000;
   }
 
-  const meRes = await fetch(
-    `https://graph.facebook.com/${version}/me?fields=id,name&access_token=${accessToken}`,
-  );
+  const [meRes, permRes] = await Promise.all([
+    fetch(`https://graph.facebook.com/${version}/me?fields=id,name`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    }),
+    fetch(`https://graph.facebook.com/${version}/me/permissions`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    }),
+  ]);
   let metaUserId: string | null = null;
   let metaUserName: string | null = null;
   if (meRes.ok) {
     const meData = (await meRes.json()) as { id?: string; name?: string };
     metaUserId = meData.id ?? null;
     metaUserName = meData.name ?? null;
+  }
+
+  // Record what the user actually granted — permissions can be unticked in
+  // the Facebook dialog, and a missing ads scope must not look "connected".
+  let grantedScopes: string[] = [];
+  if (permRes.ok) {
+    const permData = (await permRes.json()) as {
+      data?: Array<{ permission?: string; status?: string }>;
+    };
+    grantedScopes = (permData.data ?? [])
+      .filter((p) => p.status === "granted" && p.permission)
+      .map((p) => p.permission as string);
+    if (
+      !grantedScopes.includes("ads_read") &&
+      !grantedScopes.includes("ads_management")
+    ) {
+      cookieStore.delete("meta_oauth_return");
+      return redirectWith({
+        meta_error: "missing_permissions",
+        meta_error_description:
+          "Ad account access was not granted. Reconnect and allow the ads permissions in the Facebook dialog.",
+      });
+    }
   }
 
   const supabase = await createClient();
@@ -144,23 +173,30 @@ export async function GET(request: NextRequest) {
   const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
   const encrypted = encryptToken(accessToken);
 
-  await supabase.from("meta_oauth_tokens").upsert(
+  const { error: saveError } = await supabase.from("meta_oauth_tokens").upsert(
     {
       user_id: user.id,
       access_token_encrypted: encrypted,
       token_expires_at: expiresAt,
-      scopes: [
-        "public_profile",
-        "ads_management",
-        "ads_read",
-        "business_management",
-      ],
+      scopes: grantedScopes,
       meta_user_id: metaUserId,
       meta_user_name: metaUserName,
       updated_at: new Date().toISOString(),
     },
     { onConflict: "user_id" },
   );
+  invalidateUserMetaToken(user.id);
+  if (saveError) {
+    logger.error("Failed to save Meta OAuth token", {
+      message: saveError.message,
+    });
+    cookieStore.delete("meta_oauth_return");
+    return redirectWith({
+      meta_error: "save_failed",
+      meta_error_description:
+        "Facebook connected, but the connection could not be saved. Please try again.",
+    });
+  }
 
   let syncedCount = 0;
   try {

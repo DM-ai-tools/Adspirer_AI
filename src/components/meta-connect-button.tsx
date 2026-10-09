@@ -9,6 +9,10 @@ import { Button } from "@/components/ui/button";
 
 interface MetaStatus {
   connected: boolean;
+  /** Connected, but the token expires within a week. Set when status loads. */
+  expiresSoon?: boolean;
+  /** Token exists but has expired — needs a reconnect. */
+  expired?: boolean;
   metaUserName?: string;
   metaUserId?: string;
   expiresAt?: string;
@@ -51,6 +55,10 @@ export function MetaConnectButton({
         const res = await fetch("/api/auth/meta/status");
         const data = (await res.json()) as MetaStatus;
         if (cancelled) return;
+        data.expiresSoon =
+          data.connected &&
+          data.expiresAt != null &&
+          Date.parse(data.expiresAt) - Date.now() < 7 * 24 * 60 * 60 * 1000;
         setStatus(data);
         onChangedRef.current?.(data);
       } catch {
@@ -77,13 +85,25 @@ export function MetaConnectButton({
   };
 
   const handleDisconnect = async () => {
+    const ok = window.confirm(
+      "Disconnect Facebook? The agent will lose access to your ad accounts until you reconnect.",
+    );
+    if (!ok) return;
     setLoading(true);
-    await fetch("/api/auth/meta/disconnect", { method: "POST" });
-    const next = { connected: false };
-    setStatus(next);
-    onChangedRef.current?.(next);
-    setLoading(false);
+    try {
+      const res = await fetch("/api/auth/meta/disconnect", { method: "POST" });
+      if (!res.ok) throw new Error("Could not disconnect Facebook");
+      const next = { connected: false };
+      setStatus(next);
+      onChangedRef.current?.(next);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Disconnect failed");
+    } finally {
+      setLoading(false);
+    }
   };
+
+  const expiresSoon = Boolean(status?.expiresSoon);
 
   const handleSync = async () => {
     setSyncing(true);
@@ -125,17 +145,40 @@ export function MetaConnectButton({
       return (
         <div
           className={cn(
-            "flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1.5",
+            "flex items-center gap-2 rounded-lg border px-2.5 py-1.5",
+            expiresSoon
+              ? "border-amber-500/40 bg-amber-500/10"
+              : "border-emerald-500/30 bg-emerald-500/10",
             className,
           )}
+          title={
+            expiresSoon && status.expiresAt
+              ? `Facebook access expires ${new Date(status.expiresAt).toLocaleDateString()} — reconnect to renew it.`
+              : undefined
+          }
         >
-          <span className="h-2 w-2 rounded-full bg-emerald-500" />
+          <span
+            className={cn(
+              "h-2 w-2 rounded-full",
+              expiresSoon ? "bg-amber-500" : "bg-emerald-500",
+            )}
+            aria-hidden
+          />
           <span className="max-w-[140px] truncate text-xs font-medium text-foreground">
             {status.metaUserName ?? "Facebook"}
           </span>
+          {expiresSoon ? (
+            <button
+              type="button"
+              onClick={handleConnect}
+              className="text-[11px] font-medium text-amber-600 hover:underline dark:text-amber-400"
+            >
+              Renew
+            </button>
+          ) : null}
           {showManageLink ? (
             <Link
-              href="/admin/adspirer"
+              href="/admin/connections"
               className="text-[11px] text-accent hover:underline"
             >
               Manage
@@ -217,9 +260,14 @@ export function MetaConnectButton({
         size="sm"
         className={cn("h-8 gap-1.5", className)}
         onClick={handleConnect}
+        title={
+          status?.expired
+            ? "Your Facebook connection expired — reconnect to keep auditing."
+            : undefined
+        }
       >
         <FacebookIcon className="h-3.5 w-3.5" />
-        Connect Facebook
+        {status?.expired ? "Reconnect Facebook" : "Connect Facebook"}
       </Button>
     );
   }
@@ -235,8 +283,13 @@ export function MetaConnectButton({
         )}
       >
         <FacebookIcon className="h-4 w-4" />
-        Connect with Facebook
+        {status?.expired ? "Reconnect Facebook" : "Connect with Facebook"}
       </button>
+      {status?.expired ? (
+        <p className="text-xs text-amber-600 dark:text-amber-400">
+          Your Facebook connection expired. Reconnect to restore ad account access.
+        </p>
+      ) : null}
       <p className="text-[11px] text-muted">
         Continues to Facebook to approve access, then returns here. While the
         Meta app is in Development mode, use an Admin/Developer/Tester account.
@@ -247,7 +300,7 @@ export function MetaConnectButton({
 
 function FacebookIcon({ className }: { className?: string }) {
   return (
-    <svg className={className} viewBox="0 0 24 24" fill="currentColor">
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor" aria-hidden>
       <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
     </svg>
   );

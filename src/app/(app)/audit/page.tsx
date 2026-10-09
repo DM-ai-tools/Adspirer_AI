@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Download } from "lucide-react";
+import { Download, FileSpreadsheet } from "lucide-react";
 import { toast } from "sonner";
 import { apiFetch, formatDateTime } from "@/lib/api-client";
 import { useApp } from "@/components/layout/app-provider";
@@ -76,23 +76,29 @@ function AuditInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientId]);
 
-  async function exportCsv() {
+  async function exportLog(format: "csv" | "xlsx") {
     try {
-      const params = new URLSearchParams();
+      const params = new URLSearchParams({ format });
       if (clientId !== "all") params.set("clientId", clientId);
       if (type.trim()) params.set("type", type.trim());
+      // Times in the file match what the viewer sees on screen.
+      params.set("tz", Intl.DateTimeFormat().resolvedOptions().timeZone);
       const response = await fetch(`/api/audit/export?${params.toString()}`, {
         credentials: "same-origin",
       });
       if (!response.ok) throw new Error("Export failed");
       const blob = await response.blob();
+      const disposition = response.headers.get("Content-Disposition") ?? "";
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `adspirer-audit-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.download =
+        disposition.match(/filename="([^"]+)"/)?.[1] ??
+        `spendsmith-audit-${new Date().toISOString().slice(0, 10)}.${format}`;
       a.click();
-      URL.revokeObjectURL(url);
-      toast.success("CSV downloaded");
+      // Revoking synchronously can cancel the download in some browsers.
+      window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      toast.success(format === "xlsx" ? "Excel file downloaded" : "CSV downloaded");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Export failed");
     }
@@ -136,10 +142,16 @@ function AuditInner() {
               Apply
             </Button>
             {user?.profile.role === "admin" ? (
-              <Button variant="outline" onClick={() => void exportCsv()}>
-                <Download className="h-4 w-4" />
-                Export CSV
-              </Button>
+              <>
+                <Button variant="outline" onClick={() => void exportLog("xlsx")}>
+                  <FileSpreadsheet className="h-4 w-4" />
+                  Excel
+                </Button>
+                <Button variant="outline" onClick={() => void exportLog("csv")}>
+                  <Download className="h-4 w-4" />
+                  CSV
+                </Button>
+              </>
             ) : null}
           </div>
         }

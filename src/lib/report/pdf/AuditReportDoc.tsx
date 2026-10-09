@@ -33,7 +33,7 @@ function Footer() {
       <View style={s.footRule} />
       <View style={s.footRow}>
         <Text>
-          <Text style={{ color: C.teal700, fontWeight: 600 }}>Adspirer AI</Text>
+          <Text style={{ color: C.teal700, fontWeight: 600 }}>Spendsmith</Text>
           {" · Confidential"}
         </Text>
         <Text
@@ -55,7 +55,7 @@ export function AuditReportDoc({ r }: { r: AuditReport }) {
   return (
     <Document
       title={`${r.meta.reportType} — ${r.meta.accountName}`}
-      author="Adspirer AI"
+      author="Spendsmith"
       subject={`${r.meta.period} · ${r.meta.accountId}`}
     >
       <Page size="A4" style={[s.page, s.pageLead]}>
@@ -70,7 +70,7 @@ export function AuditReportDoc({ r }: { r: AuditReport }) {
               }}
             >
               <Text style={s.logoTile}>✦</Text>
-              <Text style={s.wordmark}>ADSPIRER AI</Text>
+              <Text style={s.wordmark}>SPENDSMITH</Text>
             </View>
             <Text style={s.h1}>{r.meta.reportType}</Text>
             <Text style={s.subtitle}>{r.meta.subtitle}</Text>
@@ -444,7 +444,7 @@ export function AuditReportDoc({ r }: { r: AuditReport }) {
 
         <View style={{ marginTop: S[5] }}>
           <Callout label="No changes were made">
-            These are advisory findings only. To have Adspirer execute any of
+            These are advisory findings only. To have Spendsmith execute any of
             them, request the action in chat and it will be queued for your
             approval.
           </Callout>

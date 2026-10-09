@@ -209,11 +209,11 @@ async function getDemoUser(): Promise<AuthUser> {
   const store = getDemoStore();
   const cookieStore = await cookies();
   const preferred =
-    cookieStore.get(DEMO_USER_COOKIE)?.value ?? "admin@adspirer.ai";
+    cookieStore.get(DEMO_USER_COOKIE)?.value ?? "admin@spendsmith.demo";
 
   const profile =
     store.profiles.find((p) => p.email === preferred) ??
-    store.profiles.find((p) => p.email === "admin@adspirer.ai")!;
+    store.profiles.find((p) => p.email === "admin@spendsmith.demo")!;
 
   return {
     id: profile.id,

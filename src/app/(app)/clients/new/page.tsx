@@ -44,9 +44,9 @@ export default function NewClientPage() {
       await refresh().catch(() => undefined);
       toast.success(`Created ${data.client.name}`, {
         description:
-          "Next: open Adspirer Connection → Sync accounts → Map this client to a Meta ad account.",
+          "Next: open Connections → Sync ad accounts → map this client to a Meta ad account.",
       });
-      router.push("/admin/adspirer");
+      router.push("/admin/connections");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Create failed");
     } finally {
@@ -58,7 +58,7 @@ export default function NewClientPage() {
     <div className="mx-auto max-w-2xl">
       <PageHeader
         title="New client"
-        description="Creates an agency client. Connect a Meta ad account afterward from Adspirer Connection."
+        description="Creates an agency client. Connect a Meta ad account afterward from Connections."
       />
       <Card>
         <CardContent className="p-6">

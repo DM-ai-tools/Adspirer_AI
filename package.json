@@ -1,5 +1,5 @@
 {
-  "name": "adspirer-ai",
+  "name": "spendsmith",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -40,6 +40,7 @@
     "cloudinary": "^2.10.0",
     "clsx": "^2.1.1",
     "date-fns": "^4.4.0",
+    "docx": "9.7.1",
     "lucide-react": "^1.31.0",
     "mammoth": "^1.12.2",
     "nanoid": "^6.0.1",
@@ -63,6 +64,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.3.0",
     "jsdom": "^29.1.1",
+    "jszip": "3.10.1",
     "postcss": "^8.5.26",
     "tailwindcss": "^3.4.17",
     "typescript": "^5",

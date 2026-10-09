@@ -1,11 +1,12 @@
 import { v2 as cloudinary } from "cloudinary";
 import { getConfig } from "@/lib/config";
 import {
+  getCreativeDraftAsync,
   upsertCreativeDraftAsync,
   type CreativeDraft,
 } from "@/lib/creatives/drafts";
 
-function isPublicHttpsUrl(value: string | null): value is string {
+function isPublicHttpsUrl(value: string | null | undefined): value is string {
   if (!value) return false;
   try {
     const url = new URL(value);
@@ -28,35 +29,31 @@ function imageDataUri(draft: CreativeDraft): string | null {
   return `data:${draft.image_mime || "image/png"};base64,${draft.image_b64}`;
 }
 
-/**
- * Ensure Meta receives an internet-accessible HTTPS image URL.
- *
- * Generated assets are initially served through the app for preview. A local
- * APP_URL makes those links unusable by Meta, so the selected asset is uploaded
- * server-side to Cloudinary and the durable secure_url replaces the preview URL.
- */
-export async function ensurePublicCreativeUrl(
-  draft: CreativeDraft,
-): Promise<{ draft: CreativeDraft; imageUrl: string }> {
-  if (isPublicHttpsUrl(draft.image_url)) {
-    return { draft, imageUrl: draft.image_url };
-  }
-
+export function isCloudinaryConfigured(): boolean {
   const config = getConfig();
-  if (
-    !config.CLOUDINARY_CLOUD_NAME ||
-    !config.CLOUDINARY_API_KEY ||
-    !config.CLOUDINARY_API_SECRET
-  ) {
+  return Boolean(
+    config.CLOUDINARY_CLOUD_NAME &&
+      config.CLOUDINARY_API_KEY &&
+      config.CLOUDINARY_API_SECRET,
+  );
+}
+
+/**
+ * Upload a creative still and return its public HTTPS URL. The public_id is
+ * the draft id, so reworks overwrite the same asset (the returned URL carries
+ * a new version segment, which busts browser caches).
+ */
+export async function uploadCreativeImage(input: {
+  draftId: string;
+  clientId: string;
+  headline: string;
+  /** data: URI or a fetchable URL. */
+  source: string;
+}): Promise<{ url: string; mime: string | null }> {
+  const config = getConfig();
+  if (!isCloudinaryConfigured()) {
     throw new Error(
       "Cloudinary is not configured. Add CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET to .env.local, then restart the dev server.",
-    );
-  }
-
-  const source = imageDataUri(draft);
-  if (!source) {
-    throw new Error(
-      "This creative has no image data available to upload to Cloudinary. Rework or regenerate it, then try again.",
     );
   }
 
@@ -67,33 +64,70 @@ export async function ensurePublicCreativeUrl(
     secure: true,
   });
 
-  const result = await cloudinary.uploader.upload(source, {
+  const result = await cloudinary.uploader.upload(input.source, {
     resource_type: "image",
-    folder: `adspirer/clients/${draft.client_id}`,
-    public_id: draft.id,
+    folder: `spendsmith/clients/${input.clientId}`,
+    public_id: input.draftId,
     overwrite: true,
     unique_filename: false,
     invalidate: true,
-    tags: ["adspirer", "meta-creative"],
+    tags: ["spendsmith", "meta-creative"],
     context: {
-      client_id: draft.client_id,
-      draft_id: draft.id,
-      headline: draft.headline.slice(0, 255),
+      client_id: input.clientId,
+      draft_id: input.draftId,
+      headline: input.headline.slice(0, 255),
     },
   });
 
   if (!result.secure_url || !isPublicHttpsUrl(result.secure_url)) {
     throw new Error("Cloudinary upload did not return a public HTTPS URL.");
   }
+  return {
+    url: result.secure_url,
+    mime: result.format ? `image/${result.format}` : null,
+  };
+}
 
-  const persisted = await upsertCreativeDraftAsync({
-    ...draft,
-    id: draft.id,
-    image_url: result.secure_url,
-    // Cloudinary is now the durable source; avoid retaining a large duplicate.
-    image_b64: null,
-    image_mime: result.format ? `image/${result.format}` : draft.image_mime,
+/**
+ * Ensure Meta receives an internet-accessible HTTPS image URL.
+ *
+ * New stills are uploaded when they are generated; this covers older drafts
+ * whose bytes still live inline, and local APP_URL previews Meta can't fetch.
+ */
+export async function ensurePublicCreativeUrl(
+  draft: CreativeDraft,
+): Promise<{ draft: CreativeDraft; imageUrl: string }> {
+  if (isPublicHttpsUrl(draft.image_url)) {
+    return { draft, imageUrl: draft.image_url };
+  }
+
+  // Normal reads skip the inline bytes — load them only for this upload.
+  const full =
+    draft.image_b64 === undefined
+      ? ((await getCreativeDraftAsync(draft.id, { withImageData: true })) ?? draft)
+      : draft;
+  const source = imageDataUri(full);
+  if (!source) {
+    throw new Error(
+      "This creative has no image data available to upload to Cloudinary. Rework or regenerate it, then try again.",
+    );
+  }
+
+  const uploaded = await uploadCreativeImage({
+    draftId: full.id,
+    clientId: full.client_id,
+    headline: full.headline,
+    source,
   });
 
-  return { draft: persisted, imageUrl: result.secure_url };
+  const persisted = await upsertCreativeDraftAsync({
+    ...full,
+    id: full.id,
+    image_url: uploaded.url,
+    // Cloudinary is now the durable source; drop the multi-MB copy in Postgres.
+    image_b64: null,
+    image_mime: uploaded.mime ?? full.image_mime,
+  });
+
+  return { draft: persisted, imageUrl: uploaded.url };
 }

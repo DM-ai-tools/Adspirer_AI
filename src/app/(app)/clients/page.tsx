@@ -231,7 +231,7 @@ export default function ClientsPage() {
                         {client.accessStatus === "not_connected" ||
                         client.accessStatus === "not_requested" ? (
                           <Button variant="outline" size="sm" asChild>
-                            <Link href="/admin/adspirer">Connect Meta</Link>
+                            <Link href="/admin/connections">Connect Meta</Link>
                           </Button>
                         ) : null}
                         <Button variant="ghost" size="sm" asChild>

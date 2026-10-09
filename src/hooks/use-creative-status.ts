@@ -35,7 +35,7 @@ export type CreativeProgress = {
 /** Tight enough to feel live while stills land, without hammering the API. */
 const ACTIVE_POLL_MS = 2_500;
 /** Slow background poll so a batch started on another screen still shows up. */
-const IDLE_POLL_MS = 8_000;
+const IDLE_POLL_MS = 30_000;
 
 /** Stable identity keeps consumers' memos from recomputing every render. */
 const EMPTY_DRAFTS: LiveCreativeDraft[] = [];
@@ -84,6 +84,8 @@ export function useCreativeStatus({
     };
 
     const tick = async () => {
+      // Hidden tabs don't poll; the visibility listener resumes on return.
+      if (document.hidden) return;
       try {
         const data = await apiFetch<{
           drafts: LiveCreativeDraft[];
@@ -104,11 +106,19 @@ export function useCreativeStatus({
       }
     };
 
+    const onVisible = () => {
+      if (document.hidden || cancelled) return;
+      if (timer) window.clearTimeout(timer);
+      void tick();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
     void tick();
 
     return () => {
       cancelled = true;
       if (timer) window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [clientId, conversationId, enabled, nonce]);
 

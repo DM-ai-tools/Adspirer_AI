@@ -8,7 +8,7 @@ import {
 } from "@/lib/approvals/service";
 import { executeApprovedAction } from "@/lib/approvals/executor";
 import { DuplicateExecutionError } from "@/lib/errors";
-import { resetDemoStore } from "@/lib/demo/store";
+import { getDemoStore, resetDemoStore } from "@/lib/demo/store";
 
 const CLIENT_ID = "client_modern_dental";
 const REVIEWER = "profile_admin_demo";
@@ -158,5 +158,73 @@ describe("approvals service + executor", () => {
         executedBy: REVIEWER,
       }),
     ).rejects.toBeInstanceOf(DuplicateExecutionError);
+  });
+});
+
+describe("approval races", () => {
+  it("a second reviewer cannot re-approve an already approved approval", async () => {
+    resetDemoStore();
+    const pending = await createPendingApproval({
+      clientId: CLIENT_ID,
+      toolName: "update_adset_budget",
+      proposedArgs: budgetArgs(),
+      budgetImpactCents: 1500,
+      requestedBy: REVIEWER,
+      idempotencyKey: "idem_test_double_approve",
+    });
+
+    await approve({ approvalId: pending.id, reviewedBy: REVIEWER });
+    await expect(
+      approve({ approvalId: pending.id, reviewedBy: REVIEWER }),
+    ).rejects.toThrow();
+  });
+
+  it("concurrent executes run the action exactly once", async () => {
+    resetDemoStore();
+    const pending = await createPendingApproval({
+      clientId: CLIENT_ID,
+      toolName: "pause_campaign",
+      proposedArgs: {
+        account_id: "act_100200300",
+        campaign_id: "camp_mdc_npl",
+      },
+      requestedBy: REVIEWER,
+      idempotencyKey: "idem_test_concurrent_exec",
+    });
+    await approve({ approvalId: pending.id, reviewedBy: REVIEWER });
+
+    const results = await Promise.allSettled([
+      executeApprovedAction({ approvalId: pending.id, executedBy: REVIEWER }),
+      executeApprovedAction({ approvalId: pending.id, executedBy: REVIEWER }),
+    ]);
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter((r) => r.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(
+      DuplicateExecutionError,
+    );
+    expect((await getApproval(pending.id)).status).toBe("executed");
+  });
+
+  it("an expired approval cannot be approved", async () => {
+    resetDemoStore();
+    const pending = await createPendingApproval({
+      clientId: CLIENT_ID,
+      toolName: "pause_campaign",
+      proposedArgs: {
+        account_id: "act_100200300",
+        campaign_id: "camp_mdc_npl",
+      },
+      requestedBy: REVIEWER,
+      idempotencyKey: "idem_test_expired",
+    });
+    const stored = getDemoStore().approvals.find((a) => a.id === pending.id)!;
+    stored.expires_at = new Date(Date.now() - 60_000).toISOString();
+
+    await expect(
+      approve({ approvalId: pending.id, reviewedBy: REVIEWER }),
+    ).rejects.toThrow(/expired/i);
+    expect((await getApproval(pending.id)).status).toBe("pending");
   });
 });

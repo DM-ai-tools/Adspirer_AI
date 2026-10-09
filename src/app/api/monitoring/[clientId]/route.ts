@@ -2,8 +2,9 @@ import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
 import { getCurrentUser } from "@/lib/security/auth";
 import { assertAuthenticated, assertClientAccess } from "@/lib/authz/assert";
-import { analyzeSnapshots } from "@/lib/monitoring/analyzer";
-import type { Approval, MonitoringSnapshot, Recommendation, Task } from "@/types";
+import { HEALTH_WINDOWS, type HealthWindow } from "@/lib/monitoring/health";
+import { getClientHealth, loadHealthHistory } from "@/lib/monitoring/service";
+import type { Approval, Recommendation, Task } from "@/types";
 import { jsonOk, withApiHandler } from "@/lib/api/response";
 import {
   humanApprovalStatus,
@@ -109,48 +110,41 @@ function buildAccountUpdates(input: {
   );
 }
 
-export async function GET(_request: Request, context: RouteContext) {
+export async function GET(request: Request, context: RouteContext) {
   return withApiHandler(async () => {
     const { clientId } = await context.params;
     const user = await getCurrentUser();
     assertAuthenticated(user);
     await assertClientAccess(user.id, clientId);
 
+    const url = new URL(request.url);
+    const requested = Number(url.searchParams.get("window") ?? 7);
+    const days: HealthWindow = (HEALTH_WINDOWS as readonly number[]).includes(requested)
+      ? (requested as HealthWindow)
+      : 7;
+
     const config = getConfig();
-    let snapshots: MonitoringSnapshot[] = [];
     let recommendations: Recommendation[] = [];
     let approvals: Approval[] = [];
     let tasks: Task[] = [];
 
-    if (config.isDemoMode || !config.hasSupabase) {
-      const store = getDemoStore();
-      snapshots = store.monitoringSnapshots
-        .filter((s) => s.client_id === clientId)
-        .slice()
-        .sort(
-          (a, b) =>
-            new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
-        );
-      recommendations = store.recommendations.filter(
-        (r) => r.client_id === clientId,
-      );
-      approvals = store.approvals.filter((a) => a.client_id === clientId);
-      tasks = store.tasks.filter((t) => t.client_id === clientId);
-    } else {
+    const activity = (async () => {
+      if (config.isDemoMode || !config.hasSupabase) {
+        const store = getDemoStore();
+        recommendations = store.recommendations.filter((r) => r.client_id === clientId);
+        approvals = store.approvals.filter((a) => a.client_id === clientId);
+        tasks = store.tasks.filter((t) => t.client_id === clientId);
+        return;
+      }
       const { createAdminClient } = await import("@/lib/supabase/admin");
       const supabase = createAdminClient();
-      const [
-        { data: snaps },
-        { data: recs },
-        { data: approvalRows },
-        { data: taskRows },
-      ] = await Promise.all([
+      const [{ data: recs }, { data: approvalRows }, { data: taskRows }] = await Promise.all([
         supabase
-          .from("monitoring_snapshots")
+          .from("recommendations")
           .select("*")
           .eq("client_id", clientId)
-          .order("created_at", { ascending: false }),
-        supabase.from("recommendations").select("*").eq("client_id", clientId),
+          .order("created_at", { ascending: false })
+          .limit(50),
         supabase
           .from("approvals")
           .select("*")
@@ -164,47 +158,30 @@ export async function GET(_request: Request, context: RouteContext) {
           .order("updated_at", { ascending: false })
           .limit(30),
       ]);
-      snapshots = (snaps ?? []) as MonitoringSnapshot[];
       recommendations = (recs ?? []) as Recommendation[];
       approvals = (approvalRows ?? []) as Approval[];
       tasks = (taskRows ?? []) as Task[];
-    }
+    })();
 
-    const current = snapshots[0] ?? null;
-    const baseline = snapshots[1] ?? null;
-    const analysis = current
-      ? analyzeSnapshots({ current, baseline })
-      : { findings: [] as ReturnType<typeof analyzeSnapshots>["findings"], summary: "" };
-
-    const accountUpdates = buildAccountUpdates({
-      approvals,
-      recommendations,
-      tasks,
-    });
-    const optimizations = accountUpdates.filter((u) => u.kind === "optimization");
-
-    const summaryParts: string[] = [];
-    if (analysis.summary) summaryParts.push(analysis.summary);
-    if (!current) {
-      summaryParts.push(
-        accountUpdates.length
-          ? `Tracking ${accountUpdates.length} account update${accountUpdates.length === 1 ? "" : "s"} from workspace activity (no metric snapshots yet).`
-          : "No monitoring snapshots yet. Applied optimizations and recommendations will appear here as you work the account.",
-      );
-    } else if (optimizations.length) {
-      summaryParts.push(
-        `${optimizations.length} optimization${optimizations.length === 1 ? "" : "s"} recorded for this account.`,
-      );
-    }
+    const [health, history] = await Promise.all([
+      getClientHealth({
+        userId: user.id,
+        clientId,
+        days,
+        accountId: url.searchParams.get("accountId"),
+        fresh: url.searchParams.get("refresh") === "1",
+      }),
+      loadHealthHistory(clientId, days).catch(() => []),
+      activity,
+    ]);
 
     return jsonOk({
       clientId,
-      snapshots,
-      findings: analysis.findings,
-      summary: summaryParts.filter(Boolean).join(" ") || "Account monitoring.",
+      window: days,
+      health,
+      history,
       recommendations,
-      accountUpdates,
-      optimizations,
+      accountUpdates: buildAccountUpdates({ approvals, recommendations, tasks }),
     });
   });
 }

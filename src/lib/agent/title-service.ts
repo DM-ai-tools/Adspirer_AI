@@ -1,8 +1,6 @@
 import {
   generateChatTitle,
   isDefaultConversationTitle,
-  isV2ChatTitle,
-  withV2ChatTitle,
 } from "@/lib/agent/title";
 import type { Conversation } from "@/types";
 import { getConfig } from "@/lib/config";
@@ -12,16 +10,14 @@ import { mapConversationRow } from "@/lib/db/live-maps";
 export async function maybeAutoTitleConversation(
   conversation: Conversation,
   firstUserMessage: string,
-  options?: { workspaceVersion?: "v1" | "v2" },
 ): Promise<Conversation> {
   if (!isDefaultConversationTitle(conversation.title)) {
     return conversation;
   }
 
-  let title = await generateChatTitle(firstUserMessage);
-  if (options?.workspaceVersion === "v2" || isV2ChatTitle(conversation.title)) {
-    title = withV2ChatTitle(title);
-  }
+  // There is a single workspace now, so titles no longer carry a "V2" marker
+  // (legacy marked titles are still cleaned up for display).
+  const title = await generateChatTitle(firstUserMessage);
   const ts = nowIso();
   const config = getConfig();
 

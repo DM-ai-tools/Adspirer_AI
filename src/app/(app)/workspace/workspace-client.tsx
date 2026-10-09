@@ -23,12 +23,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  DEFAULT_CHAT_TITLE,
-  DEFAULT_V2_CHAT_TITLE,
-  displayChatTitle,
-  isV2ChatTitle,
-} from "@/lib/agent/title-format";
+import { DEFAULT_CHAT_TITLE, displayChatTitle } from "@/lib/agent/title-format";
 import { MetaConnectButton } from "@/components/meta-connect-button";
 import { handleMetaOAuthReturn } from "@/lib/meta/oauth-return";
 
@@ -127,11 +122,26 @@ async function readSse(
   }
 }
 
-function WorkspaceInner({
-  workspaceVersion,
-}: {
-  workspaceVersion: "v1" | "v2";
-}) {
+const WORKSPACE_PATH = "/workspace";
+const API_BASE = "/api";
+
+function readStoredAccount(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function storeAccount(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // private mode / storage disabled — selection just won't persist
+  }
+}
+
+function WorkspaceInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const {
@@ -143,13 +153,22 @@ function WorkspaceInner({
 
   const queryClientId = searchParams.get("clientId");
   const queryConversationId = searchParams.get("conversationId");
-  const workspacePath = workspaceVersion === "v2" ? "/workspace-v2" : "/workspace";
-  const apiBase = workspaceVersion === "v2" ? "/api/v2" : "/api";
+  const queryPrompt = searchParams.get("prompt")?.slice(0, 2_000) ?? undefined;
+  const workspacePath = WORKSPACE_PATH;
+  const apiBase = API_BASE;
   const apiPath = useCallback(
-    (path: string) => `${apiBase}${path.startsWith("/") ? path : `/${path}`}`,
-    [apiBase],
+    (path: string) => `${API_BASE}${path.startsWith("/") ? path : `/${path}`}`,
+    [],
   );
   const clientId = queryClientId || selectedClientId;
+  // Latest client the operator picked. Async loads started for an earlier
+  // client compare against this before writing state, so a slow response for
+  // client A can never render under client B.
+  const activeClientRef = useRef<string | null>(clientId ?? null);
+  useEffect(() => {
+    activeClientRef.current = clientId ?? null;
+  }, [clientId]);
+  const streamAbortRef = useRef<AbortController | null>(null);
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -185,7 +204,6 @@ function WorkspaceInner({
   );
 
   useEffect(() => {
-    if (workspaceVersion !== "v2") return;
     handleMetaOAuthReturn({
       searchParams,
       pathname: workspacePath,
@@ -194,10 +212,10 @@ function WorkspaceInner({
       toastError: (msg) => toast.error(msg),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- OAuth return once
-  }, [workspaceVersion]);
+  }, []);
 
   useEffect(() => {
-    if (workspaceVersion !== "v2" || !clientId) {
+    if (!clientId) {
       setMetaAccountStatus(null);
       setSelectedMetaAccountId(null);
       return;
@@ -223,11 +241,7 @@ function WorkspaceInner({
         const granted = data.mappedAccounts.filter(
           (a) => a.access_status === "granted",
         );
-        const storageKey = `adspirer_selected_meta_account_${clientId}`;
-        const saved =
-          typeof window !== "undefined"
-            ? window.localStorage.getItem(storageKey)
-            : null;
+        const saved = readStoredAccount(selectedAccountKey(clientId));
         const client = clients.find((c) => c.id === clientId);
         const nameMatch = client
           ? granted.find(
@@ -264,7 +278,7 @@ function WorkspaceInner({
     return () => {
       cancelled = true;
     };
-  }, [workspaceVersion, clientId, clients]);
+  }, [clientId, clients]);
 
   const activeConversation = useMemo(
     () => conversations.find((c) => c.id === conversationId) ?? null,
@@ -338,6 +352,7 @@ function WorkspaceInner({
 
   const openConversation = useCallback(
     async (cid: string, conversation: Conversation) => {
+      if (activeClientRef.current !== cid) return;
       setConversationId(conversation.id);
       syncUrl(cid, conversation.id);
 
@@ -345,6 +360,7 @@ function WorkspaceInner({
         conversation: Conversation;
         messages: Message[];
       }>(apiPath(`/conversations/${conversation.id}/messages`));
+      if (activeClientRef.current !== cid) return;
       setMessages(msgRes.messages);
 
       if (conversation.task_id) {
@@ -376,12 +392,12 @@ function WorkspaceInner({
         (a, b) =>
           new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
       );
-    setConversations(sorted);
+    if (activeClientRef.current === cid) setConversations(sorted);
     return sorted;
   }, [apiPath]);
 
   const createConversation = useCallback(
-    async (cid: string, title = workspaceVersion === "v2" ? DEFAULT_V2_CHAT_TITLE : DEFAULT_CHAT_TITLE) => {
+    async (cid: string, title = DEFAULT_CHAT_TITLE) => {
       const created = await apiFetch<{ conversation: Conversation }>(
         apiPath("/conversations"),
         {
@@ -389,11 +405,13 @@ function WorkspaceInner({
           body: JSON.stringify({ clientId: cid, title }),
         },
       );
-      setConversations((prev) => [created.conversation, ...prev]);
+      if (activeClientRef.current === cid) {
+        setConversations((prev) => [created.conversation, ...prev]);
+      }
       await openConversation(cid, created.conversation);
       return created.conversation;
     },
-    [openConversation, apiPath, workspaceVersion],
+    [openConversation, apiPath],
   );
 
   const bootstrapWorkspace = useCallback(
@@ -401,6 +419,7 @@ function WorkspaceInner({
       setBootstrapping(true);
       try {
         const sorted = await refreshConversationList(cid);
+        if (activeClientRef.current !== cid) return;
         const preferred =
           (preferredConversationId
             ? sorted.find((c) => c.id === preferredConversationId)
@@ -432,15 +451,20 @@ function WorkspaceInner({
 
   useEffect(() => {
     if (!clientId) return;
+    // Leaving a client mid-reply: stop reading its stream (the run itself
+    // continues server-side and shows up when you come back).
+    streamAbortRef.current?.abort();
     setConversationId(null);
     setMessages([]);
     setTask(null);
     setApprovals([]);
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void bootstrapWorkspace(clientId, queryConversationId);
-    // Re-bootstrap when the client or workspace version changes.
+    // Re-bootstrap when the client changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clientId, workspaceVersion]);
+  }, [clientId]);
+
+  useEffect(() => () => streamAbortRef.current?.abort(), []);
 
   const hasStreamingMessage = useMemo(
     () =>
@@ -470,7 +494,9 @@ function WorkspaceInner({
     let cancelled = false;
 
     const poll = async () => {
-      if (cancelled) return;
+      // The SSE stream already delivers task progress for this tab; polling is
+      // only for runs we are not streaming (page reloaded mid-run, other tab).
+      if (cancelled || sendingRef.current || document.hidden) return;
       try {
         const currentTask = taskRef.current;
         const currentMessages = messagesRef.current;
@@ -490,17 +516,8 @@ function WorkspaceInner({
           if (!cancelled) setTask(nextTask);
         }
 
-        // While SSE is live, only refresh task progress — never wipe the chat.
-        if (sendingRef.current) {
-          if (
-            nextTask &&
-            (nextTask.status === "running" || nextTask.status === "queued") &&
-            typeof nextTask.agent_state?.statusLabel === "string"
-          ) {
-            setStatusLabel(nextTask.agent_state.statusLabel);
-          }
-          return;
-        }
+        // A stream may have started while the task request was in flight.
+        if (sendingRef.current) return;
 
         const msgRes = await apiFetch<{
           conversation: Conversation;
@@ -603,8 +620,10 @@ function WorkspaceInner({
     }
   }
 
-  async function sendMessage(content: string) {
-    if (!conversationId || !clientId) return;
+  /** Returns false when nothing reached the server, so the composer keeps the text. */
+  async function sendMessage(content: string): Promise<boolean> {
+    if (!conversationId || !clientId) return false;
+    const sendClientId = clientId;
 
     const clientUserId = `local_${Date.now()}`;
     const optimistic: Message = {
@@ -647,10 +666,14 @@ function WorkspaceInner({
         ),
     );
 
+    const abort = new AbortController();
+    streamAbortRef.current = abort;
+    let accepted = false;
     try {
       const response = await fetch(
         `${apiPath(`/conversations/${conversationId}/messages`)}?stream=1`,
         {
+          signal: abort.signal,
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -660,7 +683,7 @@ function WorkspaceInner({
           body: JSON.stringify({
             content,
             runAgent: true,
-            ...(workspaceVersion === "v2" && selectedMetaAccountId
+            ...(selectedMetaAccountId
               ? { metaAccountId: selectedMetaAccountId }
               : {}),
           }),
@@ -674,6 +697,7 @@ function WorkspaceInner({
         );
       }
 
+      accepted = true;
       let assistantId = streamingId;
       let finalTaskId: string | null = null;
 
@@ -921,15 +945,32 @@ function WorkspaceInner({
 
       // Soft reconcile approvals/task — do NOT replace the whole message list
       // (that remounts bubbles and causes the disappear/reappear glitch).
-      await refreshConversationList(clientId);
-      await loadApprovals(clientId, finalTaskId);
-      await refresh();
+      if (activeClientRef.current === sendClientId) {
+        await Promise.all([
+          refreshConversationList(sendClientId),
+          loadApprovals(sendClientId, finalTaskId),
+          refresh(),
+        ]);
+      }
+      return true;
     } catch (error) {
+      if (abort.signal.aborted) return true;
       toast.error(error instanceof Error ? error.message : "Send failed");
-      setMessages((prev) =>
-        prev.filter((m) => m.id !== clientUserId && m.id !== streamingId),
-      );
+      if (!accepted) {
+        // Nothing was saved server-side: drop the optimistic bubbles and let
+        // the composer restore the text for a retry.
+        setMessages((prev) =>
+          prev.filter((m) => m.id !== clientUserId && m.id !== streamingId),
+        );
+        return false;
+      }
+      // The server already has the message (and may still be running the
+      // task); reload the thread instead of deleting what the operator sent.
+      sendingRef.current = false;
+      void refreshWorkflow();
+      return true;
     } finally {
+      if (streamAbortRef.current === abort) streamAbortRef.current = null;
       sendingRef.current = false;
       setSending(false);
       setStatusLabel(null);
@@ -937,31 +978,32 @@ function WorkspaceInner({
   }
 
   return (
-    <div className="flex h-[calc(100vh-7.5rem)] min-h-[560px] flex-col">
+    // Full-height three-pane layout only on wide screens; below 1280px the
+    // panes stack so the chat never gets squeezed to a sliver.
+    <div className="flex flex-col xl:h-[calc(100vh-7.5rem)] xl:min-h-[560px]">
       <PageHeader
-        title={workspaceVersion === "v2" ? "Workspace V2" : "Workspace"}
-        description={
-          workspaceVersion === "v2"
-            ? "Chat with the Meta-direct agent (no Adspirer API dependency). Execute actions still require approval."
-            : "Chat with the Adspirer agent. Diagnose freely; execute actions require approval."
-        }
+        title="Workspace"
+        description="Audit and optimise a client's Meta ad account with the agent. Every change waits for your approval."
         actions={
-          <div className="flex items-center gap-3">
-            {workspaceVersion === "v2" && (
-              <MetaConnectButton
-                variant="compact"
-                returnTo="/workspace-v2"
-                showManageLink
-              />
-            )}
+          <div className="flex flex-wrap items-center gap-3">
+            <MetaConnectButton
+              variant="compact"
+              returnTo={WORKSPACE_PATH}
+              showManageLink
+            />
             <Select
               value={clientId ?? undefined}
+              disabled={sending}
               onValueChange={(value) => {
                 setSelectedClientId(value);
                 syncUrl(value, null);
               }}
             >
-              <SelectTrigger className="w-[240px]">
+              <SelectTrigger
+                className="w-full sm:w-[240px]"
+                aria-label="Client"
+                title={sending ? "Wait for the current reply to finish" : undefined}
+              >
                 <SelectValue placeholder="Select client" />
               </SelectTrigger>
               <SelectContent>
@@ -976,7 +1018,7 @@ function WorkspaceInner({
         }
       />
 
-      {workspaceVersion === "v2" && clientId && metaAccountStatus ? (
+      {clientId && metaAccountStatus ? (
         <div
           className={`mb-3 rounded-lg border px-3 py-2 text-xs ${
             selectedMetaAccountId
@@ -994,12 +1036,7 @@ function WorkspaceInner({
                   value={selectedMetaAccountId}
                   onValueChange={(value) => {
                     setSelectedMetaAccountId(value);
-                    if (clientId) {
-                      window.localStorage.setItem(
-                        `adspirer_selected_meta_account_${clientId}`,
-                        value,
-                      );
-                    }
+                    if (clientId) storeAccount(selectedAccountKey(clientId), value);
                   }}
                 >
                   <SelectTrigger className="h-7 max-w-[320px] text-xs">
@@ -1033,7 +1070,7 @@ function WorkspaceInner({
             <p>
               <span className="font-medium">No ad account ready for this client.</span>{" "}
               {!metaAccountStatus.facebookConnected
-                ? "Connect Facebook, sync, then map TR Internal Marketing under Connections."
+                ? "Connect Facebook, sync your ad accounts, then map one to this client under Connections."
                 : metaAccountStatus.mappedCount === 0
                   ? "Sync ad accounts, then map the account to this client under Connections."
                   : "Mapped accounts exist but none are granted — check Connections."}
@@ -1047,7 +1084,7 @@ function WorkspaceInner({
       ) : bootstrapping && !conversationId ? (
         <LoadingState label={`Opening workspace for ${clientName ?? "client"}…`} />
       ) : (
-        <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[240px_minmax(0,1fr)_320px]">
+        <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[220px_minmax(0,1fr)] xl:grid-cols-[240px_minmax(0,1fr)_320px]">
           <ChatHistorySidebar
             conversations={conversations}
             activeId={conversationId}
@@ -1056,20 +1093,15 @@ function WorkspaceInner({
             onDelete={(id) => void handleDeleteConversation(id)}
             deletingId={deletingId}
             disabled={sending || Boolean(deletingId)}
-            newChatLabel={workspaceVersion === "v2" ? "New V2 chat" : "New chat"}
-            className="min-h-0"
+            newChatLabel="New chat"
+            className="max-h-64 min-h-0 lg:max-h-none"
           />
 
-          <Card className="flex h-full min-h-0 flex-col overflow-hidden">
+          <Card className="flex h-[70vh] min-h-[480px] flex-col overflow-hidden xl:h-full xl:min-h-0">
             <CardHeader className="shrink-0 border-b border-border py-3">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <CardTitle className="flex items-center gap-1.5 text-sm">
-                    {isV2ChatTitle(activeConversation?.title) ? (
-                      <span className="shrink-0 rounded bg-accent-muted px-1 py-px text-[9px] font-semibold uppercase tracking-wide text-accent">
-                        V2
-                      </span>
-                    ) : null}
                     <span className="truncate">
                       {clientName ?? "Client"} ·{" "}
                       {displayChatTitle(activeConversation?.title) || DEFAULT_CHAT_TITLE}
@@ -1115,17 +1147,14 @@ function WorkspaceInner({
                   apiBase={apiBase}
                   inlineApprovals={approvals}
                   onWorkflowRefresh={refreshWorkflow}
-                  placeholder={
-                    workspaceVersion === "v2"
-                      ? "Ask the Meta-direct agent to audit, create campaigns, or propose changes…"
-                      : "Ask Adspirer to audit, create campaigns, or propose changes…"
-                  }
+                  initialInput={queryPrompt}
+                  placeholder="Ask for an audit, a new campaign, or changes to propose…"
                 />
               )}
             </CardContent>
           </Card>
 
-          <div className="flex min-h-0 flex-col gap-4 overflow-auto">
+          <div className="flex min-h-0 flex-col gap-4 lg:col-span-2 xl:col-span-1 xl:overflow-auto">
             <TaskProgress task={task} />
             {approvals.length > 0 ? (
               <div className="space-y-3">
@@ -1171,10 +1200,10 @@ function WorkspaceInner({
   );
 }
 
-export function WorkspaceClient({
-  workspaceVersion,
-}: {
-  workspaceVersion: "v1" | "v2";
-}) {
-  return <WorkspaceInner workspaceVersion={workspaceVersion} />;
+function selectedAccountKey(clientId: string): string {
+  return `spendsmith_selected_meta_account_${clientId}`;
+}
+
+export function WorkspaceClient() {
+  return <WorkspaceInner />;
 }

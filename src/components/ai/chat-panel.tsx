@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
   Download,
+  FileSpreadsheet,
   FileText,
   Loader2,
   Send,
@@ -313,7 +314,26 @@ function renderInline(text: string): React.ReactNode[] {
   });
 }
 
-function FormattedMessageBody({ text }: { text: string }) {
+/** Memoised: while one reply streams, earlier bubbles skip re-rendering. */
+/** Cells of a markdown table row: `| a | b |` → ["a", "b"]. */
+function tableCells(line: string): string[] {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+const isTableRow = (line: string) => /^\s*\|.*\|\s*$/.test(line);
+const isTableDivider = (line: string) =>
+  /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(line);
+
+const FormattedMessageBody = memo(function FormattedMessageBody({
+  text,
+}: {
+  text: string;
+}) {
   if (!text.trim()) return null;
   const lines = text.split("\n");
   const blocks: React.ReactNode[] = [];
@@ -336,6 +356,54 @@ function FormattedMessageBody({ text }: { text: string }) {
 
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
+
+    // Markdown table: header row, divider row, then body rows.
+    if (isTableRow(line) && i + 1 < lines.length && isTableDivider(lines[i + 1])) {
+      flushList();
+      const header = tableCells(line);
+      const rows: string[][] = [];
+      let j = i + 2;
+      while (j < lines.length && isTableRow(lines[j])) {
+        const cells = tableCells(lines[j]);
+        // "|" inside a campaign name splits the first cell — fold it back.
+        const overflow = cells.length - header.length;
+        rows.push(
+          overflow > 0
+            ? [cells.slice(0, overflow + 1).join(" | "), ...cells.slice(overflow + 1)]
+            : cells,
+        );
+        j += 1;
+      }
+      blocks.push(
+        <div key={`tbl-${i}`} className="my-2 overflow-x-auto rounded-lg border border-border-subtle">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-secondary/50 text-muted">
+              <tr>
+                {header.map((cell, c) => (
+                  <th key={c} className="px-2.5 py-1.5 font-medium">
+                    {renderInline(cell)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="tabular-nums">
+              {rows.map((row, r) => (
+                <tr key={r} className="border-t border-border-subtle/70">
+                  {header.map((_, c) => (
+                    <td key={c} className="px-2.5 py-1.5 text-foreground/90">
+                      {renderInline(row[c] ?? "")}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
+      );
+      i = j - 1;
+      continue;
+    }
+
     const heading = line.match(/^#{1,3}\s+(.+)$/);
     const bullet = line.match(/^[-*•]\s+(.+)$/);
     const numbered = line.match(/^\d+\.\s+(.+)$/);
@@ -370,7 +438,7 @@ function FormattedMessageBody({ text }: { text: string }) {
   flushList();
 
   return <div className="space-y-0.5">{blocks}</div>;
-}
+});
 
 function ToolProposalCards({ proposals }: { proposals: ToolProposal[] }) {
   if (!proposals.length) return null;
@@ -414,7 +482,7 @@ export function ChatPanel({
   disabled,
   sending: sendingProp,
   statusLabel,
-  placeholder = "Ask Adspirer to audit, create campaigns, or propose changes…",
+  placeholder = "Ask for an audit, a new campaign, or changes to propose…",
   className,
   clientId,
   conversationId,
@@ -423,9 +491,11 @@ export function ChatPanel({
   apiBase = "/api",
   inlineApprovals = [],
   onWorkflowRefresh,
+  initialInput,
 }: {
   messages: Message[];
-  onSend: (content: string) => Promise<void> | void;
+  /** Resolve `false` when the message never reached the server. */
+  onSend: (content: string) => Promise<void | boolean> | void;
   disabled?: boolean;
   sending?: boolean;
   statusLabel?: string | null;
@@ -438,8 +508,10 @@ export function ChatPanel({
   apiBase?: string;
   inlineApprovals?: Approval[];
   onWorkflowRefresh?: () => void | Promise<void>;
+  /** Prefills the composer (e.g. "Ask agent" from Monitoring); never auto-sent. */
+  initialInput?: string;
 }) {
-  const [input, setInput] = useState("");
+  const [input, setInput] = useState(initialInput ?? "");
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [sendingLocal, setSendingLocal] = useState(false);
   const [feedbackById, setFeedbackById] = useState<
@@ -457,7 +529,7 @@ export function ChatPanel({
   const [startingCreatives, setStartingCreatives] = useState(false);
   const [attachedNames, setAttachedNames] = useState<string[]>([]);
   const [exportProgress, setExportProgress] = useState<{
-    format: "md" | "docx" | "pdf";
+    format: "md" | "docx" | "pdf" | "xlsx";
     step: number;
     label: string;
     percent: number;
@@ -510,7 +582,9 @@ export function ChatPanel({
     setSendingLocal(true);
     setInput("");
     try {
-      await onSend(trimmed);
+      const delivered = await onSend(trimmed);
+      // Give the text back so a failed send can be retried without retyping.
+      if (delivered === false) setInput((current) => current || content);
     } finally {
       setSendingLocal(false);
     }
@@ -543,7 +617,7 @@ export function ChatPanel({
   }
 
   async function exportReport(
-    format: "md" | "docx" | "pdf",
+    format: "md" | "docx" | "pdf" | "xlsx",
     title: string,
     content: string,
     report?: unknown,
@@ -575,10 +649,6 @@ export function ChatPanel({
       });
     };
 
-    // Give the progress UI a beat to paint before the network work starts.
-    await new Promise((r) => setTimeout(r, 280));
-    advance(1);
-    await new Promise((r) => setTimeout(r, 220));
     advance(2);
 
     try {
@@ -601,19 +671,17 @@ export function ChatPanel({
       const blob = await response.blob();
       const disposition = response.headers.get("Content-Disposition") ?? "";
       const match = disposition.match(/filename="([^"]+)"/);
-      const filename =
-        match?.[1] ??
-        `adspirer-report.${format === "docx" ? "doc" : format}`;
+      const filename = match?.[1] ?? `spendsmith-report.${format}`;
 
       advance(4);
-      await new Promise((r) => setTimeout(r, 180));
 
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
       a.download = filename;
       a.click();
-      URL.revokeObjectURL(url);
+      // Revoking synchronously can cancel the download in some browsers.
+      window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
 
       setExportProgress({
         format,
@@ -715,15 +783,23 @@ export function ChatPanel({
   const showCreativeUi = showCampaignCreativeUi(conversationFlow);
   const showImageUi = showImageChoiceUi(conversationFlow);
 
+  // Messages keep object identity unless they change, so only the streaming
+  // reply is re-parsed per token instead of every message in the thread.
+  const [parseCache] = useState(() => new WeakMap<Message, ParsedAssistant>());
   const parsedById = useMemo(() => {
+    const cache = parseCache;
     const map = new Map<string, ParsedAssistant>();
     for (const m of messages) {
-      if (m.role === "assistant") {
-        map.set(m.id, parseAssistantContent(m.content, m.metadata));
+      if (m.role !== "assistant") continue;
+      let parsed = cache.get(m);
+      if (!parsed) {
+        parsed = parseAssistantContent(m.content, m.metadata);
+        cache.set(m, parsed);
       }
+      map.set(m.id, parsed);
     }
     return map;
-  }, [messages]);
+  }, [messages, parseCache]);
 
   const latestPickerMessageId = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
@@ -848,7 +924,9 @@ export function ChatPanel({
                 Preparing{" "}
                 {exportProgress.format === "docx"
                   ? "Word"
-                  : exportProgress.format.toUpperCase()}{" "}
+                  : exportProgress.format === "xlsx"
+                    ? "Excel"
+                    : exportProgress.format.toUpperCase()}{" "}
                 report
               </p>
             </div>
@@ -947,7 +1025,7 @@ export function ChatPanel({
                 (typeof message.metadata?.reportTitle === "string" &&
                   message.metadata.reportTitle) ||
                 parsed?.displayText?.match(/^#\s+(.+)$/m)?.[1]?.trim() ||
-                "Adspirer report";
+                "Spendsmith report";
               const reportData = message.metadata?.reportData ?? undefined;
               // Prefer the body that still contains the full audit tables/headers.
               // Humanized displayText used to win and drop campaign/KPI rows.
@@ -1036,6 +1114,24 @@ export function ChatPanel({
                         >
                           <FileText className="h-3.5 w-3.5" />
                           Word
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          className="h-7 gap-1 text-xs"
+                          disabled={Boolean(exportProgress)}
+                          onClick={() =>
+                            void exportReport(
+                              "xlsx",
+                              reportTitle,
+                              reportBody,
+                              reportData,
+                            )
+                          }
+                        >
+                          <FileSpreadsheet className="h-3.5 w-3.5" />
+                          Excel
                         </Button>
                         <Button
                           type="button"
@@ -1363,7 +1459,7 @@ export function ChatPanel({
                         <p className="text-[11px] text-muted">
                           Image uses a still (URL or generate). Video needs a
                           public MP4/MOV URL or an existing Meta video ID —
-                          Adspirer does not generate videos.
+                          Spendsmith does not generate videos.
                         </p>
                         <div className="flex flex-wrap gap-2">
                           <Button
@@ -1590,6 +1686,22 @@ export function ChatPanel({
                         >
                           <FileText className="h-3 w-3" />
                           Word
+                        </button>
+                        <button
+                          type="button"
+                          disabled={Boolean(exportProgress)}
+                          className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-muted hover:bg-secondary hover:text-foreground disabled:opacity-50"
+                          onClick={() =>
+                            void exportReport(
+                              "xlsx",
+                              reportTitle,
+                              reportBody,
+                              reportData,
+                            )
+                          }
+                        >
+                          <FileSpreadsheet className="h-3 w-3" />
+                          Excel
                         </button>
                         <button
                           type="button"
