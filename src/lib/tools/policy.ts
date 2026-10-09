@@ -31,10 +31,10 @@ const TOOL_POLICY: Record<string, ToolSafetyClass> = {
   create_campaign: "execute",
   create_meta_image_campaign: "execute",
   create_meta_video_campaign: "execute",
-  create_meta_image_campaign_v2: "execute",
-  create_meta_video_campaign_v2: "execute",
-  optimize_meta_budget_v2: "execute",
-  optimize_meta_placements_v2: "execute",
+  // create_meta_*_campaign_v2 / optimize_meta_*_v2 are intentionally absent
+  // (→ blocked): they had no executor, so approvals for them were queued and
+  // then always failed with "No provider dispatch". Use the v1 create tools,
+  // update_adset_budget, or pause_ad instead.
   create_adset: "execute",
   create_ad: "execute",
   pause_ad: "execute",

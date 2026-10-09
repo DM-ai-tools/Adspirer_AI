@@ -9,6 +9,7 @@ import {
 } from "@/lib/authz/assert";
 import { isAdmin } from "@/lib/security/roles";
 import { createTask, runTask } from "@/lib/agent/task-runner";
+import { toPublicTask } from "@/lib/agent/task-public";
 import type { Task } from "@/types";
 import { jsonOk, parseBody, withApiHandler } from "@/lib/api/response";
 
@@ -44,7 +45,7 @@ export async function GET(request: Request) {
         tasks = tasks.filter((t) => allowed.has(t.client_id));
       }
       if (status) tasks = tasks.filter((t) => t.status === status);
-      return jsonOk({ tasks });
+      return jsonOk({ tasks: tasks.map((t) => toPublicTask(t)) });
     }
 
     const { createAdminClient } = await import("@/lib/supabase/admin");
@@ -62,7 +63,9 @@ export async function GET(request: Request) {
     if (status) query = query.eq("status", status);
     const { data, error } = await query;
     if (error) throw new Error(error.message);
-    return jsonOk({ tasks: (data ?? []) as Task[] });
+    return jsonOk({
+      tasks: ((data ?? []) as Task[]).map((t) => toPublicTask(t)),
+    });
   });
 }
 
@@ -85,6 +88,6 @@ export async function POST(request: Request) {
     // Default: enqueue and run. Execute tools still go through approvals.
     const shouldRun = body.run !== false;
     const result = shouldRun ? await runTask(task.id) : task;
-    return jsonOk({ task: result }, 201);
+    return jsonOk({ task: toPublicTask(result) }, 201);
   });
 }

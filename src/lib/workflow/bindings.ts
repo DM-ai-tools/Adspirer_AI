@@ -135,17 +135,14 @@ export async function completeTaskIfApprovalsTerminal(taskId: string): Promise<v
   if (pending.length > 0) return;
 
   const ts = nowIso();
+  const settledState = settleApprovalTaskState(task.agent_state ?? {}, approvals);
   if (config.isDemoMode || !config.hasSupabase) {
     const t = getDemoStore().tasks.find((x) => x.id === taskId);
     if (!t) return;
     t.status = "done";
     t.completed_at = ts;
     t.updated_at = ts;
-    t.agent_state = {
-      ...(t.agent_state ?? {}),
-      phase: "completed",
-      statusLabel: "Approvals complete",
-    };
+    t.agent_state = { ...(t.agent_state ?? {}), ...settledState };
     return;
   }
 
@@ -157,13 +154,51 @@ export async function completeTaskIfApprovalsTerminal(taskId: string): Promise<v
       status: "done",
       completed_at: ts,
       updated_at: ts,
-      agent_state: {
-        ...(task.agent_state ?? {}),
-        phase: "completed",
-        statusLabel: "Approvals complete",
-      },
+      agent_state: { ...(task.agent_state ?? {}), ...settledState },
     })
     .eq("id", taskId);
+}
+
+type StepLike = { id: string; label: string; state: string };
+
+/**
+ * Final agent_state once every approval for a task is resolved: an honest
+ * label (applied vs rejected), and no step left spinning or "waiting".
+ */
+export function settleApprovalTaskState(
+  agentState: Record<string, unknown>,
+  approvals: Pick<Approval, "status">[],
+): Record<string, unknown> {
+  const executed = approvals.filter((a) => a.status === "executed").length;
+  const declined = approvals.filter((a) =>
+    ["rejected", "cancelled"].includes(a.status),
+  ).length;
+  const statusLabel =
+    approvals.length > 0 && executed === approvals.length
+      ? "Changes applied"
+      : approvals.length > 0 && declined === approvals.length
+        ? "Changes rejected"
+        : "Approvals resolved";
+
+  const steps = Array.isArray(agentState.steps)
+    ? (agentState.steps as StepLike[]).map((s) => {
+        if (s.id === "approval" || s.id === "complete") {
+          return { ...s, state: "done" };
+        }
+        if (s.state === "active" || s.state === "waiting") {
+          return { ...s, state: "done" };
+        }
+        if (s.state === "pending") return { ...s, state: "skipped" };
+        return s;
+      })
+    : undefined;
+
+  return {
+    phase: "completed",
+    statusLabel,
+    awaitingOperator: false,
+    ...(steps ? { steps } : {}),
+  };
 }
 
 export async function persistApprovalRow(approval: Approval): Promise<void> {

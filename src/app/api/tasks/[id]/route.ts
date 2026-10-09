@@ -1,6 +1,7 @@
 import { getCurrentUser } from "@/lib/security/auth";
 import { assertAuthenticated, assertClientAccess } from "@/lib/authz/assert";
-import { getTask } from "@/lib/agent/task-runner";
+import { expireStaleTask, getTask } from "@/lib/agent/task-runner";
+import { toPublicTask } from "@/lib/agent/task-public";
 import { jsonOk, withApiHandler } from "@/lib/api/response";
 
 type RouteContext = { params: Promise<{ id: string }> };
@@ -13,6 +14,8 @@ export async function GET(_request: Request, context: RouteContext) {
 
     const task = await getTask(id);
     await assertClientAccess(user.id, task.client_id);
-    return jsonOk({ task });
+    // A run whose function was killed would otherwise poll as "running" forever.
+    const current = await expireStaleTask(task);
+    return jsonOk({ task: toPublicTask(current) });
   });
 }

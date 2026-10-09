@@ -3,6 +3,7 @@ import { getDemoStore } from "@/lib/demo/store";
 import { runTask } from "@/lib/agent/task-runner";
 import { runTaskV2 } from "@/lib/agent/task-runner-v2";
 import { toMessageInsert } from "@/lib/db/live-maps";
+import { toPublicTask } from "@/lib/agent/task-public";
 import type { Message, Task } from "@/types";
 
 /**
@@ -15,6 +16,45 @@ export type TurnEmit = (event: string, data: unknown) => void;
 
 /** Minimum gap between streamed `delta` events — tokens arrive far faster. */
 const DELTA_FLUSH_MS = 50;
+
+/**
+ * `delta` SSE payload. Normally only the new text is sent:
+ *   { append, total, label?, phase?, ui? }
+ * where `total` is the full reply length after appending. When the reply was
+ * rewritten rather than extended (live status line replaced, JSON appendix
+ * stripped), the whole text is sent instead as a reset:
+ *   { content, total, label?, phase?, ui? }
+ * Clients append when their local length === total - append.length, otherwise
+ * take `content` when present (and resync from `done` / a refetch if not).
+ */
+export type DeltaPayload = {
+  append?: string;
+  content?: string;
+  total: number;
+  label?: string;
+  phase?: string;
+  ui?: unknown;
+};
+
+/** Tracks what this turn already streamed and encodes the next delta event. */
+export function createDeltaEncoder() {
+  let sent: string | null = null;
+  return (
+    fullText: string,
+    extra: Omit<DeltaPayload, "append" | "content" | "total"> = {},
+  ): DeltaPayload => {
+    const previous = sent;
+    sent = fullText;
+    if (previous !== null && fullText.startsWith(previous)) {
+      return {
+        append: fullText.slice(previous.length),
+        total: fullText.length,
+        ...extra,
+      };
+    }
+    return { content: fullText, total: fullText.length, ...extra };
+  };
+}
 
 export async function saveMessage(message: Message, taskId?: string | null) {
   const config = getConfig();
@@ -41,6 +81,7 @@ export function finalAssistantMetadata(task: Task): Record<string, unknown> {
     taskId: task.id,
     status: task.status,
     streaming: false,
+    awaitingOperator: state.awaitingOperator === true,
     pendingApprovalId:
       typeof state.pending_approval_id === "string"
         ? state.pending_approval_id
@@ -75,6 +116,7 @@ export async function runAgentTurn(input: {
   let lastPersist = 0;
   let lastDeltaSent = 0;
   let lastStatusKey = "";
+  const encodeDelta = createDeltaEncoder();
 
   try {
     const onProgress: NonNullable<Parameters<typeof runTask>[1]>["onProgress"] = async (event) => {
@@ -87,7 +129,7 @@ export async function runAgentTurn(input: {
         emit?.("progress", {
           phase: event.phase,
           label: event.label,
-          task: event.task,
+          task: toPublicTask(event.task),
           summary:
             typeof event.summary === "string" && !isTokenEvent
               ? event.summary
@@ -115,12 +157,14 @@ export async function runAgentTurn(input: {
         const now = Date.now();
         if (!isTokenEvent || now - lastDeltaSent >= DELTA_FLUSH_MS) {
           lastDeltaSent = now;
-          emit?.("delta", {
-            content: assistantMessage.content,
-            label: event.label,
-            phase: event.phase,
-            ui: taskUi,
-          });
+          emit?.(
+            "delta",
+            encodeDelta(assistantMessage.content, {
+              label: event.label,
+              phase: event.phase,
+              ui: taskUi,
+            }),
+          );
         }
         if (now - lastPersist > persistEveryMs) {
           lastPersist = now;
@@ -141,12 +185,14 @@ export async function runAgentTurn(input: {
             liveStatus: true,
             ui: taskUi ?? assistantMessage.metadata?.ui ?? null,
           };
-          emit?.("delta", {
-            content: assistantMessage.content,
-            label: event.label,
-            phase: event.phase,
-            ui: taskUi,
-          });
+          emit?.(
+            "delta",
+            encodeDelta(assistantMessage.content, {
+              label: event.label,
+              phase: event.phase,
+              ui: taskUi,
+            }),
+          );
           if (!emit) {
             // Background runs: the status line is how a tailing client sees progress.
             void saveMessage(assistantMessage, input.taskId).catch(() => undefined);

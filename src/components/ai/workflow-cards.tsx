@@ -3,9 +3,7 @@
 import { useState } from "react";
 import { Check, Loader2, X } from "lucide-react";
 import { toast } from "sonner";
-import type { Approval } from "@/types";
 import { apiFetch } from "@/lib/api-client";
-import { ApprovalCard } from "@/components/approvals/approval-card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -201,32 +199,6 @@ export function InlineCreativeCards({
             )}
           </div>
         </div>
-      ))}
-    </div>
-  );
-}
-
-export function InlineApprovalCards({
-  approvals,
-  clientName,
-  onUpdated,
-}: {
-  approvals: Approval[];
-  clientName?: string;
-  onUpdated?: (approval: Approval) => void | Promise<void>;
-}) {
-  if (!approvals.length) return null;
-  return (
-    <div className="mt-3 space-y-3 border-t border-border/60 pt-3">
-      <p className="text-xs font-semibold text-foreground">Pending approvals</p>
-      {approvals.map((approval) => (
-        <ApprovalCard
-          key={approval.id}
-          approval={approval}
-          clientName={clientName}
-          compact
-          onUpdated={onUpdated}
-        />
       ))}
     </div>
   );

@@ -3,18 +3,17 @@ import {
   ApprovalExpiredError,
   BudgetCeilingViolation,
 } from "@/lib/errors";
-import { resolveBudgetDaily } from "@/lib/meta/resolve-budget-daily";
 
 const EXECUTABLE_STATUSES: ApprovalStatus[] = ["approved", "edited"];
 
 const REVIEW_TRANSITIONS: Record<ApprovalStatus, ApprovalStatus[]> = {
   pending: ["approved", "rejected", "edited", "cancelled"],
-  edited: ["approved", "rejected", "cancelled", "executing"],
+  edited: ["approved", "rejected", "cancelled", "executing", "edited"],
   approved: ["executing", "cancelled", "rejected"],
   rejected: [],
   executing: ["executed", "failed", "edited"],
   executed: [],
-  failed: ["pending", "edited", "approved"],
+  failed: ["pending", "edited", "approved", "rejected", "cancelled"],
   cancelled: [],
 };
 
@@ -53,6 +52,86 @@ export function assertExecutableStatus(approval: Approval): void {
 }
 
 /**
+ * Read a numeric arg that may arrive as a number or a numeric string. A value
+ * that is present but not a finite number throws — it must never be treated
+ * as "no budget" and skip the ceiling.
+ */
+function numericArg(args: Record<string, unknown>, key: string): number | null {
+  const raw = args[key];
+  if (raw == null || raw === "") return null;
+  const n =
+    typeof raw === "number"
+      ? raw
+      : typeof raw === "string" && /^\s*-?\d+(\.\d+)?\s*$/.test(raw)
+        ? Number(raw)
+        : Number.NaN;
+  if (!Number.isFinite(n)) {
+    throw new BudgetCeilingViolation(`${key} must be a number`, {
+      [key]: raw,
+    });
+  }
+  return n;
+}
+
+const MS_PER_DAY = 86_400_000;
+
+/**
+ * Effective daily spend in cents for the args (daily budget, or a lifetime
+ * budget spread over its schedule). null when the args carry no budget.
+ */
+export function effectiveDailyBudgetCents(
+  args: Record<string, unknown>,
+): number | null {
+  const dailyCents = numericArg(args, "daily_budget_cents");
+  if (dailyCents != null) return Math.round(dailyCents);
+
+  const daily =
+    numericArg(args, "budget_daily") ?? numericArg(args, "daily_budget");
+  if (daily != null) return Math.round(daily * 100);
+
+  const lifetime = numericArg(args, "budget_lifetime");
+  if (lifetime != null) {
+    const end =
+      typeof args.end_time === "string" ? Date.parse(args.end_time) : Number.NaN;
+    const start =
+      typeof args.start_time === "string"
+        ? Date.parse(args.start_time)
+        : Date.now();
+    const days =
+      Number.isFinite(end) && Number.isFinite(start) && end > start
+        ? Math.max(1, Math.ceil((end - start) / MS_PER_DAY))
+        : 1;
+    return Math.ceil((lifetime * 100) / days);
+  }
+  return null;
+}
+
+/**
+ * Budget impact (cents/day) derived from the final args — never trusted from
+ * the client or the LLM, so an edit cannot understate it.
+ */
+export function computeBudgetImpactCents(
+  toolName: string,
+  args: Record<string, unknown>,
+): number | null {
+  if (toolName === "update_adset_budget") {
+    const next = numericArg(args, "daily_budget_cents");
+    if (next == null) return null;
+    const prev = numericArg(args, "previous_daily_budget_cents") ?? 0;
+    return Math.max(0, Math.round(next - prev));
+  }
+  if (
+    toolName === "create_campaign" ||
+    toolName === "create_meta_image_campaign" ||
+    toolName === "create_meta_video_campaign" ||
+    toolName === "create_adset"
+  ) {
+    return effectiveDailyBudgetCents(args);
+  }
+  return null;
+}
+
+/**
  * Budget ceiling check.
  * Uses effective daily budget or budget_impact_cents against client.budget_ceiling_cents.
  */
@@ -64,13 +143,7 @@ export function assertWithinBudgetCeiling(
   const ceiling = client.budget_ceiling_cents;
   if (ceiling == null) return;
 
-  const daily =
-    typeof args.daily_budget_cents === "number"
-      ? args.daily_budget_cents
-      : (() => {
-          const budget = resolveBudgetDaily(args);
-          return budget != null ? Math.round(budget * 100) : null;
-        })();
+  const daily = effectiveDailyBudgetCents(args);
 
   if (daily != null && daily > ceiling) {
     throw new BudgetCeilingViolation(

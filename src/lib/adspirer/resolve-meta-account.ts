@@ -111,8 +111,10 @@ function pickPrimaryAccount(
 /** Primary act_* id used by V2 chat and Meta API routes for this client. */
 export async function resolvePrimaryAccountId(
   clientId: string,
+  /** Already-loaded mapped accounts (saves a second read in the same turn). */
+  preloaded?: ConnectedMetaAccount[],
 ): Promise<string | null> {
-  const accounts = await loadMappedMetaAccounts(clientId);
+  const accounts = preloaded ?? (await loadMappedMetaAccounts(clientId));
   const granted = grantedAccounts(accounts);
   if (!granted.length) return null;
 

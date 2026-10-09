@@ -28,7 +28,59 @@ export type RequestIntent =
   | "copy_approved"
   | "optimize"
   | "general"
+  /** Greetings, thanks, definitions, "why is that" — answered without fresh account data. */
+  | "chat"
   | "out_of_scope";
+
+/** Intents that are answered conversationally (short reply, small output budget). */
+export const CONVERSATIONAL_INTENTS: ReadonlySet<RequestIntent> = new Set([
+  "chat",
+  "general",
+  "list_campaigns",
+  "copy_approved",
+  "out_of_scope",
+]);
+
+/** Intents whose reply is a long-form report (audit / export). */
+export const REPORT_INTENTS: ReadonlySet<RequestIntent> = new Set([
+  "audit",
+  "export",
+]);
+
+const GREETING_ONLY =
+  /^(?:hi|hello|hey|hiya|yo|howdy|good\s+(?:morning|afternoon|evening))(?:\s+(?:there|team|spendsmith|mate))?[\s!.,]*$/i;
+
+const THANKS_OR_UNDERSTOOD =
+  /^(?:(?:ok(?:ay)?|great|perfect|awesome|nice|cool|brilliant|excellent|lovely|amazing)[\s,!.]+)?(?:thanks?(?:\s+(?:you|so much|a lot|again|mate|team))*|thank\s+you(?:\s+(?:so much|very much|again))*|thx|ty|cheers|much appreciated|appreciate it|got it|understood|noted|makes sense|that makes sense|fair enough|i see|that'?s (?:helpful|clear|useful))(?:[\s,!.]+(?:thanks?|thank you|thx|cheers|that'?s helpful))*[\s!.]*$/i;
+
+const DEFINITIONAL_QUESTION =
+  /^(?:(?:so|ok(?:ay)?|and|but|hmm|sorry|quick question)[,\s]+)?(?:what(?:'s|’s| is| are| does| do)\b|whats\b|define\b|explain\b|can you explain\b|could you explain\b|meaning of\b|what do you mean\b|why\s*\?*$|why so\b|why (?:is|was|would|does|did|do) (?:that|this|it|they)\b|how (?:is|are|do you|does meta) (?:\w+\s+){0,3}(?:calculated|computed|measured|defined|counted)\b|how does (?:\w+\s+){0,3}work\b|difference between\b|is (?:that|this|it) (?:bad|good|normal|high|low)\b)/i;
+
+/** Mentions of live account data — those questions need a fresh fetch. */
+const ACCOUNT_DATA_REFERENCE =
+  /\b(?:my|our|this|these|those|the|current|their)\s+(?:account|ad\s*accounts?|campaigns?|ad\s*sets?|adsets?|ads|spend|budgets?|performance|results|numbers|metrics|cpa|cpm|cpc|ctr|roas|conversions?|leads|pixel|landing\s*pages?|audiences?|creatives?|approvals?|status|destination|website)\b|\b(?:last|past|this)\s+(?:\d+\s+)?(?:days?|week|month|quarter|year)\b|\byesterday\b|\btoday\b|\bact_\d+|\b\d{10,}\b|https?:\/\/|www\./i;
+
+const ACTION_REQUEST =
+  /\b(?:create|launch|build|generate|write|draft|pause|resume|queue|approve|apply|increase|decrease|raise|lower|scale|optimi[sz]e|audit|diagnos\w*|export|download|pdf|docx?|report|scrape|list|show|pull|fetch|check|compare|send)\b/i;
+
+/**
+ * A turn that needs no fresh Meta data: a greeting, a thank-you, or a
+ * definitional / follow-up question ("what does CPM mean", "why is that").
+ * These skip the Graph preflight and research memo so the reply starts fast.
+ */
+export function isConversationalTurn(request: string): boolean {
+  const text = request.trim();
+  if (!text || text.length > 220 || text.split("\n").length > 3) return false;
+  if (GREETING_ONLY.test(text) || THANKS_OR_UNDERSTOOD.test(text)) return true;
+  if (!DEFINITIONAL_QUESTION.test(text)) return false;
+  if (ACCOUNT_DATA_REFERENCE.test(text)) return false;
+  if (ACTION_REQUEST.test(text)) return false;
+  return true;
+}
+
+/** Explicit request for the heavy, multi-step account audit. */
+const EXPLICIT_AUDIT =
+  /\b(?:audit\w*|diagnos\w*|health\s*-?\s*check|account\s+health|full\s+(?:account\s+)?review|review\s+(?:of\s+)?(?:the\s+|my\s+|our\s+|this\s+)?(?:whole\s+|entire\s+|full\s+)?(?:ad\s+)?account)\b/;
 
 export function detectRequestIntent(request: string): RequestIntent {
   const text = request.toLowerCase();
@@ -41,6 +93,9 @@ export function detectRequestIntent(request: string): RequestIntent {
     )
   ) {
     return "out_of_scope";
+  }
+  if (isConversationalTurn(request)) {
+    return "chat";
   }
   // Queue / apply optimized changes → Approvals path (before export "send report")
   if (
@@ -103,12 +158,16 @@ export function detectRequestIntent(request: string): RequestIntent {
   ) {
     return "copy_approved";
   }
+  // Copy generation needs an explicit ask — a bare "headline" / "CTA" mention
+  // ("what's the CTA on ad X?") is a question, not a request for variants.
   if (
-    /\b(ad copy|ad copies|primary text|headline|write copy|generate copy|copy variants|cta)\b/.test(
+    /\b(ad copy|ad copies|write copy|generate copy|copy variants)\b/.test(
       text,
     ) ||
-    (/\b(write|generate|draft|create)\b/.test(text) &&
-      /\b(headline|primary text|ad copy|copies)\b/.test(text))
+    (/\b(write|generate|draft|create|rewrite|refresh|suggest|come up with|give me)\b/.test(
+      text,
+    ) &&
+      /\b(headlines?|primary text|ad copy|copies|ctas?|hooks?)\b/.test(text))
   ) {
     return "ad_copy";
   }
@@ -134,11 +193,10 @@ export function detectRequestIntent(request: string): RequestIntent {
   ) {
     return "list_campaigns";
   }
-  if (
-    /\b(audit|diagnos|analy[sz]|health|review|perform|deliver|spend|risk|under-?deliver)\b/.test(
-      text,
-    )
-  ) {
+  // Only an explicit audit ask runs the heavy multi-step audit. Other
+  // performance questions ("how is spend pacing?", "why is delivery low?") take
+  // the lighter general path, which still pulls a live performance snapshot.
+  if (EXPLICIT_AUDIT.test(text)) {
     return "audit";
   }
   return "general";
@@ -156,16 +214,24 @@ export function detectRequestIntentWithHistory(
   if (primary !== "general") return primary;
 
   const recent = history.slice(-10);
-  const assistantAskedAudit = recent.some(
-    (m) =>
-      m.role === "assistant" &&
+  // Only a brief that is still open counts. Once a full audit has been
+  // delivered (a long reply), a follow-up like "which campaigns are wasting
+  // spend?" must not re-run the whole audit.
+  const lastAssistant = [...recent].reverse().find((m) => m.role === "assistant");
+  const briefStillOpen =
+    !lastAssistant || lastAssistant.content.length < 2000;
+  const assistantAskedAudit = Boolean(
+    lastAssistant &&
+      briefStillOpen &&
       /\b(audit|date range|entire ad account|specific campaign|best-practice audit|competitor landing)\b/i.test(
-        m.content,
+        lastAssistant.content,
       ),
   );
-  const userAskedAudit = recent.some(
-    (m) => m.role === "user" && detectRequestIntent(m.content) === "audit",
-  );
+  const userAskedAudit =
+    briefStillOpen &&
+    recent.some(
+      (m) => m.role === "user" && detectRequestIntent(m.content) === "audit",
+    );
   if ((assistantAskedAudit || userAskedAudit) && looksLikeAuditBriefReply(request)) {
     return "audit";
   }
@@ -219,6 +285,12 @@ export function planTaskSteps(
   ];
 
   switch (intent) {
+    case "chat":
+      return [
+        { id: "queued", label: "Queued", state: "pending" },
+        { id: "write_report", label: "Answer", state: "pending" },
+        { id: "complete", label: "Complete", state: "pending" },
+      ];
     case "audit":
       return [
         ...base,
@@ -323,7 +395,7 @@ export function planTaskSteps(
         { id: "gather", label: "Gather chat + Meta evidence", state: "pending" },
         { id: "draft_report", label: "Draft report (OpenAI)", state: "pending" },
         { id: "write_report", label: "Format report for display", state: "pending" },
-        { id: "complete", label: "Ready to download", state: "pending" },
+        { id: "complete", label: "Complete", state: "pending" },
       ];
     case "out_of_scope":
       return [
@@ -392,4 +464,43 @@ export function holdStepsForOperator(steps: TaskStep[]): TaskStep[] {
   return steps.map((s) =>
     s.state === "active" ? { ...s, state: "waiting" as const } : s,
   );
+}
+
+/**
+ * Does the reply end by asking the operator something? Only the closing
+ * paragraph counts — a "?" inside a URL (`?utm_source=`), code, a table, or an
+ * earlier rhetorical question must not park the task as "waiting on you".
+ */
+export function replyAwaitsOperator(reply: string | null | undefined): boolean {
+  if (!reply) return false;
+  const cleaned = reply
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`[^`\n]*`/g, " ")
+    .replace(/<details>[\s\S]*?<\/details>/gi, " ")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\bhttps?:\/\/\S+/gi, " ")
+    .replace(/\bwww\.\S+/gi, " ");
+  const paragraphs = cleaned
+    .split(/\n\s*\n/)
+    .map((p) => p.trim())
+    // Separators and table rows are layout, not the closing thought.
+    .filter((p) => p && !/^(?:-{3,}|\*{3,}|_{3,})$/.test(p))
+    .filter((p) => !/^\|[\s\S]*\|$/.test(p));
+  const last = paragraphs.at(-1);
+  if (!last) return false;
+  const lines = last
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  // A closing list of questions ("1. Budget? 2. Audience?") is still a question.
+  if (lines.length > 1 && lines.some((l) => /\?\s*[*_)]*\s*$/.test(l))) {
+    return true;
+  }
+  const finalSentence =
+    last
+      .replace(/[*_]+/g, "")
+      .split(/(?<=[.!?])\s+/)
+      .filter(Boolean)
+      .at(-1) ?? "";
+  return /\?\s*["')\]]*\s*$/.test(finalSentence.trim());
 }

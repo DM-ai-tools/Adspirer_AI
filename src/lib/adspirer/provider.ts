@@ -1,3 +1,10 @@
+import type { MetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
+
+import type {
+  CreateProgress,
+  CreateProgressCallback,
+} from "@/lib/meta/create-progress";
+
 export interface MetaCampaign {
   id: string;
   account_id: string;
@@ -16,7 +23,13 @@ export interface MetaAdSet {
   account_id: string;
   name: string;
   status: "ACTIVE" | "PAUSED" | "ARCHIVED" | "DELETED";
+  /**
+   * Meta's delivery-relevant status (ACTIVE, PAUSED, CAMPAIGN_PAUSED, …).
+   * `status` is only the switch on this object; this includes its parents.
+   */
+  effective_status?: string;
   daily_budget_cents: number;
+  lifetime_budget_cents?: number;
   optimization_goal?: string;
   billing_event?: string;
   targeting_summary?: string;
@@ -29,6 +42,8 @@ export interface MetaAd {
   account_id: string;
   name: string;
   status: "ACTIVE" | "PAUSED" | "ARCHIVED" | "DELETED";
+  /** Meta's delivery-relevant status (ACTIVE, ADSET_PAUSED, DISAPPROVED, …). */
+  effective_status?: string;
   creative_summary?: string;
 }
 
@@ -100,6 +115,10 @@ export interface CreateCampaignInput {
   objective: string;
   status?: "ACTIVE" | "PAUSED";
   daily_budget_cents?: number;
+  /** CBO lifetime budget (cents); the ad sets then need an end_time. */
+  lifetime_budget_cents?: number;
+  /** CBO only — the bid strategy lives on the campaign. */
+  bid_strategy?: string;
   special_ad_categories?: string[];
   /** Required Meta v24+ when budget is set on ad sets (not campaign budget). */
   is_adset_budget_sharing_enabled?: boolean;
@@ -133,7 +152,7 @@ export interface CreateImageCampaignInput {
   age_max?: number;
   /** ["male"] / ["female"]; omit for all. */
   genders?: string[];
-  /** Country codes or search_meta_targeting location objects. Default US. */
+  /** Country codes or search_meta_targeting location objects. Required — no default country. */
   locations?: unknown[];
   publisher_platforms?: string[];
   special_ad_categories?: string[];
@@ -148,6 +167,12 @@ export interface CreateImageCampaignInput {
    * forwarded verbatim.
    */
   extra_args?: Record<string, unknown>;
+  start_time?: string;
+  lead_form_id?: string;
+  /** IDs created by an earlier failed run — reused instead of re-created. */
+  resume?: CreateProgress;
+  /** Called after each entity is created so the caller can checkpoint it. */
+  onProgress?: CreateProgressCallback;
 }
 
 /**
@@ -189,6 +214,10 @@ export interface CreateVideoCampaignInput {
   instagram_account_id?: string;
   facebook_page_id?: string;
   extra_args?: Record<string, unknown>;
+  start_time?: string;
+  lead_form_id?: string;
+  resume?: CreateProgress;
+  onProgress?: CreateProgressCallback;
 }
 
 export interface CreateAdSetInput {
@@ -196,6 +225,11 @@ export interface CreateAdSetInput {
   campaign_id: string;
   name?: string;
   budget_daily?: number;
+  /** Major units; requires end_time. */
+  budget_lifetime?: number;
+  start_time?: string;
+  end_time?: string;
+  lead_form_id?: string;
   /** Required by Adspirer AddMetaAdSetInput */
   ad_type?: "image" | "video" | "carousel";
   landing_page_url: string;
@@ -241,10 +275,17 @@ export interface CreateAdInput {
   name?: string;
   facebook_page_id?: string;
   instagram_account_id?: string;
+  lead_form_id?: string;
+  resume?: CreateProgress;
+  onProgress?: CreateProgressCallback;
 }
 
 export interface UpdateAdSetBudgetInput {
-  account_id: string;
+  /**
+   * Expected account. The live provider derives the real account from the ad
+   * set and refuses when this does not match.
+   */
+  account_id?: string;
   adset_id: string;
   daily_budget_cents: number;
 }
@@ -338,6 +379,15 @@ export interface MetaAdsProvider {
    * Adspirer get_meta_ad_creatives — live headlines / primary text / media for
    * grounding copy refreshes (Adspirer Ad Copy Writing Room skill).
    */
+  /**
+   * Everything the audit checkpoints need (tracking, structure, audiences,
+   * performance) in one pass. See src/lib/audit/meta-audit-data.ts.
+   */
+  getAuditSnapshot?(
+    accountId: string,
+    options?: { days?: number; since?: string; until?: string },
+  ): Promise<MetaAuditSnapshot>;
+
   getAdCreatives?(
     accountId: string,
     options?: {

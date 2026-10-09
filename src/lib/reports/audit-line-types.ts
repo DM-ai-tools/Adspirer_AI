@@ -3,7 +3,7 @@
  */
 
 const SECTION_TITLE =
-  /^(?:\d{1,2}\.\s+)?(?:Account Snapshot|Active Campaigns?|Paused Campaign(?:s| Inventory)|What'?s Working|What is Working|Risks(?:\s*&\s*Issues)?|Risk [Rr]egister|Optimizations?(?:\s+Actioned)?|Prioriti[sz]ed Recommendations|Recommendations|Immediate Next Steps|Next Steps)\b/i;
+  /^(?:\d{1,2}\.\s+)?(?:Executive Summary|Account Snapshot|Tracking (?:&|and) Measurement|Landing Pages|Audit Checklist|Active Campaigns?|Paused Campaign(?:s| Inventory)|What'?s Working|What is Working|Risks(?:\s*&\s*Issues)?|Risk [Rr]egister|Optimizations?(?:\s+Actioned)?|Prioriti[sz]ed Recommendations|Recommendations|Immediate Next Steps|Next Steps)\b/i;
 
 /** Lines that are section titles, not ordered-list steps. */
 export function isAuditSectionTitle(line: string): boolean {

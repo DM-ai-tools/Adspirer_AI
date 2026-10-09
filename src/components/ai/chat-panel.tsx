@@ -3,11 +3,13 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
+  ChevronDown,
+  Copy,
   Download,
   FileSpreadsheet,
   FileText,
   Loader2,
-  Send,
+  Sparkles,
   ThumbsDown,
   ThumbsUp,
 } from "lucide-react";
@@ -15,12 +17,17 @@ import { toast } from "sonner";
 import type { Approval, Message } from "@/types";
 import { apiFetch, formatRelative } from "@/lib/api-client";
 import {
-  InlineApprovalCards,
   InlineCreativeCards,
   type CreativeDraftCard,
 } from "@/components/ai/workflow-cards";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { ChatComposer, type ChatComposerHandle } from "@/components/ai/chat-composer";
 import { cn } from "@/lib/utils";
 import { resolveAssistantDisplay } from "@/lib/agent/message-reconcile";
 import {
@@ -29,6 +36,7 @@ import {
 } from "@/lib/agent/reply-format";
 import { humanToolLabel } from "@/lib/tools/display-labels";
 import { looksLikeFullAuditMarkdown } from "@/lib/report/from-markdown";
+import { columnAlignments } from "@/lib/reports/layout";
 import { ChatDocumentAttachButton } from "@/components/workspace/documents-panel";
 import { useCreativeStatus } from "@/hooks/use-creative-status";
 import { TargetingPickerCard } from "@/components/ai/targeting-picker";
@@ -44,7 +52,6 @@ import {
   composeSkipTargetingMessage,
   composeTargetingMessage,
   composeVideoSourceMessage,
-  mergeComposerDraft,
   stripComposerMarkers,
 } from "@/lib/chat/action-messages";
 import {
@@ -53,12 +60,36 @@ import {
   showImageChoiceUi,
 } from "@/lib/chat/infer-flow";
 
-const SUGGESTIONS = [
-  "Create a Meta campaign for this account",
-  "Write Meta ad copy for our offer",
-  "Optimize ads in this account",
-  "Audit the account and summarize spend, delivery, and risks",
+const SUGGESTIONS: Array<{ title: string; prompt: string }> = [
+  {
+    title: "Audit the account",
+    prompt: "Audit the account and summarize spend, delivery, and risks",
+  },
+  {
+    title: "Find wasted spend",
+    prompt:
+      "Which campaigns or ads are spending without results in the last 14 days, and what should we change?",
+  },
+  {
+    title: "Optimise live ads",
+    prompt: "Optimize ads in this account",
+  },
+  {
+    title: "Launch a campaign",
+    prompt: "Create a Meta campaign for this account",
+  },
 ];
+
+const APPROVAL_STATUS_UI: Record<string, { label: string; tone: string }> = {
+  pending: { label: "Awaiting approval", tone: "text-warning" },
+  edited: { label: "Edited · awaiting approval", tone: "text-warning" },
+  approved: { label: "Applying…", tone: "text-accent" },
+  executing: { label: "Applying…", tone: "text-accent" },
+  executed: { label: "Applied on Meta", tone: "text-success" },
+  rejected: { label: "Rejected", tone: "text-muted" },
+  failed: { label: "Failed", tone: "text-danger" },
+  cancelled: { label: "Cancelled", tone: "text-muted" },
+};
 
 type ServiceOption = { id: string; name: string; description?: string };
 
@@ -291,8 +322,22 @@ function parseAssistantContent(
 }
 
 function renderInline(text: string): React.ReactNode[] {
-  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`|https?:\/\/[^\s)<>]*[^\s)<>.,;:!?'"])/g);
   return parts.map((part, i) => {
+    if (/^https?:\/\//.test(part)) {
+      return (
+        <a
+          key={i}
+          href={part}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={part}
+          className="break-all text-accent underline-offset-2 hover:underline"
+        >
+          {part.replace(/^https?:\/\/(www\.)?/, "").replace(/\?.*$/, "")}
+        </a>
+      );
+    }
     if (part.startsWith("**") && part.endsWith("**")) {
       return (
         <strong key={i} className="font-semibold text-foreground">
@@ -338,15 +383,25 @@ const FormattedMessageBody = memo(function FormattedMessageBody({
   const lines = text.split("\n");
   const blocks: React.ReactNode[] = [];
   let listItems: string[] = [];
+  let listOrdered = false;
+  let listStart = 1;
 
   const flushList = () => {
     if (!listItems.length) return;
+    const ordered = listOrdered;
+    const start = listStart;
     blocks.push(
-      <ul key={`ul-${blocks.length}`} className="my-1.5 space-y-1 pl-1">
+      <ul key={`ul-${blocks.length}`} className="my-2 space-y-1.5">
         {listItems.map((item, idx) => (
-          <li key={idx} className="flex gap-2 text-sm text-foreground/90">
-            <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent/70" />
-            <span>{renderInline(item)}</span>
+          <li key={idx} className="flex gap-2.5 text-sm leading-relaxed text-foreground/90">
+            {ordered ? (
+              <span className="min-w-[1.25rem] shrink-0 text-right font-medium tabular-nums text-accent">
+                {start + idx}.
+              </span>
+            ) : (
+              <span className="mt-[0.55rem] h-1.5 w-1.5 shrink-0 rounded-full bg-accent/70" />
+            )}
+            <span className="min-w-0">{renderInline(item)}</span>
           </li>
         ))}
       </ul>,
@@ -374,13 +429,20 @@ const FormattedMessageBody = memo(function FormattedMessageBody({
         );
         j += 1;
       }
+      const align = columnAlignments(rows, header.length);
       blocks.push(
-        <div key={`tbl-${i}`} className="my-2 overflow-x-auto rounded-lg border border-border-subtle">
+        <div key={`tbl-${i}`} className="my-3 overflow-x-auto rounded-lg border border-border-subtle">
           <table className="w-full text-left text-xs">
             <thead className="bg-secondary/50 text-muted">
               <tr>
                 {header.map((cell, c) => (
-                  <th key={c} className="px-2.5 py-1.5 font-medium">
+                  <th
+                    key={c}
+                    className={cn(
+                      "whitespace-nowrap px-3 py-2 font-medium",
+                      align[c] === "right" && "text-right",
+                    )}
+                  >
                     {renderInline(cell)}
                   </th>
                 ))}
@@ -388,9 +450,15 @@ const FormattedMessageBody = memo(function FormattedMessageBody({
             </thead>
             <tbody className="tabular-nums">
               {rows.map((row, r) => (
-                <tr key={r} className="border-t border-border-subtle/70">
+                <tr key={r} className="border-t border-border-subtle/70 even:bg-secondary/20">
                   {header.map((_, c) => (
-                    <td key={c} className="px-2.5 py-1.5 text-foreground/90">
+                    <td
+                      key={c}
+                      className={cn(
+                        "px-3 py-2 align-top text-foreground/90",
+                        align[c] === "right" && "whitespace-nowrap text-right",
+                      )}
+                    >
                       {renderInline(row[c] ?? "")}
                     </td>
                   ))}
@@ -404,28 +472,45 @@ const FormattedMessageBody = memo(function FormattedMessageBody({
       continue;
     }
 
-    const heading = line.match(/^#{1,3}\s+(.+)$/);
-    const bullet = line.match(/^[-*•]\s+(.+)$/);
-    const numbered = line.match(/^\d+\.\s+(.+)$/);
+    const heading = line.match(/^(#{1,4})\s+(.+)$/);
+    const bullet = line.match(/^\s*[-*•]\s+(.+)$/);
+    const numbered = line.match(/^\s*(\d+)[.)]\s+(.+)$/);
 
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      flushList();
+      blocks.push(<hr key={`hr-${i}`} className="my-3 border-border-subtle" />);
+      continue;
+    }
     if (heading) {
       flushList();
+      const level = heading[1].length;
       blocks.push(
         <p
           key={`h-${i}`}
-          className="mb-1 mt-3 text-[13px] font-semibold tracking-tight text-foreground first:mt-0"
+          className={cn(
+            "font-semibold tracking-tight text-foreground first:mt-0",
+            level <= 2 ? "mb-1.5 mt-5 text-base" : "mb-1 mt-4 text-sm",
+          )}
         >
-          {renderInline(heading[1])}
+          {renderInline(heading[2])}
         </p>,
       );
       continue;
     }
     if (bullet || numbered) {
-      listItems.push((bullet?.[1] ?? numbered?.[1])!);
+      const ordered = Boolean(numbered);
+      if (listItems.length && ordered !== listOrdered) flushList();
+      if (!listItems.length) {
+        listOrdered = ordered;
+        listStart = numbered ? Number(numbered[1]) : 1;
+      }
+      listItems.push((bullet?.[1] ?? numbered?.[2])!);
       continue;
     }
     flushList();
     if (!line.trim()) {
+      // A blank line between list items doesn't end the list.
+      if (listItems.length && /^\s*([-*•]|\d+[.)])\s+/.test(lines[i + 1] ?? "")) continue;
       blocks.push(<div key={`sp-${i}`} className="h-2" />);
       continue;
     }
@@ -492,6 +577,9 @@ export function ChatPanel({
   inlineApprovals = [],
   onWorkflowRefresh,
   initialInput,
+  onStop,
+  onReviewApprovals,
+  onDocumentUploaded,
 }: {
   messages: Message[];
   /** Resolve `false` when the message never reached the server. */
@@ -510,9 +598,13 @@ export function ChatPanel({
   onWorkflowRefresh?: () => void | Promise<void>;
   /** Prefills the composer (e.g. "Ask agent" from Monitoring); never auto-sent. */
   initialInput?: string;
+  /** Stop waiting for the in-flight reply (the server may still finish it). */
+  onStop?: () => void;
+  /** Opens the Approvals panel (where queued changes are approved or edited). */
+  onReviewApprovals?: () => void;
+  onDocumentUploaded?: () => void;
 }) {
-  const [input, setInput] = useState(initialInput ?? "");
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const composerRef = useRef<ChatComposerHandle>(null);
   const [sendingLocal, setSendingLocal] = useState(false);
   const [feedbackById, setFeedbackById] = useState<
     Record<string, "up" | "down">
@@ -574,26 +666,32 @@ export function ChatPanel({
     bottomRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
   }, [messages, statusLabel]);
 
-  async function submit(content: string) {
+  /** Resolves false when nothing was delivered, so the composer keeps the text. */
+  async function submit(content: string): Promise<boolean> {
     const trimmed = stripComposerMarkers(content).trim();
-    if (!trimmed || sending || disabled) return;
+    if (!trimmed || sending || disabled) return false;
     // Sending a message should always jump back to the latest reply.
     stickToBottomRef.current = true;
     setSendingLocal(true);
-    setInput("");
     try {
-      const delivered = await onSend(trimmed);
-      // Give the text back so a failed send can be retried without retyping.
-      if (delivered === false) setInput((current) => current || content);
+      return (await onSend(trimmed)) !== false;
     } finally {
       setSendingLocal(false);
     }
   }
 
   function applyToComposer(block: string, marker: string) {
-    setInput((prev) => mergeComposerDraft(prev, block, marker));
+    composerRef.current?.merge(block, marker);
     toast.message("Added to your message — review and press Send when ready.");
-    requestAnimationFrame(() => inputRef.current?.focus());
+  }
+
+  async function copyMessage(text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success("Copied");
+    } catch {
+      toast.error("Couldn't copy — select the text instead");
+    }
   }
 
   async function sendFeedback(messageId: string, rating: "up" | "down") {
@@ -946,28 +1044,32 @@ export function ChatPanel({
       <div
         ref={scrollRef}
         onScroll={handleMessagesScroll}
-        className="min-h-0 flex-1 overflow-y-auto px-4 pt-4"
+        className="min-h-0 flex-1 overflow-y-auto px-3 pt-5 sm:px-6"
       >
-        <div className="space-y-4 pb-4">
+        <div className="mx-auto w-full max-w-4xl space-y-6 pb-6">
           {messages.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-border bg-secondary/20 p-5">
-              <p className="text-sm font-medium text-foreground">
-                Start a new chat
+            <div className="flex flex-col items-center px-2 pt-[8vh] text-center">
+              <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-accent/15 text-accent">
+                <Sparkles className="h-5 w-5" />
+              </div>
+              <p className="mt-4 text-lg font-semibold text-foreground">
+                What should we work on{clientName ? ` for ${clientName}` : ""}?
               </p>
-              <p className="mt-1 text-sm text-muted">
-                Ask about Meta Ads for this client — audits, campaign creation,
-                website service scrape, and approval-gated changes. Feedback
-                trains future answers.
+              <p className="mt-1 max-w-md text-sm text-muted">
+                Ask about performance, request an audit, or plan changes. Nothing
+                goes live on Meta until you approve it.
               </p>
-              <div className="mt-4 flex flex-col gap-2">
+              <div className="mt-6 grid w-full max-w-2xl gap-2 sm:grid-cols-2">
                 {SUGGESTIONS.map((s) => (
                   <button
-                    key={s}
+                    key={s.title}
                     type="button"
-                    onClick={() => submit(s)}
-                    className="rounded-lg border border-border bg-card px-3 py-2 text-left text-sm text-muted transition-colors hover:border-accent/40 hover:text-foreground"
+                    disabled={sending || disabled}
+                    onClick={() => void submit(s.prompt)}
+                    className="rounded-xl border border-border bg-card px-4 py-3 text-left transition-colors hover:border-accent/40 hover:bg-secondary/40 disabled:opacity-50"
                   >
-                    {s}
+                    <p className="text-sm font-medium text-foreground">{s.title}</p>
+                    <p className="mt-0.5 line-clamp-2 text-xs text-muted">{s.prompt}</p>
                   </button>
                 ))}
               </div>
@@ -1054,111 +1156,51 @@ export function ChatPanel({
                 pendingApprovals.includes(a.id),
               );
 
+              const isUser = message.role === "user";
+              const isAssistant = message.role === "assistant";
               return (
                 <div
                   key={message.id}
                   className={cn(
-                    "flex",
-                    message.role === "user" ? "justify-end" : "justify-start",
+                    "group flex gap-3",
+                    isUser ? "justify-end" : "justify-start",
                   )}
                 >
+                  {isAssistant ? (
+                    <div
+                      className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent/15 text-accent"
+                      aria-hidden
+                    >
+                      <Sparkles className="h-3.5 w-3.5" />
+                    </div>
+                  ) : null}
                   <div
                     className={cn(
-                      "max-w-[90%] rounded-xl px-3.5 py-2.5 text-sm leading-relaxed",
-                      message.role === "user"
-                        ? "bg-accent text-accent-foreground"
+                      "text-sm leading-relaxed",
+                      isUser
+                        ? "max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-accent px-4 py-2.5 text-accent-foreground"
                         : message.role === "system"
-                          ? "border border-border bg-secondary/40 text-muted"
-                          : "border border-border bg-card text-foreground",
+                          ? "mx-auto max-w-[90%] rounded-lg border border-border bg-secondary/40 px-3 py-2 text-xs text-muted"
+                          : "min-w-0 flex-1 text-foreground",
                     )}
                   >
-                    <div className="mb-1 flex items-center gap-2 text-[10px] uppercase tracking-wide opacity-70">
-                      <span>{message.role}</span>
-                      <span className="font-mono normal-case">
-                        {formatRelative(message.created_at)}
+                    {isAssistant && !streaming && isReport ? (
+                      <span className="mb-2 inline-flex items-center gap-1 rounded-md bg-accent/15 px-2 py-0.5 text-[11px] font-medium text-accent">
+                        <FileText className="h-3 w-3" /> Report
                       </span>
-                      {streaming ? (
-                        <span className="inline-flex items-center gap-1 normal-case text-accent">
-                          <Loader2 className="h-3 w-3 animate-spin" />
-                          live
-                        </span>
-                      ) : null}
-                      {!streaming && isReport ? (
-                        <span className="rounded bg-accent/15 px-1.5 py-0.5 normal-case text-accent">
-                          report
-                        </span>
-                      ) : null}
-                    </div>
-
-                    {!streaming &&
-                    message.role === "assistant" &&
-                    isReport ? (
-                      <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-accent/30 bg-accent/5 px-2.5 py-2">
-                        <p className="mr-auto text-xs text-muted">
-                          Download this report
-                        </p>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="secondary"
-                          className="h-7 gap-1 text-xs"
-                          disabled={Boolean(exportProgress)}
-                          onClick={() =>
-                            void exportReport(
-                              "docx",
-                              reportTitle,
-                              reportBody,
-                              reportData,
-                            )
-                          }
-                        >
-                          <FileText className="h-3.5 w-3.5" />
-                          Word
-                        </Button>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="secondary"
-                          className="h-7 gap-1 text-xs"
-                          disabled={Boolean(exportProgress)}
-                          onClick={() =>
-                            void exportReport(
-                              "xlsx",
-                              reportTitle,
-                              reportBody,
-                              reportData,
-                            )
-                          }
-                        >
-                          <FileSpreadsheet className="h-3.5 w-3.5" />
-                          Excel
-                        </Button>
-                        <Button
-                          type="button"
-                          size="sm"
-                          className="h-7 gap-1 text-xs"
-                          disabled={Boolean(exportProgress)}
-                          onClick={() =>
-                            void exportReport(
-                              "pdf",
-                              reportTitle,
-                              reportBody,
-                              reportData,
-                            )
-                          }
-                        >
-                          <Download className="h-3.5 w-3.5" />
-                          PDF
-                        </Button>
-                      </div>
                     ) : null}
 
                     {message.role === "assistant" ? (
                       <>
                         {streaming && isStreamingPlaceholder ? (
-                          <p className="text-sm italic text-muted">
-                            {liveLabel ?? "Working…"}
-                          </p>
+                          <div className="flex items-center gap-2 py-1 text-sm text-muted">
+                            <span className="flex gap-1" aria-hidden>
+                              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-accent [animation-delay:-0.3s]" />
+                              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-accent [animation-delay:-0.15s]" />
+                              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-accent" />
+                            </span>
+                            {liveLabel ?? "Thinking…"}
+                          </div>
                         ) : (
                           <FormattedMessageBody text={displayText} />
                         )}
@@ -1173,21 +1215,50 @@ export function ChatPanel({
                       <div className="whitespace-pre-wrap">{message.content}</div>
                     )}
 
-                    {!streaming &&
-                    message.role === "assistant" &&
-                    pendingApprovals.length > 0 &&
-                    messageApprovals.length > 0 ? (
-                      <InlineApprovalCards
-                        approvals={messageApprovals}
-                        clientName={clientName}
-                        onUpdated={async () => {
-                          await onWorkflowRefresh?.();
-                        }}
-                      />
-                    ) : pendingApprovals.length > 0 ? (
-                      <div className="mt-2 rounded-lg border border-accent/30 bg-accent/5 px-2.5 py-2 text-xs text-muted">
-                        Queued for Approvals ({pendingApprovals.length}). Review
-                        inline when loaded — nothing is live until executed.
+                    {!streaming && message.role === "assistant" && pendingApprovals.length > 0 ? (
+                      // One place to act on approvals (the Approvals panel);
+                      // the chat shows what was queued and its live status.
+                      <div className="mt-3 rounded-xl border border-border bg-secondary/30 px-3 py-2.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-xs font-medium text-foreground">
+                            {pendingApprovals.length} change
+                            {pendingApprovals.length === 1 ? "" : "s"} queued for approval
+                          </p>
+                          {onReviewApprovals ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="secondary"
+                              className="h-7 text-xs"
+                              onClick={onReviewApprovals}
+                            >
+                              Review
+                            </Button>
+                          ) : null}
+                        </div>
+                        {messageApprovals.length ? (
+                          <ul className="mt-2 space-y-1">
+                            {messageApprovals.map((a) => {
+                              const s = APPROVAL_STATUS_UI[a.status] ?? {
+                                label: a.status,
+                                tone: "text-muted",
+                              };
+                              return (
+                                <li key={a.id} className="flex items-center justify-between gap-3 text-xs">
+                                  <span className="min-w-0 truncate text-muted">
+                                    {humanToolLabel(a.tool_name)}
+                                    {a.rationale ? ` — ${a.rationale}` : ""}
+                                  </span>
+                                  <span className={cn("shrink-0 font-medium", s.tone)}>{s.label}</span>
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        ) : (
+                          <p className="mt-1 text-[11px] text-muted">
+                            Nothing changes on Meta until you approve.
+                          </p>
+                        )}
                       </div>
                     ) : null}
 
@@ -1644,13 +1715,29 @@ export function ChatPanel({
                     {message.role === "assistant" &&
                     (parsed?.displayText || message.content) &&
                     !streaming ? (
-                      <div className="mt-2 flex flex-wrap items-center gap-1 border-t border-border/60 pt-2">
+                      <div
+                        className={cn(
+                          "mt-2 flex flex-wrap items-center gap-0.5 text-muted transition-opacity",
+                          !isReport &&
+                            "sm:opacity-0 sm:focus-within:opacity-100 sm:group-hover:opacity-100",
+                        )}
+                      >
                         <button
                           type="button"
-                          title="Helpful"
+                          title="Copy"
+                          aria-label="Copy reply"
+                          onClick={() => void copyMessage(displayText)}
+                          className="rounded-md p-1.5 transition-colors hover:bg-secondary hover:text-foreground"
+                        >
+                          <Copy className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          title="Good reply — teach the agent"
+                          aria-label="Good reply"
                           onClick={() => void sendFeedback(message.id, "up")}
                           className={cn(
-                            "rounded-md p-1 text-muted transition-colors hover:bg-secondary hover:text-foreground",
+                            "rounded-md p-1.5 transition-colors hover:bg-secondary hover:text-foreground",
                             feedback === "up" && "bg-accent/15 text-accent",
                           )}
                         >
@@ -1658,82 +1745,70 @@ export function ChatPanel({
                         </button>
                         <button
                           type="button"
-                          title="Not helpful"
+                          title="Bad reply — teach the agent"
+                          aria-label="Bad reply"
                           onClick={() => void sendFeedback(message.id, "down")}
                           className={cn(
-                            "rounded-md p-1 text-muted transition-colors hover:bg-secondary hover:text-foreground",
-                            feedback === "down" &&
-                              "bg-danger-muted text-danger",
+                            "rounded-md p-1.5 transition-colors hover:bg-secondary hover:text-foreground",
+                            feedback === "down" && "bg-danger-muted text-danger",
                           )}
                         >
                           <ThumbsDown className="h-3.5 w-3.5" />
                         </button>
-                        <span className="ml-1 mr-2 text-[10px] text-muted">
-                          Teach the agent
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <button
+                              type="button"
+                              disabled={Boolean(exportProgress)}
+                              className={cn(
+                                "ml-1 inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors disabled:opacity-50",
+                                isReport
+                                  ? "border border-accent/40 bg-accent/10 font-medium text-accent hover:bg-accent/20"
+                                  : "hover:bg-secondary hover:text-foreground",
+                              )}
+                            >
+                              <Download className="h-3.5 w-3.5" />
+                              {isReport ? "Download report" : "Export"}
+                              <ChevronDown className="h-3 w-3" />
+                            </button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="start">
+                            <DropdownMenuItem
+                              onSelect={() =>
+                                void exportReport("pdf", reportTitle, reportBody, reportData)
+                              }
+                            >
+                              <Download className="mr-2 h-3.5 w-3.5" /> PDF
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onSelect={() =>
+                                void exportReport("docx", reportTitle, reportBody, reportData)
+                              }
+                            >
+                              <FileText className="mr-2 h-3.5 w-3.5" /> Word (.docx)
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onSelect={() =>
+                                void exportReport("xlsx", reportTitle, reportBody, reportData)
+                              }
+                            >
+                              <FileSpreadsheet className="mr-2 h-3.5 w-3.5" /> Excel (.xlsx)
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onSelect={() =>
+                                void exportReport("md", reportTitle, reportBody, reportData)
+                              }
+                            >
+                              <FileText className="mr-2 h-3.5 w-3.5" /> Markdown
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                        <span
+                          className="ml-2 text-[11px]"
+                          title={new Date(message.created_at).toLocaleString()}
+                        >
+                          {formatRelative(message.created_at)}
                         </span>
-                        <button
-                          type="button"
-                          disabled={Boolean(exportProgress)}
-                          className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-muted hover:bg-secondary hover:text-foreground disabled:opacity-50"
-                          onClick={() =>
-                            void exportReport(
-                              "docx",
-                              reportTitle,
-                              reportBody,
-                              reportData,
-                            )
-                          }
-                        >
-                          <FileText className="h-3 w-3" />
-                          Word
-                        </button>
-                        <button
-                          type="button"
-                          disabled={Boolean(exportProgress)}
-                          className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-muted hover:bg-secondary hover:text-foreground disabled:opacity-50"
-                          onClick={() =>
-                            void exportReport(
-                              "xlsx",
-                              reportTitle,
-                              reportBody,
-                              reportData,
-                            )
-                          }
-                        >
-                          <FileSpreadsheet className="h-3 w-3" />
-                          Excel
-                        </button>
-                        <button
-                          type="button"
-                          disabled={Boolean(exportProgress)}
-                          className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-muted hover:bg-secondary hover:text-foreground disabled:opacity-50"
-                          onClick={() =>
-                            void exportReport(
-                              "pdf",
-                              reportTitle,
-                              reportBody,
-                              reportData,
-                            )
-                          }
-                        >
-                          <Download className="h-3 w-3" />
-                          PDF
-                        </button>
-                        <button
-                          type="button"
-                          disabled={Boolean(exportProgress)}
-                          className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-muted hover:bg-secondary hover:text-foreground disabled:opacity-50"
-                          onClick={() =>
-                            void exportReport(
-                              "md",
-                              reportTitle,
-                              reportBody,
-                              reportData,
-                            )
-                          }
-                        >
-                          MD
-                        </button>
                       </div>
                     ) : null}
                   </div>
@@ -1741,8 +1816,8 @@ export function ChatPanel({
               );
             })
           )}
-          {sending && statusLabel ? (
-            <div className="flex items-center gap-2 text-xs text-muted">
+          {sending && statusLabel && !messages.some((m) => m.metadata?.streaming) ? (
+            <div className="flex items-center gap-2 pl-10 text-xs text-muted">
               <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
               {statusLabel}
             </div>
@@ -1751,26 +1826,15 @@ export function ChatPanel({
         </div>
       </div>
 
-      <form
-        className="shrink-0 flex flex-col gap-2 border-t border-border px-4 py-3"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void submit(input);
-        }}
-      >
-        {attachedNames.length ? (
-          <div className="flex flex-wrap gap-1.5">
-            {attachedNames.map((name) => (
-              <span
-                key={name}
-                className="inline-flex items-center rounded-md bg-accent/10 px-2 py-0.5 text-[10px] text-accent"
-              >
-                Attached: {name}
-              </span>
-            ))}
-          </div>
-        ) : null}
-        <div className="flex gap-2">
+      <ChatComposer
+        ref={composerRef}
+        initialValue={initialInput}
+        placeholder={placeholder}
+        disabled={disabled}
+        sending={sending}
+        onSubmit={submit}
+        onStop={onStop}
+        leading={
           <ChatDocumentAttachButton
             clientId={clientId}
             conversationId={conversationId}
@@ -1780,36 +1844,20 @@ export function ChatPanel({
               setAttachedNames((prev) =>
                 prev.includes(filename) ? prev : [...prev.slice(-4), filename],
               );
+              onDocumentUploaded?.();
             }}
           />
-          <Textarea
-            ref={inputRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder={placeholder}
-            disabled={disabled || sending}
-            className="min-h-[52px] max-h-32 resize-none"
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                void submit(input);
-              }
-            }}
-          />
-          <Button
-            type="submit"
-            size="icon"
-            className="h-[52px] w-11 shrink-0"
-            disabled={disabled || sending || !input.trim()}
-          >
-            {sending ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Send className="h-4 w-4" />
-            )}
-          </Button>
-        </div>
-      </form>
+        }
+        footer={
+          attachedNames.length ? (
+            <span className="block truncate text-accent">
+              Attached: {attachedNames.join(", ")}
+            </span>
+          ) : (
+            "Changes wait for your approval — nothing goes live automatically."
+          )
+        }
+      />
     </div>
   );
 }

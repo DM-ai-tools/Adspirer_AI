@@ -6,6 +6,7 @@ import { AgentPausedError } from "@/lib/errors";
 import { classify } from "@/lib/tools/policy";
 import "@/lib/tools"; // ensure tools registered
 import { createPendingApproval } from "@/lib/approvals/service";
+import { humanToolLabel } from "@/lib/tools/display-labels";
 import { estimateMetaBudgetImpactCents } from "@/lib/meta/normalize-approval-args";
 import {
   runAdspirerAgent,
@@ -22,8 +23,13 @@ import { loadConversationHistory } from "@/lib/agent/history";
 import {
   buildContextResearch,
   captureTaskLearning,
+  loadResearchEvidence,
+  peekCachedResearch,
   saveLearning,
 } from "@/lib/agent/learning";
+import { loadMappedMetaAccounts } from "@/lib/adspirer/resolve-meta-account";
+import { loadDocumentsForContext } from "@/lib/documents/service";
+import { isTaskStale, STALE_TASK_MESSAGE } from "@/lib/agent/task-public";
 import { generateConversationReport } from "@/lib/agent/report-generator";
 import {
   activateStep,
@@ -35,6 +41,7 @@ import {
   markRemainingSkipped,
   mentionsCreativeGeneration,
   planTaskSteps,
+  replyAwaitsOperator,
   setStepState,
   type TaskStep,
 } from "@/lib/agent/task-plan";
@@ -146,7 +153,7 @@ function awaitsOperator(result: AgentRunResult): boolean {
       ui?.adPicker?.ads?.length ||
       ui?.servicePicker?.services?.length ||
       ui?.creativePicker?.drafts?.length ||
-      result.summary.includes("?"),
+      replyAwaitsOperator(result.summary),
   );
 }
 
@@ -181,19 +188,10 @@ function stripCreativesHandoff(summary: string): string {
     .trim();
 }
 
+/** One clear pointer to Approvals — unless the reply already gives it. */
 function appendApprovalCta(summary: string): string {
-  const next = [
-    "",
-    "---",
-    "### What's next",
-    "1. Open **Approvals** and approve (or edit) the queued action(s).",
-    "2. After execution, you’ll see proof IDs — entities stay **PAUSED** (not published).",
-    "3. Reply here to continue the next stage (website scrape, ad sets, ads, etc.).",
-  ].join("\n");
-  if (summary.includes("What's next") || summary.includes("Approvals")) {
-    return summary.includes("What's next") ? summary : `${summary.trim()}${next}`;
-  }
-  return `${summary.trim()}\n\n---\n${APPROVAL_PORTAL_CTA}${next}`;
+  if (/\bapprovals\b/i.test(summary)) return summary;
+  return `${summary.trim()}\n\n${APPROVAL_PORTAL_CTA}`;
 }
 
 export async function createTask(input: {
@@ -251,15 +249,22 @@ export async function runTask(
   const correlationId = newCorrelationId();
   const log = logger.child({ correlationId, taskId, clientId: task.client_id });
 
-  let steps: TaskStep[] = planTaskSteps(task.goal ?? task.title).map((s) =>
+  const request = task.goal ?? task.title;
+  // createTask already planned the steps for this request — reuse them.
+  const plannedSteps = Array.isArray(task.agent_state?.steps)
+    ? (task.agent_state.steps as TaskStep[])
+    : planTaskSteps(request);
+  let steps: TaskStep[] = plannedSteps.map((s) =>
     s.id === "queued" ? { ...s, state: "done" } : s,
   );
+  const bareIntent = detectRequestIntent(request);
 
   task.status = "running";
   task.agent_state = {
     ...(task.agent_state ?? {}),
     phase: "running",
     statusLabel: "Starting…",
+    awaitingOperator: false,
     steps,
     correlationId,
   };
@@ -273,9 +278,12 @@ export async function runTask(
 
   // Progress saves are serialized and coalesced: while one write is in flight,
   // further events just mark the task dirty and the next write picks up the
-  // latest state. Token deltas never wait on the database.
+  // latest state. No progress event waits on the database; terminal saves
+  // await `saveChain` first so a late progress write cannot land after them.
   let saveChain: Promise<void> = Promise.resolve();
   let saveQueued = false;
+  let lastTokenSaveAt = 0;
+  const TOKEN_SAVE_INTERVAL_MS = 1500;
   const queueSave = (): Promise<void> => {
     if (saveQueued) return saveChain;
     saveQueued = true;
@@ -306,31 +314,50 @@ export async function runTask(
     };
     task.updated_at = nowIso();
     if (event.delta == null) {
-      await queueSave();
-    } else if ((event.summary?.length ?? 0) % 240 < event.delta.length) {
+      void queueSave();
+    } else if (Date.now() - lastTokenSaveAt >= TOKEN_SAVE_INTERVAL_MS) {
+      lastTokenSaveAt = Date.now();
       void queueSave();
     }
     await options?.onProgress?.({ ...event, task });
   };
 
   try {
+    const conversational = bareIntent === "chat";
     await emit({
       phase: "research",
-      label: "Researching prior context & learnings…",
+      label: conversational
+        ? "Answering…"
+        : "Researching prior context & learnings…",
       stepId: "research",
     });
 
-    const [context, historyRaw, research] = await Promise.all([
+    // Shared reads: started once, used by the context builder, the Meta
+    // preflight and the approval step below.
+    const metaAccounts = loadMappedMetaAccounts(task.client_id);
+    const documents = loadDocumentsForContext({
+      clientId: task.client_id,
+      conversationId: task.conversation_id,
+    });
+    const selectedCreative = getSelectedCreativeDraftAsync(task.client_id, {
+      conversationId: task.conversation_id,
+    });
+    for (const p of [metaAccounts, documents, selectedCreative]) {
+      p.catch(() => undefined);
+    }
+    // Research evidence is plain DB reads; the model memo is never awaited.
+    const researchEvidence = conversational
+      ? null
+      : loadResearchEvidence(task.client_id);
+    researchEvidence?.catch(() => undefined);
+
+    const [context, historyRaw] = await Promise.all([
       buildClientContext(task.client_id, {
         conversationId: task.conversation_id,
+        preloaded: { metaAccounts, documents, selectedCreative },
       }),
       loadConversationHistory(task.conversation_id),
-      buildContextResearch({
-        clientId: task.client_id,
-        request: task.goal ?? task.title,
-      }),
     ]);
-    steps = completeStepsThrough(steps, "research");
     const history = historyRaw.filter((m) => {
       if (m.role === "assistant" && !m.content.trim()) return false;
       return true;
@@ -340,14 +367,18 @@ export async function runTask(
     }
 
     // Fetch Meta evidence BEFORE writing the answer (fixes "fetching…" placeholders).
-    const intent = detectRequestIntentWithHistory(
-      task.goal ?? task.title,
-      history,
-    );
-    const bareIntent = detectRequestIntent(task.goal ?? task.title);
+    const intent = detectRequestIntentWithHistory(request, history);
+    const research = researchEvidence
+      ? await buildContextResearch({
+          clientId: task.client_id,
+          intent,
+          evidence: researchEvidence,
+        }).catch(() => "")
+      : (peekCachedResearch(task.client_id, intent) ?? "");
+    steps = completeStepsThrough(steps, "research");
     if (intent !== bareIntent) {
       const preserved = new Map(steps.map((s) => [s.id, s.state]));
-      steps = planTaskSteps(task.goal ?? task.title, intent).map((s) => ({
+      steps = planTaskSteps(request, intent).map((s) => ({
         ...s,
         state:
           preserved.get(s.id) ??
@@ -358,14 +389,20 @@ export async function runTask(
         steps,
       };
     }
-    const gathered = await gatherDiagnoseEvidence({
-      clientId: task.client_id,
-      request: task.goal ?? task.title,
-      conversationId: task.conversation_id,
-      history,
-      intent,
-      onProgress: emit,
-    });
+    // Conversational turns (greetings, definitions, "why is that") need no
+    // fresh account data — skip the Graph preflight entirely.
+    const gathered: Awaited<ReturnType<typeof gatherDiagnoseEvidence>> =
+      intent === "chat"
+        ? { accountId: null, evidence: "", toolCalls: [] }
+        : await gatherDiagnoseEvidence({
+            clientId: task.client_id,
+            request,
+            conversationId: task.conversation_id,
+            history,
+            intent,
+            preloaded: { metaAccounts, documents, selectedCreative },
+            onProgress: emit,
+          });
 
     // One bulk write for the whole preflight batch (was 2 round trips each).
     await saveToolCalls(
@@ -472,9 +509,16 @@ export async function runTask(
       reportTitle,
       reportData,
       history,
+      intent,
       correlationId,
       onProgress: emit,
     });
+
+    // The audit checklist table comes from the checkpoint engine, not the
+    // model, so it is always complete and exports with the report.
+    if (gathered.auditAppendix && agentResult.summary.trim()) {
+      agentResult.summary = `${agentResult.summary.trimEnd()}\n\n${gathered.auditAppendix}`;
+    }
 
     // Prefer structured pickers from preflight evidence when the model forgets the appendix
     if (gathered.copyPicker?.copies?.length) {
@@ -763,13 +807,12 @@ export async function runTask(
 
     // Process execute proposals from the grounded answer only.
     const pendingApprovalIds: string[] = [];
+    /** Proposals the approval gate refused (bad values, ungranted account…). */
+    const rejectedProposals: string[] = [];
     let approvalSummary = agentResult.summary;
-    const selectedCreative = await getSelectedCreativeDraftAsync(
-      task.client_id,
-      { conversationId: task.conversation_id },
-    ).catch(() => null);
-    const selectedImageUrl = selectedCreative
-      ? resolveImageUrlForAdspirer(selectedCreative)
+    const selectedDraft = await selectedCreative.catch(() => null);
+    const selectedImageUrl = selectedDraft
+      ? resolveImageUrlForAdspirer(selectedDraft)
       : null;
 
     // When the operator asks to send/queue optimizations for Approvals, inject
@@ -829,21 +872,36 @@ export async function runTask(
         if (steps.some((s) => s.id === "queue_adsets_ads")) {
           steps = activateStep(steps, "queue_adsets_ads");
         }
-        const approval = await createPendingApproval({
-          clientId: task.client_id,
-          taskId: task.id,
-          toolCallId: toolCall.id,
-          toolName: call.name,
-          proposedArgs: proposedArgsWithBackend,
-          rationale: call.rationale ?? approvalSummary,
-          budgetImpactCents: estimateBudgetImpact(call.name, args),
-          requestedBy: task.created_by,
-        });
+        // One invalid proposal must not sink the whole reply: record it on
+        // the tool call, tell the operator, and keep queueing the rest.
+        let approval: Awaited<ReturnType<typeof createPendingApproval>>;
+        try {
+          approval = await createPendingApproval({
+            clientId: task.client_id,
+            taskId: task.id,
+            toolCallId: toolCall.id,
+            toolName: call.name,
+            proposedArgs: proposedArgsWithBackend,
+            rationale: call.rationale ?? approvalSummary,
+            budgetImpactCents: estimateBudgetImpact(call.name, args),
+            requestedBy: task.created_by,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          toolCall.error_message = message;
+          toolCall.completed_at = nowIso();
+          await saveToolCall(toolCall, task.client_id);
+          rejectedProposals.push(`**${humanToolLabel(call.name)}** — ${message}`);
+          continue;
+        }
 
         toolCall.approval_id = approval.id;
         toolCall.completed_at = nowIso();
         await saveToolCall(toolCall, task.client_id);
-        pendingApprovalIds.push(approval.id);
+        // Identical proposals dedupe to the same approval.
+        if (!pendingApprovalIds.includes(approval.id)) {
+          pendingApprovalIds.push(approval.id);
+        }
       }
     }
 
@@ -871,6 +929,14 @@ export async function runTask(
     } else if (pendingApprovalIds.length > 0) {
       approvalSummary = appendApprovalCta(agentResult.summary);
     }
+    if (rejectedProposals.length) {
+      approvalSummary = [
+        approvalSummary,
+        "",
+        `**Not queued** — ${rejectedProposals.length === 1 ? "this change was" : "these changes were"} refused before reaching Approvals:`,
+        ...rejectedProposals.map((r) => `- ${r}`),
+      ].join("\n");
+    }
 
     if (pendingApprovalIds.length > 0) {
       if (agentResult.ui?.adPicker) {
@@ -878,13 +944,16 @@ export async function runTask(
         agentResult.ui = Object.keys(uiRest).length ? uiRest : undefined;
       }
       if (steps.some((s) => s.id === "approval")) {
-        steps = setStepState(steps, "approval", "active");
+        steps = setStepState(steps, "approval", "waiting");
       }
+      // Nothing is running while approvals are pending — no spinners.
+      steps = holdStepsForOperator(steps);
       task.status = "waiting_approval";
       task.agent_state = {
         ...(task.agent_state ?? {}),
         phase: "awaiting_approval",
         statusLabel: "Waiting for approval",
+        awaitingOperator: true,
         last_tool: agentResult.toolCalls.find(
           (c) => classify(c.name) === "execute",
         )?.name,
@@ -895,6 +964,7 @@ export async function runTask(
         steps,
       };
       task.updated_at = nowIso();
+      await saveChain;
       await saveTask(task);
 
       log.info("Task waiting on approval", {
@@ -956,13 +1026,14 @@ export async function runTask(
         ...(task.agent_state ?? {}),
         phase: "error",
         statusLabel: "Model call failed",
+        awaitingOperator: false,
         summary: agentResult.summary,
-        messages: agentResult.messages,
         error: task.error_message,
         ui: null,
         steps,
       };
       task.updated_at = nowIso();
+      await saveChain;
       await saveTask(task);
       await options?.onProgress?.({
         phase: "error",
@@ -977,7 +1048,6 @@ export async function runTask(
     }
 
     const waiting = !agentResult.report && awaitsOperator(agentResult);
-    const rendering = agentResult.ui?.creativePicker?.status === "generating";
     // Only a stage still in progress gets parked; a finished audit that ends on
     // "want me to pause it?" has genuinely completed its checklist.
     const holdPlan = waiting && steps.some((s) => s.state === "active");
@@ -997,13 +1067,9 @@ export async function runTask(
       steps = setStepState(steps, "complete", "done");
     }
 
-    const finalLabel = agentResult.report
-      ? "Ready to download"
-      : rendering
-        ? "Rendering stills…"
-        : waiting
-          ? "Waiting on your reply"
-          : "Complete";
+    // A neutral final label: transient labels ("Rendering stills…", "Ready to
+    // download") never got updated once the turn ended.
+    const finalLabel = waiting ? "Waiting on your reply" : "Done";
 
     task.status = "done";
     task.completed_at = nowIso();
@@ -1011,8 +1077,8 @@ export async function runTask(
       ...(task.agent_state ?? {}),
       phase: "completed",
       statusLabel: finalLabel,
+      awaitingOperator: waiting,
       summary: agentResult.summary,
-      messages: agentResult.messages,
       ui: agentResult.ui ?? null,
       report: agentResult.report ?? null,
       steps,
@@ -1049,6 +1115,7 @@ export async function runTask(
       ...(task.agent_state ?? {}),
       phase: "error",
       statusLabel: "Error",
+      awaitingOperator: false,
       error: message,
       steps,
     };
@@ -1183,6 +1250,46 @@ export async function getTask(taskId: string): Promise<Task> {
     .single();
   if (error || !data) throw new Error(`Task not found: ${taskId}`);
   return mapTaskRow(data as Record<string, unknown>);
+}
+
+/**
+ * A running/queued task whose function was killed never reaches a terminal
+ * state. Once it has been silent past the stale window, record it as failed so
+ * the UI stops showing a spinner forever. Returns the (possibly updated) task.
+ */
+export async function expireStaleTask(task: Task): Promise<Task> {
+  if (!isTaskStale(task)) return task;
+  const steps = Array.isArray(task.agent_state?.steps)
+    ? markRemainingSkipped(
+        (task.agent_state.steps as TaskStep[]).map((s) =>
+          s.state === "active" ? { ...s, state: "error" as const } : s,
+        ),
+      )
+    : undefined;
+  const ts = nowIso();
+  const expired: Task = {
+    ...task,
+    status: "error",
+    error_message: STALE_TASK_MESSAGE,
+    updated_at: ts,
+    agent_state: {
+      ...(task.agent_state ?? {}),
+      phase: "error",
+      statusLabel: "Stopped",
+      awaitingOperator: false,
+      error: STALE_TASK_MESSAGE,
+      ...(steps ? { steps } : {}),
+    },
+  };
+  try {
+    return await saveTask(expired);
+  } catch (error) {
+    logger.warn("Could not persist stale task expiry", {
+      taskId: task.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return expired;
+  }
 }
 
 async function saveTask(task: Task): Promise<Task> {

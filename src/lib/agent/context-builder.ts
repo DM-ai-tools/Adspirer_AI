@@ -1,4 +1,11 @@
-import type { Client, ClientService, CompetitorBrief } from "@/types";
+import type {
+  Client,
+  ClientService,
+  CompetitorBrief,
+  ConnectedMetaAccount,
+  WorkspaceDocument,
+} from "@/types";
+import type { CreativeDraft } from "@/lib/creatives/drafts";
 import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
 import { getSelectedCreativeDraftAsync,
@@ -12,11 +19,19 @@ import {
 import { humanToolLabel } from "@/lib/tools/display-labels";
 import { buildClientBrandBlock } from "./prompts";
 
+/** Reads the turn already started, shared so they are not repeated. */
+export type PreloadedTurnReads = {
+  metaAccounts?: Promise<ConnectedMetaAccount[]>;
+  documents?: Promise<WorkspaceDocument[]>;
+  selectedCreative?: Promise<CreativeDraft | null>;
+};
+
 export async function buildClientContext(
   clientId: string,
-  options?: { conversationId?: string | null },
+  options?: { conversationId?: string | null; preloaded?: PreloadedTurnReads },
 ): Promise<string> {
   const conversationId = options?.conversationId ?? null;
+  const preloaded = options?.preloaded;
   // Independent reads — run them together rather than one round trip at a time.
   const [
     client,
@@ -30,11 +45,15 @@ export async function buildClientContext(
     loadClient(clientId),
     loadServices(clientId),
     loadBriefs(clientId),
-    loadMappedMetaAccounts(clientId),
-    loadDocumentsForContext({ clientId, conversationId }).catch(() => []),
-    getSelectedCreativeDraftAsync(clientId, { conversationId }).catch(
-      () => null,
-    ),
+    preloaded?.metaAccounts ?? loadMappedMetaAccounts(clientId),
+    (
+      preloaded?.documents ??
+      loadDocumentsForContext({ clientId, conversationId })
+    ).catch(() => [] as WorkspaceDocument[]),
+    (
+      preloaded?.selectedCreative ??
+      getSelectedCreativeDraftAsync(clientId, { conversationId })
+    ).catch(() => null),
     listCreativeDraftsAsync(clientId, {
       conversationId: conversationId ?? undefined,
     }).catch(() => []),

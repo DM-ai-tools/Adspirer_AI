@@ -44,33 +44,45 @@ function redactUrls(text: string): string {
 
 type ResearchInput = {
   clientId: string;
-  request: string;
+  /** Request intent — the memo cache is keyed by client + intent. */
+  intent: string;
+  /** Pre-started evidence load (runs in parallel with other turn reads). */
+  evidence?: Promise<string>;
 };
 
 /**
- * Gather prior tasks, approvals, feedback, and learnings, then synthesize a
- * short research brief the main agent should apply before analysis.
- */
-/**
- * The memo summarises operator preferences, which change slowly. Re-using it
- * for a few minutes removes an OpenAI round trip from the start of most turns.
+ * The memo summarises operator preferences, which change slowly. It is built
+ * off the critical path: a turn uses the cached memo when there is one,
+ * otherwise the raw evidence block right away, and the memo is refreshed in
+ * the background for the next turn.
  */
 const RESEARCH_CACHE_TTL_MS = 10 * 60 * 1000;
 const researchCache = new Map<string, { memo: string; at: number }>();
+const researchRefreshing = new Set<string>();
 
-export async function buildContextResearch(
-  input: ResearchInput,
-): Promise<string> {
-  const cached = researchCache.get(input.clientId);
+function researchCacheKey(clientId: string, intent: string): string {
+  return `${clientId}::${intent}`;
+}
+
+/** Cached memo for this client + intent, if fresh. Never triggers a fetch. */
+export function peekCachedResearch(
+  clientId: string,
+  intent: string,
+): string | null {
+  const cached = researchCache.get(researchCacheKey(clientId, intent));
   if (cached && Date.now() - cached.at < RESEARCH_CACHE_TTL_MS) {
     return cached.memo;
   }
+  return null;
+}
 
+/** Prior tasks, approvals, feedback and learnings as one redacted block. */
+export async function loadResearchEvidence(clientId: string): Promise<string> {
   const [tasks, approvals, feedback, learnings] = await Promise.all([
-    loadRecentTasks(input.clientId),
-    loadRecentApprovals(input.clientId),
-    loadRecentFeedback(input.clientId),
-    loadLearnings(input.clientId),
+    loadRecentTasks(clientId),
+    loadRecentApprovals(clientId),
+    loadRecentFeedback(clientId),
+    loadLearnings(clientId),
   ]);
 
   const evidence = [
@@ -79,9 +91,7 @@ export async function buildContextResearch(
       ? tasks
           .map(
             (t) =>
-              `- [${t.status}] ${t.title}${t.error ? ` · error: ${t.error}` : ""}${
-                t.summary ? ` · ${t.summary.slice(0, 180)}` : ""
-              }`,
+              `- [${t.status}] ${t.title}${t.error ? ` · error: ${t.error}` : ""}`,
           )
           .join("\n")
       : "- (none yet)",
@@ -114,19 +124,29 @@ export async function buildContextResearch(
       : "- (none yet)",
   ].join("\n");
 
-  const evidenceBlocks = redactUrls(evidence);
+  return redactUrls(evidence);
+}
 
+function heuristicResearchBlock(evidenceBlocks: string): string {
+  return [
+    "## Context research (prior workspace activity)",
+    RESEARCH_SCOPE_RULE,
+    "",
+    evidenceBlocks,
+  ].join("\n");
+}
+
+/** Build the memo with a small model and cache it for the next turn. */
+async function refreshResearchMemo(
+  clientId: string,
+  intent: string,
+  evidenceBlocks: string,
+): Promise<void> {
   const config = getConfig();
-  if (!config.hasOpenAI || !config.OPENAI_API_KEY) {
-    return [
-      "## Context research (heuristic)",
-      RESEARCH_SCOPE_RULE,
-      "",
-      "Apply these lessons from prior workspace activity before diagnosing:",
-      evidenceBlocks,
-    ].join("\n");
-  }
-
+  if (!config.hasOpenAI || !config.OPENAI_API_KEY) return;
+  const key = researchCacheKey(clientId, intent);
+  if (researchRefreshing.has(key)) return;
+  researchRefreshing.add(key);
   try {
     const openai = createOpenAI({ apiKey: config.OPENAI_API_KEY });
     const { text } = await generateText({
@@ -140,36 +160,54 @@ export async function buildContextResearch(
         "Use only the provided evidence. Output 4–8 bullet insights about quality and preference.",
         "If evidence is thin, say so plainly instead of inventing defaults.",
       ].join(" "),
+      // No request text: the memo is reused across turns of this kind, so it
+      // must not carry one request's specifics into another.
       prompt: [
-        `Current operator request:\n${input.request.slice(0, 1500)}`,
+        `Kind of request this memo will support: ${intent}`,
         "",
         "Evidence from this client workspace:",
         evidenceBlocks,
       ].join("\n"),
     });
-
-    // The memo already distils the evidence; appending the raw blocks again
-    // only doubled the tokens sent on every model step.
     const memo = [
       "## Context research (learned before analysis)",
       RESEARCH_SCOPE_RULE,
       "",
       text.trim(),
     ].join("\n");
-    researchCache.set(input.clientId, { memo, at: Date.now() });
-    return memo;
+    researchCache.set(key, { memo, at: Date.now() });
   } catch (error) {
-    logger.warn("OpenAI context research failed; using raw evidence", {
+    logger.warn("Context research memo refresh failed", {
       error: error instanceof Error ? error.message : String(error),
-      clientId: input.clientId,
+      clientId,
     });
-    return [
-      "## Context research (raw evidence)",
-      RESEARCH_SCOPE_RULE,
-      "",
-      evidenceBlocks,
-    ].join("\n");
+  } finally {
+    researchRefreshing.delete(key);
   }
+}
+
+/**
+ * Research block for this turn. Never waits on a model call: returns the
+ * cached memo, or the raw evidence immediately while the memo is rebuilt in
+ * the background.
+ */
+export async function buildContextResearch(
+  input: ResearchInput,
+): Promise<string> {
+  const cached = peekCachedResearch(input.clientId, input.intent);
+  if (cached) return cached;
+
+  const evidenceBlocks = await (input.evidence ??
+    loadResearchEvidence(input.clientId));
+
+  const config = getConfig();
+  if (config.hasOpenAI && config.OPENAI_API_KEY) {
+    const { runAfterResponse } = await import("@/lib/api/background");
+    runAfterResponse("research-memo", () =>
+      refreshResearchMemo(input.clientId, input.intent, evidenceBlocks),
+    );
+  }
+  return heuristicResearchBlock(evidenceBlocks);
 }
 
 export async function recordFeedback(input: {
@@ -347,16 +385,8 @@ export async function captureTaskLearning(input: {
       weight: 1.2,
     });
   }
-  if (input.status === "done" && input.summary) {
-    await saveLearning({
-      clientId: input.clientId,
-      source: "task_success",
-      insight: `Successful completion pattern: ${input.summary.slice(0, 280)}`,
-      createdBy: input.userId,
-      evidence: { taskId: input.taskId, status: input.status },
-      weight: 0.8,
-    });
-  }
+  // Successful replies are not saved as learnings: feeding the agent's own
+  // wording back into context made it repeat its boilerplate.
 }
 
 async function loadRecentTasks(clientId: string) {
@@ -468,7 +498,7 @@ async function loadLearnings(clientId: string): Promise<AgentLearning[]> {
       agentLearnings?: AgentLearning[];
     };
     return (store.agentLearnings ?? [])
-      .filter((l) => l.client_id === clientId)
+      .filter((l) => l.client_id === clientId && l.source !== "task_success")
       .slice(0, 12);
   }
 
@@ -479,6 +509,7 @@ async function loadLearnings(clientId: string): Promise<AgentLearning[]> {
       .from("agent_learnings")
       .select("*")
       .eq("client_id", clientId)
+      .neq("source", "task_success")
       .order("created_at", { ascending: false })
       .limit(12);
     if (error) return [];

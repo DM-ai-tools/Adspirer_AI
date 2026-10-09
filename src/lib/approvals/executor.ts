@@ -4,28 +4,34 @@ import { getDemoStore } from "@/lib/demo/store";
 import { resolveProvider } from "@/lib/adspirer/client";
 import type { MetaAdsProvider } from "@/lib/adspirer/provider";
 import {
+  ApprovalValidationError,
   DuplicateExecutionError,
+  ExecutionVerificationError,
   ProviderUnavailableError,
 } from "@/lib/errors";
 import {
   assertApprovalNotExpired,
   assertExecutableStatus,
   assertTransition,
-  assertWithinBudgetCeiling,
+  canTransition,
   effectiveApprovalArgs,
 } from "@/lib/approvals/validator";
-import { getApproval } from "@/lib/approvals/service";
+import { getApproval, getClient } from "@/lib/approvals/service";
+import { prepareApprovalArgs } from "@/lib/approvals/validate-args";
 import { nowIso } from "@/lib/utils";
 import { toApprovalInsert } from "@/lib/db/live-maps";
 import { completeTaskIfApprovalsTerminal } from "@/lib/workflow/bindings";
 import { logger } from "@/lib/observability/logger";
 import type { WorkspaceExecutionBackend } from "@/lib/runtime/workspace-context";
 import { resolveBudgetDaily } from "@/lib/meta/resolve-budget-daily";
-import { normalizeMetaApprovalArgs } from "@/lib/meta/normalize-approval-args";
+import { resolveAdSetIdForCreateAd } from "@/lib/meta/resolve-ad-set";
 import {
-  normalizeCreateAdArgs,
-  resolveAdSetIdForCreateAd,
-} from "@/lib/meta/resolve-ad-set";
+  PartialCreateError,
+  describeProgress,
+  hasProgress,
+  parseProgress,
+  type CreateProgress,
+} from "@/lib/meta/create-progress";
 
 const executingKeys = new Set<string>();
 
@@ -34,9 +40,21 @@ export type ExecuteApprovedActionResult = {
   result: unknown;
 };
 
+/** Tools that build several Meta entities and can resume a failed run. */
+const RESUMABLE_TOOLS = new Set([
+  "create_meta_image_campaign",
+  "create_meta_video_campaign",
+  "create_ad",
+]);
+
 /**
  * Execute an approved action with idempotency protection.
  * Enforces ADS_EXECUTION_MODE — production/sandbox require MCP provider availability.
+ *
+ * Once Meta has accepted the change, the call reports success no matter what
+ * happens to the bookkeeping afterwards (status write, task completion,
+ * learning) — a post-success failure must never send the approval back for a
+ * second, duplicating run.
  */
 export async function executeApprovedAction(input: {
   approvalId: string;
@@ -84,6 +102,17 @@ export async function executeApprovedAction(input: {
   executingKeys.add(idempotencyKey);
   assertTransition(approval.status, "executing");
 
+  // Entities a previous failed run already created (all PAUSED).
+  const priorProgress = RESUMABLE_TOOLS.has(approval.tool_name)
+    ? parseProgress(
+        (approval.execution_result as Record<string, unknown> | null)?.created,
+      )
+    : null;
+  const priorAccount =
+    typeof approval.execution_result?.account_id === "string"
+      ? approval.execution_result.account_id
+      : null;
+
   let working: Approval = {
     ...approval,
     status: "executing",
@@ -99,83 +128,133 @@ export async function executeApprovedAction(input: {
     throw error;
   }
 
+  let progress: CreateProgress | null = priorProgress;
+  let accountId: string | null = priorAccount;
+
   try {
-    const args = {
-      ...effectiveApprovalArgs(approval),
-      ...input.overrideArgs,
-    };
+    let result: unknown;
+    try {
+      const rawArgs = {
+        ...effectiveApprovalArgs(approval),
+        ...input.overrideArgs,
+      };
+      const providerBackend =
+        typeof rawArgs.__provider_backend === "string"
+          ? (rawArgs.__provider_backend as WorkspaceExecutionBackend)
+          : null;
 
-    const providerBackend =
-      typeof args.__provider_backend === "string"
-        ? (args.__provider_backend as WorkspaceExecutionBackend)
-        : null;
+      // Re-validate right before execution: schema, coercion, granted
+      // account and the (live, not demo-only) budget ceiling.
+      const client = await getClient(approval.client_id);
+      const prepared = await prepareApprovalArgs({
+        toolName: approval.tool_name,
+        clientId: approval.client_id,
+        args: rawArgs,
+        client,
+      });
 
-    const enrichedArgs = await enrichMetaCampaignArgs(
-      approval.tool_name,
-      args,
-      providerBackend,
-    );
+      // Live executions only ever go to Meta directly. resolveProvider() throws
+      // rather than falling back to mock data, so nothing "succeeds" silently.
+      if (
+        (config.adsExecutionMode === "production" ||
+          config.adsExecutionMode === "sandbox") &&
+        providerBackend &&
+        providerBackend !== "meta_direct"
+      ) {
+        throw new ProviderUnavailableError(
+          "This approval was created for a backend that is no longer supported. Ask the agent to propose it again.",
+          { backend: providerBackend },
+        );
+      }
 
-    const client =
-      config.isDemoMode || !config.hasSupabase
-        ? getDemoStore().clients.find((c) => c.id === approval.client_id)
-        : null;
-
-    if (client) {
-      assertWithinBudgetCeiling(client, args, approval.budget_impact_cents);
-    }
-
-    // Live executions only ever go to Meta directly. resolveProvider() throws
-    // rather than falling back to mock data, so nothing "succeeds" silently.
-    if (
-      (config.adsExecutionMode === "production" ||
-        config.adsExecutionMode === "sandbox") &&
-      providerBackend &&
-      providerBackend !== "meta_direct"
-    ) {
-      throw new ProviderUnavailableError(
-        "This approval was created for a backend that is no longer supported. Ask the agent to propose it again.",
-        { backend: providerBackend },
+      const enrichedArgs = await enrichMetaCampaignArgs(
+        approval.tool_name,
+        prepared.args,
+        providerBackend,
       );
+      accountId =
+        typeof enrichedArgs.account_id === "string" ? enrichedArgs.account_id : null;
+
+      if (priorProgress && priorAccount && accountId !== priorAccount) {
+        throw new ApprovalValidationError(
+          `This approval already created PAUSED entities in ${priorAccount} (${describeProgress(priorProgress)}) but now targets ${accountId}. Reject it and ask for a new proposal so nothing is duplicated.`,
+        );
+      }
+
+      const provider = await resolveProvider(providerBackend);
+      const checkpoint = async (next: CreateProgress) => {
+        progress = next;
+        working = {
+          ...working,
+          execution_result: {
+            partial: true,
+            account_id: accountId,
+            created: { ...next },
+          },
+          updated_at: nowIso(),
+        };
+        try {
+          await persist(working);
+        } catch (error) {
+          logger.warn("Could not checkpoint execution progress", {
+            approvalId: working.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      };
+
+      result = await dispatchToProvider(approval.tool_name, enrichedArgs, provider, {
+        resume: priorProgress ?? undefined,
+        onProgress: checkpoint,
+      });
+    } catch (error) {
+      if (error instanceof PartialCreateError && hasProgress(error.progress)) {
+        progress = error.progress;
+      }
+      await recordFailure(working, error, progress, accountId);
+      throw error;
     }
 
-    const provider = await resolveProvider(providerBackend);
-    const result = await dispatchToProvider(
-      approval.tool_name,
-      enrichedArgs,
-      provider,
-    );
-
+    // ---- Meta succeeded: everything below is best-effort bookkeeping ----
+    const executionResult = buildExecutionResult(approval.tool_name, result, accountId);
     working = {
       ...working,
       status: "executed",
-      execution_result: (result ?? {}) as Record<string, unknown>,
+      execution_result: executionResult,
       execution_error: null,
       executed_at: nowIso(),
       reviewed_by: working.reviewed_by ?? input.executedBy,
       updated_at: nowIso(),
     };
-    await persist(working);
+    await persistBestEffort(working);
 
     // Mark linked task done when all approvals are terminal
     if (working.task_id) {
-      await completeTaskIfApprovalsTerminal(working.task_id);
-      if (config.isDemoMode || !config.hasSupabase) {
-        const task = getDemoStore().tasks.find((t) => t.id === working.task_id);
-        if (task && task.status === "waiting_approval") {
-          task.agent_state = {
-            ...(task.agent_state ?? {}),
-            phase: "completed",
-            last_execution: working.tool_name,
-            last_execution_result: working.execution_result,
-          };
+      try {
+        await completeTaskIfApprovalsTerminal(working.task_id);
+        if (config.isDemoMode || !config.hasSupabase) {
+          const task = getDemoStore().tasks.find((t) => t.id === working.task_id);
+          if (task && task.status === "waiting_approval") {
+            task.agent_state = {
+              ...(task.agent_state ?? {}),
+              phase: "completed",
+              last_execution: working.tool_name,
+              last_execution_result: working.execution_result,
+            };
+          }
         }
+      } catch (error) {
+        logger.warn("Task completion after execution failed", {
+          approvalId: working.id,
+          taskId: working.task_id,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
 
     try {
       const { saveLearning } = await import("@/lib/agent/learning");
-      const proof = summarizeExecutionProof(working.tool_name, result);
+      const proof = summarizeExecutionProof(working.tool_name, executionResult);
       await saveLearning({
         clientId: working.client_id,
         source: "execution_proof",
@@ -184,7 +263,7 @@ export async function executeApprovedAction(input: {
         evidence: {
           approvalId: working.id,
           toolName: working.tool_name,
-          result: (result ?? null) as Record<string, unknown> | null,
+          result: executionResult,
         },
         weight: 1.1,
       });
@@ -195,36 +274,139 @@ export async function executeApprovedAction(input: {
     logger.info("Executed approved action", {
       approvalId: working.id,
       toolName: working.tool_name,
-      provider: provider.name,
       mode: config.adsExecutionMode,
     });
 
     return { approval: working, result };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Execution failed";
-    // Return to editable state so the operator can fix args and approve again.
-    assertTransition(working.status, "edited");
-    working = {
-      ...working,
-      status: "edited",
-      execution_error: message,
-      updated_at: nowIso(),
-    };
-    await persist(working);
-    logger.error("Approved action execution failed", {
-      approvalId: working.id,
-      toolName: working.tool_name,
-      error: message,
-    });
-    throw error;
   } finally {
     executingKeys.delete(idempotencyKey);
   }
 }
 
 /**
+ * Persist the failure without ever throwing over the original error.
+ * Verification mismatches (Meta accepted but reads back differently) become
+ * `failed`; everything else returns to `edited` so the operator can fix args.
+ * Already-created entity IDs stay in execution_result for the next run.
+ */
+async function recordFailure(
+  working: Approval,
+  error: unknown,
+  progress: CreateProgress | null,
+  accountId: string | null,
+): Promise<void> {
+  const message = error instanceof Error ? error.message : "Execution failed";
+  const target: Approval["status"] =
+    error instanceof ExecutionVerificationError ? "failed" : "edited";
+  const created = progress && hasProgress(progress) ? progress : null;
+  const executionError =
+    created && !message.includes("Already created in Meta")
+      ? `${message} Already created in Meta (PAUSED, not live): ${describeProgress(created)}. Approving again reuses them instead of creating duplicates.`
+      : message;
+
+  const failed: Approval = {
+    ...working,
+    status: canTransition(working.status, target) ? target : working.status,
+    execution_error: executionError,
+    execution_result: created
+      ? { partial: true, account_id: accountId, created: { ...created } }
+      : working.execution_result,
+    updated_at: nowIso(),
+  };
+  try {
+    await persist(failed);
+  } catch (persistError) {
+    // Left in `executing`; the stale-execution reaper will fail it later.
+    logger.error("Could not record execution failure", {
+      approvalId: working.id,
+      error:
+        persistError instanceof Error ? persistError.message : String(persistError),
+    });
+  }
+  logger.error("Approved action execution failed", {
+    approvalId: working.id,
+    toolName: working.tool_name,
+    error: message,
+    created: created ?? undefined,
+  });
+}
+
+/** Retry the success write once; a lost write is logged, never surfaced as failure. */
+async function persistBestEffort(approval: Approval): Promise<void> {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      await persist(approval);
+      return;
+    } catch (error) {
+      logger.error("Could not record successful execution", {
+        approvalId: approval.id,
+        attempt,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
+
+/** Flatten the provider result + IDs into what the approval row stores. */
+function buildExecutionResult(
+  toolName: string,
+  result: unknown,
+  accountId: string | null,
+): Record<string, unknown> {
+  const obj =
+    result && typeof result === "object"
+      ? { ...(result as Record<string, unknown>) }
+      : {};
+  const pickId = (value: unknown): string | undefined =>
+    value && typeof value === "object" && typeof (value as { id?: unknown }).id === "string"
+      ? (value as { id: string }).id
+      : undefined;
+
+  const proof: Record<string, unknown> = {};
+  if (toolName === "create_meta_image_campaign" || toolName === "create_meta_video_campaign") {
+    const campaignId = pickId(obj.campaign);
+    const adSetId = pickId(obj.adset);
+    const adId = pickId(obj.ad);
+    if (campaignId) proof.campaign_id = campaignId;
+    if (adSetId) proof.ad_set_id = adSetId;
+    if (adId) proof.ad_id = adId;
+    proof.status = "PAUSED";
+  } else if (toolName === "create_adset") {
+    if (typeof obj.id === "string") proof.ad_set_id = obj.id;
+    if (typeof obj.campaign_id === "string") proof.campaign_id = obj.campaign_id;
+    proof.status = "PAUSED";
+  } else if (toolName === "create_ad") {
+    if (typeof obj.id === "string") proof.ad_id = obj.id;
+    if (typeof obj.adset_id === "string") proof.ad_set_id = obj.adset_id;
+    proof.status = "PAUSED";
+  } else if (toolName === "create_campaign") {
+    if (typeof obj.id === "string") proof.campaign_id = obj.id;
+    if (typeof obj.status === "string") proof.status = obj.status;
+  } else if (toolName === "update_adset_budget") {
+    if (typeof obj.id === "string") proof.ad_set_id = obj.id;
+    if (typeof obj.daily_budget_cents === "number") {
+      proof.daily_budget_cents = obj.daily_budget_cents;
+    }
+    if (typeof obj.currency === "string") proof.currency = obj.currency;
+  } else if (toolName === "pause_campaign" || toolName === "resume_campaign") {
+    if (typeof obj.id === "string") proof.campaign_id = obj.id;
+    if (typeof obj.status === "string") proof.status = obj.status;
+  } else if (toolName === "pause_ad") {
+    if (typeof obj.id === "string") proof.ad_id = obj.id;
+    if (typeof obj.status === "string") proof.status = obj.status;
+  }
+  if (typeof obj.verified === "boolean") proof.verified = obj.verified;
+
+  return {
+    ...obj,
+    ...(accountId ? { account_id: accountId } : {}),
+    proof,
+  };
+}
+
+/**
  * A required arg the LLM (or an edit) dropped must stop the run here —
- * `String(undefined)` used to ship the literal text "undefined" to Adspirer,
+ * `String(undefined)` used to ship the literal text "undefined" to Meta,
  * which published a campaign actually named "undefined - <timestamp>".
  */
 function requireString(
@@ -237,7 +419,7 @@ function requireString(
     const value = args[candidate];
     if (typeof value === "string" && value.trim()) return value.trim();
   }
-  throw new Error(
+  throw new ApprovalValidationError(
     `${toolName} is missing "${key}". Use Edit on the approval to add it, then approve again.`,
   );
 }
@@ -263,7 +445,7 @@ async function enrichMetaCampaignArgs(
   args: Record<string, unknown>,
   backend: WorkspaceExecutionBackend | null,
 ): Promise<Record<string, unknown>> {
-  const next = normalizeMetaApprovalArgs(toolName, args);
+  const next = { ...args };
 
   const needsPage = [
     "create_meta_image_campaign",
@@ -275,8 +457,7 @@ async function enrichMetaCampaignArgs(
   if (backend !== "meta_direct" || !needsPage) return next;
   if (optionalString(next.facebook_page_id)) return next;
 
-  const accountId =
-    optionalString(next.account_id) ?? optionalString(next.ad_account_id);
+  const accountId = optionalString(next.account_id);
   if (!accountId) return next;
 
   const { resolveFacebookPageIdForAccount } = await import(
@@ -287,11 +468,10 @@ async function enrichMetaCampaignArgs(
 }
 
 /**
- * Adspirer's create_meta_image_campaign / create_meta_video_campaign /
- * add_meta_ad_set accept far more than our typed core (interests, custom
- * audiences, dynamic-creative arrays, placements, DSA fields…). Anything on
- * this list found in the approval args is forwarded verbatim, so operators/the
- * agent can use the full schema without a code change per field.
+ * Fields beyond the typed core that the Graph provider actually applies
+ * (targeting extras, placements, DSA, lead forms). Fields it cannot apply are
+ * rejected at validation time (see validate-args UNSUPPORTED_KEYS) instead of
+ * being forwarded and silently dropped.
  */
 const CAMPAIGN_PASSTHROUGH_KEYS = [
   "location_types",
@@ -305,23 +485,14 @@ const CAMPAIGN_PASSTHROUGH_KEYS = [
   "custom_audiences",
   "excluded_custom_audiences",
   "lead_form_id",
-  "multi_advertiser",
   "advantage_audience",
-  "advantage_plus_creative",
-  "disabled_creative_features",
-  "primary_texts",
-  "headlines",
-  "descriptions",
   "facebook_positions",
   "instagram_positions",
-  "story_image_url",
-  "right_column_image_url",
+  "audience_network_positions",
+  "messenger_positions",
   "destination_type",
   "dsa_beneficiary",
   "dsa_payor",
-  "daily_min_spend_target",
-  "daily_spend_cap",
-  "custom_conversion_id",
 ] as const;
 
 function collectPassthrough(
@@ -334,61 +505,53 @@ function collectPassthrough(
   return Object.keys(extra).length ? extra : undefined;
 }
 
+type DispatchOptions = {
+  resume?: CreateProgress;
+  onProgress?: (progress: CreateProgress) => Promise<void>;
+};
+
 async function dispatchToProvider(
   toolName: string,
   args: Record<string, unknown>,
-  resolvedProvider?: MetaAdsProvider,
+  provider: MetaAdsProvider,
+  options: DispatchOptions = {},
 ): Promise<unknown> {
-  const backend =
-    typeof args.__provider_backend === "string"
-      ? (args.__provider_backend as WorkspaceExecutionBackend)
-      : null;
-  delete args.__provider_backend;
-  const provider =
-    resolvedProvider ?? (await resolveProvider(backend));
-
   switch (toolName) {
     case "update_adset_budget":
       return provider.updateAdSetBudget({
-        account_id: String(args.account_id),
-        adset_id: String(args.adset_id),
-        daily_budget_cents: Number(args.daily_budget_cents),
+        // Expected account only — the provider derives the real one from the
+        // ad set and refuses on mismatch.
+        account_id: optionalString(args.account_id),
+        adset_id: requireString(args, "adset_id", toolName),
+        daily_budget_cents: args.daily_budget_cents as number,
       });
     case "pause_campaign":
       return provider.pauseCampaign(
-        String(args.account_id),
-        String(args.campaign_id),
+        requireString(args, "account_id", toolName),
+        requireString(args, "campaign_id", toolName),
       );
     case "resume_campaign":
       return provider.resumeCampaign(
-        String(args.account_id),
-        String(args.campaign_id),
+        requireString(args, "account_id", toolName),
+        requireString(args, "campaign_id", toolName),
       );
     case "create_campaign":
       return provider.createCampaign({
-        account_id: requireString(args, "account_id", toolName, [
-          "ad_account_id",
-        ]),
+        account_id: requireString(args, "account_id", toolName),
         name: requireString(args, "name", toolName, ["campaign_name"]),
-        objective: String(args.objective ?? "OUTCOME_TRAFFIC"),
+        objective: requireString(args, "objective", toolName),
         status: (args.status as "ACTIVE" | "PAUSED" | undefined) ?? "PAUSED",
-        daily_budget_cents:
-          typeof args.daily_budget_cents === "number"
-            ? args.daily_budget_cents
-            : undefined,
-        special_ad_categories: Array.isArray(args.special_ad_categories)
-          ? (args.special_ad_categories as string[])
-          : undefined,
+        daily_budget_cents: optionalNumber(args.daily_budget_cents),
+        special_ad_categories: optionalStringArray(args.special_ad_categories),
       });
     case "create_meta_image_campaign":
       return provider.createImageCampaign({
-        account_id: requireString(args, "account_id", toolName, [
-          "ad_account_id",
-        ]),
+        account_id: requireString(args, "account_id", toolName),
         campaign_name: requireString(args, "campaign_name", toolName, ["name"]),
         objective: optionalString(args.objective),
-        budget_daily: resolveBudgetDaily(args) ?? optionalNumber(args.budget_daily),
+        budget_daily: resolveBudgetDaily(args),
         budget_lifetime: optionalNumber(args.budget_lifetime),
+        start_time: optionalString(args.start_time),
         end_time: optionalString(args.end_time),
         primary_text: requireString(args, "primary_text", toolName),
         headline: requireString(args, "headline", toolName),
@@ -413,26 +576,28 @@ async function dispatchToProvider(
             : undefined,
         pixel_id: optionalString(args.pixel_id),
         pixel_event_name: optionalString(args.pixel_event_name),
+        lead_form_id: optionalString(args.lead_form_id),
         instagram_account_id: optionalString(args.instagram_account_id),
         facebook_page_id: optionalString(args.facebook_page_id),
         extra_args: collectPassthrough(args),
+        resume: options.resume,
+        onProgress: options.onProgress,
       });
     case "create_meta_video_campaign": {
       const videoUrl = optionalString(args.video_url);
       const existingVideoId = optionalString(args.existing_video_id);
       if (!videoUrl && !existingVideoId) {
-        throw new Error(
+        throw new ApprovalValidationError(
           "create_meta_video_campaign requires video_url or existing_video_id",
         );
       }
       return provider.createVideoCampaign({
-        account_id: requireString(args, "account_id", toolName, [
-          "ad_account_id",
-        ]),
+        account_id: requireString(args, "account_id", toolName),
         campaign_name: requireString(args, "campaign_name", toolName, ["name"]),
         objective: optionalString(args.objective),
-        budget_daily: resolveBudgetDaily(args) ?? optionalNumber(args.budget_daily),
+        budget_daily: resolveBudgetDaily(args),
         budget_lifetime: optionalNumber(args.budget_lifetime),
+        start_time: optionalString(args.start_time),
         end_time: optionalString(args.end_time),
         primary_text: requireString(args, "primary_text", toolName),
         headline: optionalString(args.headline),
@@ -458,174 +623,120 @@ async function dispatchToProvider(
             : undefined,
         pixel_id: optionalString(args.pixel_id),
         pixel_event_name: optionalString(args.pixel_event_name),
+        lead_form_id: optionalString(args.lead_form_id),
         instagram_account_id: optionalString(args.instagram_account_id),
         facebook_page_id: optionalString(args.facebook_page_id),
         extra_args: collectPassthrough(args),
+        resume: options.resume,
+        onProgress: options.onProgress,
       });
     }
-    case "create_adset": {
-      const normalized = normalizeCreateAdSetArgs(args);
+    case "create_adset":
       return provider.createAdSet({
-        account_id: requireString(normalized, "account_id", toolName, [
-          "ad_account_id",
-        ]),
-        campaign_id: requireString(normalized, "campaign_id", toolName),
-        name:
-          typeof normalized.name === "string" ? normalized.name : undefined,
-        budget_daily: resolveBudgetDaily(normalized),
+        account_id: requireString(args, "account_id", toolName),
+        campaign_id: requireString(args, "campaign_id", toolName),
+        name: optionalString(args.name),
+        budget_daily: resolveBudgetDaily(args),
+        budget_lifetime: optionalNumber(args.budget_lifetime),
+        start_time: optionalString(args.start_time),
+        end_time: optionalString(args.end_time),
         ad_type:
-          normalized.ad_type === "video" || normalized.ad_type === "carousel"
-            ? normalized.ad_type
+          args.ad_type === "video" || args.ad_type === "carousel"
+            ? args.ad_type
             : "image",
-        landing_page_url: String(normalized.landing_page_url),
-        primary_text: String(normalized.primary_text),
-        headline:
-          typeof normalized.headline === "string"
-            ? normalized.headline
-            : undefined,
-        description: optionalString(normalized.description),
-        call_to_action: optionalString(normalized.call_to_action),
-        image_url:
-          typeof normalized.image_url === "string"
-            ? normalized.image_url
-            : undefined,
-        video_url: optionalString(normalized.video_url),
-        existing_video_id: optionalString(normalized.existing_video_id),
-        thumbnail_url: optionalString(normalized.thumbnail_url),
-        age_min:
-          typeof normalized.age_min === "number"
-            ? normalized.age_min
-            : undefined,
-        age_max:
-          typeof normalized.age_max === "number"
-            ? normalized.age_max
-            : undefined,
-        genders: optionalStringArray(normalized.genders),
-        locations: Array.isArray(normalized.locations)
-          ? normalized.locations
-          : undefined,
-        publisher_platforms: optionalStringArray(
-          normalized.publisher_platforms,
-        ),
-        objective: optionalString(normalized.objective),
-        facebook_page_id: optionalString(normalized.facebook_page_id),
-        pixel_id: optionalString(normalized.pixel_id),
-        pixel_event_name: optionalString(normalized.pixel_event_name),
+        landing_page_url: requireString(args, "landing_page_url", toolName),
+        primary_text: requireString(args, "primary_text", toolName),
+        headline: optionalString(args.headline),
+        description: optionalString(args.description),
+        call_to_action: optionalString(args.call_to_action),
+        image_url: optionalString(args.image_url),
+        video_url: optionalString(args.video_url),
+        existing_video_id: optionalString(args.existing_video_id),
+        thumbnail_url: optionalString(args.thumbnail_url),
+        age_min: optionalNumber(args.age_min),
+        age_max: optionalNumber(args.age_max),
+        genders: optionalStringArray(args.genders),
+        locations: Array.isArray(args.locations) ? args.locations : undefined,
+        publisher_platforms: optionalStringArray(args.publisher_platforms),
+        objective: optionalString(args.objective),
+        facebook_page_id: optionalString(args.facebook_page_id),
+        pixel_id: optionalString(args.pixel_id),
+        pixel_event_name: optionalString(args.pixel_event_name),
+        lead_form_id: optionalString(args.lead_form_id),
         campaign_budget_optimization:
-          typeof normalized.campaign_budget_optimization === "boolean"
-            ? normalized.campaign_budget_optimization
+          typeof args.campaign_budget_optimization === "boolean"
+            ? args.campaign_budget_optimization
             : undefined,
-        extra_args: collectPassthrough(normalized),
+        extra_args: collectPassthrough(args),
       });
-    }
     case "create_ad": {
-      const normalized = normalizeCreateAdArgs(args);
       const adSetId =
-        optionalString(normalized.ad_set_id) ??
-        optionalString(normalized.adset_id) ??
-        (await resolveAdSetIdForCreateAd(provider, normalized));
+        optionalString(args.ad_set_id) ??
+        optionalString(args.adset_id) ??
+        (await resolveAdSetIdForCreateAd(provider, args));
       if (!adSetId) {
-        throw new Error(
+        throw new ApprovalValidationError(
           'create_ad is missing "ad_set_id". Include ad_set_id, or campaign_name + ad_set_name so we can look up the ad set on Meta. Use Edit on the approval to add it, then approve again.',
         );
       }
       return provider.createAd({
-        account_id: requireString(normalized, "account_id", toolName, [
-          "ad_account_id",
-        ]),
+        account_id: requireString(args, "account_id", toolName),
         ad_set_id: adSetId,
         ad_type:
-          normalized.ad_type === "video" || normalized.ad_type === "carousel"
-            ? normalized.ad_type
+          args.ad_type === "video" || args.ad_type === "carousel"
+            ? args.ad_type
             : "image",
-        primary_text: requireString(normalized, "primary_text", toolName),
-        landing_page_url: requireString(
-          normalized,
-          "landing_page_url",
-          toolName,
-        ),
-        display_link: optionalString(normalized.display_link),
-        url_tags: optionalString(normalized.url_tags),
-        headline:
-          typeof normalized.headline === "string"
-            ? normalized.headline
-            : undefined,
-        description: optionalString(normalized.description),
-        call_to_action: optionalString(normalized.call_to_action),
-        image_url:
-          typeof normalized.image_url === "string"
-            ? normalized.image_url
-            : undefined,
-        existing_image_hash:
-          typeof normalized.existing_image_hash === "string"
-            ? normalized.existing_image_hash
-            : undefined,
-        video_url: optionalString(normalized.video_url),
-        existing_video_id: optionalString(normalized.existing_video_id),
-        thumbnail_url: optionalString(normalized.thumbnail_url),
-        name: typeof normalized.name === "string" ? normalized.name : undefined,
-        facebook_page_id: optionalString(normalized.facebook_page_id),
-        instagram_account_id: optionalString(normalized.instagram_account_id),
+        primary_text: requireString(args, "primary_text", toolName),
+        landing_page_url: requireString(args, "landing_page_url", toolName),
+        display_link: optionalString(args.display_link),
+        url_tags: optionalString(args.url_tags),
+        headline: optionalString(args.headline),
+        description: optionalString(args.description),
+        call_to_action: optionalString(args.call_to_action),
+        image_url: optionalString(args.image_url),
+        existing_image_hash: optionalString(args.existing_image_hash),
+        video_url: optionalString(args.video_url),
+        existing_video_id: optionalString(args.existing_video_id),
+        thumbnail_url: optionalString(args.thumbnail_url),
+        name: optionalString(args.name),
+        facebook_page_id: optionalString(args.facebook_page_id),
+        instagram_account_id: optionalString(args.instagram_account_id),
+        lead_form_id: optionalString(args.lead_form_id),
+        resume: options.resume,
+        onProgress: options.onProgress,
       });
     }
     case "pause_ad":
-      return provider.pauseAd(String(args.account_id), String(args.ad_id));
+      return provider.pauseAd(
+        requireString(args, "account_id", toolName),
+        requireString(args, "ad_id", toolName),
+      );
     default:
-      throw new Error(`No provider dispatch for tool: ${toolName}`);
+      throw new ApprovalValidationError(
+        `No provider dispatch for tool: ${toolName}`,
+      );
   }
 }
 
-/** Fill Adspirer-required create_adset fields so older pending approvals still execute. */
-function normalizeCreateAdSetArgs(
-  args: Record<string, unknown>,
-): Record<string, unknown> {
-  const name =
-    (typeof args.name === "string" && args.name.trim()) ||
-    "Ad Set";
-  const landing =
-    (typeof args.landing_page_url === "string" && args.landing_page_url.trim()) ||
-    (typeof args.website_url === "string" && args.website_url.trim()) ||
-    (typeof args.url === "string" && args.url.trim()) ||
-    (typeof args.landing_url === "string" && args.landing_url.trim()) ||
-    "";
-  const primary =
-    (typeof args.primary_text === "string" && args.primary_text.trim()) ||
-    `${name} — Learn more.`;
-
-  if (!landing || !/^https?:\/\//i.test(landing)) {
-    throw new Error(
-      "This create_adset approval is missing landing_page_url. Click Edit, add a full https:// website URL, Save, then Approve again. New ad sets are created PAUSED (not published).",
-    );
-  }
-
-  return {
-    ...args,
-    name,
-    ad_type: args.ad_type ?? "image",
-    primary_text: primary,
-    landing_page_url: landing,
-    headline:
-      (typeof args.headline === "string" && args.headline.trim()) ||
-      name.slice(0, 40),
-  };
-}
-
-function summarizeExecutionProof(toolName: string, result: unknown): string {
-  const obj =
-    result && typeof result === "object"
-      ? (result as Record<string, unknown>)
+function summarizeExecutionProof(
+  toolName: string,
+  result: Record<string, unknown>,
+): string {
+  const proof =
+    result.proof && typeof result.proof === "object"
+      ? (result.proof as Record<string, unknown>)
       : {};
-  const ids = [
-    typeof obj.id === "string" ? `id=${obj.id}` : null,
-    typeof obj.campaign_id === "string" ? `campaign_id=${obj.campaign_id}` : null,
-    typeof obj.ad_set_id === "string" ? `ad_set_id=${obj.ad_set_id}` : null,
-    typeof obj.adset_id === "string" ? `adset_id=${obj.adset_id}` : null,
-    typeof obj.ad_id === "string" ? `ad_id=${obj.ad_id}` : null,
-  ].filter(Boolean);
-  if (ids.length) {
-    return `Executed ${toolName} successfully (PAUSED entities). Proof: ${ids.join(", ")}. After campaign creates, ask for website URL → scrape services → create ad sets/ads.`;
+  const ids = Object.entries(proof)
+    .filter(([k, v]) => /_id$/.test(k) && typeof v === "string")
+    .map(([k, v]) => `${k}=${String(v)}`);
+  if (toolName.startsWith("create_")) {
+    return ids.length
+      ? `Executed ${toolName} successfully (PAUSED entities). Proof: ${ids.join(", ")}. After campaign creates, ask for website URL → scrape services → create ad sets/ads.`
+      : `Executed ${toolName} successfully. Report returned IDs/status as proof; keep new entities PAUSED and continue the builder stages.`;
   }
-  return `Executed ${toolName} successfully. Report returned IDs/status as proof; keep new entities PAUSED and continue the builder stages.`;
+  return ids.length
+    ? `Executed ${toolName} successfully. Proof: ${ids.join(", ")}.`
+    : `Executed ${toolName} successfully.`;
 }
 
 /** Move an approval to `executing` only if it is still in `expectedStatus`. */

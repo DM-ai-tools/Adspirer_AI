@@ -27,6 +27,7 @@ describe("buildMetaTargeting", () => {
 
   it("adds default position arrays when publisher_platforms are set", () => {
     const targeting = buildMetaTargeting({
+      locations: ["US"],
       publisher_platforms: ["facebook", "instagram", "audience_network", "messenger"],
       extra_args: {},
     });

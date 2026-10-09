@@ -1,4 +1,14 @@
 import type { LanguageModel, ModelMessage, SystemModelMessage } from "ai";
+import {
+  asksAboutDeliveryStructure,
+  gatherDeliveryStructure,
+} from "@/lib/agent/delivery-structure";
+import { adSetsWithSilentTracking, evaluateCheckpoints } from "@/lib/audit/checkpoints";
+import {
+  renderOptimisationSignals,
+  renderScorecardEvidence,
+  renderScorecardMarkdown,
+} from "@/lib/audit/render";
 import type { Task } from "@/types";
 import { getConfig } from "@/lib/config";
 import { resolveProvider } from "@/lib/adspirer/client";
@@ -14,7 +24,14 @@ import {
   buildSystemPromptV2,
 } from "@/lib/agent/prompts-v2";
 import type { AgentHistoryMessage } from "@/lib/agent/history";
-import { detectRequestIntent, detectRequestIntentWithHistory, mentionsCreativeGeneration } from "@/lib/agent/task-plan";
+import {
+  CONVERSATIONAL_INTENTS,
+  REPORT_INTENTS,
+  detectRequestIntent,
+  detectRequestIntentWithHistory,
+  mentionsCreativeGeneration,
+  type RequestIntent,
+} from "@/lib/agent/task-plan";
 import {
   wantsQueueApprovals,
 } from "@/lib/agent/optimize-queue";
@@ -24,6 +41,7 @@ import {
   matchCampaignsByHints,
   resolveAuditBrief,
   applyCompetitorUrlsFromDocuments,
+  parseDateRangeFromText,
 } from "@/lib/agent/audit-brief";
 import {
   analyzeLandingPages,
@@ -47,6 +65,8 @@ import {
 } from "@/lib/landing/verified-destinations";
 import { logger } from "@/lib/observability/logger";
 import { resolvePrimaryAccountId } from "@/lib/adspirer/resolve-meta-account";
+import type { ConnectedMetaAccount, WorkspaceDocument } from "@/types";
+import type { CreativeDraft } from "@/lib/creatives/drafts";
 
 function activeSystemPrompt(clientContext: string): string {
   return buildSystemPromptV2(clientContext);
@@ -194,6 +214,8 @@ export async function runAdspirerAgent(input: {
   reportTitle?: string;
   reportData?: import("@/lib/report/schema").AuditReport;
   history?: AgentHistoryMessage[];
+  /** Intent already resolved by the task runner (avoids re-detecting). */
+  intent?: RequestIntent;
   correlationId?: string;
   onProgress?: (event: AgentProgressEvent) => void | Promise<void>;
 }): Promise<AgentRunResult> {
@@ -396,9 +418,7 @@ async function runAnthropicAgent(input: WriterInput): Promise<AgentRunResult> {
 
   await input.onProgress?.({
     phase: "write_report",
-    label: input.reportDraft
-      ? "Formatting report for display…"
-      : "Writing report from live results…",
+    label: writingLabel(input),
     stepId: "write_report",
   });
 
@@ -448,9 +468,35 @@ type WriterInput = {
   reportTitle?: string;
   reportData?: import("@/lib/report/schema").AuditReport;
   history?: AgentHistoryMessage[];
+  intent?: RequestIntent;
   correlationId?: string;
   onProgress?: (event: AgentProgressEvent) => void | Promise<void>;
 };
+
+function resolveWriterIntent(input: WriterInput): RequestIntent {
+  return (
+    input.intent ??
+    detectRequestIntentWithHistory(
+      input.task.goal ?? input.task.title,
+      input.history ?? [],
+    )
+  );
+}
+
+/** Status label shown while the reply streams. */
+function writingLabel(input: WriterInput): string {
+  if (input.reportDraft) return "Formatting report…";
+  const intent = resolveWriterIntent(input);
+  if (intent === "chat") return "Answering…";
+  return REPORT_INTENTS.has(intent) ? "Writing report…" : "Writing reply…";
+}
+
+/** Output budget: short for Q&A, long for audits / reports. */
+function maxOutputTokensFor(intent: RequestIntent): number {
+  if (REPORT_INTENTS.has(intent)) return 8000;
+  if (CONVERSATIONAL_INTENTS.has(intent)) return 2000;
+  return 4000;
+}
 
 function buildWriterMessages(input: WriterInput): {
   /** Same for every client and turn — cached. */
@@ -459,10 +505,7 @@ function buildWriterMessages(input: WriterInput): {
   systemContext: string;
   messages: Array<{ role: "assistant" | "user" | "system"; content: string }>;
 } {
-  const intent = detectRequestIntentWithHistory(
-    input.task.goal ?? input.task.title,
-    input.history ?? [],
-  );
+  const intent = resolveWriterIntent(input);
   const evidence = input.toolEvidence?.trim() || "(no live tool evidence yet)";
   const accountHint =
     evidence.match(/ID:\s*(act_[^\s]+)/)?.[1] ??
@@ -498,8 +541,8 @@ function buildWriterMessages(input: WriterInput): {
               ]),
           "- Ground every claim in the live metrics / scraped page evidence; say Unknown when evidence is missing.",
           "- Do NOT queue execute/optimize tools and do NOT change Meta yet.",
-          "- If competitor LPs were not provided, finish the own-LP audit and optionally invite them to paste competitor URLs later.",
-          "- End by inviting the operator to ask to optimize a specific campaign, ad copy, or landing page when ready.",
+          "- If competitor LPs were not provided, finish the own-LP audit and mention in one sentence that they can paste competitor URLs for a comparison.",
+          "- Close with at most ONE next step — the single highest-impact fix — not a menu of options.",
         ]
       : intent === "audit"
         ? [
@@ -518,6 +561,8 @@ function buildWriterMessages(input: WriterInput): {
           "- Creative refresh / Pixel verification stay waiting until the operator provides image / Pixel ID — never claim those were queued.",
           "- When queuing: do NOT show ad_picker. Confirm separate Approvals cards for each tool.",
           "- NEVER invent a 'known limitation' that tool calls did not fire.",
+          "- Use the 'Optimisation signals (live checkpoints)' to order advice: fix tracking (T-codes) before scaling; consolidate learning-limited ad sets; keep 7-day frequency at 1.5–2.5 for prospecting and 3–5 for retargeting; keep 2–6 live ads per ad set and add 3–5 new concepts a month; exclude customers from prospecting; keep retargeting under half of spend.",
+          "- For each recommendation give the expected effect with numbers from the evidence (spend moved, results at stake) — no generic advice.",
         ]
       : [
           "- Do NOT start an optimize/execute workflow unless Detected intent is optimize (or they clearly asked to change Meta).",
@@ -545,7 +590,20 @@ function buildWriterMessages(input: WriterInput): {
       ]
         .filter(Boolean)
         .join("\n")
-    : [
+    : intent === "chat"
+      ? [
+          `Operator message: ${input.task.goal ?? input.task.title}`,
+          "Detected intent: chat (conversational / definitional — no fresh account data was fetched for this turn)",
+          "",
+          "Reply now:",
+          "- Answer the question directly in the first sentence, in 1–4 sentences total.",
+          "- Plain prose only: no headings, tables, bullet menus, or sign-off questions like \"Anything else?\".",
+          "- Use the conversation so far for follow-ups (\"why is that\", \"what does that mean\"). Do not repeat earlier reports.",
+          "- For greetings or thanks, reply in one short, friendly sentence.",
+          "- If a correct answer needs live account numbers that are not in the conversation, say so in one sentence and offer to pull them. Never invent figures.",
+          "- Do NOT propose tools, JSON, or Meta changes.",
+        ].join("\n")
+      : [
         `Operator request: ${input.task.goal ?? input.task.title}`,
         `Detected intent: ${intent}`,
         accountHint ? `Primary Meta account_id: ${accountHint}` : "",
@@ -553,19 +611,24 @@ function buildWriterMessages(input: WriterInput): {
         "## Live tool evidence (already fetched — use this; do NOT say you are still fetching)",
         evidence,
         "",
-        "Write the final operator-facing answer NOW using the evidence above.",
+        REPORT_INTENTS.has(intent)
+          ? "Write the report NOW from the evidence above."
+          : "Answer the operator's question NOW from the evidence above.",
         "Rules:",
-        "- Reply in natural language + light markdown (headings, bullets). Sound like a normal chat assistant.",
-        "- NEVER make the entire reply a JSON object/array or a wrapper like {\"message\":...}.",
-        "- JSON is only an optional appendix at the very end for tool proposals or service_picker.",
+        REPORT_INTENTS.has(intent)
+          ? "- This is a report: use clear headings and tables where they help. Lead with the answer (scope, period, headline numbers)."
+          : "- Answer exactly what was asked, directly, in the first sentence. Keep it short — a few sentences, or a compact list/table only when listing several campaigns or numbers. No report structure, no headings unless the answer genuinely needs sections.",
+        "- Quote real numbers from the evidence with their currency, and keep campaign / ad set / ad names exactly as Meta returns them.",
+        "- If a number is not in the evidence, say it is not available — never estimate or invent it.",
+        "- Offer at most ONE next step, and only when there is an obvious one. Never end with a menu of options or \"Anything else?\".",
+        "- No emojis.",
+        "- NEVER make the entire reply a JSON object/array or a wrapper like {\"message\":...}. JSON is only an optional appendix at the very end for tool proposals or pickers.",
         "- Never say \"fetching data\", \"stand by\", or \"results incoming\".",
-        "- Prefer concrete findings, tables, and recommendations from the evidence.",
         "- If evidence is thin/failed, say exactly what failed and what the operator should check (Facebook connection / Meta account mapping).",
         "- If proposing execute change(s), explain in prose first, then append one JSON block per tool at the end:",
         '```json\n{"tool":"create_meta_image_campaign"|"create_meta_video_campaign","args":{...},"rationale":"..."}\n```',
         "- For scrape/services: list services in prose, then append service_picker JSON at the end (not instead of prose).",
-        "- When you queue Approvals, include a clear What's next checklist so the operator knows the workflow is paused for human review — not stuck.",
-        "- Mention Approvals portal when proposing execute actions. Never claim Meta mutations applied yet.",
+        "- When you queue Approvals, say in one sentence what is waiting in Approvals and that nothing changes in Meta until it is approved. Never claim Meta mutations applied yet.",
         "- If they asked for Word/PDF export, deliver a complete markdown report and tell them to use Export Word / Export PDF under the message.",
         ...auditRules,
         ...optimizeRules,
@@ -635,10 +698,14 @@ async function streamWriterText(args: {
   // cleanly, so a failed call would otherwise look like an empty success and get
   // reported as "Done". Capture the error here and rethrow it after the loop.
   let streamError: unknown = null;
+  const intent = resolveWriterIntent(input);
+  const label = writingLabel(input);
   const result = streamText({
     model,
     instructions,
     messages: modelMessages,
+    maxOutputTokens: maxOutputTokensFor(intent),
+    temperature: 0.4,
     ...(tools
       ? {
           tools,
@@ -666,18 +733,33 @@ async function streamWriterText(args: {
     },
   });
 
+  // Re-stripping the whole reply on every token is quadratic on long audits.
+  // Batch tokens and rebuild the preview at most every PREVIEW_INTERVAL_MS.
   let text = "";
-  for await (const delta of result.textStream) {
-    text += delta;
-    const preview = liveReplyPreview(text);
+  let pendingDelta = "";
+  let lastPreviewAt = 0;
+  const flushPreview = async () => {
+    if (!pendingDelta) return;
+    const delta = pendingDelta;
+    pendingDelta = "";
+    lastPreviewAt = Date.now();
     await input.onProgress?.({
       phase: "write_report",
-      label: input.reportDraft ? "Formatting report…" : "Writing report…",
+      label,
       stepId: "write_report",
       delta,
-      summary: preview,
+      summary: liveReplyPreview(text),
     });
+  };
+  for await (const delta of result.textStream) {
+    text += delta;
+    pendingDelta += delta;
+    // The first tokens go out immediately — time to first token matters most.
+    if (lastPreviewAt === 0 || Date.now() - lastPreviewAt >= PREVIEW_INTERVAL_MS) {
+      await flushPreview();
+    }
   }
+  await flushPreview();
 
   if (streamError) throw streamError;
   if (!text.trim() && !input.reportDraft) {
@@ -745,7 +827,7 @@ async function finalizeWriterResult(args: {
 
   await input.onProgress?.({
     phase: "write_report",
-    label: "Writing report…",
+    label: writingLabel(input),
     stepId: "write_report",
     summary: display,
     delta: "",
@@ -786,6 +868,9 @@ async function finalizeWriterResult(args: {
   };
 }
 
+/** Minimum gap between live preview rebuilds while tokens stream. */
+const PREVIEW_INTERVAL_MS = 60;
+
 function liveReplyPreview(text: string): string {
   const trimmed = text.trim();
   // Prefer any prose before machine JSON so the bubble grows smoothly.
@@ -813,17 +898,41 @@ async function runMockAgent(input: {
   reportDraft?: string;
   reportTitle?: string;
   reportData?: import("@/lib/report/schema").AuditReport;
+  intent?: RequestIntent;
   correlationId?: string;
   onProgress?: (event: AgentProgressEvent) => void | Promise<void>;
 }): Promise<AgentRunResult> {
+  const intent =
+    input.intent ?? detectRequestIntent(input.task.goal ?? input.task.title);
   await input.onProgress?.({
     phase: "write_report",
-    label: input.reportDraft ? "Formatting report…" : "Preparing summary…",
+    label: input.reportDraft
+      ? "Formatting report…"
+      : intent === "chat"
+        ? "Answering…"
+        : "Preparing summary…",
     stepId: "write_report",
   });
 
-  const intent = detectRequestIntent(input.task.goal ?? input.task.title);
   const evidence = input.toolEvidence?.trim();
+
+  if (intent === "chat" && !input.reportDraft) {
+    const summary =
+      "I'm running without a language model in this workspace, so I can't answer free-form questions here. Ask me to list campaigns or audit the account and I'll pull the live data.";
+    await input.onProgress?.({
+      phase: "write_report",
+      label: "Answering…",
+      stepId: "write_report",
+      summary,
+      delta: summary,
+    });
+    return {
+      summary,
+      messages: [{ role: "assistant", content: summary }],
+      toolCalls: [],
+      mode: "mock",
+    };
+  }
 
   if (evidence?.includes("### Audit briefing incomplete")) {
     const summary =
@@ -1195,19 +1304,42 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
-function formatInsightMetrics(i: MetaInsights): string {
+/** Major-unit amount in the account currency (code suffix when unknown symbol). */
+export function formatMoneyMajor(
+  amount: number,
+  currency: string | null | undefined,
+): string {
+  if (!Number.isFinite(amount)) return "n/a";
+  if (!currency) return `${amount.toFixed(2)} (account currency)`;
+  try {
+    return new Intl.NumberFormat("en", {
+      style: "currency",
+      currency,
+      currencyDisplay: "narrowSymbol",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(amount);
+  } catch {
+    return `${amount.toFixed(2)} ${currency}`;
+  }
+}
+
+function formatInsightMetrics(
+  i: MetaInsights,
+  money: (amount: number) => string,
+): string {
   const parts = [
-    `spend $${i.spend.toFixed(2)}`,
+    `spend ${money(i.spend)}`,
     `${i.impressions.toLocaleString()} imps`,
     `${i.clicks.toLocaleString()} clicks`,
     `CTR ${i.ctr.toFixed(2)}%`,
-    `CPC $${i.cpc.toFixed(2)}`,
+    `CPC ${money(i.cpc)}`,
   ];
   if (i.reach != null) parts.push(`reach ${i.reach.toLocaleString()}`);
   if (i.frequency != null) parts.push(`freq ${i.frequency.toFixed(2)}`);
   if (i.conversions != null) parts.push(`conv ${i.conversions}`);
   if (i.cost_per_conversion != null) {
-    parts.push(`CPA $${i.cost_per_conversion.toFixed(2)}`);
+    parts.push(`CPA ${money(i.cost_per_conversion)}`);
   }
   return parts.join(" · ");
 }
@@ -1220,6 +1352,12 @@ export async function gatherDiagnoseEvidence(input: {
   history?: AgentHistoryMessage[];
   /** Pre-resolved intent (supports audit brief follow-ups). */
   intent?: ReturnType<typeof detectRequestIntent>;
+  /** Reads the task runner already started — shared to avoid repeat queries. */
+  preloaded?: {
+    metaAccounts?: Promise<ConnectedMetaAccount[]>;
+    documents?: Promise<WorkspaceDocument[]>;
+    selectedCreative?: Promise<CreativeDraft | null>;
+  };
   onProgress?: (event: AgentProgressEvent) => void | Promise<void>;
 }): Promise<{
   accountId: string | null;
@@ -1235,9 +1373,26 @@ export async function gatherDiagnoseEvidence(input: {
   targetingPicker?: TargetingPickerUi;
   /** True when audit needs scope/dates/campaigns before full analysis. */
   auditBriefingIncomplete?: boolean;
+  /** Deterministic checklist table appended to the audit reply (and exports). */
+  auditAppendix?: string;
 }> {
   const intent = input.intent ?? detectRequestIntent(input.request);
-  const accountId = await resolvePrimaryAccountId(input.clientId);
+  const preloadedAccounts = input.preloaded?.metaAccounts
+    ? await input.preloaded.metaAccounts.catch(() => undefined)
+    : undefined;
+  const accountId = await resolvePrimaryAccountId(
+    input.clientId,
+    preloadedAccounts,
+  );
+  const loadDocuments = () =>
+    input.preloaded?.documents ??
+    loadDocumentsForContext({
+      clientId: input.clientId,
+      conversationId: input.conversationId ?? null,
+    });
+  /** Account currency from the overview — evidence money is never assumed USD. */
+  let currency: string | null = null;
+  const money = (amount: number) => formatMoneyMajor(amount, currency);
   const toolCalls: AgentToolCallProposal[] = [];
   const executeProposals: AgentToolCallProposal[] = [];
   const sections: string[] = [];
@@ -1248,6 +1403,7 @@ export async function gatherDiagnoseEvidence(input: {
   let videoChoice: VideoChoiceUi | undefined;
   let targetingPicker: TargetingPickerUi | undefined;
   let auditBriefingIncomplete = false;
+  let auditAppendix: string | undefined;
 
   const targetingSubmitted =
     /\badvanced targeting selections\b/i.test(input.request) ||
@@ -1324,6 +1480,7 @@ export async function gatherDiagnoseEvidence(input: {
     });
     try {
       const overview = await provider.getAccountOverview(accountId);
+      currency = overview.currency || null;
       toolCalls.push({
         name: "get_account_overview",
         args: { account_id: accountId },
@@ -1374,7 +1531,7 @@ export async function gatherDiagnoseEvidence(input: {
         const lines = campaigns.slice(0, 25).map((c) => {
           const budget =
             c.daily_budget_cents != null
-              ? ` · daily $${(c.daily_budget_cents / 100).toFixed(0)}`
+              ? ` · daily ${money(c.daily_budget_cents / 100)}`
               : "";
           return `- ${c.name} (${c.id}) · ${c.status} · ${c.objective}${budget}`;
         });
@@ -1388,10 +1545,7 @@ export async function gatherDiagnoseEvidence(input: {
         // Competitor LP URLs only from competitor docs / spreadsheets — never scan
         // brand/copy docs (those poisoned own destinations with googleconsult etc.).
         try {
-          const docs = await loadDocumentsForContext({
-            clientId: input.clientId,
-            conversationId: input.conversationId,
-          });
+          const docs = await loadDocuments();
           const pinnedOrRecent = docs.slice(0, 8);
           const competitorDocs = pinnedOrRecent.filter(
             (d) =>
@@ -1556,7 +1710,7 @@ export async function gatherDiagnoseEvidence(input: {
                 rationale: "Account spend for audit period",
               });
               sections.push(
-                `### Account spend (${dateLabel})\n- ${formatInsightMetrics(accountInsights)}`,
+                `### Account spend (${dateLabel})\n- ${formatInsightMetrics(accountInsights, money)}`,
               );
             } catch (error) {
               sections.push(
@@ -1612,7 +1766,7 @@ export async function gatherDiagnoseEvidence(input: {
               });
               totalSpend += row.spend;
               insightLines.push(
-                `- ${c.name} (${c.id}) · ${c.status} · ${c.objective} · ${formatInsightMetrics(row)}`,
+                `- ${c.name} (${c.id}) · ${c.status} · ${c.objective} · ${formatInsightMetrics(row, money)}`,
               );
             } else {
               const error = outcome.error;
@@ -1627,7 +1781,7 @@ export async function gatherDiagnoseEvidence(input: {
             [
               `### Campaign performance (${dateLabel})`,
               `- Campaigns scored: ${insightTargets.length}`,
-              `- Sum of listed campaign spend: $${totalSpend.toFixed(2)}`,
+              `- Sum of listed campaign spend: ${money(totalSpend)}`,
               "",
               ...insightLines,
             ].join("\n"),
@@ -1855,6 +2009,41 @@ export async function gatherDiagnoseEvidence(input: {
             );
           }
 
+          // Checkpoint engine: tracking, structure, bidding, audiences,
+          // creative and funnel scored from live data. The writer interprets;
+          // the table is appended to the reply verbatim.
+          if (provider.getAuditSnapshot) {
+            await input.onProgress?.({
+              phase: "audit_checkpoints",
+              label: "Checking tracking, structure & audiences…",
+              stepId: "apply_framework",
+            });
+            try {
+              const snapshot = await provider.getAuditSnapshot(accountId, {
+                since: dateStart,
+                until: dateStop,
+                days: Math.max(
+                  1,
+                  Math.round((Date.parse(`${dateStop}T00:00:00Z`) - Date.parse(`${dateStart}T00:00:00Z`)) / 86_400_000) + 1,
+                ),
+              });
+              const scorecard = evaluateCheckpoints(snapshot);
+              sections.push(renderScorecardEvidence(scorecard, snapshot));
+              auditAppendix = renderScorecardMarkdown(scorecard, snapshot);
+              toolCalls.push({
+                name: "audit_checkpoints",
+                args: { account_id: accountId, date_start: dateStart, date_stop: dateStop },
+                rationale: `Audit checkpoints: ${scorecard.score}/100`,
+              });
+            } catch (error) {
+              sections.push(
+                `### Audit checkpoint scorecard\n- Could not compute: ${
+                  error instanceof Error ? error.message : String(error)
+                }. Mark tracking, learning-phase and audience checks as "not verified" instead of guessing.`,
+              );
+            }
+          }
+
           await input.onProgress?.({
             phase: "apply_framework",
             label: "Applying audit checklist…",
@@ -1866,7 +2055,8 @@ export async function gatherDiagnoseEvidence(input: {
               META_AUDIT_FRAMEWORK,
               "",
               "### Writer instructions for this audit",
-              "- Produce the full audit in chat using the checklist required sections.",
+              "- Produce the full audit in chat using the Required report format headings, in order.",
+              "- Lead with Fail checkpoints from the scorecard (most severe, most spend at stake first); never contradict a checkpoint result.",
               "- Quantify spend and call out what is working vs what needs improvement.",
               "- **REQUIRED section: Landing pages** — use Website URLs + CTA types from “Ad CTA & destination inventory” and scores from “Landing page analysis”.",
               "- NEVER say destinations are unavailable because the campaign is paused or had $0 spend.",
@@ -1874,7 +2064,7 @@ export async function gatherDiagnoseEvidence(input: {
               "- If a destination URL is missing from Meta, say so and recommend fixing the CTA / Website URL in Ads Manager.",
               "- Include prioritized recommendations covering both ads/budgets AND landing pages.",
               "- Do NOT queue execute/optimize tools and do NOT claim you changed Meta.",
-              "- End by inviting the operator to say which campaign, ad copy, or landing page to optimize when they are ready.",
+              "- Close with at most ONE next step (the single highest-impact fix) — no menu of options.",
             ].join("\n"),
           );
 
@@ -1889,9 +2079,13 @@ export async function gatherDiagnoseEvidence(input: {
               [
                 "### Supplemental diagnostics",
                 ...analysis.findings.map((f) => `- ${f}`),
-                "",
-                "### Supplemental recommended actions",
-                ...analysis.recommended_actions.map((r) => `- ${r}`),
+                ...(analysis.recommended_actions.length
+                  ? [
+                      "",
+                      "### Supplemental recommended actions",
+                      ...analysis.recommended_actions.map((r) => `- ${r}`),
+                    ]
+                  : []),
               ].join("\n"),
             );
           } catch (error) {
@@ -1933,9 +2127,13 @@ export async function gatherDiagnoseEvidence(input: {
         [
           "### Diagnostic findings",
           ...analysis.findings.map((f) => `- ${f}`),
-          "",
-          "### Recommended actions",
-          ...analysis.recommended_actions.map((r) => `- ${r}`),
+          ...(analysis.recommended_actions.length
+            ? [
+                "",
+                "### Recommended actions",
+                ...analysis.recommended_actions.map((r) => `- ${r}`),
+              ]
+            : []),
         ].join("\n"),
       );
     } catch (error) {
@@ -1943,6 +2141,133 @@ export async function gatherDiagnoseEvidence(input: {
         `### Diagnostics\n- Failed: ${
           error instanceof Error ? error.message : String(error)
         }`,
+      );
+    }
+  }
+
+  // Performance questions outside an audit ("how is spend pacing?", "why is
+  // CPA up this week?") get a light live snapshot — account totals plus active
+  // campaigns — instead of the full multi-step audit.
+  const asksAboutPerformance =
+    /\b(perform\w*|spend|spent|spending|pacing|deliver\w*|results?|cpa|cpc|cpm|ctr|roas|cost per|conversions?|leads?|clicks?|impressions?|reach|frequency|doing|working|winning|losing|wasting|analy[sz]\w*|trend\w*)\b/i.test(
+      input.request,
+    );
+  if (
+    accountId &&
+    campaignsPromise &&
+    asksAboutPerformance &&
+    (intent === "general" ||
+      intent === "budget" ||
+      intent === "list_campaigns")
+  ) {
+    await input.onProgress?.({
+      phase: "pull_insights",
+      label: "Pulling recent performance…",
+      stepId: "diagnose",
+    });
+    const range =
+      parseDateRangeFromText(input.request) ??
+      parseDateRangeFromText("last 7 days")!;
+    try {
+      const campaigns = await campaignsPromise;
+      const active = campaigns
+        .filter((c) => c.status === "ACTIVE")
+        .slice(0, 10);
+      const [accountRow, campaignRows] = await Promise.all([
+        provider.getAccountInsights
+          ? provider
+              .getAccountInsights(accountId, range.dateStart, range.dateStop)
+              .catch(() => null)
+          : Promise.resolve(null),
+        mapWithConcurrency(active, INSIGHTS_CONCURRENCY, (c) =>
+          provider
+            .getCampaignInsights(accountId, c.id, range.dateStart, range.dateStop)
+            .then((row) => ({ c, row }))
+            .catch(() => ({ c, row: null as MetaInsights | null })),
+        ),
+      ]);
+      if (accountRow) {
+        toolCalls.push({
+          name: "get_account_insights",
+          args: {
+            account_id: accountId,
+            date_start: range.dateStart,
+            date_stop: range.dateStop,
+          },
+          rationale: "Performance snapshot",
+        });
+      }
+      for (const { c, row } of campaignRows) {
+        if (!row) continue;
+        toolCalls.push({
+          name: "get_campaign_insights",
+          args: {
+            account_id: accountId,
+            campaign_id: c.id,
+            date_start: range.dateStart,
+            date_stop: range.dateStop,
+          },
+          rationale: `Performance snapshot for ${c.name}`,
+        });
+      }
+      sections.push(
+        [
+          `### Performance snapshot (${range.dateLabel}: ${range.dateStart} → ${range.dateStop})`,
+          accountRow
+            ? `- Account total: ${formatInsightMetrics(accountRow, money)}`
+            : "- Account total: not returned by Meta",
+          active.length
+            ? `- Active campaigns (${active.length}${campaigns.filter((c) => c.status === "ACTIVE").length > active.length ? ", top 10 listed" : ""}):`
+            : "- No ACTIVE campaigns in this account.",
+          ...campaignRows.map(({ c, row }) =>
+            row
+              ? `  - ${c.name} (${c.id}) · ${formatInsightMetrics(row, money)}`
+              : `  - ${c.name} (${c.id}): insights unavailable`,
+          ),
+          "Use these figures to answer; say when a figure the operator asked about is not here.",
+        ].join("\n"),
+      );
+    } catch (error) {
+      sections.push(
+        `### Performance snapshot\n- Failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  // "Is anything running?" / "any ad sets active under this campaign?" need
+  // live ad set and ad statuses — the campaign list alone made the writer
+  // guess (it once called a paused ad an active ad set).
+  if (accountId && intent !== "audit" && asksAboutDeliveryStructure(input.request)) {
+    await input.onProgress?.({
+      phase: "delivery_structure",
+      label: "Checking ad sets & ads on Meta…",
+      stepId: "diagnose",
+    });
+    try {
+      const campaigns = await (campaignsPromise ?? provider.listCampaigns(accountId));
+      sections.push(
+        await gatherDeliveryStructure({
+          provider,
+          accountId,
+          campaigns,
+          request: input.request,
+          history: input.history,
+          money,
+          mapWithConcurrency,
+        }),
+      );
+      toolCalls.push({
+        name: "list_adsets",
+        args: { account_id: accountId },
+        rationale: "Live ad set and ad status",
+      });
+    } catch (error) {
+      sections.push(
+        `### Delivery structure\n- Failed to load ad sets/ads: ${
+          error instanceof Error ? error.message : String(error)
+        }. Say you couldn't check instead of guessing.`,
       );
     }
   }
@@ -2134,13 +2459,7 @@ export async function gatherDiagnoseEvidence(input: {
       };
 
       try {
-        const { loadDocumentsForContext } = await import(
-          "@/lib/documents/service"
-        );
-        const docs = await loadDocumentsForContext({
-          clientId: input.clientId,
-          conversationId: input.conversationId ?? null,
-        });
+        const docs = await loadDocuments();
         if (docs.length) {
           brief.reference_material = docs
             .slice(0, 4)
@@ -2265,9 +2584,10 @@ export async function gatherDiagnoseEvidence(input: {
   try {
     const { getSelectedCreativeDraftAsync, resolveImageUrlForAdspirer } =
       await import("@/lib/creatives/drafts");
-    const selected = await getSelectedCreativeDraftAsync(input.clientId, {
-      conversationId: input.conversationId ?? null,
-    });
+    const selected = await (input.preloaded?.selectedCreative ??
+      getSelectedCreativeDraftAsync(input.clientId, {
+        conversationId: input.conversationId ?? null,
+      }));
     if (selected) {
       const imageUrl = resolveImageUrlForAdspirer(selected);
       sections.push(
@@ -2392,7 +2712,7 @@ export async function gatherDiagnoseEvidence(input: {
         "Acknowledge the selection briefly.",
         "Do NOT show targeting_picker, format_choice, image_choice, or video_choice.",
         "Do NOT queue create_meta_* or scrape services.",
-        "Suggest 2–3 optional next steps (create campaign, generate images, write script) and wait for their choice.",
+        "Ask in one short sentence what they want to do with it next, then wait. No menu of options.",
       ].join("\n"),
     );
   }
@@ -2404,6 +2724,12 @@ export async function gatherDiagnoseEvidence(input: {
       label: "Building optimize proposals…",
       stepId: "optimize",
     });
+    // Live checkpoints (last 14 days) load alongside the proposals: they
+    // explain what to fix first and stop budget increases on ad sets whose
+    // conversions aren't being recorded.
+    const snapshotPromise = provider.getAuditSnapshot
+      ? provider.getAuditSnapshot(accountId, { days: 14 }).catch(() => null)
+      : Promise.resolve(null);
     try {
       const ads = await provider.listAds(accountId);
       toolCalls.push({
@@ -2472,13 +2798,41 @@ export async function gatherDiagnoseEvidence(input: {
         },
       );
 
-      executeProposals.push(...bundle.proposals);
+      const snapshot = await snapshotPromise;
+      const silent = snapshot ? adSetsWithSilentTracking(snapshot) : new Map<string, string>();
+      const held = new Set<string>();
+      for (const proposal of bundle.proposals) {
+        const adSetId = typeof proposal.args.adset_id === "string" ? proposal.args.adset_id : null;
+        const next = Number(proposal.args.daily_budget_cents);
+        const prev = Number(proposal.args.previous_daily_budget_cents);
+        const isIncrease =
+          proposal.name === "update_adset_budget" && Number.isFinite(next) && Number.isFinite(prev) && next > prev;
+        if (isIncrease && adSetId && silent.has(adSetId)) {
+          bundle.blockedLines.push(
+            `- Held back: budget increase on ad set ${adSetId} — its optimisation event (${silent.get(adSetId)}) wasn't recorded in the last 7 days. Fix tracking first, then scale.`,
+          );
+          held.add(adSetId);
+          continue;
+        }
+        executeProposals.push(proposal);
+      }
+      const queueableLines = bundle.queueableLines.filter(
+        (line) => ![...held].some((id) => line.includes(id)),
+      );
+      if (snapshot) {
+        sections.push(renderOptimisationSignals(evaluateCheckpoints(snapshot)));
+        toolCalls.push({
+          name: "audit_checkpoints",
+          args: { account_id: accountId, days: 14 },
+          rationale: "Optimisation signals",
+        });
+      }
 
       sections.push(
         [
           "### Queueable optimizations (ONLY these may be marked Ready to queue)",
-          ...(bundle.queueableLines.length
-            ? bundle.queueableLines
+          ...(queueableLines.length
+            ? queueableLines
             : ["- (none — live Meta data did not yield concrete mutate args)"]),
           "",
           "### Needs operator input (NOT Ready to queue — do not claim Approvals will show these)",
@@ -2549,6 +2903,7 @@ export async function gatherDiagnoseEvidence(input: {
     videoChoice,
     targetingPicker,
     auditBriefingIncomplete,
+    auditAppendix,
   };
 }
 

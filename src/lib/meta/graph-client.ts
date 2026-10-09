@@ -1,4 +1,5 @@
 import { getMetaGraphVersion } from "@/lib/meta/auth";
+import { logger } from "@/lib/observability/logger";
 
 type GraphValue = string | number | boolean | null | undefined;
 
@@ -12,19 +13,30 @@ type GraphErrorBody = {
   fbtrace_id?: string;
 };
 
-function formatGraphError(error: GraphErrorBody | undefined, fallback: string): string {
+/**
+ * Meta's own user-facing text comes first (it names the exact field that is
+ * wrong), then our hint, then the codes and fbtrace_id support needs.
+ */
+export function formatGraphError(
+  error: GraphErrorBody | undefined,
+  fallback: string,
+): string {
   if (!error) return fallback;
-
-  const hint =
-    metaErrorHint(error.error_subcode) ?? metaErrorHintForCode(error.code);
-  if (hint) return hint;
 
   const parts: string[] = [];
   if (error.error_user_title) parts.push(error.error_user_title);
   if (error.error_user_msg) parts.push(error.error_user_msg);
   else if (error.message) parts.push(error.message);
-  if (error.code != null) parts.push(`code ${error.code}`);
-  if (error.error_subcode != null) parts.push(`subcode ${error.error_subcode}`);
+
+  const hint =
+    metaErrorHint(error.error_subcode) ?? metaErrorHintForCode(error.code);
+  if (hint) parts.push(hint);
+
+  const codes: string[] = [];
+  if (error.code != null) codes.push(`code ${error.code}`);
+  if (error.error_subcode != null) codes.push(`subcode ${error.error_subcode}`);
+  if (error.fbtrace_id) codes.push(`fbtrace_id ${error.fbtrace_id}`);
+  if (codes.length) parts.push(`(${codes.join(", ")})`);
   return parts.length ? parts.join(" — ") : fallback;
 }
 
@@ -36,33 +48,32 @@ function metaErrorHint(subcode: number | undefined): string | null {
         "Your Meta app is in Development mode — switch it to Live in Meta Developer Console",
         "(developers.facebook.com → your app → toggle Live), complete Business Verification",
         "and App Review for ads_management, then reconnect Facebook in Connections.",
-        "Development mode cannot create ads on real ad accounts. (subcode 1885183)",
+        "Development mode cannot create ads on real ad accounts.",
       ].join(" ");
     case 1487061:
       return [
         "Missing daily ad set budget — set budget_daily in the approval args",
-        "(major currency units, e.g. 5 for £5/day). (subcode 1487061)",
+        "(major currency units, e.g. 5 for £5/day).",
       ].join(" ");
     case 1487079:
       return [
         "Radius targeting is only allowed on cities, not regions or postcodes.",
-        "Remove radius from region locations or switch to a city target. (subcode 1487079)",
+        "Remove radius from region locations or switch to a city target.",
       ].join(" ");
     case 2490562:
       return [
         "The video_feeds placement is deprecated — use feed, story, facebook_reels, or marketplace instead.",
-        "(subcode 2490562)",
       ].join(" ");
     case 4834011:
       return [
         "Meta requires is_adset_budget_sharing_enabled when budget is set on the ad set.",
-        "This is handled automatically — retry approval; if it persists, contact support. (subcode 4834011)",
+        "Spendsmith sets it automatically; if you still see this, contact support with the fbtrace_id.",
       ].join(" ");
     case 1815143:
       return [
         "This ad set optimizes for off-site conversions but is missing a Meta Pixel.",
         "Add pixel_id (and optional pixel_event_name, e.g. PURCHASE or LEAD) in the approval args,",
-        "or use objective OUTCOME_TRAFFIC for link-click optimization without a pixel. (subcode 1815143)",
+        "or use objective OUTCOME_TRAFFIC for link-click optimization without a pixel.",
       ].join(" ");
     default:
       return null;
@@ -71,13 +82,13 @@ function metaErrorHint(subcode: number | undefined): string | null {
 
 function metaErrorHintForCode(code: number | undefined): string | null {
   if (code === 190) {
-    return "Your Facebook connection has expired or was revoked. Reconnect Facebook (Connect Facebook in the workspace header) and try again. (code 190)";
+    return "Your Facebook connection has expired or was revoked. Reconnect Facebook (Connect Facebook in the workspace header).";
   }
   if (code === 2) {
     return [
-      "Meta API is temporarily unavailable (code 2). Wait 1–2 minutes and approve again.",
-      "If it keeps failing, verify ad_set_id is the real ID from Ads Manager (not a placeholder),",
-      "and that landing_page_url is set. Video uploads to Meta can also trigger this — retry helps.",
+      "Meta reported a temporary error.",
+      "Before approving again, check Ads Manager: a create may still have gone through,",
+      "and repeating it could make a duplicate. Also verify ad_set_id is a real ID and landing_page_url is set.",
     ].join(" ");
   }
   return null;
@@ -110,6 +121,8 @@ export class MetaGraphError extends Error {
     message: string,
     readonly code: number | undefined,
     readonly status: number,
+    readonly subcode?: number,
+    readonly fbtraceId?: string,
   ) {
     super(message);
     this.name = "MetaGraphError";
@@ -196,6 +209,8 @@ export class MetaGraphClient {
         formatGraphError(error, `Meta Graph GET failed (${res.status})`),
         error?.code,
         res.status,
+        error?.error_subcode,
+        error?.fbtrace_id,
       );
     }
   }
@@ -244,10 +259,20 @@ export class MetaGraphClient {
     const json = await readGraphJson(res);
     if (!res.ok || json.error) {
       const error = json.error as GraphErrorBody | undefined;
+      // Path only — never the body/token. fbtrace_id lets Meta support trace it.
+      logger.warn("Meta Graph POST failed", {
+        path: path.replace(/^act_\d+/, "act_*"),
+        status: res.status,
+        code: error?.code,
+        subcode: error?.error_subcode,
+        fbtrace_id: error?.fbtrace_id,
+      });
       throw new MetaGraphError(
         formatGraphError(error, `Meta Graph POST failed (${res.status})`),
         error?.code,
         res.status,
+        error?.error_subcode,
+        error?.fbtrace_id,
       );
     }
     return json as T;

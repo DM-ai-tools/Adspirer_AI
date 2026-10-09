@@ -1,6 +1,26 @@
 import type { MetaGraphClient } from "@/lib/meta/graph-client";
 import { metaMinorToCents } from "@/lib/meta/currency";
 import { resultLabelFor } from "@/lib/meta/account-dashboard";
+import { pixelStats } from "@/lib/audit/meta-audit-data";
+
+/** promoted_object.custom_event_type → pixel event name. */
+const PIXEL_EVENT: Record<string, string> = {
+  PURCHASE: "Purchase",
+  LEAD: "Lead",
+  COMPLETE_REGISTRATION: "CompleteRegistration",
+  ADD_TO_CART: "AddToCart",
+  INITIATED_CHECKOUT: "InitiateCheckout",
+  CONTACT: "Contact",
+  SCHEDULE: "Schedule",
+  SUBMIT_APPLICATION: "SubmitApplication",
+  START_TRIAL: "StartTrial",
+  SUBSCRIBE: "Subscribe",
+};
+
+function list(names: string[]) {
+  const shown = names.slice(0, 2).map((n) => `"${n}"`).join(", ");
+  return names.length > 2 ? `${shown} and ${names.length - 2} more` : shown;
+}
 
 /**
  * Account health watch: compares the last N full days with the N days before
@@ -49,6 +69,15 @@ export type AdIssue = {
   reason: string | null;
 };
 
+/** A live ad set's optimisation event and how often it fired this week. */
+export type TrackingSignal = {
+  pixelId: string;
+  eventName: string;
+  /** Events recorded in the last 7 days; null when the pixel couldn't be read. */
+  events7d: number | null;
+  adSetNames: string[];
+};
+
 export type HealthSnapshot = {
   account: {
     id: string;
@@ -72,6 +101,8 @@ export type HealthSnapshot = {
   activeCampaigns: number;
   campaigns: CampaignHealthRow[];
   adIssues: AdIssue[];
+  /** Conversion tracking for live ad sets (empty when none optimise for an event). */
+  tracking?: TrackingSignal[];
   /** Parts that failed to load; the rest still evaluates. */
   warnings: string[];
   fetchedAt: string;
@@ -357,6 +388,19 @@ export function evaluateHealth(snapshot: HealthSnapshot): AccountHealth {
     }
   }
 
+  // Tracking first: an optimisation event that stopped firing means Meta is
+  // bidding blind and every result figure above is under-reported.
+  for (const t of snapshot.tracking ?? []) {
+    if (t.events7d !== 0) continue;
+    add({
+      code: "TRACKING_STOPPED",
+      severity: cur.spendCents > 0 ? "critical" : "warning",
+      title: `No ${t.eventName} events recorded this week`,
+      detail: `${list(t.adSetNames)} optimise${t.adSetNames.length === 1 ? "s" : ""} for ${t.eventName}, but the pixel recorded none in the last 7 days. Meta can't optimise or report results until tracking is fixed.`,
+      ask: `The ${t.eventName} event hasn't fired in 7 days on pixel ${t.pixelId}, which live ad sets optimise for. Help me diagnose the tracking (pixel, Conversions API, thank-you page) and what to do with the ad sets meanwhile.`,
+    });
+  }
+
   if (snapshot.adIssues.length) {
     const disapproved = snapshot.adIssues.filter((a) => a.status === "DISAPPROVED");
     const names = snapshot.adIssues.slice(0, 3).map((a) => `"${a.name}"`).join(", ");
@@ -583,7 +627,7 @@ export async function fetchHealthSnapshot(
       "Ad set budgets",
       warnings,
       graph.get<{ data?: Row[] }>(`${id}/adsets`, {
-        fields: "campaign_id,daily_budget",
+        fields: "name,campaign_id,daily_budget,promoted_object",
         effective_status: active,
         limit: 500,
       }),
@@ -628,6 +672,35 @@ export async function fetchHealthSnapshot(
   }
   const activeRows = campaigns?.data ?? [];
   for (const c of activeRows) dailyAllotted += toCents(c.daily_budget);
+
+  // Which conversion event each live ad set optimises for, and whether the
+  // pixel recorded it this week (at most 3 pixels).
+  const trackingKeys = new Map<string, { pixelId: string; eventName: string; adSetNames: string[] }>();
+  for (const a of adSets?.data ?? []) {
+    const promoted = (a.promoted_object ?? {}) as Row;
+    const pixelId = typeof promoted.pixel_id === "string" ? promoted.pixel_id : null;
+    const eventName = PIXEL_EVENT[String(promoted.custom_event_type ?? "")];
+    if (!pixelId || !eventName) continue;
+    const key = `${pixelId}:${eventName}`;
+    const entry = trackingKeys.get(key) ?? { pixelId, eventName, adSetNames: [] };
+    entry.adSetNames.push(String(a.name ?? a.id ?? "Ad set"));
+    trackingKeys.set(key, entry);
+  }
+  const pixelIds = [...new Set([...trackingKeys.values()].map((t) => t.pixelId))].slice(0, 3);
+  const pixelEvents = new Map(
+    await Promise.all(
+      pixelIds.map(async (pid) => [
+        pid,
+        await settle(`Pixel ${pid} events`, warnings, pixelStats(graph, pid, 7)),
+      ] as const),
+    ),
+  );
+  const tracking: TrackingSignal[] = [...trackingKeys.values()]
+    .filter((t) => pixelEvents.has(t.pixelId))
+    .map((t) => {
+      const stats = pixelEvents.get(t.pixelId);
+      return { ...t, events7d: stats ? (stats.events[t.eventName] ?? 0) : null };
+    });
 
   const byId = new Map<string, CampaignHealthRow>();
   const ensure = (cid: string, name: string): CampaignHealthRow => {
@@ -693,6 +766,7 @@ export async function fetchHealthSnapshot(
     campaigns: [...byId.values()]
       .filter((c) => c.delivering || c.current.spendCents > 0 || c.previous.spendCents > 0)
       .sort((a, b) => b.current.spendCents - a.current.spendCents || b.previous.spendCents - a.previous.spendCents),
+    tracking,
     adIssues: (ads?.data ?? []).map((a) => {
       const issues = Array.isArray(a.issues_info) ? (a.issues_info as Row[]) : [];
       const campaign = a.campaign as Row | undefined;

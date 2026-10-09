@@ -285,9 +285,10 @@ export function ChatDocumentAttachButton({
       <Button
         type="button"
         size="icon"
-        variant="secondary"
-        className="h-[52px] w-11 shrink-0"
+        variant="ghost"
+        className="h-9 w-9 shrink-0 rounded-xl text-muted hover:text-foreground"
         title="Attach PDF, Word, Excel, CSV, or Markdown"
+        aria-label="Attach a file"
         disabled={disabled || uploading}
         onClick={() => inputRef.current?.click()}
       >

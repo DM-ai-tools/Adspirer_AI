@@ -7,6 +7,7 @@ import { assertAuthenticated, assertClientAccess } from "@/lib/authz/assert";
 import { createTask } from "@/lib/agent/task-runner";
 import { createTaskV2 } from "@/lib/agent/task-runner-v2";
 import {
+  createDeltaEncoder,
   runAgentTurn,
   saveMessage,
   type TurnEmit,
@@ -15,7 +16,11 @@ import type {
   RunAgentTurnPayload,
   runAgentTurnTask,
 } from "../../../../../../trigger/run-agent-turn";
-import { maybeAutoTitleConversation } from "@/lib/agent/title-service";
+import {
+  isStarterPrompt,
+  maybeAutoTitleConversation,
+  titleConversationAfterReply,
+} from "@/lib/agent/title-service";
 import { nowIso } from "@/lib/utils";
 import type { Conversation, Message, Task } from "@/types";
 import { jsonOk, parseBody, withApiHandler } from "@/lib/api/response";
@@ -24,8 +29,9 @@ import {
   mapMessageRow,
   newEntityId,
 } from "@/lib/db/live-maps";
-import { getTask } from "@/lib/agent/task-runner";
+import { expireStaleTask, getTask } from "@/lib/agent/task-runner";
 import { reconcileConversationMessages } from "@/lib/agent/message-reconcile";
+import { isTaskStale, toPublicTask } from "@/lib/agent/task-public";
 
 const postSchema = z.object({
   content: z.string().min(1),
@@ -88,16 +94,24 @@ async function tailBackgroundTurn(input: {
 }): Promise<{ task: Task; message: Message } | "not_started" | null> {
   const started = Date.now();
   let lastStatusKey = "";
-  let lastContent = "";
+  let lastContent: string | null = null;
+  const encodeDelta = createDeltaEncoder();
   while (!input.isClosed() && Date.now() - started < TAIL_BUDGET_MS) {
     await sleep(900);
-    const [task, message] = await Promise.all([
+    const [loaded, message] = await Promise.all([
       getTask(input.taskId).catch(() => null),
       loadMessage(input.messageId),
     ]);
-    if (!task) continue;
-    if (task.status === "queued" && Date.now() - started > JOB_START_TIMEOUT_MS) {
+    if (!loaded) continue;
+    if (loaded.status === "queued" && Date.now() - started > JOB_START_TIMEOUT_MS) {
       return "not_started";
+    }
+    // The worker died mid-run: record the failure instead of tailing forever.
+    const task = isTaskStale(loaded) ? await expireStaleTask(loaded) : loaded;
+    if (task !== loaded && message) {
+      const settled = settleOrphanedMessage(message, task);
+      await saveMessage(settled, task.id).catch(() => undefined);
+      return { task, message: settled };
     }
     const label =
       typeof task.agent_state?.statusLabel === "string"
@@ -108,22 +122,43 @@ async function tailBackgroundTurn(input: {
     const statusKey = `${task.status}|${phase}|${label}`;
     if (statusKey !== lastStatusKey) {
       lastStatusKey = statusKey;
-      input.send("progress", { phase, label, task });
+      input.send("progress", { phase, label, task: toPublicTask(task) });
     }
     if (message && message.content !== lastContent) {
       lastContent = message.content;
-      input.send("delta", {
-        content: message.content,
-        label,
-        phase,
-        ui: task.agent_state?.ui ?? null,
-      });
+      input.send(
+        "delta",
+        encodeDelta(message.content, {
+          label,
+          phase,
+          ui: task.agent_state?.ui ?? null,
+        }),
+      );
     }
     if (message && message.metadata?.streaming === false) {
       return { task, message };
     }
   }
   return null;
+}
+
+/** An assistant row left `streaming` by a run that died: close it out. */
+function settleOrphanedMessage(message: Message, task: Task): Message {
+  const content = message.content.trim();
+  const filler = !content || /^_[^_\n]+_$/.test(content);
+  const note = task.error_message ?? "This run stopped unexpectedly.";
+  return {
+    ...message,
+    content: filler ? note : `${message.content.trimEnd()}\n\n_${note}_`,
+    metadata: {
+      ...(message.metadata ?? {}),
+      taskId: task.id,
+      status: task.status,
+      streaming: false,
+      liveStatus: false,
+      error: note,
+    },
+  };
 }
 
 async function getConversation(id: string): Promise<Conversation> {
@@ -217,6 +252,21 @@ export async function GET(_request: Request, context: RouteContext) {
       } catch {
         task = null;
       }
+    }
+
+    // A run killed mid-turn leaves the task "running" and the reply streaming
+    // forever. Past the stale window, fail the task and close the message.
+    if (task && isTaskStale(task)) {
+      task = await expireStaleTask(task);
+      const expired = task;
+      messages = await Promise.all(
+        messages.map(async (m) => {
+          if (!streamingForLatestTask.includes(m)) return m;
+          const settled = settleOrphanedMessage(m, expired);
+          await saveMessage(settled, expired.id).catch(() => undefined);
+          return settled;
+        }),
+      );
     }
 
     return jsonOk({
@@ -357,10 +407,15 @@ export async function POST(request: Request, context: RouteContext) {
     return withApiHandler(async () => {
       const result = await runAgentTurn(turnInput);
       task = result.task;
+      conversation = await titleConversationAfterReply(
+        conversation,
+        body.content,
+        result.message.content,
+      ).catch(() => conversation);
       return jsonOk(
         {
           message: userMessage,
-          task,
+          task: toPublicTask(task),
           assistantMessage: result.message,
           conversation,
         },
@@ -386,7 +441,7 @@ export async function POST(request: Request, context: RouteContext) {
       try {
         send("user_message", { message: userMessage });
         send("assistant_message", { message: assistantMessage });
-        send("task", { task });
+        send("task", { task: toPublicTask(task) });
         void titled.then((next) => {
           conversation = next;
           send("conversation", { conversation });
@@ -424,10 +479,23 @@ export async function POST(request: Request, context: RouteContext) {
           task = settled.task;
           conversation = await titled;
           send("done", {
-            task,
+            task: toPublicTask(task),
             message: settled.message,
             conversation,
           });
+          // Starter-prompt threads get their title from the first reply —
+          // after `done`, so it never delays the answer.
+          if (isStarterPrompt(body.content)) {
+            const retitled = await titleConversationAfterReply(
+              conversation,
+              body.content,
+              settled.message.content,
+            ).catch(() => conversation);
+            if (retitled.title !== conversation.title) {
+              conversation = retitled;
+              send("conversation", { conversation });
+            }
+          }
         }
       } catch (error) {
         const message =

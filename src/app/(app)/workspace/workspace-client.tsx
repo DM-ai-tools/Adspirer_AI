@@ -2,20 +2,34 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Trash2 } from "lucide-react";
+import {
+  AlertTriangle,
+  ClipboardCheck,
+  FileText,
+  Loader2,
+  MoreHorizontal,
+  PanelLeft,
+  PanelRight,
+  Trash2,
+  X,
+} from "lucide-react";
 import { toast } from "sonner";
 import type { Approval, Conversation, Message, Task } from "@/types";
-import { apiFetch, formatRelative } from "@/lib/api-client";
+import { apiFetch } from "@/lib/api-client";
 import { useApp } from "@/components/layout/app-provider";
-import { PageHeader } from "@/components/shared/page-header";
 import { LoadingState } from "@/components/shared/loading-state";
 import { ChatPanel } from "@/components/ai/chat-panel";
 import { ChatHistorySidebar } from "@/components/ai/chat-history-sidebar";
-import { TaskProgress } from "@/components/ai/task-progress";
-import { ApprovalCard } from "@/components/approvals/approval-card";
+import { ApprovalsPanel } from "@/components/workspace/approvals-panel";
 import { DocumentsPanel } from "@/components/workspace/documents-panel";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { cn } from "@/lib/utils";
 import {
   Select,
   SelectContent,
@@ -40,6 +54,7 @@ function mergeServerMessages(
 
   const byId = new Map(server.map((m) => [m.id, m]));
   const used = new Set<string>();
+  let changed = false;
   const merged = local.map((m) => {
     const isTemp =
       m.id.startsWith("local_") ||
@@ -50,32 +65,65 @@ function mergeServerMessages(
     const match = byId.get(m.id) ?? (serverId ? byId.get(serverId) : undefined);
     if (!match) return m;
     used.add(match.id);
-    // Never clobber an in-flight optimistic / streaming bubble.
+    const serverFinished = match.metadata?.streaming !== true;
     if (isTemp) {
-      return {
-        ...m,
-        metadata: {
-          ...(match.metadata ?? {}),
-          ...(m.metadata ?? {}),
-          serverId: match.id,
-          streaming: m.metadata?.streaming ?? false,
-        },
-      };
+      // A bubble whose stream ended without a final event (network drop,
+      // tail timeout): once the server row is finished it wins, keeping the
+      // local key so the bubble doesn't remount.
+      if (serverFinished && (match.content?.trim() || m.role === "user")) {
+        changed = true;
+        return {
+          ...match,
+          id: m.id,
+          metadata: {
+            ...(match.metadata ?? {}),
+            serverId: match.id,
+            clientTempId: m.metadata?.clientTempId ?? m.id,
+            streaming: false,
+          },
+        };
+      }
+      return m;
     }
+    // Unchanged rows keep their object identity so memoised parsing and
+    // rendering are skipped on every poll.
+    if (
+      match.content === m.content &&
+      m.metadata?.streaming !== true &&
+      metadataCovers(m.metadata, match.metadata)
+    ) {
+      return m;
+    }
+    changed = true;
     return {
       ...match,
       metadata: {
-        ...(match.metadata ?? {}),
         ...(m.metadata ?? {}),
+        ...(match.metadata ?? {}),
         streaming: false,
       },
     };
   });
 
   for (const msg of server) {
-    if (!used.has(msg.id)) merged.push(msg);
+    if (!used.has(msg.id)) {
+      merged.push(msg);
+      changed = true;
+    }
   }
-  return merged;
+  return changed ? merged : local;
+}
+
+function metadataCovers(
+  local: Record<string, unknown> | null | undefined,
+  server: Record<string, unknown> | null | undefined,
+): boolean {
+  if (!server) return true;
+  for (const [key, value] of Object.entries(server)) {
+    if (key === "streaming") continue;
+    if (JSON.stringify(local?.[key]) !== JSON.stringify(value)) return false;
+  }
+  return true;
 }
 
 async function readSse(
@@ -141,6 +189,21 @@ function storeAccount(key: string, value: string): void {
   }
 }
 
+type MetaAccountStatus = {
+  ready: boolean;
+  facebookConnected: boolean;
+  primaryAccount: {
+    meta_account_name: string;
+    meta_account_id: string;
+  } | null;
+  mappedAccounts: Array<{
+    meta_account_name: string;
+    meta_account_id: string;
+    access_status: string;
+  }>;
+  mappedCount: number;
+};
+
 function WorkspaceInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -153,7 +216,11 @@ function WorkspaceInner() {
 
   const queryClientId = searchParams.get("clientId");
   const queryConversationId = searchParams.get("conversationId");
-  const queryPrompt = searchParams.get("prompt")?.slice(0, 2_000) ?? undefined;
+  // "Ask agent" links (?prompt=…): read once — the URL is rewritten as soon
+  // as a chat opens — and only prefill until the operator moves on.
+  const [pendingPrompt, setPendingPrompt] = useState(
+    () => searchParams.get("prompt")?.slice(0, 2_000) || undefined,
+  );
   const workspacePath = WORKSPACE_PATH;
   const apiBase = API_BASE;
   const apiPath = useCallback(
@@ -180,28 +247,36 @@ function WorkspaceInner() {
   const sendingRef = useRef(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [statusLabel, setStatusLabel] = useState<string | null>(null);
-  const [metaAccountStatus, setMetaAccountStatus] = useState<{
-    ready: boolean;
-    facebookConnected: boolean;
-    primaryAccount: {
-      meta_account_name: string;
-      meta_account_id: string;
-    } | null;
-    mappedAccounts: Array<{
-      meta_account_name: string;
-      meta_account_id: string;
-      access_status: string;
-    }>;
-    mappedCount: number;
+  // Ad-account info is tagged with the client it was loaded for; anything
+  // for a different client reads as "not loaded", so a send right after a
+  // client switch can never carry the previous client's account.
+  const [metaAccount, setMetaAccount] = useState<{
+    clientId: string;
+    status: MetaAccountStatus | null;
+    selectedId: string | null;
   } | null>(null);
-  const [selectedMetaAccountId, setSelectedMetaAccountId] = useState<
-    string | null
-  >(null);
+  const metaAccountStatus =
+    metaAccount && metaAccount.clientId === clientId ? metaAccount.status : null;
+  const selectedMetaAccountId =
+    metaAccount && metaAccount.clientId === clientId ? metaAccount.selectedId : null;
+  const setSelectedMetaAccountId = (id: string) =>
+    setMetaAccount((prev) => (prev ? { ...prev, selectedId: id } : prev));
+
+  const [historyCollapsed, setHistoryCollapsed] = useState(false);
+  const [historyDrawer, setHistoryDrawer] = useState(false);
+  const [panel, setPanel] = useState<"approvals" | "files" | null>(null);
+  const [docsVersion, setDocsVersion] = useState(0);
+  const activeConversationRef = useRef<string | null>(null);
 
   const clientName = useMemo(
     () => clients.find((c) => c.id === clientId)?.name,
     [clients, clientId],
   );
+  // Read clients without re-running effects every time the list refreshes.
+  const clientsRef = useRef(clients);
+  useEffect(() => {
+    clientsRef.current = clients;
+  }, [clients]);
 
   useEffect(() => {
     handleMetaOAuthReturn({
@@ -215,11 +290,7 @@ function WorkspaceInner() {
   }, []);
 
   useEffect(() => {
-    if (!clientId) {
-      setMetaAccountStatus(null);
-      setSelectedMetaAccountId(null);
-      return;
-    }
+    if (!clientId) return;
     let cancelled = false;
     (async () => {
       try {
@@ -242,7 +313,7 @@ function WorkspaceInner() {
           (a) => a.access_status === "granted",
         );
         const saved = readStoredAccount(selectedAccountKey(clientId));
-        const client = clients.find((c) => c.id === clientId);
+        const client = clientsRef.current.find((c) => c.id === clientId);
         const nameMatch = client
           ? granted.find(
               (a) =>
@@ -260,25 +331,25 @@ function WorkspaceInner() {
           granted[0]?.meta_account_id ??
           null;
 
-        setMetaAccountStatus({
-          ready: data.ready,
-          facebookConnected: data.facebookConnected,
-          primaryAccount: data.primaryAccount,
-          mappedAccounts: data.mappedAccounts,
-          mappedCount: data.mappedAccounts.length,
+        setMetaAccount({
+          clientId,
+          status: {
+            ready: data.ready,
+            facebookConnected: data.facebookConnected,
+            primaryAccount: data.primaryAccount,
+            mappedAccounts: data.mappedAccounts,
+            mappedCount: data.mappedAccounts.length,
+          },
+          selectedId: nextId,
         });
-        setSelectedMetaAccountId(nextId);
       } catch {
-        if (!cancelled) {
-          setMetaAccountStatus(null);
-          setSelectedMetaAccountId(null);
-        }
+        if (!cancelled) setMetaAccount({ clientId, status: null, selectedId: null });
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [clientId, clients]);
+  }, [clientId]);
 
   const activeConversation = useMemo(
     () => conversations.find((c) => c.id === conversationId) ?? null,
@@ -300,46 +371,49 @@ function WorkspaceInner() {
     [router, workspacePath],
   );
 
-  const loadApprovals = useCallback(async (cid: string, taskId?: string | null) => {
-    const { approvals: merged } = await apiFetch<{ approvals: Approval[] }>(
-      `/api/approvals?clientId=${cid}&status=pending,edited`,
-    );
-    if (taskId) {
-      const related = merged.filter((a) => a.task_id === taskId);
-      setApprovals(related.length ? related : merged);
+  /** Every approval raised in this chat (any status) — pending ones drive the panel. */
+  const loadApprovals = useCallback(async (cid: string, convId: string | null) => {
+    if (!convId) {
+      setApprovals([]);
       return;
     }
-    setApprovals(merged);
+    const { approvals: list } = await apiFetch<{ approvals: Approval[] }>(
+      `/api/approvals?clientId=${cid}&conversationId=${convId}`,
+    );
+    if (activeClientRef.current === cid && activeConversationRef.current === convId) {
+      setApprovals(list);
+    }
   }, []);
 
   const refreshWorkflow = useCallback(async () => {
     if (!clientId || !conversationId) return;
     // Never wipe the in-flight optimistic/streaming thread on focus.
     if (sendingRef.current) return;
+    const convId = conversationId;
     const activeTaskId = task?.id ?? null;
-    const msgRes = await apiFetch<{
-      conversation: Conversation;
-      messages: Message[];
-    }>(apiPath(`/conversations/${conversationId}/messages`));
+    const [msgRes, taskRes] = await Promise.all([
+      apiFetch<{ conversation: Conversation; messages: Message[] }>(
+        apiPath(`/conversations/${convId}/messages`),
+      ),
+      activeTaskId
+        ? apiFetch<{ task: Task }>(`/api/tasks/${activeTaskId}`).catch(() => null)
+        : Promise.resolve(null),
+      loadApprovals(clientId, convId),
+    ]);
+    // The operator may have switched chats while this was loading.
+    if (activeConversationRef.current !== convId || sendingRef.current) return;
     setMessages((prev) => mergeServerMessages(prev, msgRes.messages));
-    await loadApprovals(clientId, activeTaskId);
-    if (activeTaskId) {
-      try {
-        const taskRes = await apiFetch<{ task: Task }>(
-          `/api/tasks/${activeTaskId}`,
-        );
-        setTask(taskRes.task);
-      } catch {
-        // ignore
-      }
-    }
-    await refresh();
-  }, [clientId, conversationId, task, loadApprovals, refresh, apiPath]);
+    if (taskRes) setTask(taskRes.task);
+  }, [clientId, conversationId, task, loadApprovals, apiPath]);
 
   useEffect(() => {
     if (!clientId || !conversationId) return;
+    // focus and visibilitychange both fire when returning to the tab.
+    let last = 0;
     const onFocus = () => {
       if (document.visibilityState === "hidden") return;
+      if (Date.now() - last < 2_000) return;
+      last = Date.now();
       void refreshWorkflow();
     };
     window.addEventListener("focus", onFocus);
@@ -353,31 +427,25 @@ function WorkspaceInner() {
   const openConversation = useCallback(
     async (cid: string, conversation: Conversation) => {
       if (activeClientRef.current !== cid) return;
+      activeConversationRef.current = conversation.id;
       setConversationId(conversation.id);
       syncUrl(cid, conversation.id);
+      const stale = () =>
+        activeClientRef.current !== cid ||
+        activeConversationRef.current !== conversation.id;
 
-      const msgRes = await apiFetch<{
-        conversation: Conversation;
-        messages: Message[];
-      }>(apiPath(`/conversations/${conversation.id}/messages`));
-      if (activeClientRef.current !== cid) return;
+      const [msgRes, taskRes] = await Promise.all([
+        apiFetch<{ conversation: Conversation; messages: Message[] }>(
+          apiPath(`/conversations/${conversation.id}/messages`),
+        ),
+        conversation.task_id
+          ? apiFetch<{ task: Task }>(`/api/tasks/${conversation.task_id}`).catch(() => null)
+          : Promise.resolve(null),
+        loadApprovals(cid, conversation.id),
+      ]);
+      if (stale()) return;
       setMessages(msgRes.messages);
-
-      if (conversation.task_id) {
-        try {
-          const taskRes = await apiFetch<{ task: Task }>(
-            `/api/tasks/${conversation.task_id}`,
-          );
-          setTask(taskRes.task);
-          await loadApprovals(cid, taskRes.task.id);
-        } catch {
-          setTask(null);
-          await loadApprovals(cid);
-        }
-      } else {
-        setTask(null);
-        await loadApprovals(cid);
-      }
+      setTask(taskRes?.task ?? null);
     },
     [loadApprovals, syncUrl, apiPath],
   );
@@ -454,11 +522,13 @@ function WorkspaceInner() {
     // Leaving a client mid-reply: stop reading its stream (the run itself
     // continues server-side and shows up when you come back).
     streamAbortRef.current?.abort();
+    activeConversationRef.current = null;
+    // Resetting per-client state is the point of this effect.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setConversationId(null);
     setMessages([]);
     setTask(null);
     setApprovals([]);
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     void bootstrapWorkspace(clientId, queryConversationId);
     // Re-bootstrap when the client changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -538,6 +608,12 @@ function WorkspaceInner() {
           sendingRef.current = false;
           setSending(false);
           setStatusLabel(null);
+          // A run that finished outside this tab's stream: pick up the
+          // approvals and title it produced.
+          if (currentTask && ["running", "queued"].includes(currentTask.status)) {
+            void loadApprovals(clientId, conversationId);
+            void refreshConversationList(clientId);
+          }
         }
       } catch {
         // Transient network errors during a long run should not break the chat.
@@ -558,10 +634,16 @@ function WorkspaceInner() {
     sending,
     task?.id,
     task?.status,
+    loadApprovals,
+    refreshConversationList,
   ]);
 
   async function handleNewChat() {
     if (!clientId || sending) return;
+    setHistoryDrawer(false);
+    setPendingPrompt(undefined);
+    // Don't pile up empty chats: the current one is already blank.
+    if (conversationId && messages.length === 0) return;
     try {
       await createConversation(clientId);
     } catch (error) {
@@ -572,7 +654,9 @@ function WorkspaceInner() {
   }
 
   async function handleSelectConversation(id: string) {
+    setHistoryDrawer(false);
     if (!clientId || sending || id === conversationId) return;
+    setPendingPrompt(undefined);
     const found = conversations.find((c) => c.id === id);
     if (!found) return;
     try {
@@ -622,8 +706,10 @@ function WorkspaceInner() {
 
   /** Returns false when nothing reached the server, so the composer keeps the text. */
   async function sendMessage(content: string): Promise<boolean> {
-    if (!conversationId || !clientId) return false;
+    if (!conversationId || !clientId || sendingRef.current) return false;
+    setPendingPrompt(undefined);
     const sendClientId = clientId;
+    const sendConversationId = conversationId;
 
     const clientUserId = `local_${Date.now()}`;
     const optimistic: Message = {
@@ -699,7 +785,10 @@ function WorkspaceInner() {
 
       accepted = true;
       let assistantId = streamingId;
-      let finalTaskId: string | null = null;
+      // The reply as streamed so far. Deltas append to it (`append` + `total`
+      // length check) or reset it (`content`); progress summaries only show
+      // while no reply text has arrived.
+      let replyText = "";
 
       await readSse(response, {
         onEvent: (event, data) => {
@@ -777,7 +866,8 @@ function WorkspaceInner() {
             // Reflect live gather/write status in the streaming bubble
             if (
               typeof payload.summary === "string" &&
-              payload.summary.trim()
+              payload.summary.trim() &&
+              !replyText
             ) {
               setMessages((prev) =>
                 prev.map((m) =>
@@ -841,7 +931,18 @@ function WorkspaceInner() {
           }
 
           if (event === "delta") {
-            const contentText = String(payload.content ?? "");
+            const append = typeof payload.append === "string" ? payload.append : null;
+            const total = typeof payload.total === "number" ? payload.total : null;
+            if (typeof payload.content === "string") {
+              replyText = payload.content;
+            } else if (append != null) {
+              // Out of sync (missed event): keep what we have; the next reset
+              // or the final message brings the full text.
+              if (total == null || replyText.length === total - append.length) {
+                replyText += append;
+              }
+            }
+            const contentText = replyText;
             const deltaUi = payload.ui ?? null;
             setMessages((prev) =>
               prev.map((m) =>
@@ -868,7 +969,6 @@ function WorkspaceInner() {
 
           if (event === "done") {
             const nextTask = payload.task as Task;
-            finalTaskId = nextTask?.id ?? null;
             const message = payload.message as Message;
             const nextConversation = payload.conversation as
               | Conversation
@@ -891,10 +991,14 @@ function WorkspaceInner() {
             setMessages((prev) =>
               prev.map((m) => {
                 if (m.id === streamingId || m.id === assistantId) {
+                  // Keep the bubble's React key; the server id rides along.
                   return {
                     ...message,
+                    id: m.id,
                     metadata: {
                       ...(message.metadata ?? {}),
+                      serverId: message.id,
+                      clientTempId: m.metadata?.clientTempId ?? m.id,
                       streaming: false,
                     },
                   };
@@ -933,7 +1037,12 @@ function WorkspaceInner() {
                   ? {
                       ...m,
                       content: m.content || `Something went wrong: ${err}`,
-                      metadata: { streaming: false, status: "error" },
+                      metadata: {
+                        ...(m.metadata ?? {}),
+                        streaming: false,
+                        liveStatus: false,
+                        status: "error",
+                      },
                     }
                   : m,
               ),
@@ -948,7 +1057,7 @@ function WorkspaceInner() {
       if (activeClientRef.current === sendClientId) {
         await Promise.all([
           refreshConversationList(sendClientId),
-          loadApprovals(sendClientId, finalTaskId),
+          loadApprovals(sendClientId, sendConversationId),
           refresh(),
         ]);
       }
@@ -977,164 +1086,245 @@ function WorkspaceInner() {
     }
   }
 
-  return (
-    // Full-height three-pane layout only on wide screens; below 1280px the
-    // panes stack so the chat never gets squeezed to a sliver.
-    <div className="flex flex-col xl:h-[calc(100vh-7.5rem)] xl:min-h-[560px]">
-      <PageHeader
-        title="Workspace"
-        description="Audit and optimise a client's Meta ad account with the agent. Every change waits for your approval."
-        actions={
-          <div className="flex flex-wrap items-center gap-3">
-            <MetaConnectButton
-              variant="compact"
-              returnTo={WORKSPACE_PATH}
-              showManageLink
-            />
-            <Select
-              value={clientId ?? undefined}
-              disabled={sending}
-              onValueChange={(value) => {
-                setSelectedClientId(value);
-                syncUrl(value, null);
-              }}
-            >
-              <SelectTrigger
-                className="w-full sm:w-[240px]"
-                aria-label="Client"
-                title={sending ? "Wait for the current reply to finish" : undefined}
-              >
-                <SelectValue placeholder="Select client" />
-              </SelectTrigger>
-              <SelectContent>
-                {clients.map((c) => (
-                  <SelectItem key={c.id} value={c.id}>
-                    {c.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        }
-      />
+  const grantedAccounts =
+    metaAccountStatus?.mappedAccounts.filter((a) => a.access_status === "granted") ?? [];
+  const pendingApprovals = approvals.filter((a) =>
+    ["pending", "edited"].includes(a.status),
+  );
+  const taskRunning =
+    sending || (task != null && ["queued", "running"].includes(task.status));
+  const awaitingOperator =
+    !taskRunning && task?.agent_state?.awaitingOperator === true;
+  const chatTitle =
+    displayChatTitle(activeConversation?.title) || DEFAULT_CHAT_TITLE;
 
-      {clientId && metaAccountStatus ? (
-        <div
-          className={`mb-3 rounded-lg border px-3 py-2 text-xs ${
-            selectedMetaAccountId
-              ? "border-emerald-500/30 bg-emerald-500/10 text-foreground"
-              : "border-amber-500/30 bg-amber-500/10 text-foreground"
-          }`}
+  const toggleHistory = () => {
+    if (window.matchMedia("(min-width: 1024px)").matches) {
+      setHistoryCollapsed((v) => !v);
+    } else {
+      setHistoryDrawer((v) => !v);
+    }
+  };
+
+  const historySidebar = (
+    <ChatHistorySidebar
+      conversations={conversations}
+      activeId={conversationId}
+      onSelect={(id) => void handleSelectConversation(id)}
+      onNewChat={() => void handleNewChat()}
+      onDelete={(id) => void handleDeleteConversation(id)}
+      deletingId={deletingId}
+      disabled={sending || bootstrapping || Boolean(deletingId)}
+      newChatLabel="New chat"
+      className="h-full"
+    />
+  );
+
+  return (
+    // Fills the viewport under the app header so the conversation gets all
+    // the vertical space; side panels collapse into drawers on small screens.
+    <div className="flex h-[calc(100dvh-5.5rem)] min-h-[520px] flex-col gap-3 md:h-[calc(100dvh-6.5rem)]">
+      {/* Top bar: who and which ad account we're working on */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="h-9 w-9 shrink-0 text-muted hover:text-foreground"
+          onClick={toggleHistory}
+          aria-label="Toggle chat history"
+          title="Chat history"
         >
-          {selectedMetaAccountId ? (
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-medium">Ad account for chat:</span>
-              {metaAccountStatus.mappedAccounts.filter(
-                (a) => a.access_status === "granted",
-              ).length > 1 ? (
-                <Select
-                  value={selectedMetaAccountId}
-                  onValueChange={(value) => {
-                    setSelectedMetaAccountId(value);
-                    if (clientId) storeAccount(selectedAccountKey(clientId), value);
-                  }}
-                >
-                  <SelectTrigger className="h-7 max-w-[320px] text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {metaAccountStatus.mappedAccounts
-                      .filter((a) => a.access_status === "granted")
-                      .map((a) => (
-                        <SelectItem
-                          key={a.meta_account_id}
-                          value={a.meta_account_id}
-                        >
-                          {a.meta_account_name} ({a.meta_account_id})
-                        </SelectItem>
-                      ))}
-                  </SelectContent>
-                </Select>
-              ) : (
-                <span>
-                  {
-                    metaAccountStatus.mappedAccounts.find(
-                      (a) => a.meta_account_id === selectedMetaAccountId,
-                    )?.meta_account_name
-                  }{" "}
-                  ({selectedMetaAccountId})
+          <PanelLeft className="h-4 w-4" />
+        </Button>
+        <h1 className="mr-1 text-base font-semibold text-foreground">Workspace</h1>
+        <Select
+          value={clientId ?? undefined}
+          disabled={sending}
+          onValueChange={(value) => {
+            setSelectedClientId(value);
+            syncUrl(value, null);
+          }}
+        >
+          <SelectTrigger
+            className="h-9 w-[200px]"
+            aria-label="Client"
+            title={sending ? "Wait for the current reply to finish" : "Client"}
+          >
+            <SelectValue placeholder="Select client" />
+          </SelectTrigger>
+          <SelectContent>
+            {clients.map((c) => (
+              <SelectItem key={c.id} value={c.id}>
+                {c.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        {clientId && metaAccountStatus ? (
+          selectedMetaAccountId ? (
+            grantedAccounts.length > 1 ? (
+              <Select
+                value={selectedMetaAccountId}
+                disabled={sending}
+                onValueChange={(value) => {
+                  setSelectedMetaAccountId(value);
+                  if (clientId) storeAccount(selectedAccountKey(clientId), value);
+                }}
+              >
+                <SelectTrigger className="h-9 w-[260px]" aria-label="Ad account">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {grantedAccounts.map((a) => (
+                    <SelectItem key={a.meta_account_id} value={a.meta_account_id}>
+                      {a.meta_account_name} · {a.meta_account_id.replace(/^act_/, "")}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <span
+                className="inline-flex h-9 max-w-[280px] items-center gap-1.5 truncate rounded-md border border-border bg-card px-3 text-xs text-muted"
+                title={selectedMetaAccountId}
+              >
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-success" />
+                <span className="truncate text-foreground">
+                  {grantedAccounts.find((a) => a.meta_account_id === selectedMetaAccountId)
+                    ?.meta_account_name ?? selectedMetaAccountId}
                 </span>
-              )}
-            </div>
+              </span>
+            )
           ) : (
-            <p>
-              <span className="font-medium">No ad account ready for this client.</span>{" "}
+            <span className="inline-flex h-9 items-center gap-1.5 rounded-md border border-warning/40 bg-warning-muted px-3 text-xs text-warning">
+              <AlertTriangle className="h-3.5 w-3.5" />
               {!metaAccountStatus.facebookConnected
-                ? "Connect Facebook, sync your ad accounts, then map one to this client under Connections."
+                ? "Connect Facebook to use live data"
                 : metaAccountStatus.mappedCount === 0
-                  ? "Sync ad accounts, then map the account to this client under Connections."
-                  : "Mapped accounts exist but none are granted — check Connections."}
-            </p>
-          )}
+                  ? "No ad account mapped — see Connections"
+                  : "Ad account access not granted — see Connections"}
+            </span>
+          )
+        ) : null}
+
+        <div className="ml-auto flex items-center gap-2">
+          <MetaConnectButton variant="compact" returnTo={WORKSPACE_PATH} showManageLink />
+          <Button
+            type="button"
+            variant={panel === "approvals" ? "secondary" : "outline"}
+            size="sm"
+            className="h-9 gap-1.5"
+            onClick={() => setPanel((p) => (p === "approvals" ? null : "approvals"))}
+          >
+            <ClipboardCheck className="h-4 w-4" />
+            Approvals
+            {pendingApprovals.length ? (
+              <span className="rounded-full bg-warning px-1.5 text-[11px] font-semibold text-background">
+                {pendingApprovals.length}
+              </span>
+            ) : null}
+          </Button>
+          <Button
+            type="button"
+            variant={panel === "files" ? "secondary" : "ghost"}
+            size="icon"
+            className="h-9 w-9"
+            aria-label="Files"
+            title="Files for this client"
+            onClick={() => setPanel((p) => (p === "files" ? null : "files"))}
+          >
+            <FileText className="h-4 w-4" />
+          </Button>
         </div>
-      ) : null}
+      </div>
 
       {!clientId ? (
         <LoadingState label="Select a client to begin" />
-      ) : bootstrapping && !conversationId ? (
-        <LoadingState label={`Opening workspace for ${clientName ?? "client"}…`} />
       ) : (
-        <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[220px_minmax(0,1fr)] xl:grid-cols-[240px_minmax(0,1fr)_320px]">
-          <ChatHistorySidebar
-            conversations={conversations}
-            activeId={conversationId}
-            onSelect={(id) => void handleSelectConversation(id)}
-            onNewChat={() => void handleNewChat()}
-            onDelete={(id) => void handleDeleteConversation(id)}
-            deletingId={deletingId}
-            disabled={sending || Boolean(deletingId)}
-            newChatLabel="New chat"
-            className="max-h-64 min-h-0 lg:max-h-none"
-          />
+        <div className="relative flex min-h-0 flex-1 gap-3">
+          {/* History: column on desktop, drawer on small screens */}
+          {!historyCollapsed ? (
+            <div className="hidden w-64 shrink-0 lg:block">{historySidebar}</div>
+          ) : null}
+          {historyDrawer ? (
+            <div className="fixed inset-0 z-40 lg:hidden">
+              <button
+                type="button"
+                aria-label="Close chat history"
+                className="absolute inset-0 bg-background/70 backdrop-blur-sm"
+                onClick={() => setHistoryDrawer(false)}
+              />
+              <div className="absolute inset-y-0 left-0 w-[85vw] max-w-xs p-3">{historySidebar}</div>
+            </div>
+          ) : null}
 
-          <Card className="flex h-[70vh] min-h-[480px] flex-col overflow-hidden xl:h-full xl:min-h-0">
-            <CardHeader className="shrink-0 border-b border-border py-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <CardTitle className="flex items-center gap-1.5 text-sm">
-                    <span className="truncate">
-                      {clientName ?? "Client"} ·{" "}
-                      {displayChatTitle(activeConversation?.title) || DEFAULT_CHAT_TITLE}
-                    </span>
-                  </CardTitle>
-                  {activeConversation ? (
-                    <p className="text-[11px] text-muted">
-                      Updated {formatRelative(activeConversation.updated_at)}
-                    </p>
-                  ) : null}
-                </div>
-                {conversationId ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="shrink-0 text-muted hover:bg-danger-muted hover:text-danger"
-                    disabled={sending || Boolean(deletingId)}
-                    onClick={() => void handleDeleteConversation(conversationId)}
-                  >
-                    <Trash2 className="mr-1.5 h-3.5 w-3.5" />
-                    {deletingId === conversationId ? "Deleting…" : "Delete"}
-                  </Button>
-                ) : null}
+          {/* Conversation */}
+          <section className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-card/60">
+            <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-4">
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium text-foreground" title={chatTitle}>
+                  {chatTitle}
+                </p>
               </div>
-            </CardHeader>
-            <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden p-0">
+              {taskRunning ? (
+                <span className="inline-flex max-w-[45%] items-center gap-1.5 truncate text-xs text-muted">
+                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-accent" />
+                  <span className="truncate">{statusLabel ?? "Working…"}</span>
+                </span>
+              ) : pendingApprovals.length ? (
+                <button
+                  type="button"
+                  onClick={() => setPanel("approvals")}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-warning-muted px-2.5 py-1 text-xs font-medium text-warning"
+                >
+                  <ClipboardCheck className="h-3.5 w-3.5" />
+                  {pendingApprovals.length} awaiting approval
+                </button>
+              ) : awaitingOperator ? (
+                <span className="text-xs text-muted">Waiting on your reply</span>
+              ) : task?.status === "error" ? (
+                <span className="inline-flex items-center gap-1 text-xs text-danger">
+                  <AlertTriangle className="h-3.5 w-3.5" /> Last reply failed
+                </span>
+              ) : null}
+              {conversationId ? (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 shrink-0 text-muted"
+                      aria-label="Chat options"
+                      disabled={sending || Boolean(deletingId)}
+                    >
+                      <MoreHorizontal className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => void handleNewChat()}>
+                      New chat
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      className="text-danger focus:text-danger"
+                      onSelect={() => void handleDeleteConversation(conversationId)}
+                    >
+                      <Trash2 className="mr-2 h-3.5 w-3.5" />
+                      Delete chat
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              ) : null}
+            </header>
+            <div className="flex min-h-0 flex-1 flex-col">
               {bootstrapping ? (
                 <div className="p-4">
-                  <LoadingState label="Loading chat…" />
+                  <LoadingState label={`Opening ${clientName ?? "workspace"}…`} />
                 </div>
               ) : (
                 <ChatPanel
+                  key={conversationId ?? "none"}
                   messages={messages}
                   onSend={sendMessage}
                   sending={sending}
@@ -1147,53 +1337,82 @@ function WorkspaceInner() {
                   apiBase={apiBase}
                   inlineApprovals={approvals}
                   onWorkflowRefresh={refreshWorkflow}
-                  initialInput={queryPrompt}
-                  placeholder="Ask for an audit, a new campaign, or changes to propose…"
+                  onReviewApprovals={() => setPanel("approvals")}
+                  onDocumentUploaded={() => setDocsVersion((v) => v + 1)}
+                  initialInput={pendingPrompt}
+                  placeholder={`Ask about ${clientName ?? "this account"} — performance, an audit, or a change to propose…`}
                 />
               )}
-            </CardContent>
-          </Card>
+            </div>
+          </section>
 
-          <div className="flex min-h-0 flex-col gap-4 lg:col-span-2 xl:col-span-1 xl:overflow-auto">
-            <TaskProgress task={task} />
-            {approvals.length > 0 ? (
-              <div className="space-y-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-muted">
-                  Approvals
-                </p>
-                {approvals.map((approval) => (
-                  <ApprovalCard
-                    key={approval.id}
-                    approval={approval}
-                    clientName={clientName}
-                    compact
-                    onUpdated={async (updated) => {
-                      setApprovals((prev) =>
-                        prev
-                          .map((a) => (a.id === updated.id ? updated : a))
-                          .filter((a) =>
-                            ["pending", "edited"].includes(a.status),
-                          ),
-                      );
-                      await refreshWorkflow();
-                    }}
-                  />
-                ))}
-              </div>
-            ) : (
-              <Card>
-                <CardContent className="p-4 text-sm text-muted">
-                  No pending approvals. Ask the agent to implement a change to
-                  queue an execute action.
-                </CardContent>
-              </Card>
-            )}
-            <DocumentsPanel
-              clientId={clientId}
-              conversationId={conversationId}
-              apiBase={apiBase}
-            />
-          </div>
+          {/* Approvals / files: column on desktop, drawer on small screens */}
+          {panel ? (
+            <>
+              <button
+                type="button"
+                aria-label="Close panel"
+                className="fixed inset-0 z-30 bg-background/70 backdrop-blur-sm xl:hidden"
+                onClick={() => setPanel(null)}
+              />
+              <aside className="fixed inset-y-0 right-0 z-40 flex w-[92vw] max-w-sm flex-col overflow-hidden border-l border-border bg-card xl:static xl:z-auto xl:w-[360px] xl:max-w-none xl:shrink-0 xl:rounded-xl xl:border">
+                <div className="flex h-12 shrink-0 items-center gap-1 border-b border-border px-2">
+                  {(["approvals", "files"] as const).map((key) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => setPanel(key)}
+                      className={cn(
+                        "rounded-md px-3 py-1.5 text-sm transition-colors",
+                        panel === key
+                          ? "bg-secondary font-medium text-foreground"
+                          : "text-muted hover:text-foreground",
+                      )}
+                    >
+                      {key === "approvals"
+                        ? `Approvals${pendingApprovals.length ? ` (${pendingApprovals.length})` : ""}`
+                        : "Files"}
+                    </button>
+                  ))}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="ml-auto h-8 w-8 text-muted"
+                    aria-label="Close panel"
+                    onClick={() => setPanel(null)}
+                  >
+                    <span className="hidden xl:inline">
+                      <PanelRight className="h-4 w-4" />
+                    </span>
+                    <X className="h-4 w-4 xl:hidden" />
+                  </Button>
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                  {panel === "approvals" ? (
+                    <ApprovalsPanel
+                      approvals={approvals}
+                      clientName={clientName}
+                      onUpdated={async (updated) => {
+                        setApprovals((prev) =>
+                          prev.map((a) => (a.id === updated.id ? updated : a)),
+                        );
+                        await refreshWorkflow();
+                      }}
+                    />
+                  ) : (
+                    <DocumentsPanel
+                      key={docsVersion}
+                      clientId={clientId}
+                      conversationId={conversationId}
+                      apiBase={apiBase}
+                      className="border-0 bg-transparent shadow-none"
+                    />
+                  )}
+                </div>
+              </aside>
+            </>
+          ) : null}
         </div>
       )}
     </div>

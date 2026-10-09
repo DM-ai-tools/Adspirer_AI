@@ -111,9 +111,18 @@ export function reconcileAssistantMessage(
   }
 
   if (streaming && taskTerminal) {
-    const nextContent = taskSummary
+    let nextContent = taskSummary
       ? resolveAssistantDisplay(taskSummary, ui)
       : resolveAssistantDisplay(message.content, ui);
+    // A failed run that never wrote a reply: show why instead of a stale
+    // "_Fetching…_" status line.
+    if (
+      task.status === "error" &&
+      task.error_message &&
+      isFillerContent(nextContent)
+    ) {
+      nextContent = task.error_message;
+    }
     return {
       ...message,
       content: nextContent || message.content,

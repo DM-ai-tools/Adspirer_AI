@@ -110,10 +110,22 @@ function mapLocations(locations: unknown[] | undefined): GeoLocations {
   if (!geo.zips!.length) delete geo.zips;
   if (!geo.places!.length) delete geo.places;
 
-  if (!geo.countries && !geo.cities && !geo.regions && !geo.zips && !geo.places) {
-    return { countries: ["US"] };
-  }
   return geo;
+}
+
+function hasAnyGeo(geo: GeoLocations): boolean {
+  return Boolean(
+    geo.countries || geo.cities || geo.regions || geo.zips || geo.places,
+  );
+}
+
+export const MISSING_LOCATION_MESSAGE =
+  'No targeting location was provided. Add `locations` (e.g. ["GB"] for a country, or {"key": "<Meta city key>", "type": "city", "radius": 15}) — a country is never guessed for you.';
+
+/** True when `locations` contains at least one usable country/city/region/zip/place. */
+export function hasTargetingLocation(locations: unknown): boolean {
+  if (!Array.isArray(locations)) return false;
+  return hasAnyGeo(mapLocations(locations));
 }
 
 function mapIdList(values: unknown): Array<{ id: string }> | undefined {
@@ -125,29 +137,30 @@ function mapIdList(values: unknown): Array<{ id: string }> | undefined {
   return ids.length ? ids : undefined;
 }
 
+/** Our arg name → Meta flexible_spec key. Ids only: Meta resolves names. */
+const FLEXIBLE_SPEC_KEYS: Array<[string, string]> = [
+  ["interests", "interests"],
+  ["behaviors", "behaviors"],
+  ["life_events", "life_events"],
+  ["job_titles", "work_positions"],
+  ["work_employers", "work_employers"],
+  ["education_schools", "education_schools"],
+  ["education_majors", "education_majors"],
+];
+
 function mapFlexibleSpec(extra: Record<string, unknown> | undefined) {
   if (!extra) return undefined;
-  const interests = Array.isArray(extra.interests)
-    ? (extra.interests as IdName[])
-        .map(asIdName)
-        .filter((x): x is { id: string; name?: string } => Boolean(x))
-    : [];
-  const behaviors = Array.isArray(extra.behaviors)
-    ? (extra.behaviors as IdName[])
-        .map(asIdName)
-        .filter((x): x is { id: string; name?: string } => Boolean(x))
-    : [];
-  if (!interests.length && !behaviors.length) return undefined;
-  return [
-    {
-      ...(interests.length
-        ? { interests: interests.map((i) => ({ id: i.id })) }
-        : {}),
-      ...(behaviors.length
-        ? { behaviors: behaviors.map((b) => ({ id: b.id })) }
-        : {}),
-    },
-  ];
+  const spec: Record<string, Array<{ id: string }>> = {};
+  for (const [argKey, metaKey] of FLEXIBLE_SPEC_KEYS) {
+    const raw = extra[argKey];
+    if (!Array.isArray(raw)) continue;
+    const ids = (raw as IdName[])
+      .map(asIdName)
+      .filter((x): x is { id: string; name?: string } => Boolean(x))
+      .map((x) => ({ id: x.id }));
+    if (ids.length) spec[metaKey] = ids;
+  }
+  return Object.keys(spec).length ? [spec] : undefined;
 }
 
 const DEPRECATED_FACEBOOK_POSITIONS = new Set(["video_feeds"]);
@@ -214,6 +227,9 @@ export function buildMetaTargeting(input: {
 }): Record<string, unknown> {
   const extra = input.extra_args ?? {};
   const geo = mapLocations(input.locations);
+  if (!hasAnyGeo(geo)) {
+    throw new Error(MISSING_LOCATION_MESSAGE);
+  }
   if (Array.isArray(extra.location_types) && extra.location_types.length) {
     geo.location_types = extra.location_types as string[];
   }
@@ -244,7 +260,36 @@ export function buildMetaTargeting(input: {
       : undefined);
   applyPublisherPlatforms(targeting, platforms, extra);
 
+  // Meta requires an explicit Advantage+ audience choice on new ad sets.
+  // Off (0) unless the proposal asks for it.
+  targeting.targeting_automation = {
+    advantage_audience: isTruthyFlag(extra.advantage_audience) ? 1 : 0,
+  };
+
   return targeting;
+}
+
+function isTruthyFlag(value: unknown): boolean {
+  if (value === true || value === 1) return true;
+  if (typeof value === "string") {
+    return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+  }
+  return false;
+}
+
+function optionalTrimmed(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+/** Instant-form lead ads: `lead_form_id` from the args (top level or extra). */
+export function resolveLeadFormId(input: {
+  lead_form_id?: string;
+  extra_args?: Record<string, unknown>;
+}): string | undefined {
+  return (
+    optionalTrimmed(input.lead_form_id) ??
+    optionalTrimmed(input.extra_args?.lead_form_id)
+  );
 }
 
 function resolvePixelId(input: {
@@ -271,8 +316,17 @@ export function optimizationForObjective(
   billing_event: string;
 } {
   const hasPixel = Boolean(resolvePixelId(options ?? {}));
+  const upper = (objective ?? "OUTCOME_TRAFFIC").toUpperCase();
 
-  switch ((objective ?? "OUTCOME_TRAFFIC").toUpperCase()) {
+  // Instant-form lead ads optimise for on-Facebook leads, not pixel events.
+  if (upper === "OUTCOME_LEADS" && resolveLeadFormId(options ?? {})) {
+    return {
+      optimization_goal: "LEAD_GENERATION",
+      billing_event: "IMPRESSIONS",
+    };
+  }
+
+  switch (upper) {
     case "OUTCOME_SALES":
     case "OUTCOME_LEADS":
       // OFFSITE_CONVERSIONS requires pixel_id in promoted_object (subcode 1815143).
@@ -308,6 +362,7 @@ export function optimizationForObjective(
 
 export function buildPromotedObject(input: {
   objective?: string;
+  lead_form_id?: string;
   facebook_page_id?: string;
   pixel_id?: string;
   pixel_event_name?: string;
@@ -319,13 +374,18 @@ export function buildPromotedObject(input: {
       ? input.extra_args.facebook_page_id
       : undefined);
   const pixelId = resolvePixelId(input);
-  const eventName =
-    input.pixel_event_name ??
-    (typeof input.extra_args?.pixel_event_name === "string"
-      ? input.extra_args.pixel_event_name
-      : "PURCHASE");
-
   const objective = (input.objective ?? "").toUpperCase();
+  // Default conversion event follows the objective: leads → LEAD, sales → PURCHASE.
+  const eventName = (
+    optionalTrimmed(input.pixel_event_name) ??
+    optionalTrimmed(input.extra_args?.pixel_event_name) ??
+    (objective === "OUTCOME_LEADS" ? "LEAD" : "PURCHASE")
+  ).toUpperCase();
+
+  if (objective === "OUTCOME_LEADS" && resolveLeadFormId(input)) {
+    // Instant forms: Meta wants just the page that owns the form.
+    return pageId ? { page_id: pageId } : undefined;
+  }
   if (objective === "OUTCOME_SALES" || objective === "OUTCOME_LEADS") {
     if (!pixelId) return pageId ? { page_id: pageId } : undefined;
     return {
@@ -336,4 +396,64 @@ export function buildPromotedObject(input: {
   }
   if (pageId) return { page_id: pageId };
   return undefined;
+}
+
+/**
+ * Meta call_to_action.type values accepted on link / video creatives.
+ * https://developers.facebook.com/docs/marketing-api/reference/ad-creative-link-data-call-to-action
+ */
+export const META_CTA_TYPES = [
+  "LEARN_MORE",
+  "SIGN_UP",
+  "CONTACT_US",
+  "BOOK_TRAVEL",
+  "BOOK_NOW",
+  "APPLY_NOW",
+  "GET_QUOTE",
+  "GET_OFFER",
+  "GET_DIRECTIONS",
+  "SHOP_NOW",
+  "SUBSCRIBE",
+  "DOWNLOAD",
+  "ORDER_NOW",
+  "BUY_NOW",
+  "BUY_TICKETS",
+  "WATCH_MORE",
+  "WATCH_VIDEO",
+  "SEND_MESSAGE",
+  "MESSAGE_PAGE",
+  "WHATSAPP_MESSAGE",
+  "CALL_NOW",
+  "INSTALL_APP",
+  "USE_APP",
+  "PLAY_GAME",
+  "LISTEN_NOW",
+  "DONATE_NOW",
+  "REQUEST_TIME",
+  "SEE_MENU",
+  "GET_SHOWTIMES",
+  "OPEN_LINK",
+  "NO_BUTTON",
+] as const;
+
+const CTA_SET = new Set<string>(META_CTA_TYPES);
+
+/**
+ * Normalise a CTA ("Learn more", "learn-more" → LEARN_MORE) and reject values
+ * Meta does not accept, instead of letting the creative POST fail mid-run.
+ */
+export function normalizeCallToAction(value: unknown): string | undefined {
+  if (value == null) return undefined;
+  if (typeof value !== "string") {
+    throw new Error("call_to_action must be a text value such as LEARN_MORE.");
+  }
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const normalized = trimmed.toUpperCase().replace(/[\s-]+/g, "_");
+  if (!CTA_SET.has(normalized)) {
+    throw new Error(
+      `call_to_action "${trimmed}" is not a Meta button type. Use one of: ${META_CTA_TYPES.join(", ")}.`,
+    );
+  }
+  return normalized;
 }

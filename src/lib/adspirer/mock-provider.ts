@@ -1,3 +1,4 @@
+import { demoMetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
 import type {
   CreateAdInput,
   CreateAdSetInput,
@@ -259,10 +260,12 @@ export class MockMetaAdsProvider implements MetaAdsProvider {
     );
   }
 
+  /** `parentId` may be an ad set or a campaign, like Meta's `/ads` edge. */
   async listAds(accountId: string, adSetId?: string): Promise<MetaAd[]> {
     return getState().ads.filter(
       (a) =>
-        a.account_id === accountId && (adSetId ? a.adset_id === adSetId : true),
+        a.account_id === accountId &&
+        (adSetId ? a.adset_id === adSetId || a.campaign_id === adSetId : true),
     );
   }
 
@@ -289,6 +292,11 @@ export class MockMetaAdsProvider implements MetaAdsProvider {
       findings: ["Account appears stable (demo)."],
       recommended_actions: ["Continue monitoring weekly CPL and frequency."],
     };
+  }
+
+  async getAuditSnapshot(accountId: string, options?: { days?: number }) {
+    const overview = await this.getAccountOverview(accountId);
+    return demoMetaAuditSnapshot(accountId, overview.account_name, options?.days ?? 30);
   }
 
   async getAccountOverview(accountId: string): Promise<MetaAccountOverview> {

@@ -71,16 +71,28 @@ export async function apiFetch<T>(
   return payload.data;
 }
 
+/**
+ * App "cents" (major units × 100) → money string. Whole units by default (for
+ * dashboards); pass `{ exact: true }` where precision matters (approvals) to
+ * use the currency's own minor digits (2 for USD/GBP, 0 for JPY) so an
+ * edited 55.50 never displays as 56.
+ */
 export function formatCents(
   cents: number | null | undefined,
   currency = "USD",
+  options?: { exact?: boolean },
 ): string {
-  if (cents == null) return "—";
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency,
-    maximumFractionDigits: 0,
-  }).format(cents / 100);
+  if (cents == null || !Number.isFinite(cents)) return "—";
+  try {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: currency || "USD",
+      ...(options?.exact ? {} : { maximumFractionDigits: 0 }),
+    }).format(cents / 100);
+  } catch {
+    // Unknown/invalid currency code — still show the amount.
+    return `${(cents / 100).toFixed(options?.exact ? 2 : 0)} ${currency}`;
+  }
 }
 
 export function formatRelative(iso: string | null | undefined): string {

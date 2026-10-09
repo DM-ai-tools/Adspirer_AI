@@ -10,6 +10,8 @@ export type ErrorCode =
   | "TOOL_CLASSIFICATION_ERROR"
   | "AGENT_PAUSED"
   | "PROVIDER_UNAVAILABLE"
+  | "APPROVAL_VALIDATION_ERROR"
+  | "EXECUTION_VERIFICATION_ERROR"
   | "INTERNAL_ERROR";
 
 export class AppError extends Error {
@@ -138,6 +140,29 @@ export class ProviderUnavailableError extends AppError {
     details?: Record<string, unknown>,
   ) {
     super("PROVIDER_UNAVAILABLE", message, 503, details);
+  }
+}
+
+/** Approval args failed schema / policy / account validation. */
+export class ApprovalValidationError extends AppError {
+  constructor(
+    message = "The proposed action has invalid or unsupported values",
+    details?: Record<string, unknown>,
+  ) {
+    super("APPROVAL_VALIDATION_ERROR", message, 422, details);
+  }
+}
+
+/**
+ * Meta accepted a change but reading it back shows a different value/status.
+ * The approval is marked failed rather than reported as executed.
+ */
+export class ExecutionVerificationError extends AppError {
+  constructor(
+    message = "Meta did not confirm the change",
+    details?: Record<string, unknown>,
+  ) {
+    super("EXECUTION_VERIFICATION_ERROR", message, 502, details);
   }
 }
 

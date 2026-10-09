@@ -13,6 +13,7 @@ import type {
   UpdateAdSetBudgetInput,
 } from "@/lib/adspirer/provider";
 import { MetaGraphClient } from "@/lib/meta/graph-client";
+import { fetchMetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
 import type {
   MetaCustomAudience,
   MetaTargetingOption,
@@ -25,6 +26,21 @@ import {
 import { resolvePromotePageId, formatMissingPageHelp } from "@/lib/meta/resolve-page";
 import { logger } from "@/lib/observability/logger";
 import { centsToMetaMinor, metaMinorToCents } from "@/lib/meta/currency";
+import { ExecutionVerificationError } from "@/lib/errors";
+import {
+  PartialCreateError,
+  type CreateProgress,
+} from "@/lib/meta/create-progress";
+import {
+  normalizeCallToAction,
+  resolveLeadFormId,
+} from "@/lib/meta/targeting-builder";
+import {
+  assertFutureEndTime,
+  optionalText,
+  positiveMinor,
+  positiveNumber,
+} from "@/lib/meta/mutation-guards";
 
 export {
   centsToMetaMinor,
@@ -151,6 +167,10 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
   /** Per-request caches: a provider instance lives for one API call / turn. */
   private readonly currencyByAccount = new Map<string, Promise<string>>();
   private readonly campaignsByAccount = new Map<string, Promise<MetaCampaign[]>>();
+  private readonly overviewByAccount = new Map<
+    string,
+    ReturnType<MetaGraphProviderV2["fetchAccountOverview"]>
+  >();
 
   constructor(accessToken: string) {
     this.graph = new MetaGraphClient(accessToken);
@@ -356,7 +376,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
         paging?: { cursors?: { after?: string }; next?: string };
       }>(path, {
         fields:
-          "id,name,status,campaign_id,daily_budget,optimization_goal,billing_event,targeting",
+          "id,name,status,effective_status,campaign_id,daily_budget,lifetime_budget,optimization_goal,billing_event,targeting",
         limit: 100,
         ...(after ? { after } : {}),
       });
@@ -371,7 +391,13 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       account_id: normalizeAccountId(accountId),
       name: String(row.name ?? "Ad Set"),
       status: String(row.status ?? "PAUSED") as MetaAdSet["status"],
+      effective_status:
+        typeof row.effective_status === "string" ? row.effective_status : undefined,
       daily_budget_cents: metaMinorToCents(Number(row.daily_budget ?? 0), currency),
+      lifetime_budget_cents:
+        Number(row.lifetime_budget ?? 0) > 0
+          ? metaMinorToCents(Number(row.lifetime_budget), currency)
+          : undefined,
       optimization_goal:
         typeof row.optimization_goal === "string"
           ? row.optimization_goal
@@ -385,6 +411,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     }));
   }
 
+  /** `parentId` may be an ad set or a campaign — both expose an `/ads` edge. */
   async listAds(accountId: string, adSetId?: string): Promise<MetaAd[]> {
     const path = adSetId
       ? `${adSetId}/ads`
@@ -392,7 +419,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     const data = await this.graph.get<{ data?: Array<Record<string, unknown>> }>(
       path,
       {
-        fields: "id,name,status,adset_id,campaign_id,creative",
+        fields: "id,name,status,effective_status,adset_id,campaign_id,creative",
         limit: 100,
       },
     );
@@ -403,6 +430,8 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       account_id: normalizeAccountId(accountId),
       name: String(row.name ?? "Ad"),
       status: String(row.status ?? "PAUSED") as MetaAd["status"],
+      effective_status:
+        typeof row.effective_status === "string" ? row.effective_status : undefined,
       creative_summary: row.creative ? "Meta creative attached" : undefined,
     }));
   }
@@ -417,19 +446,41 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
         `Active campaigns: ${overview.active_campaigns}`,
         `Paused campaigns: ${overview.paused_campaigns}`,
       ],
-      recommended_actions: [
-        "Review CPA/ROAS thresholds before scaling",
-        "Validate placements against creative format",
-      ],
+      // Only evidence-based recommendations belong here; canned advice was
+      // being presented to operators as if it came from their data.
+      recommended_actions: [] as string[],
     };
+  }
+
+  /** Overview (cached per turn): the agent and analyzeAccount share one fetch. */
+  async getAuditSnapshot(
+    accountId: string,
+    options?: { days?: number; since?: string; until?: string },
+  ) {
+    return fetchMetaAuditSnapshot(this.graph, normalizeAccountId(accountId), options);
   }
 
   async getAccountOverview(accountId: string) {
     const id = normalizeAccountId(accountId);
-    const account = await this.graph.get<Record<string, unknown>>(id, {
-      fields: "id,name,currency,timezone_name",
-    });
-    const campaigns = await this.listCampaigns(id).catch(() => []);
+    let pending = this.overviewByAccount.get(id);
+    if (!pending) {
+      pending = this.fetchAccountOverview(id);
+      this.overviewByAccount.set(id, pending);
+      pending.catch(() => this.overviewByAccount.delete(id));
+    }
+    return pending;
+  }
+
+  private async fetchAccountOverview(id: string) {
+    const [account, campaigns] = await Promise.all([
+      this.graph.get<Record<string, unknown>>(id, {
+        fields: "id,name,currency,timezone_name",
+      }),
+      this.listCampaigns(id).catch(() => [] as MetaCampaign[]),
+    ]);
+    if (typeof account.currency === "string" && !this.currencyByAccount.has(id)) {
+      this.currencyByAccount.set(id, Promise.resolve(account.currency));
+    }
     const active = campaigns.filter((c) => c.status === "ACTIVE").length;
     const paused = campaigns.filter((c) => c.status === "PAUSED").length;
     const archived = campaigns.filter((c) => c.status === "ARCHIVED").length;
@@ -445,79 +496,321 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       total_campaigns: campaigns.length,
       archived_campaigns: archived,
       health: "healthy" as const,
-      notes: ["V2 direct Meta provider"],
+      notes: [] as string[],
     };
   }
 
-  async updateAdSetBudget(input: UpdateAdSetBudgetInput): Promise<MetaAdSet> {
-    const currency = await this.accountCurrency(input.account_id);
-    await this.graph.post(`${input.adset_id}`, {
-      daily_budget: String(centsToMetaMinor(input.daily_budget_cents, currency)),
-    });
-    // The change has already succeeded on Meta; a failed re-read must not
-    // turn it into a reported failure (and a duplicate on retry).
-    const adsets = await this.listAdSets(input.account_id).catch(
-      () => [] as MetaAdSet[],
-    );
-    return (
-      adsets.find((a) => a.id === input.adset_id) ?? {
-        id: input.adset_id,
-        campaign_id: "",
-        account_id: normalizeAccountId(input.account_id),
-        name: input.adset_id,
-        status: "PAUSED",
-        daily_budget_cents: input.daily_budget_cents,
-      }
-    );
+  // ---------------------------------------------------------------------------
+  // Mutations. Every write validates up front, fails closed on anything it
+  // cannot confirm (currency, owning account, CBO), and reads the result back.
+  // ---------------------------------------------------------------------------
+
+  /** Write-path currency cache: unlike accountCurrency() this never guesses. */
+  private readonly writeCurrencyByAccount = new Map<string, Promise<string>>();
+
+  /**
+   * Account currency for budget writes. A failed lookup throws: guessing USD
+   * for a JPY/KRW account would send a budget 100× too large.
+   */
+  async requireAccountCurrency(accountId: string): Promise<string> {
+    const id = normalizeAccountId(accountId);
+    let pending = this.writeCurrencyByAccount.get(id);
+    if (!pending) {
+      pending = this.graph
+        .get<{ currency?: unknown }>(id, { fields: "currency" })
+        .then((row) => {
+          const currency =
+            typeof row.currency === "string"
+              ? row.currency.trim().toUpperCase()
+              : "";
+          if (!/^[A-Z]{3}$/.test(currency)) {
+            throw new Error("Meta returned no currency for the account");
+          }
+          return currency;
+        })
+        .catch((error: unknown) => {
+          this.writeCurrencyByAccount.delete(id);
+          const reason =
+            error instanceof Error ? error.message : String(error ?? "unknown");
+          throw new Error(
+            `Could not read the currency of ad account ${id} (${reason}). Nothing was sent to Meta — budgets are never sent with a guessed currency, because a wrong guess changes the amount up to 100×.`,
+          );
+        });
+      this.writeCurrencyByAccount.set(id, pending);
+    }
+    return pending;
   }
 
-  async pauseCampaign(accountId: string, campaignId: string): Promise<MetaCampaign> {
-    await this.graph.post(campaignId, { status: "PAUSED" });
-    this.invalidateCampaigns(accountId);
-    const campaigns = await this.listCampaigns(accountId).catch(
-      () => [] as MetaCampaign[],
+  /** App cents → Meta minor units as the string Graph expects; rejects 0. */
+  private budgetMinor(cents: number, currency: string, label: string): string {
+    const minor = centsToMetaMinor(cents, currency);
+    if (!Number.isFinite(minor) || minor <= 0) {
+      throw new Error(
+        `${label} ${formatMoney(cents, currency)} is too small to send to Meta.`,
+      );
+    }
+    return String(minor);
+  }
+
+  /** Confirm `entityId` lives in `accountId` before touching it. */
+  private async assertEntityInAccount(
+    entityId: string,
+    accountId: string,
+    label: string,
+  ): Promise<void> {
+    const row = await this.graph.get<{ account_id?: unknown }>(entityId, {
+      fields: "account_id",
+    });
+    const actual =
+      row.account_id != null && String(row.account_id).trim()
+        ? normalizeAccountId(String(row.account_id).trim())
+        : null;
+    if (!actual) {
+      throw new Error(
+        `Could not confirm which ad account ${label} ${entityId} belongs to. Nothing was changed.`,
+      );
+    }
+    if (actual !== normalizeAccountId(accountId)) {
+      throw new Error(
+        `${label} ${entityId} belongs to ad account ${actual}, not ${normalizeAccountId(accountId)}. Nothing was changed.`,
+      );
+    }
+  }
+
+  async updateAdSetBudget(input: UpdateAdSetBudgetInput): Promise<
+    MetaAdSet & {
+      currency: string;
+      previous_daily_budget_cents: number | null;
+      effective_status?: string;
+      verified: boolean;
+      verification_error?: string;
+    }
+  > {
+    const adset = await this.graph.get<{
+      id?: string;
+      name?: string;
+      status?: string;
+      account_id?: unknown;
+      campaign_id?: string;
+      daily_budget?: string;
+      lifetime_budget?: string;
+      campaign?: {
+        id?: string;
+        name?: string;
+        daily_budget?: string;
+        lifetime_budget?: string;
+        bid_strategy?: string;
+      };
+    }>(input.adset_id, {
+      fields:
+        "id,name,status,account_id,campaign_id,daily_budget,lifetime_budget,campaign{id,name,daily_budget,lifetime_budget,bid_strategy}",
+    });
+    const name = adset.name ?? input.adset_id;
+
+    // The account comes from the ad set itself, never from the proposal.
+    const accountId =
+      adset.account_id != null && String(adset.account_id).trim()
+        ? normalizeAccountId(String(adset.account_id).trim())
+        : null;
+    if (!accountId) {
+      throw new Error(
+        `Could not confirm which ad account ad set ${input.adset_id} belongs to. Nothing was changed.`,
+      );
+    }
+    if (input.account_id && normalizeAccountId(input.account_id) !== accountId) {
+      throw new Error(
+        `Ad set "${name}" belongs to ad account ${accountId}, not ${normalizeAccountId(input.account_id)}. Nothing was changed.`,
+      );
+    }
+
+    const campaign = adset.campaign ?? {};
+    if (positiveMinor(campaign.daily_budget) || positiveMinor(campaign.lifetime_budget)) {
+      throw new Error(
+        `Ad set "${name}" is in campaign "${campaign.name ?? campaign.id ?? adset.campaign_id}", which uses a campaign budget (Advantage+ campaign budget / CBO). Its budget is set on the campaign, so the ad set daily budget can't be changed. Nothing was changed.`,
+      );
+    }
+    if (positiveMinor(adset.lifetime_budget)) {
+      throw new Error(
+        `Ad set "${name}" uses a lifetime budget, not a daily budget — change it in Ads Manager. Nothing was changed.`,
+      );
+    }
+
+    const currency = await this.requireAccountCurrency(accountId);
+    const requestedMinor = this.budgetMinor(
+      input.daily_budget_cents,
+      currency,
+      "Daily budget",
     );
-    return campaigns.find((c) => c.id === campaignId) ?? {
+    const previousCents = positiveMinor(adset.daily_budget)
+      ? metaMinorToCents(Number(adset.daily_budget), currency)
+      : null;
+
+    await this.graph.post(input.adset_id, { daily_budget: requestedMinor });
+
+    const base = {
+      id: input.adset_id,
+      campaign_id: String(adset.campaign_id ?? campaign.id ?? ""),
+      account_id: accountId,
+      name,
+      status: String(adset.status ?? "PAUSED") as MetaAdSet["status"],
+      currency,
+      previous_daily_budget_cents: previousCents,
+    };
+
+    // Read back: the change succeeded on Meta, so a failed re-read is
+    // reported as unverified (never as a failure that invites a retry).
+    let after: { daily_budget?: string; status?: string; effective_status?: string };
+    try {
+      after = await this.graph.get(input.adset_id, {
+        fields: "daily_budget,lifetime_budget,status,effective_status",
+      });
+    } catch (error) {
+      return {
+        ...base,
+        daily_budget_cents: input.daily_budget_cents,
+        verified: false,
+        verification_error:
+          error instanceof Error ? error.message : "Read-back failed",
+      };
+    }
+    const actualMinor = Number(after.daily_budget);
+    if (!Number.isFinite(actualMinor) || String(actualMinor) !== requestedMinor) {
+      const shown = Number.isFinite(actualMinor)
+        ? formatMoney(metaMinorToCents(actualMinor, currency), currency)
+        : "no daily budget";
+      throw new ExecutionVerificationError(
+        `Meta accepted the budget update for "${name}", but reading it back shows ${shown} instead of ${formatMoney(input.daily_budget_cents, currency)}. Check the ad set in Ads Manager before trying again.`,
+        { adset_id: input.adset_id, requested_minor: requestedMinor, actual_minor: after.daily_budget ?? null },
+      );
+    }
+    return {
+      ...base,
+      status: String(after.status ?? base.status) as MetaAdSet["status"],
+      daily_budget_cents: metaMinorToCents(actualMinor, currency),
+      effective_status: after.effective_status,
+      verified: true,
+    };
+  }
+
+  /** POST a status change and read it back. */
+  private async setStatusVerified(
+    label: "Campaign" | "Ad",
+    accountId: string,
+    entityId: string,
+    status: "ACTIVE" | "PAUSED",
+  ): Promise<{
+    name?: string;
+    status: string;
+    effective_status?: string;
+    objective?: string;
+    adset_id?: string;
+    campaign_id?: string;
+    verified: boolean;
+    verification_error?: string;
+  }> {
+    await this.assertEntityInAccount(entityId, accountId, label);
+    await this.graph.post(entityId, { status });
+    let row: Record<string, unknown>;
+    try {
+      row = await this.graph.get<Record<string, unknown>>(entityId, {
+        fields:
+          label === "Campaign"
+            ? "name,status,effective_status,objective"
+            : "name,status,effective_status,adset_id,campaign_id",
+      });
+    } catch (error) {
+      return {
+        status,
+        verified: false,
+        verification_error:
+          error instanceof Error ? error.message : "Read-back failed",
+      };
+    }
+    const actual = typeof row.status === "string" ? row.status : "";
+    if (actual !== status) {
+      throw new ExecutionVerificationError(
+        `Meta accepted the request, but ${label.toLowerCase()} ${entityId} reports status ${actual || "unknown"} instead of ${status}. Check it in Ads Manager.`,
+        { entity_id: entityId, requested_status: status, actual_status: actual || null },
+      );
+    }
+    return {
+      name: typeof row.name === "string" ? row.name : undefined,
+      status: actual,
+      effective_status:
+        typeof row.effective_status === "string" ? row.effective_status : undefined,
+      objective: typeof row.objective === "string" ? row.objective : undefined,
+      adset_id: typeof row.adset_id === "string" ? row.adset_id : undefined,
+      campaign_id: typeof row.campaign_id === "string" ? row.campaign_id : undefined,
+      verified: true,
+    };
+  }
+
+  async pauseCampaign(
+    accountId: string,
+    campaignId: string,
+  ): Promise<MetaCampaign & { effective_status?: string; verified: boolean; verification_error?: string }> {
+    const res = await this.setStatusVerified("Campaign", accountId, campaignId, "PAUSED");
+    this.invalidateCampaigns(accountId);
+    return {
       id: campaignId,
       account_id: normalizeAccountId(accountId),
-      name: campaignId,
-      status: "PAUSED",
-      objective: "OUTCOME_TRAFFIC",
+      name: res.name ?? campaignId,
+      status: res.status as MetaCampaign["status"],
+      objective: res.objective ?? "",
+      effective_status: res.effective_status,
+      verified: res.verified,
+      ...(res.verification_error ? { verification_error: res.verification_error } : {}),
     };
   }
 
   async resumeCampaign(
     accountId: string,
     campaignId: string,
-  ): Promise<MetaCampaign> {
-    await this.graph.post(campaignId, { status: "ACTIVE" });
+  ): Promise<MetaCampaign & { effective_status?: string; verified: boolean; verification_error?: string }> {
+    const res = await this.setStatusVerified("Campaign", accountId, campaignId, "ACTIVE");
     this.invalidateCampaigns(accountId);
-    const campaigns = await this.listCampaigns(accountId).catch(
-      () => [] as MetaCampaign[],
-    );
-    return campaigns.find((c) => c.id === campaignId) ?? {
+    return {
       id: campaignId,
       account_id: normalizeAccountId(accountId),
-      name: campaignId,
-      status: "ACTIVE",
-      objective: "OUTCOME_TRAFFIC",
+      name: res.name ?? campaignId,
+      status: res.status as MetaCampaign["status"],
+      objective: res.objective ?? "",
+      effective_status: res.effective_status,
+      verified: res.verified,
+      ...(res.verification_error ? { verification_error: res.verification_error } : {}),
     };
   }
 
   async createCampaign(input: CreateCampaignInput): Promise<MetaCampaign> {
     const accountId = normalizeAccountId(input.account_id);
-    const hasCampaignBudget = typeof input.daily_budget_cents === "number";
+    const hasDaily = typeof input.daily_budget_cents === "number";
+    const hasLifetime = typeof input.lifetime_budget_cents === "number";
+    if (hasDaily && hasLifetime) {
+      throw new Error("A campaign can have a daily or a lifetime budget, not both.");
+    }
     const body: Record<string, string | boolean> = {
       name: input.name,
       objective: input.objective,
       status: input.status ?? "PAUSED",
       special_ad_categories: JSON.stringify(input.special_ad_categories ?? []),
     };
-    if (hasCampaignBudget) {
-      const currency = await this.accountCurrency(accountId);
-      body.daily_budget = String(
-        centsToMetaMinor(input.daily_budget_cents!, currency),
-      );
+    if (hasDaily || hasLifetime) {
+      // Campaign budget (CBO): the campaign also owns the bid strategy.
+      const currency = await this.requireAccountCurrency(accountId);
+      if (hasDaily) {
+        body.daily_budget = this.budgetMinor(
+          input.daily_budget_cents!,
+          currency,
+          "Campaign daily budget",
+        );
+      } else {
+        body.lifetime_budget = this.budgetMinor(
+          input.lifetime_budget_cents!,
+          currency,
+          "Campaign lifetime budget",
+        );
+      }
+      body.bid_strategy = input.bid_strategy ?? "LOWEST_COST_WITHOUT_CAP";
     } else {
       // Meta Marketing API v24+: required when budget lives on ad sets (not CBO).
       body.is_adset_budget_sharing_enabled =
@@ -535,198 +828,264 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       status: (input.status ?? "PAUSED") as MetaCampaign["status"],
       objective: input.objective,
       daily_budget_cents: input.daily_budget_cents,
+      lifetime_budget_cents: input.lifetime_budget_cents,
     };
   }
 
   async createImageCampaign(input: CreateImageCampaignInput) {
-    const extra = mergeCampaignExtra(input);
-    const useCbo = Boolean(input.campaign_budget_optimization);
-    const facebookPageId = await this.resolveFacebookPageId(
-      input.account_id,
-      input.facebook_page_id,
-    );
-    let campaign;
-    try {
-      campaign = await this.createCampaign({
-        account_id: input.account_id,
-        name: input.campaign_name,
-        objective: input.objective ?? "OUTCOME_TRAFFIC",
-        status: "PAUSED",
-        daily_budget_cents: useCbo
-          ? budgetToMinorUnits(input.budget_daily)
-          : undefined,
-        special_ad_categories: input.special_ad_categories,
-      });
-    } catch (error) {
-      this.rethrowStep("Create campaign", error);
-    }
-    let adset;
-    try {
-      adset = await this.createAdSet({
-        account_id: input.account_id,
-        campaign_id: campaign.id,
-        name: input.ad_set_name ?? `${input.campaign_name} - Ad Set`,
-        budget_daily: useCbo ? undefined : input.budget_daily,
-        ad_type: "image",
-        landing_page_url: input.landing_page_url,
-        primary_text: input.primary_text,
-        headline: input.headline,
-        description: input.description,
-        call_to_action: input.call_to_action,
-        image_url: input.image_url,
-        age_min: input.age_min,
-        age_max: input.age_max,
-        genders: input.genders,
-        locations: input.locations,
-        publisher_platforms: input.publisher_platforms,
-        objective: input.objective,
-        facebook_page_id: facebookPageId,
-        pixel_id: input.pixel_id,
-        pixel_event_name: input.pixel_event_name,
-        campaign_budget_optimization: useCbo,
-        extra_args: extra,
-      });
-    } catch (error) {
-      this.rethrowStep("Create ad set", error);
-    }
-    let ad;
-    try {
-      ad = await this.createAd({
-        account_id: input.account_id,
-        ad_set_id: adset.id,
-        ad_type: "image",
-        primary_text: input.primary_text,
-        headline: input.headline,
-        description: input.description,
-        call_to_action: input.call_to_action,
-        landing_page_url: input.landing_page_url,
-        display_link: input.display_link,
-        url_tags: input.url_tags,
-        image_url: input.image_url,
-        existing_image_hash: input.existing_image_hash,
-        facebook_page_id: facebookPageId,
-        instagram_account_id: input.instagram_account_id,
-        name: input.ad_name ?? `${input.campaign_name} - Ad`,
-      });
-    } catch (error) {
-      this.rethrowStep("Create ad", error);
-    }
-    return { campaign, adset, ad, raw_text: "Created with Meta Graph API" };
+    return this.createFullCampaign(input, "image");
   }
 
   async createVideoCampaign(input: CreateVideoCampaignInput) {
-    const extra = mergeCampaignExtra(input);
-    const useCbo = Boolean(input.campaign_budget_optimization);
-    const facebookPageId = await this.resolveFacebookPageId(
-      input.account_id,
-      input.facebook_page_id,
-    );
-    let existingVideoId = input.existing_video_id;
-    if (!existingVideoId && input.video_url) {
+    return this.createFullCampaign(input, "video");
+  }
+
+  /**
+   * Campaign → ad set → creative → ad, all PAUSED. Everything that can be
+   * checked is checked before the first POST; each created ID is reported
+   * through onProgress, and IDs in `resume` (from an earlier failed run) are
+   * reused instead of created again.
+   */
+  private async createFullCampaign(
+    input: CreateImageCampaignInput | CreateVideoCampaignInput,
+    kind: "image" | "video",
+  ) {
+    const accountId = normalizeAccountId(input.account_id);
+    const progress: CreateProgress = { ...(input.resume ?? {}) };
+    const record = async (patch: CreateProgress) => {
+      Object.assign(progress, patch);
       try {
-        existingVideoId = await this.uploadVideoFromUrl(
-          input.account_id,
-          input.video_url,
-        );
+        await input.onProgress?.({ ...progress });
       } catch (error) {
-        this.rethrowStep("Upload video", error);
+        logger.warn("Create progress checkpoint failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
+    };
+    const step = async <T>(name: string, run: () => Promise<T>): Promise<T> => {
+      try {
+        return await run();
+      } catch (error) {
+        throw new PartialCreateError(name, error, progress);
+      }
+    };
+
+    // ---- 1. Validate everything before anything is created -------------
+    const objective = input.objective ?? "OUTCOME_TRAFFIC";
+    const useCbo = Boolean(input.campaign_budget_optimization);
+    const daily = positiveNumber(input.budget_daily);
+    const lifetime = positiveNumber(input.budget_lifetime);
+    if (daily == null && lifetime == null) {
+      throw new Error(
+        "A budget is required — set budget_daily, or budget_lifetime with end_time. Nothing was created.",
+      );
     }
-    let campaign;
-    try {
-      campaign = await this.createCampaign({
-        account_id: input.account_id,
+    if (daily != null && lifetime != null) {
+      throw new Error("Set either budget_daily or budget_lifetime, not both. Nothing was created.");
+    }
+    if (lifetime != null) assertFutureEndTime(input.end_time, true);
+    else if (input.end_time) assertFutureEndTime(input.end_time, false);
+    const cta = normalizeCallToAction(input.call_to_action);
+    const currency = await this.requireAccountCurrency(accountId);
+    const facebookPageId = await step("Resolve Facebook page", () =>
+      this.resolveFacebookPageId(accountId, input.facebook_page_id),
+    );
+    const leadFormId = resolveLeadFormId(input);
+
+    const adSetInput: CreateAdSetInput = {
+      account_id: accountId,
+      campaign_id: progress.campaign_id ?? "pending",
+      name: input.ad_set_name ?? `${input.campaign_name} - Ad Set`,
+      budget_daily: useCbo ? undefined : (daily ?? undefined),
+      budget_lifetime: useCbo ? undefined : (lifetime ?? undefined),
+      start_time: input.start_time,
+      end_time: input.end_time,
+      ad_type: kind,
+      landing_page_url: input.landing_page_url,
+      primary_text: input.primary_text,
+      age_min: input.age_min,
+      age_max: input.age_max,
+      genders: input.genders,
+      locations: input.locations,
+      publisher_platforms: input.publisher_platforms,
+      objective,
+      facebook_page_id: facebookPageId,
+      pixel_id: input.pixel_id,
+      pixel_event_name: input.pixel_event_name,
+      lead_form_id: leadFormId,
+      campaign_budget_optimization: useCbo,
+      extra_args: mergeCampaignExtra(input),
+    };
+    // Throws on missing location / budget before any POST.
+    const adSetPlan = await this.planAdSet(adSetInput, {
+      cbo: useCbo,
+      objective,
+      currency,
+    });
+    const campaignBudgetCents = useCbo
+      ? budgetToMinorUnits(daily ?? lifetime ?? undefined)
+      : undefined;
+    if (useCbo) this.budgetMinor(campaignBudgetCents ?? 0, currency, "Campaign budget");
+    const campaignBudget = !useCbo
+      ? {}
+      : daily != null
+        ? { daily_budget_cents: campaignBudgetCents }
+        : { lifetime_budget_cents: campaignBudgetCents };
+
+    // A recorded campaign must still exist in this account; never re-create it.
+    if (progress.campaign_id) {
+      const campaignId = progress.campaign_id;
+      await step("Check previously created campaign", () =>
+        this.assertEntityInAccount(campaignId, accountId, "Campaign"),
+      );
+    }
+
+    // ---- 2. Video upload ---------------------------------------------------
+    const video = input as CreateVideoCampaignInput;
+    let videoId = kind === "video" ? (video.existing_video_id ?? progress.video_id) : undefined;
+    if (kind === "video" && !videoId) {
+      if (!video.video_url) {
+        throw new Error("A video ad needs video_url or existing_video_id. Nothing was created.");
+      }
+      videoId = await step("Upload video", () =>
+        this.uploadVideoFromUrl(accountId, video.video_url!),
+      );
+      await record({ video_id: videoId });
+    }
+
+    // ---- 3. Campaign -------------------------------------------------------
+    let campaign: MetaCampaign;
+    if (progress.campaign_id) {
+      campaign = {
+        id: progress.campaign_id,
+        account_id: accountId,
         name: input.campaign_name,
-        objective: input.objective ?? "OUTCOME_TRAFFIC",
         status: "PAUSED",
-        daily_budget_cents: useCbo
-          ? budgetToMinorUnits(input.budget_daily)
-          : undefined,
-        special_ad_categories: input.special_ad_categories,
-      });
-    } catch (error) {
-      this.rethrowStep("Create campaign", error);
+        objective,
+      };
+    } else {
+      campaign = await step("Create campaign", () =>
+        this.createCampaign({
+          account_id: accountId,
+          name: input.campaign_name,
+          objective,
+          status: "PAUSED",
+          special_ad_categories: input.special_ad_categories,
+          ...campaignBudget,
+        }),
+      );
+      await record({ campaign_id: campaign.id });
     }
-    let adset;
-    try {
-      adset = await this.createAdSet({
-        account_id: input.account_id,
+
+    // ---- 4. Ad set ---------------------------------------------------------
+    let adset: MetaAdSet;
+    if (progress.adset_id) {
+      adset = {
+        id: progress.adset_id,
         campaign_id: campaign.id,
-        name: input.ad_set_name ?? `${input.campaign_name} - Ad Set`,
-        budget_daily: useCbo ? undefined : input.budget_daily,
-        ad_type: "video",
-        landing_page_url: input.landing_page_url,
-        primary_text: input.primary_text,
-        headline: input.headline,
-        description: input.description,
-        call_to_action: input.call_to_action,
-        video_url: input.video_url,
-        existing_video_id: existingVideoId,
-        thumbnail_url: input.thumbnail_url,
-        age_min: input.age_min,
-        age_max: input.age_max,
-        genders: input.genders,
-        locations: input.locations,
-        publisher_platforms: input.publisher_platforms,
-        objective: input.objective,
-        facebook_page_id: facebookPageId,
-        pixel_id: input.pixel_id,
-        pixel_event_name: input.pixel_event_name,
-        campaign_budget_optimization: useCbo,
-        extra_args: extra,
-      });
-    } catch (error) {
-      this.rethrowStep("Create ad set", error);
+        account_id: accountId,
+        name: adSetInput.name ?? "Ad Set",
+        status: "PAUSED",
+        daily_budget_cents: adSetPlan.daily_budget_cents,
+      };
+    } else {
+      const res = await step("Create ad set", () =>
+        this.graph.post<{ id: string }>(`${accountId}/adsets`, {
+          ...adSetPlan.body,
+          campaign_id: campaign.id,
+        }),
+      );
+      adset = {
+        id: String(res.id),
+        campaign_id: campaign.id,
+        account_id: accountId,
+        name: adSetInput.name ?? "Ad Set",
+        status: "PAUSED",
+        daily_budget_cents: adSetPlan.daily_budget_cents,
+        optimization_goal: adSetPlan.optimization_goal,
+        billing_event: adSetPlan.billing_event,
+        targeting_summary: JSON.stringify(adSetPlan.targeting),
+      };
+      await record({ adset_id: adset.id });
     }
-    let ad;
-    try {
-      ad = await this.createAd({
-        account_id: input.account_id,
+
+    // ---- 5. Creative + ad --------------------------------------------------
+    const ad = await this.createAdSteps(
+      {
+        account_id: accountId,
         ad_set_id: adset.id,
-        ad_type: "video",
+        ad_type: kind,
         primary_text: input.primary_text,
         headline: input.headline,
         description: input.description,
-        call_to_action: input.call_to_action,
+        call_to_action: cta,
         landing_page_url: input.landing_page_url,
         display_link: input.display_link,
         url_tags: input.url_tags,
-        video_url: input.video_url,
-        existing_video_id: existingVideoId,
-        thumbnail_url: input.thumbnail_url,
+        image_url: kind === "image" ? (input as CreateImageCampaignInput).image_url : undefined,
+        existing_image_hash:
+          kind === "image" ? (input as CreateImageCampaignInput).existing_image_hash : undefined,
+        existing_video_id: videoId,
+        thumbnail_url: kind === "video" ? video.thumbnail_url : undefined,
         facebook_page_id: facebookPageId,
         instagram_account_id: input.instagram_account_id,
-        name: input.ad_name ?? `${input.campaign_name} - Video Ad`,
-      });
-    } catch (error) {
-      this.rethrowStep("Create ad", error);
-    }
-    return { campaign, adset, ad, raw_text: "Created with Meta Graph API" };
+        lead_form_id: leadFormId,
+        name: input.ad_name ?? `${input.campaign_name} - ${kind === "video" ? "Video Ad" : "Ad"}`,
+      },
+      { progress, record, step, adSetVerified: true, pageId: facebookPageId },
+    );
+
+    return {
+      campaign: { ...campaign, account_id: accountId },
+      adset,
+      ad,
+      currency,
+      created: { ...progress },
+      raw_text: "Created with Meta Graph API (all PAUSED)",
+    };
   }
 
-  async createAdSet(input: CreateAdSetInput): Promise<MetaAdSet & { raw_text?: string }> {
+  /**
+   * Build (and validate) the ad set POST body without sending it. `campaign`
+   * says whether the parent campaign owns the budget (CBO).
+   */
+  private async planAdSet(
+    input: CreateAdSetInput,
+    campaign: { cbo: boolean; objective?: string; currency?: string },
+  ): Promise<{
+    body: Record<string, string | number | boolean | null | undefined>;
+    optimization_goal: string;
+    billing_event: string;
+    targeting: Record<string, unknown>;
+    daily_budget_cents: number;
+    budget_note?: string;
+  }> {
     const accountId = normalizeAccountId(input.account_id);
+    const objective = input.objective ?? campaign.objective;
+    const extra = { ...(input.extra_args ?? {}) };
+    const leadFormId = input.lead_form_id ?? resolveLeadFormId({ extra_args: extra });
+    if (leadFormId) extra.lead_form_id = leadFormId;
+
     const { optimization_goal, billing_event } = optimizationForObjective(
-      input.objective,
-      {
-        pixel_id: input.pixel_id,
-        extra_args: input.extra_args,
-      },
+      objective,
+      { pixel_id: input.pixel_id, extra_args: extra },
     );
+    // Throws a clear error when no location was given (never defaults to US).
     const targeting = buildMetaTargeting({
       age_min: input.age_min,
       age_max: input.age_max,
       genders: input.genders,
       locations: input.locations,
       publisher_platforms: input.publisher_platforms,
-      extra_args: input.extra_args,
+      extra_args: extra,
     });
     const promoted = buildPromotedObject({
-      objective: input.objective,
+      objective,
+      lead_form_id: leadFormId,
       facebook_page_id: input.facebook_page_id,
       pixel_id: input.pixel_id,
       pixel_event_name: input.pixel_event_name,
-      extra_args: input.extra_args,
+      extra_args: extra,
     });
 
     const body: Record<string, string | number | boolean | null | undefined> = {
@@ -735,164 +1094,276 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       status: "PAUSED",
       billing_event,
       optimization_goal,
-      bid_strategy: "LOWEST_COST_WITHOUT_CAP",
       targeting: JSON.stringify(targeting),
     };
+    if (input.start_time) body.start_time = input.start_time;
+    if (input.end_time) {
+      assertFutureEndTime(input.end_time, false);
+      body.end_time = input.end_time;
+    }
 
-    if (!input.campaign_budget_optimization) {
-      const budget = input.budget_daily;
-      if (typeof budget !== "number" || !Number.isFinite(budget) || budget <= 0) {
+    let dailyCents = 0;
+    let budgetNote: string | undefined;
+    const daily = positiveNumber(input.budget_daily);
+    const lifetime = positiveNumber(input.budget_lifetime);
+    if (campaign.cbo) {
+      // Budget and bid strategy belong to the campaign under CBO.
+      if (daily != null || lifetime != null) {
+        budgetNote =
+          "The campaign uses a campaign budget (CBO), so the ad set budget in the proposal was not applied — the campaign budget is shared across its ad sets.";
+      }
+    } else {
+      if (daily == null && lifetime == null) {
         throw new Error(
-          "Missing daily ad set budget — set budget_daily or daily_budget (e.g. 5 for £5/day) in the approval args.",
+          "Missing ad set budget — set budget_daily (major units, e.g. 5 for 5/day), or budget_lifetime with end_time. Nothing was created.",
         );
       }
-      const currency = await this.accountCurrency(accountId);
-      body.daily_budget = String(
-        centsToMetaMinor(Math.round(budget * 100), currency),
-      );
-    }
-    if (promoted) {
-      body.promoted_object = JSON.stringify(promoted);
+      if (daily != null && lifetime != null) {
+        throw new Error("Set either budget_daily or budget_lifetime on the ad set, not both.");
+      }
+      if (lifetime != null) assertFutureEndTime(input.end_time, true);
+      const currency =
+        campaign.currency ?? (await this.requireAccountCurrency(accountId));
+      body.bid_strategy = "LOWEST_COST_WITHOUT_CAP";
+      if (daily != null) {
+        dailyCents = budgetToMinorUnits(daily) ?? 0;
+        body.daily_budget = this.budgetMinor(dailyCents, currency, "Ad set daily budget");
+      } else {
+        body.lifetime_budget = this.budgetMinor(
+          budgetToMinorUnits(lifetime ?? undefined) ?? 0,
+          currency,
+          "Ad set lifetime budget",
+        );
+      }
     }
 
-    const res = await this.graph.post<{ id: string }>(`${accountId}/adsets`, body);
+    const destinationType =
+      optionalText(extra.destination_type) ?? (leadFormId ? "ON_AD" : undefined);
+    if (destinationType) body.destination_type = destinationType;
+    const dsaBeneficiary = optionalText(extra.dsa_beneficiary);
+    if (dsaBeneficiary) body.dsa_beneficiary = dsaBeneficiary;
+    const dsaPayor = optionalText(extra.dsa_payor);
+    if (dsaPayor) body.dsa_payor = dsaPayor;
+    if (promoted) body.promoted_object = JSON.stringify(promoted);
+
+    return {
+      body,
+      optimization_goal,
+      billing_event,
+      targeting,
+      daily_budget_cents: dailyCents,
+      ...(budgetNote ? { budget_note: budgetNote } : {}),
+    };
+  }
+
+  async createAdSet(
+    input: CreateAdSetInput,
+  ): Promise<MetaAdSet & { raw_text?: string; budget_note?: string }> {
+    const accountId = normalizeAccountId(input.account_id);
+    // The live campaign decides CBO / objective — not the proposal's flag.
+    const campaign = await this.graph.get<{
+      account_id?: unknown;
+      objective?: string;
+      daily_budget?: string;
+      lifetime_budget?: string;
+    }>(input.campaign_id, {
+      fields: "account_id,objective,daily_budget,lifetime_budget,bid_strategy",
+    });
+    const campaignAccount =
+      campaign.account_id != null && String(campaign.account_id).trim()
+        ? normalizeAccountId(String(campaign.account_id).trim())
+        : null;
+    if (campaignAccount !== accountId) {
+      throw new Error(
+        `Campaign ${input.campaign_id} belongs to ${campaignAccount ?? "an unknown ad account"}, not ${accountId}. Nothing was created.`,
+      );
+    }
+    const cbo =
+      positiveMinor(campaign.daily_budget) || positiveMinor(campaign.lifetime_budget);
+    const plan = await this.planAdSet(
+      { ...input, account_id: accountId },
+      { cbo, objective: input.objective ?? campaign.objective },
+    );
+
+    const res = await this.graph.post<{ id: string }>(`${accountId}/adsets`, plan.body);
     return {
       id: String(res.id),
       campaign_id: input.campaign_id,
       account_id: accountId,
       name: input.name ?? "Ad Set",
       status: "PAUSED",
-      daily_budget_cents: Math.round((input.budget_daily ?? 0) * 100),
-      optimization_goal,
-      billing_event,
-      targeting_summary: JSON.stringify(targeting),
-      raw_text: "Ad set created with Meta Graph API",
+      daily_budget_cents: plan.daily_budget_cents,
+      optimization_goal: plan.optimization_goal,
+      billing_event: plan.billing_event,
+      targeting_summary: JSON.stringify(plan.targeting),
+      raw_text: "Ad set created with Meta Graph API (PAUSED)",
+      ...(plan.budget_note ? { budget_note: plan.budget_note } : {}),
     };
   }
 
   async createAd(input: CreateAdInput): Promise<MetaAd & { raw_text?: string }> {
-    const accountId = normalizeAccountId(input.account_id);
-    let pageId: string;
-    try {
-      pageId = await this.resolveFacebookPageId(
-        input.account_id,
-        input.facebook_page_id,
-      );
-    } catch (error) {
-      this.rethrowStep("Resolve Facebook page", error);
-    }
-
-    const isVideo =
-      input.ad_type === "video" || input.video_url || input.existing_video_id;
-    let videoId = input.existing_video_id;
-    if (isVideo && !videoId && input.video_url) {
+    const progress: CreateProgress = { ...(input.resume ?? {}) };
+    const record = async (patch: CreateProgress) => {
+      Object.assign(progress, patch);
       try {
-        videoId = await this.uploadVideoFromUrl(
-          input.account_id,
-          input.video_url,
-        );
+        await input.onProgress?.({ ...progress });
       } catch (error) {
-        this.rethrowStep("Upload video", error);
+        logger.warn("Create progress checkpoint failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
+    };
+    const step = async <T>(name: string, run: () => Promise<T>): Promise<T> => {
+      try {
+        return await run();
+      } catch (error) {
+        throw new PartialCreateError(name, error, progress);
+      }
+    };
+    return this.createAdSteps(input, { progress, record, step, adSetVerified: false });
+  }
+
+  /** Creative + ad, resuming from `progress` (creative_id / ad_id / video_id). */
+  private async createAdSteps(
+    input: CreateAdInput,
+    ctx: {
+      progress: CreateProgress;
+      record: (patch: CreateProgress) => Promise<void>;
+      step: <T>(name: string, run: () => Promise<T>) => Promise<T>;
+      adSetVerified: boolean;
+      pageId?: string;
+    },
+  ): Promise<MetaAd & { raw_text?: string; creative_id: string }> {
+    const { progress, record, step } = ctx;
+    const accountId = normalizeAccountId(input.account_id);
+
+    // Validate before any POST.
+    const ctaType = normalizeCallToAction(input.call_to_action) ?? "LEARN_MORE";
+    const leadFormId = input.lead_form_id?.trim() || undefined;
+    if (!ctx.adSetVerified) {
+      await step("Check ad set", () =>
+        this.assertEntityInAccount(input.ad_set_id, accountId, "Ad set"),
+      );
     }
-    if (isVideo && !videoId) {
+    const pageId =
+      ctx.pageId ??
+      (await step("Resolve Facebook page", () =>
+        this.resolveFacebookPageId(accountId, input.facebook_page_id),
+      ));
+
+    const isVideo = Boolean(
+      input.ad_type === "video" || input.video_url || input.existing_video_id,
+    );
+    let videoId = input.existing_video_id ?? progress.video_id;
+    if (isVideo && !videoId && !input.video_url) {
       throw new Error(
         "Video ad requires existing_video_id or a public video_url Meta can fetch.",
       );
     }
 
-    const ctaType = input.call_to_action ?? "LEARN_MORE";
-    const linkData: Record<string, unknown> = {
-      link: input.landing_page_url,
-      message: input.primary_text,
-      ...(input.headline ? { name: input.headline } : {}),
-      ...(input.description ? { description: input.description } : {}),
-      ...(input.display_link ? { caption: input.display_link } : {}),
-      ...(input.image_url ? { image_url: input.image_url } : {}),
-      ...(input.existing_image_hash
-        ? { image_hash: input.existing_image_hash }
-        : {}),
-      call_to_action: {
-        type: ctaType,
-        value: { link: input.landing_page_url },
-      },
-    };
+    let creativeId = progress.creative_id;
+    if (!creativeId) {
+      if (isVideo && !videoId) {
+        videoId = await step("Upload video", () =>
+          this.uploadVideoFromUrl(accountId, input.video_url!),
+        );
+        await record({ video_id: videoId });
+      }
+      const ctaValue: Record<string, string> = { link: input.landing_page_url };
+      if (leadFormId) ctaValue.lead_gen_form_id = leadFormId;
+      const callToAction = { type: ctaType, value: ctaValue };
 
-    const storySpec: Record<string, unknown> = {
-      page_id: pageId,
-      ...(input.instagram_account_id
-        ? { instagram_actor_id: input.instagram_account_id }
-        : {}),
-    };
-
-    if (isVideo) {
-      storySpec.video_data = {
-        video_id: videoId,
-        message: input.primary_text,
-        title: input.headline,
-        link_description: input.description,
-        ...(input.thumbnail_url ? { image_url: input.thumbnail_url } : {}),
-        call_to_action: {
-          type: ctaType,
-          value: { link: input.landing_page_url },
-        },
+      const storySpec: Record<string, unknown> = {
+        page_id: pageId,
+        // v22+: instagram_actor_id was replaced by instagram_user_id.
+        ...(input.instagram_account_id
+          ? { instagram_user_id: input.instagram_account_id }
+          : {}),
       };
-    } else {
-      storySpec.link_data = linkData;
-    }
+      if (isVideo) {
+        storySpec.video_data = {
+          video_id: videoId,
+          message: input.primary_text,
+          ...(input.headline ? { title: input.headline } : {}),
+          ...(input.description ? { link_description: input.description } : {}),
+          ...(input.thumbnail_url ? { image_url: input.thumbnail_url } : {}),
+          call_to_action: callToAction,
+        };
+      } else {
+        storySpec.link_data = {
+          link: input.landing_page_url,
+          message: input.primary_text,
+          ...(input.headline ? { name: input.headline } : {}),
+          ...(input.description ? { description: input.description } : {}),
+          ...(input.display_link ? { caption: input.display_link } : {}),
+          // link_data takes `picture` (a URL) or `image_hash` — never image_url.
+          ...(input.existing_image_hash
+            ? { image_hash: input.existing_image_hash }
+            : input.image_url
+              ? { picture: input.image_url }
+              : {}),
+          call_to_action: callToAction,
+        };
+      }
 
-    const creativeBody: Record<string, string | number | boolean | null | undefined> = {
-      name: input.name ?? "Creative",
-      object_story_spec: JSON.stringify(storySpec),
-    };
-    if (input.url_tags) {
-      creativeBody.url_tags = input.url_tags;
-    }
+      const creativeBody: Record<string, string | number | boolean | null | undefined> = {
+        name: input.name ?? "Creative",
+        object_story_spec: JSON.stringify(storySpec),
+      };
+      if (input.url_tags) creativeBody.url_tags = input.url_tags;
 
-    let creative: { id: string };
-    try {
-      creative = await this.graph.post<{ id: string }>(
-        `${accountId}/adcreatives`,
-        creativeBody,
+      const creative = await step("Create ad creative", () =>
+        this.graph.post<{ id: string }>(`${accountId}/adcreatives`, creativeBody),
       );
-    } catch (error) {
-      this.rethrowStep("Create ad creative", error);
+      creativeId = String(creative.id);
+      await record({ creative_id: creativeId });
     }
 
-    let ad: { id: string };
-    try {
-      ad = await this.graph.post<{ id: string }>(`${accountId}/ads`, {
-        name: input.name ?? "Ad",
-        adset_id: input.ad_set_id,
-        status: "PAUSED",
-        creative: JSON.stringify({ creative_id: creative.id }),
-      });
-    } catch (error) {
-      this.rethrowStep("Create ad", error);
+    let adId = progress.ad_id;
+    if (!adId) {
+      const finalCreativeId = creativeId;
+      const ad = await step("Create ad", () =>
+        this.graph.post<{ id: string }>(`${accountId}/ads`, {
+          name: input.name ?? "Ad",
+          adset_id: input.ad_set_id,
+          status: "PAUSED",
+          creative: JSON.stringify({ creative_id: finalCreativeId }),
+        }),
+      );
+      adId = String(ad.id);
+      await record({ ad_id: adId });
     }
+
     return {
-      id: String(ad.id),
+      id: adId,
       adset_id: input.ad_set_id,
-      campaign_id: "unknown",
+      campaign_id: progress.campaign_id ?? "unknown",
       account_id: accountId,
       name: input.name ?? "Ad",
       status: "PAUSED",
+      creative_id: creativeId,
       creative_summary: input.display_link
         ? `Display: ${input.display_link}`
         : input.landing_page_url,
-      raw_text: "Ad created with Meta Graph API",
+      raw_text: "Ad created with Meta Graph API (PAUSED)",
     };
   }
 
-  async pauseAd(accountId: string, adId: string): Promise<MetaAd> {
-    await this.graph.post(adId, { status: "PAUSED" });
+  async pauseAd(
+    accountId: string,
+    adId: string,
+  ): Promise<MetaAd & { effective_status?: string; verified: boolean; verification_error?: string }> {
+    const res = await this.setStatusVerified("Ad", accountId, adId, "PAUSED");
     return {
       id: adId,
-      adset_id: "unknown",
-      campaign_id: "unknown",
+      adset_id: res.adset_id ?? "unknown",
+      campaign_id: res.campaign_id ?? "unknown",
       account_id: normalizeAccountId(accountId),
-      name: adId,
-      status: "PAUSED",
+      name: res.name ?? adId,
+      status: res.status as MetaAd["status"],
+      effective_status: res.effective_status,
+      verified: res.verified,
+      ...(res.verification_error ? { verification_error: res.verification_error } : {}),
     };
   }
 

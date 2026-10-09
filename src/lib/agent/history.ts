@@ -6,6 +6,22 @@ import { sanitizeHistoryContent } from "@/lib/agent/reply-format";
 
 const MAX_MESSAGES = 24;
 const MAX_CHARS = 48_000;
+/** Rows fetched from the DB — the newest ones, not the oldest. */
+const FETCH_LIMIT = 80;
+/** Older assistant replies (full audits) are cut to this many characters. */
+const PAST_REPLY_CHARS = 1_500;
+/** The latest reply stays fuller so "explain point 3" follow-ups still work. */
+const LATEST_REPLY_CHARS = 6_000;
+const TRUNCATION_NOTE = "[earlier report truncated]";
+
+/** Cut a long reply at a line boundary and mark it as truncated. */
+export function truncatePastReply(content: string, limit: number): string {
+  if (content.length <= limit) return content;
+  const head = content.slice(0, limit);
+  const lastBreak = head.lastIndexOf("\n");
+  const cut = lastBreak > limit * 0.6 ? head.slice(0, lastBreak) : head;
+  return `${cut.trimEnd()}\n\n${TRUNCATION_NOTE}`;
+}
 
 export type AgentHistoryMessage = {
   role: "user" | "assistant" | "system";
@@ -31,12 +47,18 @@ export async function loadConversationHistory(
     return m.role === "user" || m.role === "assistant" || m.role === "system";
   });
 
+  const latestAssistantIndex = filtered.map((m) => m.role).lastIndexOf("assistant");
   return truncateHistory(
-    filtered.map((m) => ({
+    filtered.map((m, index) => ({
       role: m.role as AgentHistoryMessage["role"],
       content:
         m.role === "assistant"
-          ? sanitizeHistoryContent(m.content)
+          ? truncatePastReply(
+              sanitizeHistoryContent(m.content),
+              index === latestAssistantIndex
+                ? LATEST_REPLY_CHARS
+                : PAST_REPLY_CHARS,
+            )
           : m.content,
     })),
   );
@@ -75,10 +97,12 @@ async function fetchMessages(conversationId: string): Promise<Message[]> {
     .from("messages")
     .select("*")
     .eq("conversation_id", conversationId)
-    .order("created_at", { ascending: true })
-    .limit(80);
+    // Newest first so long threads keep their latest turns, then back to
+    // chronological order for the model.
+    .order("created_at", { ascending: false })
+    .limit(FETCH_LIMIT);
   if (error) throw new Error(error.message);
-  return (data ?? []).map((row) =>
-    mapMessageRow(row as Record<string, unknown>),
-  );
+  return (data ?? [])
+    .map((row) => mapMessageRow(row as Record<string, unknown>))
+    .reverse();
 }
