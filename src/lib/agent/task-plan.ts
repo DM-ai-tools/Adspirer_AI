@@ -1,5 +1,5 @@
 import type { AgentHistoryMessage } from "@/lib/agent/history";
-import { looksLikeAuditBriefReply } from "@/lib/agent/audit-brief";
+import { looksLikeAuditBriefReply, parseDateRangeFromText } from "@/lib/agent/audit-brief";
 
 export type TaskStepState =
   | "pending"
@@ -246,6 +246,19 @@ export function detectRequestIntentWithHistory(
       ),
   );
   if (askedForBrief && request.trim().length <= 200 && !/\?\s*$/.test(request.trim())) {
+    return "audit";
+  }
+  // "now do 16th to 17th sept" / "16 sept" after an audit → the same audit
+  // for the new period. Questions ("what was spend on 16 sept?") stay Q&A.
+  const hadAudit = history.some(
+    (m) => m.role === "user" && detectRequestIntent(m.content) === "audit",
+  );
+  if (
+    hadAudit &&
+    request.trim().length <= 120 &&
+    !/\?\s*$/.test(request.trim()) &&
+    parseDateRangeFromText(request)
+  ) {
     return "audit";
   }
 

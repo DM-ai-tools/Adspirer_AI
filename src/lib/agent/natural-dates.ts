@@ -140,6 +140,26 @@ export function parseNaturalDateRange(text: string, now = new Date()): ParsedRan
       dateLabel: `${LABEL_FMT.format(first)} – ${LABEL_FMT.format(last)}`,
     };
   }
+  // A single day: "16th sept", "on 16 September 2026", "Sept 16", "16/09/2026".
+  m = re(`\\b${DAY}\\s*(?:of\\s+)?${MONTH}${YEAR}`).exec(t) ?? null;
+  if (m && (m[2]!.toLowerCase() !== "may" || m[3] || /\d/.test(m[1]!))) {
+    const day: Parts = { day: +m[1]!, month: monthOf(m[2]!)!, year: fullYear(m[3]) };
+    return finish(day, day, today);
+  }
+  m = re(`\\b${MONTH}\\s+${DAY}(?!\\d|\\s*(?:%|x|k|am|pm|days?|weeks?|months?))${YEAR}`).exec(t);
+  if (m && m[1]!.toLowerCase() !== "may") {
+    const day: Parts = { day: +m[2]!, month: monthOf(m[1]!)!, year: fullYear(m[3]) };
+    return finish(day, day, today);
+  }
+  m = /\b(\d{1,2})[/.](\d{1,2})[/.](\d{2}|\d{4})\b/.exec(t);
+  if (m) {
+    const [a, b] = [+m[1]!, +m[2]!];
+    const year = fullYear(m[3]);
+    const day: Parts | null =
+      b <= 12 ? { day: a, month: b - 1, year } : a <= 12 ? { day: b, month: a - 1, year } : null;
+    if (day) return finish(day, day, today);
+  }
+
   // A whole month: "September 2026", "for sept", "in august", "month of july".
   // Bare "may" is ignored unless it clearly names the month.
   m = re(`(?:\\b(for|in|during|month of|of|whole|all of|throughout)\\s+)?\\b${MONTH}(?:\\s+(20\\d{2}))?\\b`).exec(t);

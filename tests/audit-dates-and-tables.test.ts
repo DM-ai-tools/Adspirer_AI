@@ -27,6 +27,12 @@ describe("parseNaturalDateRange", () => {
     ["last month", "2026-09-01..2026-09-30"],
     ["1 Oct to 31 Oct", "2026-10-01..2026-10-09"], // future days clamped to today
     ["november", "2025-11-01..2025-11-30"], // a month that hasn't happened yet this year → last year's
+    ["16th sept and 17th sept", "2026-09-16..2026-09-17"],
+    ["16 sept", "2026-09-16..2026-09-16"],
+    ["on 16 September 2026", "2026-09-16..2026-09-16"],
+    ["Sept 16", "2026-09-16..2026-09-16"],
+    ["16/09/2026", "2026-09-16..2026-09-16"],
+    ["September 2026", "2026-09-01..2026-09-30"], // not "Sep 20"
   ])("%s → %s", (text, expected) => {
     expect(range(text)).toBe(expected);
   });
@@ -63,7 +69,50 @@ describe("audit follow-up routing", () => {
   });
 });
 
+describe("follow-up audits for a new period", () => {
+  const history = [
+    { role: "user" as const, content: "Audit the account and summarize spend, delivery, and risks" },
+    { role: "assistant" as const, content: "What date range would you like the audit to cover?" },
+    { role: "user" as const, content: "from 1st sept to 15th sept" },
+    {
+      role: "assistant" as const,
+      content: `# Meta Ads Account Audit — TR Internal Marketing\n\n**Period:** 1 Sept 2026 – 15 Sept 2026\n${"detail ".repeat(800)}`,
+    },
+  ];
+
+  it.each([
+    ["give me the audit for 16th sept and 17th sept", "2026-09-16", "2026-09-17"],
+    ["now do 16th to 17th september", "2026-09-16", "2026-09-17"],
+    ["16 sept", "2026-09-16", "2026-09-16"],
+  ])("%s → whole-account audit for the new dates", (text, start, stop) => {
+    expect(detectRequestIntentWithHistory(text, history)).toBe("audit");
+    const brief = resolveAuditBrief(text, history);
+    expect(brief.scope).toBe("account");
+    expect(brief.campaignHints).toEqual([]); // dates are never campaign names
+    expect(brief.dateStart?.slice(5)).toBe(start.slice(5));
+    expect(brief.dateStop?.slice(5)).toBe(stop.slice(5));
+    expect(brief.ready).toBe(true);
+  });
+
+  it("keeps questions as quick answers", () => {
+    expect(detectRequestIntentWithHistory("what was spend on 16 sept?", history)).toBe("general");
+  });
+
+  it("still recognises a named campaign", () => {
+    const brief = resolveAuditBrief("audit campaign TR AUDIT FINAL for last 7 days", history);
+    expect(brief.campaignHints).toEqual(["TR AUDIT FINAL"]);
+  });
+});
+
 describe("markdown table rows", () => {
+  it("shows escaped pipes outside tables as plain pipes", () => {
+    const blocks = parseMarkdownToBlocks("Ad sets within TR \\| Lead Gen Traffic Radius \\| Sep 2026");
+    const text = blocks
+      .flatMap((b) => (b.type === "paragraph" ? b.spans.map((s) => s.text) : []))
+      .join("");
+    expect(text).toContain("TR | Lead Gen Traffic Radius | Sep 2026");
+  });
+
   it("honours escaped pipes in cells", () => {
     expect(
       splitMarkdownTableRow("| Critical | TR \\| Lead Gen Traffic Radius \\| Sep 2026 | $30/day |"),

@@ -322,7 +322,9 @@ function parseAssistantContent(
   };
 }
 
-function renderInline(text: string): React.ReactNode[] {
+function renderInline(raw: string): React.ReactNode[] {
+  // "\|" is a table escape; in prose it's just a pipe (campaign names).
+  const text = raw.replace(/\\\|/g, "|");
   const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`|https?:\/\/[^\s)<>]*[^\s)<>.,;:!?'"])/g);
   return parts.map((part, i) => {
     if (/^https?:\/\//.test(part)) {

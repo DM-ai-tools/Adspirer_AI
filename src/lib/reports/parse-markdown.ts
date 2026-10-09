@@ -154,7 +154,9 @@ export function sanitizeReportText(input: string): string {
     .trim();
 }
 
-export function parseInline(text: string): InlineSpan[] {
+export function parseInline(raw: string): InlineSpan[] {
+  // "\|" is a table escape; outside tables (prose, lists) it's just a pipe.
+  const text = raw.replace(/\\\|/g, "|");
   const spans: InlineSpan[] = [];
   const re = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g;
   let last = 0;
@@ -230,7 +232,7 @@ export function parseMarkdownToBlocks(markdown: string): ReportBlock[] {
       blocks.push({
         type: "heading",
         level,
-        text: sanitizeReportText(heading[2].replace(/\*\*/g, "")),
+        text: sanitizeReportText(heading[2].replace(/\*\*/g, "").replace(/\\\|/g, "|")),
       });
       i += 1;
       continue;

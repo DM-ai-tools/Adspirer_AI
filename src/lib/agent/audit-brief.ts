@@ -113,6 +113,19 @@ export function parseDateRangeFromText(text: string): {
   return parseNaturalDateRange(text);
 }
 
+/**
+ * "for 16th sept and 17th sept", "for last 7 days", "for the same period" are
+ * dates or filler, not campaign names — treating them as names made the
+ * audit look for a campaign that doesn't exist and fetch nothing.
+ */
+function isNotACampaignName(hint: string): boolean {
+  const h = hint.trim();
+  if (parseDateRangeFromText(h)) return true;
+  if (/^(the\s+)?(same|whole|entire|full|this|that|previous|last|next)\b/i.test(h)) return true;
+  if (/^(the\s+)?(audit|report|account|period|dates?|range|days?|weeks?|months?|time|it|me|us)\b/i.test(h)) return true;
+  return false;
+}
+
 function parseScope(text: string): {
   scope: AuditScope | null;
   campaignHints: string[];
@@ -139,7 +152,7 @@ function parseScope(text: string): {
   ];
   for (const m of named) {
     const hint = m[1]?.trim();
-    if (hint && hint.length > 1 && !/^(the|all|my|our|this|these)$/i.test(hint)) {
+    if (hint && hint.length > 1 && !/^(the|all|my|our|this|these)$/i.test(hint) && !isNotACampaignName(hint)) {
       campaignHints.push(hint);
     }
   }
@@ -148,7 +161,7 @@ function parseScope(text: string): {
     /\b(?:for|on)\s+(?:the\s+)?(?:campaign\s+)?["“]?([A-Za-z0-9][^"”\n]{2,80}?)["”]?\s*(?=$|\.|,|\blast\b|\bfrom\b|\bto\b)/i.exec(
       text,
     );
-  if (forNamed?.[1] && !/\baccount\b/i.test(forNamed[1])) {
+  if (forNamed?.[1] && !/\baccount\b/i.test(forNamed[1]) && !isNotACampaignName(forNamed[1])) {
     const hint = forNamed[1].trim();
     if (
       hint.length > 2 &&
