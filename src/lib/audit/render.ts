@@ -6,6 +6,7 @@ import {
   type Checkpoint,
   type CheckpointStatus,
 } from "@/lib/audit/checkpoints";
+import { escapeTableCell } from "@/lib/reports/table-row";
 import type { MetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
 
 const STATUS_LABEL: Record<CheckpointStatus, string> = {
@@ -18,8 +19,8 @@ const STATUS_LABEL: Record<CheckpointStatus, string> = {
 
 const SEVERITY_LABEL = { critical: "Critical", high: "High", medium: "Medium", low: "Low" } as const;
 
-/** Table cells can't contain pipes or newlines. */
-const cell = (text: string | undefined) => (text ?? "").replace(/\|/g, "/").replace(/\s*\n\s*/g, " ").trim();
+/** Pipes are escaped (names like "TR | Lead Gen" stay intact); newlines flattened. */
+const cell = (text: string | undefined) => escapeTableCell(text ?? "");
 
 function line(c: Checkpoint) {
   return [

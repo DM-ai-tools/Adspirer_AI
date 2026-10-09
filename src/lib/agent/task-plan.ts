@@ -235,6 +235,19 @@ export function detectRequestIntentWithHistory(
   if ((assistantAskedAudit || userAskedAudit) && looksLikeAuditBriefReply(request)) {
     return "audit";
   }
+  // A short answer to the audit's own clarifying question stays on the audit
+  // path even if it can't be parsed — the brief then asks again, instead of
+  // a generic reply pretending to be an audit without data.
+  const askedForBrief = Boolean(
+    lastAssistant &&
+      briefStillOpen &&
+      /before I run the full audit|what date range should I cover|reply with the missing piece|audit briefing/i.test(
+        lastAssistant.content,
+      ),
+  );
+  if (askedForBrief && request.trim().length <= 200 && !/\?\s*$/.test(request.trim())) {
+    return "audit";
+  }
 
   const assistantOfferedOptimize = recent.some(
     (m) =>

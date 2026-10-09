@@ -1,3 +1,4 @@
+import { splitMarkdownTableRow } from "@/lib/reports/table-row";
 /**
  * Lightweight markdown → structured blocks for report export.
  * Handles headings, paragraphs, lists, tables, horizontal rules, and inline bold/italic/code.
@@ -186,9 +187,8 @@ function isTableSeparator(line: string): boolean {
 }
 
 function splitTableRow(line: string): string[] {
-  const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
-  return trimmed.split("|").map((c) =>
-    sanitizeReportText(c.trim().replace(/\*\*/g, "")),
+  return splitMarkdownTableRow(line).map((c) =>
+    sanitizeReportText(c.replace(/\*\*/g, "")),
   );
 }
 

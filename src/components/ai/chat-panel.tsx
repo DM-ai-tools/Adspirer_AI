@@ -37,6 +37,7 @@ import {
 import { humanToolLabel } from "@/lib/tools/display-labels";
 import { looksLikeFullAuditMarkdown } from "@/lib/report/from-markdown";
 import { columnAlignments } from "@/lib/reports/layout";
+import { splitMarkdownTableRow } from "@/lib/reports/table-row";
 import { ChatDocumentAttachButton } from "@/components/workspace/documents-panel";
 import { useCreativeStatus } from "@/hooks/use-creative-status";
 import { TargetingPickerCard } from "@/components/ai/targeting-picker";
@@ -362,12 +363,7 @@ function renderInline(text: string): React.ReactNode[] {
 /** Memoised: while one reply streams, earlier bubbles skip re-rendering. */
 /** Cells of a markdown table row: `| a | b |` → ["a", "b"]. */
 function tableCells(line: string): string[] {
-  return line
-    .trim()
-    .replace(/^\|/, "")
-    .replace(/\|$/, "")
-    .split("|")
-    .map((cell) => cell.trim());
+  return splitMarkdownTableRow(line);
 }
 
 const isTableRow = (line: string) => /^\s*\|.*\|\s*$/.test(line);

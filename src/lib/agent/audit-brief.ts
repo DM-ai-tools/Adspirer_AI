@@ -1,4 +1,5 @@
 import type { AgentHistoryMessage } from "@/lib/agent/history";
+import { parseNaturalDateRange } from "@/lib/agent/natural-dates";
 import {
   extractHttpUrls,
   isCompetitorLandingSkip,
@@ -59,7 +60,7 @@ export function parseDateRangeFromText(text: string): {
     start.setUTCDate(start.getUTCDate() - 6);
     return { dateStart: isoDate(start), dateStop: stop, dateLabel: "last 7 days" };
   }
-  if (/\blast\s+month\b|\bpast\s+30\s+days\b|\blast\s+30\b/.test(lower)) {
+  if (/\bpast\s+30\s+days\b|\blast\s+30\b/.test(lower)) {
     const start = new Date(today);
     start.setUTCDate(start.getUTCDate() - 29);
     return {
@@ -107,7 +108,9 @@ export function parseDateRangeFromText(text: string): {
     };
   }
 
-  return null;
+  // "1st sept to 15th sept", "Sep 1-15", "01/09/2026 to 15/09/2026",
+  // "September 2026", "last month"…
+  return parseNaturalDateRange(text);
 }
 
 function parseScope(text: string): {

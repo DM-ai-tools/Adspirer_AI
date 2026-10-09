@@ -174,8 +174,8 @@ describe("scorecard rendering", () => {
     expect(md).toMatch(/\| Account structure \| \d+\/100 \| [\d.]+ of [\d.]+ \| [^|]*S1 Fail[^|]*\| S1 Fail \(−10\)/);
     expect(md).toContain("### Account structure —");
     expect(md).toMatch(/\| S1 \| Live campaigns have live ad sets \| Fail · Critical \| 0 of 10 \|/);
-    // Pipes inside names must not break the table.
-    expect(md).not.toContain("TR | Lead Gen");
+    // Pipes inside names are escaped so the table keeps its columns.
+    expect(md).toContain("TR \\| Lead Gen Traffic Radius \\| Sep 2026");
     const evidence = renderScorecardEvidence(card, snap);
     expect(evidence).toContain("authoritative");
     expect(evidence).toContain("[S1] FAIL");

@@ -2,6 +2,7 @@ import {
   parseAuditReport,
   type AuditReport,
 } from "@/lib/report/schema";
+import { splitMarkdownTableRow } from "@/lib/reports/table-row";
 
 /**
  * Detect a full operator-facing audit in chat prose/markdown.
@@ -466,8 +467,7 @@ export function auditReportFromMarkdown(
   if (!risks.length) {
     for (const line of riskSection.split("\n")) {
       if (!/\|/.test(line) || /severity|---+|\|\s*#\s*\|/i.test(line)) continue;
-      const cells = line
-        .split("|")
+      const cells = splitMarkdownTableRow(line)
         .map((c) => cleanCell(c))
         .filter(Boolean);
       if (cells.length >= 4 && /^\d+$/.test(cells[0])) {
