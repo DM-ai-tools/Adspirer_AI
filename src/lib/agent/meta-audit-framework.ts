@@ -54,7 +54,9 @@ Cite live evidence (spend, results, cost per result, CTR, frequency, statuses) i
 1. **Executive Summary** — 3–5 bullets in plain business language for a non-specialist: overall score from the scorecard, the single biggest money leak (with the spend at stake), and the first fix.
 2. **Account Snapshot** — period, total spend, results, cost per result (and ROAS if purchases), active vs paused campaigns.
 3. **Tracking & Measurement** — what is and isn't being measured, from the T-checkpoints, in plain words.
-4. **Active Campaigns** — table: campaign, status, budget, spend, results, cost per result, CTR, frequency.
+4. **Active Campaigns** — table: campaign, status, budget, spend, results, cost per result, CTR, frequency. Then, for each audited campaign, a "### Ad sets in <campaign name>" sub-section (no IDs in that heading):
+   - table (these 9 columns only, so it fits a printed page): Ad set | Status | Learning | Spend | Results | Cost per result | CTR | Freq (7d) | Live ads
+   - one verdict per ad set — **Scale / Keep / Fix / Pause** — as a bullet: "**<ad set name>** (ID <id>) · <budget> · optimises for <event in plain words, e.g. Complete registration> — <verdict>: <reason>", with the numbers behind it (share of campaign spend, cost per result vs the campaign, learning limited, frequency over benchmark, too few live ads, setup gaps such as no exclusions or restricted placements).
 5. **What's Working** — strengths with evidence.
 6. **Risks & Issues** — table: Severity | Issue | Evidence | Fix | Spend at stake. Most severe first.
 7. **Landing Pages** — own destinations (+ competitor pages if provided): score, message match, top fixes.

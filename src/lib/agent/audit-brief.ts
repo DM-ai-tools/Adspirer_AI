@@ -14,6 +14,8 @@ export type AuditBrief = {
   scope: AuditScope | null;
   /** Free-text campaign names/ids the operator mentioned */
   campaignHints: string[];
+  /** "the active campaign", "all live campaigns" — whatever is delivering now. */
+  activeCampaigns: boolean;
   dateStart: string | null;
   dateStop: string | null;
   dateLabel: string | null;
@@ -113,6 +115,10 @@ export function parseDateRangeFromText(text: string): {
   return parseNaturalDateRange(text);
 }
 
+/** Words and punctuation that make up a date phrase ("from 9th sept to 12th sept", "last 7 days"). */
+const DATE_WORDS =
+  /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|\d{1,4}(?:st|nd|rd|th)?|to|and|from|till|until|through|thru|of|the|for|on|between|last|this|next|past|days?|weeks?|months?|quarter|year|today|yesterday)\b|[/\-–—.,]/gi;
+
 /**
  * "for 16th sept and 17th sept", "for last 7 days", "for the same period" are
  * dates or filler, not campaign names — treating them as names made the
@@ -120,15 +126,22 @@ export function parseDateRangeFromText(text: string): {
  */
 function isNotACampaignName(hint: string): boolean {
   const h = hint.trim();
-  if (parseDateRangeFromText(h)) return true;
+  // Only a hint that is nothing but a date — "TR | Lead Gen | Sep 2026" is a name.
+  if (parseDateRangeFromText(h) && !h.replace(DATE_WORDS, "").trim()) return true;
+  if (/^(that|which|currently|active|live|running|delivering)\b/i.test(h)) return true;
   if (/^(the\s+)?(same|whole|entire|full|this|that|previous|last|next)\b/i.test(h)) return true;
   if (/^(the\s+)?(audit|report|account|period|dates?|range|days?|weeks?|months?|time|it|me|us)\b/i.test(h)) return true;
   return false;
 }
 
+/** "the active campaign", "all live campaigns", "campaigns that are running". */
+const ACTIVE_CAMPAIGNS =
+  /\b(?:active|live|running|delivering|enabled)\s+(?:meta\s+|facebook\s+|fb\s+)?campaigns?\b|\bcampaigns?\s+(?:that\s+|which\s+)?(?:is\s+|are\s+)?(?:currently\s+)?(?:active|live|running|delivering)\b/;
+
 function parseScope(text: string): {
   scope: AuditScope | null;
   campaignHints: string[];
+  activeCampaigns: boolean;
 } {
   const lower = text.toLowerCase();
   const campaignHints: string[] = [];
@@ -142,7 +155,7 @@ function parseScope(text: string): {
       /\b(ad\s+)?account\b/.test(lower) &&
       !/\bcampaigns?\b/.test(lower))
   ) {
-    return { scope: "account", campaignHints: [] };
+    return { scope: "account", campaignHints: [], activeCampaigns: false };
   }
 
   const named = [
@@ -177,15 +190,20 @@ function parseScope(text: string): {
     if (!campaignHints.includes(id)) campaignHints.push(id);
   }
 
-  if (campaignHints.length || /\b(specific|particular|selected|these|those)\s+campaigns?\b/.test(lower)) {
-    return { scope: "campaigns", campaignHints };
+  const activeCampaigns = ACTIVE_CAMPAIGNS.test(lower);
+  if (
+    campaignHints.length ||
+    activeCampaigns ||
+    /\b(specific|particular|selected|these|those)\s+campaigns?\b/.test(lower)
+  ) {
+    return { scope: "campaigns", campaignHints, activeCampaigns };
   }
 
   if (/\bcampaigns?\b/.test(lower) && !/\baccount\b/.test(lower)) {
-    return { scope: "campaigns", campaignHints };
+    return { scope: "campaigns", campaignHints, activeCampaigns };
   }
 
-  return { scope: null, campaignHints: [] };
+  return { scope: null, campaignHints: [], activeCampaigns: false };
 }
 
 function parseCompetitorLanding(text: string): {
@@ -209,6 +227,7 @@ function parseCompetitorLanding(text: string): {
 function finalizeBrief(partial: {
   scope: AuditScope | null;
   campaignHints: string[];
+  activeCampaigns: boolean;
   dateStart: string | null;
   dateStop: string | null;
   dateLabel: string | null;
@@ -217,7 +236,7 @@ function finalizeBrief(partial: {
 }): AuditBrief {
   const missing: AuditBrief["missing"] = [];
   if (!partial.scope) missing.push("scope");
-  if (partial.scope === "campaigns" && partial.campaignHints.length === 0) {
+  if (partial.scope === "campaigns" && partial.campaignHints.length === 0 && !partial.activeCampaigns) {
     missing.push("campaigns");
   }
   if (!partial.dateStart || !partial.dateStop) missing.push("date_range");
@@ -240,6 +259,7 @@ function finalizeBrief(partial: {
 function mergeBriefs(parts: AuditBrief[]): AuditBrief {
   let scope: AuditScope | null = null;
   const campaignHints: string[] = [];
+  let activeCampaigns = false;
   let dateStart: string | null = null;
   let dateStop: string | null = null;
   let dateLabel: string | null = null;
@@ -248,6 +268,7 @@ function mergeBriefs(parts: AuditBrief[]): AuditBrief {
 
   for (const part of parts) {
     if (part.scope) scope = part.scope;
+    if (part.activeCampaigns) activeCampaigns = true;
     for (const h of part.campaignHints) {
       if (!campaignHints.some((x) => x.toLowerCase() === h.toLowerCase())) {
         campaignHints.push(h);
@@ -277,6 +298,7 @@ function mergeBriefs(parts: AuditBrief[]): AuditBrief {
   return finalizeBrief({
     scope,
     campaignHints,
+    activeCampaigns,
     dateStart,
     dateStop,
     dateLabel,
@@ -286,13 +308,14 @@ function mergeBriefs(parts: AuditBrief[]): AuditBrief {
 }
 
 function briefFromText(text: string): AuditBrief {
-  const { scope, campaignHints } = parseScope(text);
+  const { scope, campaignHints, activeCampaigns } = parseScope(text);
   const range = parseDateRangeFromText(text);
   const competitor = parseCompetitorLanding(text);
 
   return finalizeBrief({
     scope,
     campaignHints,
+    activeCampaigns,
     dateStart: range?.dateStart ?? null,
     dateStop: range?.dateStop ?? null,
     dateLabel: range?.dateLabel ?? null,
@@ -425,6 +448,23 @@ export function matchCampaignsByHints<T extends { id: string; name: string }>(
     });
     for (const c of byName) {
       if (!matched.some((m) => m.id === c.id)) matched.push(c);
+    }
+  }
+  return matched;
+}
+
+/**
+ * The campaigns a campaign-scoped audit covers: the ones named, plus every
+ * campaign that is on when the operator asked for "the active campaign(s)".
+ */
+export function resolveAuditCampaigns<T extends { id: string; name: string; status: string }>(
+  campaigns: T[],
+  brief: Pick<AuditBrief, "campaignHints" | "activeCampaigns">,
+): T[] {
+  const matched = matchCampaignsByHints(campaigns, brief.campaignHints);
+  if (brief.activeCampaigns) {
+    for (const c of campaigns) {
+      if (c.status === "ACTIVE" && !matched.some((m) => m.id === c.id)) matched.push(c);
     }
   }
   return matched;

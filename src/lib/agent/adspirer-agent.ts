@@ -4,7 +4,9 @@ import {
   gatherDeliveryStructure,
 } from "@/lib/agent/delivery-structure";
 import { adSetsWithSilentTracking, evaluateCheckpoints } from "@/lib/audit/checkpoints";
+import { scopeAuditSnapshot } from "@/lib/audit/meta-audit-data";
 import {
+  renderAdSetEvidence,
   renderOptimisationSignals,
   renderScorecardEvidence,
   renderScorecardMarkdown,
@@ -38,8 +40,8 @@ import {
 import { buildFullOptimizeProposals } from "@/lib/agent/optimize-proposals";
 import {
   buildAuditClarifyingQuestion,
-  matchCampaignsByHints,
   resolveAuditBrief,
+  resolveAuditCampaigns,
   applyCompetitorUrlsFromDocuments,
   parseDateRangeFromText,
 } from "@/lib/agent/audit-brief";
@@ -1584,8 +1586,8 @@ export async function gatherDiagnoseEvidence(input: {
         let matchedCampaigns: MetaCampaign[] = [];
 
         if (brief.scope === "campaigns") {
-          matchedCampaigns = matchCampaignsByHints(campaigns, brief.campaignHints);
-          if (brief.campaignHints.length && matchedCampaigns.length === 0) {
+          matchedCampaigns = resolveAuditCampaigns(campaigns, brief);
+          if ((brief.campaignHints.length || brief.activeCampaigns) && matchedCampaigns.length === 0) {
             if (!effectiveMissing.includes("campaigns")) {
               effectiveMissing.push("campaigns");
             }
@@ -1616,7 +1618,13 @@ export async function gatherDiagnoseEvidence(input: {
             [
               "### Audit briefing incomplete",
               `- Known scope: ${brief.scope ?? "unset"}`,
-              `- Campaign hints: ${brief.campaignHints.join(", ") || "(none)"}`,
+              `- Campaign hints: ${[
+                ...brief.campaignHints,
+                ...(brief.activeCampaigns ? ["(active campaigns)"] : []),
+              ].join(", ") || "(none)"}`,
+              brief.activeCampaigns && matchedCampaigns.length === 0
+                ? "- No campaign is ACTIVE right now — tell the operator that and ask which campaign(s) to audit."
+                : "",
               `- Date range: ${brief.dateLabel ?? "unset"}`,
               `- Competitor LPs: ${
                 brief.competitorLanding === "skip"
@@ -2019,7 +2027,7 @@ export async function gatherDiagnoseEvidence(input: {
               stepId: "apply_framework",
             });
             try {
-              const snapshot = await provider.getAuditSnapshot(accountId, {
+              const accountSnapshot = await provider.getAuditSnapshot(accountId, {
                 since: dateStart,
                 until: dateStop,
                 days: Math.max(
@@ -2027,8 +2035,14 @@ export async function gatherDiagnoseEvidence(input: {
                   Math.round((Date.parse(`${dateStop}T00:00:00Z`) - Date.parse(`${dateStart}T00:00:00Z`)) / 86_400_000) + 1,
                 ),
               });
+              // A campaign audit scores and lists only those campaigns' ad sets and ads.
+              const snapshot =
+                brief.scope === "campaigns"
+                  ? scopeAuditSnapshot(accountSnapshot, matchedCampaigns.map((c) => c.id))
+                  : accountSnapshot;
               const scorecard = evaluateCheckpoints(snapshot);
               sections.push(renderScorecardEvidence(scorecard, snapshot));
+              sections.push(renderAdSetEvidence(snapshot));
               auditAppendix = renderScorecardMarkdown(scorecard, snapshot);
               toolCalls.push({
                 name: "audit_checkpoints",
@@ -2039,7 +2053,7 @@ export async function gatherDiagnoseEvidence(input: {
               sections.push(
                 `### Audit checkpoint scorecard\n- Could not compute: ${
                   error instanceof Error ? error.message : String(error)
-                }. Mark tracking, learning-phase and audience checks as "not verified" instead of guessing.`,
+                }. Mark tracking, learning-phase and audience checks as "not verified" instead of guessing. Ad set numbers were not loaded — say so in the ad set section; never invent them.`,
               );
             }
           }
@@ -2058,6 +2072,8 @@ export async function gatherDiagnoseEvidence(input: {
               "- Produce the full audit in chat using the Required report format headings, in order.",
               "- Lead with Fail checkpoints from the scorecard (most severe, most spend at stake first); never contradict a checkpoint result.",
               "- Quantify spend and call out what is working vs what needs improvement.",
+              "- **REQUIRED: audit every ad set** listed in “Ad sets” inside section 4 (Active Campaigns): the 9-column ad set table from the report format (IDs, budgets and optimisation events go in the verdict bullets, not the table), then a short verdict per ad set (Scale / Keep / Fix / Pause) with its numbers and the reason. Cover learning status, budget vs results, frequency, audience/placement setup and its ads.",
+              "- Spend, results and cost per result for the period come from the evidence above — never say they are unavailable when “Ad sets” or “Campaign performance” lists them.",
               "- **REQUIRED section: Landing pages** — use Website URLs + CTA types from “Ad CTA & destination inventory” and scores from “Landing page analysis”.",
               "- NEVER say destinations are unavailable because the campaign is paused or had $0 spend.",
               "- NEVER use workspace-document URLs (e.g. competitor copy docs) as the campaign destination.",

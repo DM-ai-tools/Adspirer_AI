@@ -7,7 +7,7 @@ import {
   type CheckpointStatus,
 } from "@/lib/audit/checkpoints";
 import { escapeTableCell } from "@/lib/reports/table-row";
-import type { MetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
+import type { AuditAd, AuditAdSet, MetaAuditSnapshot, PeriodPerformance } from "@/lib/audit/meta-audit-data";
 
 const STATUS_LABEL: Record<CheckpointStatus, string> = {
   pass: "Pass",
@@ -33,14 +33,24 @@ function line(c: Checkpoint) {
     .join("\n");
 }
 
+/** "Campaign TR | Lead Gen (1202…)" when the audit is campaign-scoped; null for the whole account. */
+function scopeLabel(snap: MetaAuditSnapshot): string | null {
+  const scoped = snap.scope?.campaigns;
+  if (!scoped) return null;
+  if (!scoped.length) return "selected campaigns (none found in the snapshot)";
+  return `${scoped.length === 1 ? "campaign" : "campaigns"} ${scoped.map((c) => `${c.name} (${c.id})`).join("; ")}`;
+}
+
 /**
  * Evidence block for the writer. Results are authoritative: the narrative
  * may explain and prioritise them but never contradict them.
  */
 export function renderScorecardEvidence(scorecard: AuditScorecard, snap: MetaAuditSnapshot): string {
   const tracked = snap.pixels.filter((p) => p.stats7d);
+  const scope = scopeLabel(snap);
   return [
     `### Audit checkpoint scorecard (computed from live Meta data — authoritative)`,
+    scope ? `Scope: ${scope} — structure, bidding, audience, creative and funnel checks cover only these; tracking checks are account-wide.` : "",
     `Period: ${snap.period.since} → ${snap.period.until} (${snap.period.days} days) · Score ${scorecard.score}/100 (grade ${scorecard.grade}) · ${scorecard.counts.fail} fail, ${scorecard.counts.warn} warning, ${scorecard.counts.pass} pass`,
     `By area: ${scorecard.byCategory
       .map((c) => `${c.category} ${c.score == null ? "not scored" : `${c.score}/100`}`)
@@ -104,10 +114,11 @@ export function renderScorecardMarkdown(scorecard: AuditScorecard, snap: MetaAud
     i === 0 ? `${b.grade} ${b.min}+` : b.min === 0 ? `${b.grade} below ${GRADE_BANDS[i - 1]!.min}` : `${b.grade} ${b.min}–${GRADE_BANDS[i - 1]!.min - 1}`,
   ).join(", ");
 
+  const scope = scopeLabel(snap);
   const lines = [
     "## Audit checklist",
     "",
-    `Score **${scorecard.score}/100** (grade ${scorecard.grade}) from ${scorecard.checkpoints.length} checkpoints, ${snap.period.since} → ${snap.period.until}: ${scorecard.counts.fail} failed, ${scorecard.counts.warn} warnings, ${scorecard.counts.pass} passed${unscored ? `, ${unscored} notes (not scored)` : ""}.`,
+    `Score **${scorecard.score}/100** (grade ${scorecard.grade}) from ${scorecard.checkpoints.length} checkpoints, ${snap.period.since} → ${snap.period.until}${scope ? ` for ${scope}` : ""}: ${scorecard.counts.fail} failed, ${scorecard.counts.warn} warnings, ${scorecard.counts.pass} passed${unscored ? `, ${unscored} notes (not scored)` : ""}.`,
     "",
     "### How the score works",
     `- Each checkpoint is worth points by severity: Critical ${SEVERITY_POINTS.critical}, High ${SEVERITY_POINTS.high}, Medium ${SEVERITY_POINTS.medium}, Low ${SEVERITY_POINTS.low}.`,
@@ -156,6 +167,137 @@ export function renderScorecardMarkdown(scorecard: AuditScorecard, snap: MetaAud
     );
   }
 
+  return lines.join("\n");
+}
+
+const LEARNING_LABEL: Record<string, string> = {
+  LEARNING: "In learning",
+  SUCCESS: "Exited learning",
+  FAIL: "Learning limited",
+};
+
+const isLiveStatus = (status: string) => status === "ACTIVE" || status === "WITH_ISSUES";
+
+function moneyFor(currency: string) {
+  return (cents: number) => {
+    try {
+      return new Intl.NumberFormat("en", {
+        style: "currency",
+        currency,
+        currencyDisplay: "narrowSymbol",
+        maximumFractionDigits: cents >= 100_000 ? 0 : 2,
+      }).format(cents / 100);
+    } catch {
+      return `${(cents / 100).toFixed(2)} ${currency}`;
+    }
+  };
+}
+
+function periodLine(p: PeriodPerformance | null, money: (cents: number) => string): string {
+  if (!p || (p.spendCents === 0 && p.impressions === 0)) return "no delivery in the period";
+  return [
+    `spend ${money(p.spendCents)}`,
+    p.results != null ? `${p.results.toLocaleString("en")} ${p.resultLabel}` : `${p.resultLabel}: not reported`,
+    `cost per result ${p.costPerResultCents != null ? money(p.costPerResultCents) : "n/a"}`,
+    `impressions ${p.impressions.toLocaleString("en")}`,
+    `reach ${p.reach.toLocaleString("en")}`,
+    `frequency ${p.frequency.toFixed(2)}`,
+    `link CTR ${p.linkCtr.toFixed(2)}%`,
+    `CPM ${p.cpmCents != null ? money(p.cpmCents) : "n/a"}`,
+    p.roas != null ? `ROAS ${p.roas.toFixed(2)}×` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function adSetBlock(a: AuditAdSet, ads: AuditAd[], campaignSpend: number, money: (cents: number) => string): string {
+  const spend = a.performance?.spendCents ?? 0;
+  const liveAds = ads.filter((ad) => isLiveStatus(ad.status));
+  const budget = a.dailyBudgetCents
+    ? `daily budget ${money(a.dailyBudgetCents)}`
+    : a.lifetimeBudgetCents
+      ? `lifetime budget ${money(a.lifetimeBudgetCents)}`
+      : "budget set at campaign level (CBO)";
+  // OFFSITE_CONVERSIONS → "Offsite conversions", so the report reads in plain words.
+  const plain = (code: string) => code.charAt(0) + code.slice(1).toLowerCase().replace(/_/g, " ");
+  const goal = [a.optimizationGoal, a.customEventType].filter((v): v is string => Boolean(v)).map(plain).join(" → ") || "unknown";
+  const setup = [
+    budget,
+    `optimises for ${goal}`,
+    `bid ${a.bidStrategy ?? "default (lowest cost)"}`,
+    `attribution ${a.attributionWindows.join(", ") || "default"}`,
+    `Advantage+ audience ${a.advantageAudience == null ? "unknown" : a.advantageAudience ? "on" : "off"}`,
+    `placements ${a.publisherPlatforms.join(", ") || "Advantage+ (all)"}`,
+    `countries ${a.countries.join(", ") || "not set"}`,
+    `custom audiences ${a.includedAudienceIds.length} included / ${a.excludedAudienceIds.length} excluded`,
+  ].join(" · ");
+  const adLines = [...ads]
+    .sort((x, y) => (y.performance?.spendCents ?? 0) - (x.performance?.spendCents ?? 0))
+    .slice(0, 8)
+    .map(
+      (ad) =>
+        `    - ${ad.name} (${ad.id}) · ${ad.status}${ad.format ? ` · ${ad.format}` : ""}${ad.issue ? ` · issue: ${ad.issue}` : ""} — ${periodLine(ad.performance, money)}`,
+    );
+  return [
+    `- **${a.name} (${a.id})** · ${a.status} · ${a.learningStatus ? LEARNING_LABEL[a.learningStatus] ?? a.learningStatus : "learning status not reported"}${
+      a.lastSignificantEdit ? ` (last significant edit ${a.lastSignificantEdit.slice(0, 10)})` : ""
+    }`,
+    `  - Setup: ${setup}`,
+    `  - Period: ${periodLine(a.performance, money)}${
+      campaignSpend > 0 && spend > 0 ? ` · ${Math.round((spend / campaignSpend) * 100)}% of campaign spend` : ""
+    }${a.frequency7d != null ? ` · 7-day frequency ${a.frequency7d.toFixed(2)}` : ""}`,
+    `  - Ads: live ads ${liveAds.length} of ${ads.length}${ads.length > 8 ? " (top 8 by spend below)" : ""}`,
+    ...adLines,
+  ].join("\n");
+}
+
+/**
+ * Every ad set in scope with its setup and period numbers, grouped by
+ * campaign — the writer audits each one. Account-wide audits list ad sets
+ * that are live or spent in the period.
+ */
+export function renderAdSetEvidence(snap: MetaAuditSnapshot, maxAdSets = 40): string {
+  const money = moneyFor(snap.account.currency);
+  const scoped = Boolean(snap.scope);
+  const adSets = scoped
+    ? snap.adSets
+    : snap.adSets.filter((a) => isLiveStatus(a.status) || (a.performance?.spendCents ?? 0) > 0);
+  const header = `### Ad sets (${snap.period.since} → ${snap.period.until}) — live Meta data, authoritative`;
+  if (!adSets.length) {
+    return [
+      header,
+      scoped
+        ? "- No ad sets found in the audited campaign(s) — the campaign cannot deliver without one. Say so; do not invent ad set numbers."
+        : "- No ad sets are live or spent in the period.",
+    ].join("\n");
+  }
+  const bySpend = (x: AuditAdSet, y: AuditAdSet) => (y.performance?.spendCents ?? 0) - (x.performance?.spendCents ?? 0);
+  const campaignOrder = [...snap.campaigns].sort(
+    (x, y) => (y.performance?.spendCents ?? 0) - (x.performance?.spendCents ?? 0),
+  );
+  const lines: string[] = [header];
+  let shown = 0;
+  for (const c of campaignOrder) {
+    const own = adSets.filter((a) => a.campaignId === c.id).sort(bySpend);
+    if (!own.length || shown >= maxAdSets) continue;
+    const live = own.filter((a) => isLiveStatus(a.status)).length;
+    lines.push(
+      "",
+      `#### Campaign ${c.name} (${c.id}) · ${c.status} · ${c.objective}${
+        c.dailyBudgetCents ? ` · campaign daily budget ${money(c.dailyBudgetCents)}` : ""
+      } — ${own.length} ad set${own.length === 1 ? "" : "s"}, ${live} live`,
+      `Campaign period: ${periodLine(c.performance, money)}`,
+    );
+    for (const a of own.slice(0, maxAdSets - shown)) {
+      lines.push(adSetBlock(a, snap.ads.filter((ad) => ad.adSetId === a.id), c.performance?.spendCents ?? 0, money));
+      shown += 1;
+    }
+  }
+  if (adSets.length > shown) lines.push("", `- ${adSets.length - shown} more ad sets not listed.`);
+  lines.push(
+    "",
+    "Use these numbers for the per-ad-set audit. A metric marked \"not reported\" or \"n/a\" was not measured — say so; never estimate it.",
+  );
   return lines.join("\n");
 }
 

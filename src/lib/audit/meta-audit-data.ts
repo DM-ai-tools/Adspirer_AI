@@ -139,6 +139,8 @@ export type MetaAuditSnapshot = {
   warnings: string[];
   fetchedAt: string;
   demo?: boolean;
+  /** Set when the audit covers selected campaigns, not the whole account. */
+  scope?: { campaigns: Array<{ id: string; name: string }> };
 };
 
 // ---------------------------------------------------------------------------
@@ -484,6 +486,51 @@ export async function fetchMetaAuditSnapshot(
     }),
     warnings,
     fetchedAt: new Date().toISOString(),
+  };
+}
+
+/** Add up period performance across rows (reach is summed, so it's an upper bound). */
+function sumPerformance(rows: PeriodPerformance[]): PeriodPerformance | null {
+  if (!rows.length) return null;
+  if (rows.length === 1) return rows[0]!;
+  const total = (pick: (p: PeriodPerformance) => number) => rows.reduce((sum, p) => sum + pick(p), 0);
+  const spendCents = total((p) => p.spendCents);
+  const impressions = total((p) => p.impressions);
+  const reach = total((p) => p.reach);
+  const counted = rows.filter((p) => p.results != null);
+  const results = counted.length ? counted.reduce((sum, p) => sum + p.results!, 0) : null;
+  const labels = new Set(counted.map((p) => p.resultLabel));
+  return {
+    spendCents,
+    impressions,
+    reach,
+    frequency: reach > 0 ? impressions / reach : 0,
+    linkCtr: impressions > 0 ? total((p) => p.linkCtr * p.impressions) / impressions : 0,
+    cpmCents: impressions > 0 ? Math.round((spendCents / impressions) * 1000) : null,
+    results,
+    resultLabel: labels.size === 1 ? [...labels][0]! : labels.size ? "Mixed goals" : "Results",
+    costPerResultCents: results && results > 0 ? Math.round(spendCents / results) : null,
+    roas: null,
+  };
+}
+
+/**
+ * Narrow an account snapshot to the audited campaigns: their ad sets, ads and
+ * totals. Tracking (pixels, conversions, audiences) stays account-wide — the
+ * campaigns depend on it. The placement split is account-level only, so it is
+ * dropped rather than credited to these campaigns.
+ */
+export function scopeAuditSnapshot(snap: MetaAuditSnapshot, campaignIds: string[]): MetaAuditSnapshot {
+  const ids = new Set(campaignIds);
+  const campaigns = snap.campaigns.filter((c) => ids.has(c.id));
+  return {
+    ...snap,
+    campaigns,
+    adSets: snap.adSets.filter((a) => ids.has(a.campaignId)),
+    ads: snap.ads.filter((a) => ids.has(a.campaignId)),
+    totals: sumPerformance(campaigns.map((c) => c.performance).filter((p): p is PeriodPerformance => p != null)),
+    placements: [],
+    scope: { campaigns: campaigns.map((c) => ({ id: c.id, name: c.name })) },
   };
 }
 
