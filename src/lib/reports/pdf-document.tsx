@@ -340,7 +340,7 @@ export function ReportPdfDocument(props: {
 }) {
   const title = glyphSafe(props.title);
   return (
-    <Document title={title} author="Spendsmith" creator="Spendsmith" producer="Spendsmith">
+    <Document title={title} author="CampaignForge" creator="CampaignForge" producer="CampaignForge">
       <Page size="A4" style={s.page}>
         <View
           style={s.runningHeader}
@@ -349,14 +349,14 @@ export function ReportPdfDocument(props: {
             pageNumber > 1 ? (
               <>
                 <Text>{title}</Text>
-                <Text>SPENDSMITH</Text>
+                <Text>CAMPAIGNFORGE</Text>
               </>
             ) : null
           }
         />
 
         <View style={s.cover}>
-          <Text style={s.brand}>SPENDSMITH</Text>
+          <Text style={s.brand}>CAMPAIGNFORGE</Text>
           <Text style={s.title}>{title}</Text>
           <Text style={s.subtitle}>
             {props.subtitle} · {props.generatedLabel}

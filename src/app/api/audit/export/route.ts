@@ -119,7 +119,7 @@ export async function GET(request: Request) {
     ];
 
     const stamp = formatTime(new Date().toISOString(), timeZone).slice(0, 10);
-    const filename = `spendsmith-audit-${stamp}.${format}`;
+    const filename = `campaignforge-audit-${stamp}.${format}`;
     const body =
       format === "xlsx"
         ? Buffer.from(toXlsx("Audit log", columns, events))

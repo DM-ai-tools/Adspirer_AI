@@ -137,7 +137,7 @@ export default function LoginPageClient() {
             AI Meta Ads Operations
           </div>
           <h1 className="text-5xl font-semibold tracking-tight text-foreground sm:text-6xl">
-            Spendsmith
+            CampaignForge
           </h1>
           <p className="mt-4 text-lg leading-relaxed text-muted">
             Enterprise agent workspace for auditing Meta accounts, proposing

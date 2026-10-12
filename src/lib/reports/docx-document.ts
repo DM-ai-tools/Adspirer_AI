@@ -205,7 +205,7 @@ function cover(title: string, subtitle: string, dateLabel: string): Table {
               new Paragraph({
                 spacing: { after: 120 },
                 children: [
-                  new TextRun({ text: "SPENDSMITH", font: FONT, bold: true, size: 16, color: hex(T.primaryLight), characterSpacing: 40 }),
+                  new TextRun({ text: "CAMPAIGNFORGE", font: FONT, bold: true, size: 16, color: hex(T.primaryLight), characterSpacing: 40 }),
                 ],
               }),
               new Paragraph({
@@ -267,7 +267,7 @@ export async function renderReportDocx(input: {
   const muted = hex(T.muted);
 
   const doc = new Document({
-    creator: "Spendsmith",
+    creator: "CampaignForge",
     title,
     description: input.subtitle,
     styles: {
@@ -363,7 +363,7 @@ export async function renderReportDocx(input: {
                 border: { bottom: { ...HAIRLINE, space: 4 } },
                 children: [
                   new TextRun({ text: title, size: 15, color: muted }),
-                  new TextRun({ text: "\tSPENDSMITH", size: 15, color: muted }),
+                  new TextRun({ text: "\tCAMPAIGNFORGE", size: 15, color: muted }),
                 ],
               }),
             ],

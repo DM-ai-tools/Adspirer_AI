@@ -94,7 +94,7 @@ function AuditInner() {
       a.href = url;
       a.download =
         disposition.match(/filename="([^"]+)"/)?.[1] ??
-        `spendsmith-audit-${new Date().toISOString().slice(0, 10)}.${format}`;
+        `campaignforge-audit-${new Date().toISOString().slice(0, 10)}.${format}`;
       a.click();
       // Revoking synchronously can cancel the download in some browsers.
       window.setTimeout(() => URL.revokeObjectURL(url), 10_000);

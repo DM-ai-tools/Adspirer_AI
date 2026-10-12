@@ -69,7 +69,7 @@ function seedStore(): DemoStore {
     {
       id: adminId,
       email: "admin@spendsmith.demo",
-      full_name: "Spendsmith Admin",
+      full_name: "CampaignForge Admin",
       role: "admin",
       avatar_url: null,
       is_active: true,
@@ -79,7 +79,7 @@ function seedStore(): DemoStore {
     {
       id: operatorId,
       email: "operator@spendsmith.demo",
-      full_name: "Spendsmith Operator",
+      full_name: "CampaignForge Operator",
       role: "operator",
       avatar_url: null,
       is_active: true,
@@ -549,7 +549,7 @@ function seedStore(): DemoStore {
       connected_meta_account_id: "meta_acc_ct_1",
       access_method: "business_manager_partner",
       status: "requested",
-      instructions: "Invite the Spendsmith BM as partner with Ads management.",
+      instructions: "Invite the CampaignForge BM as partner with Ads management.",
       recipient_email: "ads@clicktrends.example",
       sent_at: ts,
       sent_manually: true,

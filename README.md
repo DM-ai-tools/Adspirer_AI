@@ -1,4 +1,4 @@
-# Spendsmith
+# CampaignForge
 
 Autonomous Meta advertising intelligence and operations platform for agencies. Operators manage dozens of client Meta ad accounts through natural-language workspace chat, with a code-level policy gate that blocks Execute mutations until a human approves them.
 

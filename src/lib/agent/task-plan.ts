@@ -48,7 +48,7 @@ export const REPORT_INTENTS: ReadonlySet<RequestIntent> = new Set([
 ]);
 
 const GREETING_ONLY =
-  /^(?:hi|hello|hey|hiya|yo|howdy|good\s+(?:morning|afternoon|evening))(?:\s+(?:there|team|spendsmith|mate))?[\s!.,]*$/i;
+  /^(?:hi|hello|hey|hiya|yo|howdy|good\s+(?:morning|afternoon|evening))(?:\s+(?:there|team|campaignforge|mate))?[\s!.,]*$/i;
 
 const THANKS_OR_UNDERSTOOD =
   /^(?:(?:ok(?:ay)?|great|perfect|awesome|nice|cool|brilliant|excellent|lovely|amazing)[\s,!.]+)?(?:thanks?(?:\s+(?:you|so much|a lot|again|mate|team))*|thank\s+you(?:\s+(?:so much|very much|again))*|thx|ty|cheers|much appreciated|appreciate it|got it|understood|noted|makes sense|that makes sense|fair enough|i see|that'?s (?:helpful|clear|useful))(?:[\s,!.]+(?:thanks?|thank you|thx|cheers|that'?s helpful))*[\s!.]*$/i;

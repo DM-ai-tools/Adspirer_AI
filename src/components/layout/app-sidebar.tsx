@@ -126,7 +126,7 @@ export function AppSidebar() {
         {!sidebarCollapsed ? (
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold tracking-tight text-foreground">
-              Spendsmith
+              CampaignForge
             </p>
             <p className="truncate text-[10px] uppercase tracking-[0.14em] text-muted">
               Meta Ops

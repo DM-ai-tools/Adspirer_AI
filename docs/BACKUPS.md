@@ -23,11 +23,11 @@ check that both jobs pass.
 
 ## Restoring
 
-1. Download the newest `spendsmith-db-*.tar.gz.gpg` artifact from the workflow run.
+1. Download the newest `campaignforge-db-*.tar.gz.gpg` artifact from the workflow run.
 2. Decrypt and unpack it:
 
    ```bash
-   gpg --decrypt spendsmith-db-<stamp>.tar.gz.gpg > backup.tar.gz
+   gpg --decrypt campaignforge-db-<stamp>.tar.gz.gpg > backup.tar.gz
    tar -xzf backup.tar.gz   # creates dump/roles.sql, dump/schema.sql, dump/data.sql
    ```
 

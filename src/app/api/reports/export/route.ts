@@ -5,7 +5,7 @@ import { parseBody } from "@/lib/api/response";
 import { exportReportPayload } from "@/lib/reports/export";
 
 const schema = z.object({
-  title: z.string().min(1).max(200).optional().default("Spendsmith report"),
+  title: z.string().min(1).max(200).optional().default("CampaignForge report"),
   content: z.string().min(1).max(200_000),
   format: z.enum(["md", "docx", "pdf", "xlsx"]),
   /** Structured AuditReport JSON — preferred over markdown conversion. */

@@ -2935,7 +2935,7 @@ export async function createAdspirerMastraAgent(clientContext: string) {
 
   return new Agent({
     id: "adspirer-agent",
-    name: "Spendsmith Agent",
+    name: "CampaignForge Agent",
     instructions: activeSystemPrompt(clientContext),
     model: anthropic(config.ANTHROPIC_MODEL),
   });

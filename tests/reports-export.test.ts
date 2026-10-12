@@ -127,7 +127,7 @@ describe("parseMarkdownToBlocks", () => {
 describe("exportWordHtml", () => {
   it("renders branded HTML without raw markdown markers in body tables", () => {
     const html = exportWordHtml("Campaign publish report", SAMPLE);
-    expect(html).toContain("Spendsmith");
+    expect(html).toContain("CampaignForge");
     expect(html).toContain("<table>");
     expect(html).toContain("<th>");
     expect(html).toContain("TR Internal Marketing");
@@ -173,7 +173,7 @@ describe("exportPdf", () => {
     expect(new TextDecoder().decode(pdf.slice(0, 5))).toBe("%PDF-");
     const text = await pdfText(pdf);
     // The letter-spaced wordmark extracts as "S P E N D …".
-    expect(text.replace(/(?<=\b[A-Z]) (?=[A-Z]\b)/g, "")).toContain("SPENDSMITH");
+    expect(text.replace(/(?<=\b[A-Z]) (?=[A-Z]\b)/g, "")).toContain("CAMPAIGNFORGE");
     expect(text).toContain("TR Internal Marketing");
     expect(text).toMatch(/Page 1 of \d/);
     expect(text).not.toContain("## ");

@@ -86,7 +86,7 @@ describe("structured audit report template", () => {
 
   it("emits branded Word HTML without markdown hashes as headings", () => {
     const html = renderAuditReportDocxHtml(sample);
-    expect(html).toContain("SPENDSMITH");
+    expect(html).toContain("CAMPAIGNFORGE");
     expect(html).toContain("Bottom line");
     expect(html).toContain("TR AUDIT FINAL");
     expect(html).not.toMatch(/## Account snapshot/);
@@ -143,7 +143,7 @@ Objective: OUTCOME_LEADS
 
     const out = await exportReportPayload({
       format: "docx",
-      title: "Spendsmith report",
+      title: "CampaignForge report",
       content: auditBody,
       report: sample,
     });

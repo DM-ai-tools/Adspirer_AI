@@ -17,8 +17,8 @@ const jetbrainsMono = JetBrains_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "Spendsmith",
-    template: "%s · Spendsmith",
+    default: "CampaignForge",
+    template: "%s · CampaignForge",
   },
   description:
     "Enterprise AI operations for Meta Ads — audit, approve, and execute with human control.",

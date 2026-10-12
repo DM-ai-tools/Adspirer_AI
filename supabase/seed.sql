@@ -1,5 +1,5 @@
 -- =============================================================================
--- Spendsmith — DEMO DATA seed
+-- CampaignForge — DEMO DATA seed
 -- =============================================================================
 -- CLEARLY LABELED DEMO DATA — do not use in production migrations.
 --
@@ -62,7 +62,7 @@ insert into auth.users (
   crypt('demo-password-admin', gen_salt('bf')),
   timezone('utc', now()),
   '{"provider":"email","providers":["email"]}'::jsonb,
-  '{"full_name":"Spendsmith Admin","role":"admin"}'::jsonb,
+  '{"full_name":"CampaignForge Admin","role":"admin"}'::jsonb,
   timezone('utc', now()),
   timezone('utc', now()),
   '',
@@ -79,7 +79,7 @@ insert into auth.users (
   crypt('demo-password-operator', gen_salt('bf')),
   timezone('utc', now()),
   '{"provider":"email","providers":["email"]}'::jsonb,
-  '{"full_name":"Spendsmith Operator","role":"operator"}'::jsonb,
+  '{"full_name":"CampaignForge Operator","role":"operator"}'::jsonb,
   timezone('utc', now()),
   timezone('utc', now()),
   '',

@@ -67,7 +67,7 @@ function metaErrorHint(subcode: number | undefined): string | null {
     case 4834011:
       return [
         "Meta requires is_adset_budget_sharing_enabled when budget is set on the ad set.",
-        "Spendsmith sets it automatically; if you still see this, contact support with the fbtrace_id.",
+        "CampaignForge sets it automatically; if you still see this, contact support with the fbtrace_id.",
       ].join(" ");
     case 1815143:
       return [

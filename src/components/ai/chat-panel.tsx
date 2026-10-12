@@ -767,7 +767,7 @@ export function ChatPanel({
       const blob = await response.blob();
       const disposition = response.headers.get("Content-Disposition") ?? "";
       const match = disposition.match(/filename="([^"]+)"/);
-      const filename = match?.[1] ?? `spendsmith-report.${format}`;
+      const filename = match?.[1] ?? `campaignforge-report.${format}`;
 
       advance(4);
 
@@ -1125,7 +1125,7 @@ export function ChatPanel({
                 (typeof message.metadata?.reportTitle === "string" &&
                   message.metadata.reportTitle) ||
                 parsed?.displayText?.match(/^#\s+(.+)$/m)?.[1]?.trim() ||
-                "Spendsmith report";
+                "CampaignForge report";
               const reportData = message.metadata?.reportData ?? undefined;
               // Prefer the body that still contains the full audit tables/headers.
               // Humanized displayText used to win and drop campaign/KPI rows.
@@ -1528,7 +1528,7 @@ export function ChatPanel({
                         <p className="text-[11px] text-muted">
                           Image uses a still (URL or generate). Video needs a
                           public MP4/MOV URL or an existing Meta video ID —
-                          Spendsmith does not generate videos.
+                          CampaignForge does not generate videos.
                         </p>
                         <div className="flex flex-wrap gap-2">
                           <Button

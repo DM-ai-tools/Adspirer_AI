@@ -277,7 +277,7 @@ export async function prepareApprovalArgs(input: {
   const schema = getExecuteToolSchema(toolName);
   if (!schema) {
     fail(
-      `"${toolName}" cannot be executed from an approval — Spendsmith has no executor for it. Use create_meta_image_campaign / create_meta_video_campaign, create_adset, create_ad, update_adset_budget, pause_campaign, resume_campaign or pause_ad.`,
+      `"${toolName}" cannot be executed from an approval — CampaignForge has no executor for it. Use create_meta_image_campaign / create_meta_video_campaign, create_adset, create_ad, update_adset_budget, pause_campaign, resume_campaign or pause_ad.`,
       { toolName },
     );
   }
@@ -295,7 +295,7 @@ export async function prepareApprovalArgs(input: {
     );
     if (unsupported.length) {
       fail(
-        `${toolName} uses fields Spendsmith cannot apply yet: ${unsupported
+        `${toolName} uses fields CampaignForge cannot apply yet: ${unsupported
           .map((k) => `${k} (${UNSUPPORTED_KEYS[k]})`)
           .join(", ")}. Remove them with Edit, or set them in Ads Manager after creation.`,
         { fields: unsupported },

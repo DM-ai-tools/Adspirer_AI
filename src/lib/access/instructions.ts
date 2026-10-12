@@ -24,11 +24,11 @@ export function generateAccessInstructions(input: {
   if (input.method === "business_manager_partner") {
     return {
       method: input.method,
-      subject: `Please partner Spendsmith Business Manager for ${input.clientName}`,
+      subject: `Please partner CampaignForge Business Manager for ${input.clientName}`,
       body: [
         `Hi${input.recipientEmail ? "" : " there"},`,
         "",
-        `Please grant Spendsmith partner access to the Meta Business Manager for ${input.clientName}${
+        `Please grant CampaignForge partner access to the Meta Business Manager for ${input.clientName}${
           input.metaAccountName ? ` (${input.metaAccountName})` : ""
         }.`,
         "",
@@ -41,43 +41,43 @@ export function generateAccessInstructions(input: {
         `App: ${config.APP_URL}`,
         "",
         "Thank you,",
-        "Spendsmith",
+        "CampaignForge",
       ].join("\n"),
       checklist: [
         "Open Business Settings → Partners",
         `Add partner BM ID ${partnerBmId}`,
         "Share ad account with Manage campaigns",
-        "Confirm back to Spendsmith operator",
+        "Confirm back to CampaignForge operator",
       ],
     };
   }
 
   return {
     method: input.method,
-    subject: `Please grant Spendsmith direct access for ${input.clientName}`,
+    subject: `Please grant CampaignForge direct access for ${input.clientName}`,
     body: [
       `Hi${input.recipientEmail ? "" : " there"},`,
       "",
-      `Please grant the Spendsmith service user direct access to the Meta ad account for ${input.clientName}${
+      `Please grant the CampaignForge service user direct access to the Meta ad account for ${input.clientName}${
         input.metaAccountName ? ` (${input.metaAccountName})` : ""
       }.`,
       "",
       "Steps:",
       "1. Open Meta Business Settings → Ad accounts → Assign people.",
-      "2. Invite the Spendsmith operator email provided by your account manager.",
+      "2. Invite the CampaignForge operator email provided by your account manager.",
       "3. Permission: Manage campaigns.",
       "4. Reply once access is granted.",
       "",
       `App: ${config.APP_URL}`,
       "",
       "Thank you,",
-      "Spendsmith",
+      "CampaignForge",
     ].join("\n"),
     checklist: [
       "Open Ad accounts → Assign people",
-      "Invite Spendsmith service user",
+      "Invite CampaignForge service user",
       "Grant Manage campaigns",
-      "Confirm back to Spendsmith operator",
+      "Confirm back to CampaignForge operator",
     ],
   };
 }
