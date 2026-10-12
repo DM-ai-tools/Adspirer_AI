@@ -10,7 +10,7 @@ import {
 import type { StyleProp } from "@react-pdf/stylesheet";
 import type { InlineSpan, ReportBlock } from "@/lib/reports/parse-markdown";
 import { parseMarkdownToBlocks, sanitizeReportText } from "@/lib/reports/parse-markdown";
-import { columnAlignments, columnWeights, padRows } from "@/lib/reports/layout";
+import { chunkWord, columnAlignments, fitTableColumns, padRows } from "@/lib/reports/layout";
 import { ensureReportFonts } from "@/lib/report/pdf/fonts";
 import { REPORT_THEME as T } from "@/lib/reports/template";
 
@@ -196,11 +196,24 @@ export function linkLabel(url: string): string {
 
 type TextStyle = StyleProp;
 
-function TextWithLinks({ text, style }: { text: string; style?: TextStyle }) {
+function TextWithLinks({
+  text,
+  style,
+  hyphenationCallback,
+}: {
+  text: string;
+  style?: TextStyle;
+  hyphenationCallback?: (word: string) => string[];
+}) {
   const parts = glyphSafe(text).split(URL_RE);
-  if (parts.length === 1) return <Text style={style}>{parts[0]}</Text>;
+  if (parts.length === 1)
+    return (
+      <Text style={style} hyphenationCallback={hyphenationCallback}>
+        {parts[0]}
+      </Text>
+    );
   return (
-    <Text style={style}>
+    <Text style={style} hyphenationCallback={hyphenationCallback}>
       {parts.map((part, i) =>
         i % 2 === 1 ? (
           <Link key={i} src={part} style={s.link}>
@@ -227,25 +240,38 @@ function Spans({ spans }: { spans: InlineSpan[] }) {
   );
 }
 
+/** A4 width minus the side margins and the table's outer border. */
+const TABLE_WIDTH = 595.28 - PAGE_X * 2 - 1;
+
 function Table({ block }: { block: Extract<ReportBlock, { type: "table" }> }) {
   const { headers, rows, columns } = padRows(block.headers, block.rows);
-  const widths = columnWeights(headers, rows);
+  // Wide tables (a 12-column ad set table) step down in type size so every
+  // word fits its column; only words that still don't fit break mid-word.
+  const fit = fitTableColumns(headers, rows, { availableWidth: TABLE_WIDTH });
   const align = columnAlignments(rows, columns);
   const cellStyle = (c: number) => [
     s.cell,
     {
-      width: `${(widths[c] * 100).toFixed(2)}%`,
+      width: fit.widths[c],
       textAlign: align[c],
+      fontSize: fit.fontSize,
+      lineHeight: `${(fit.fontSize * 1.35).toFixed(1)}pt`,
+      paddingHorizontal: fit.paddingX,
     } as const,
     c === columns - 1 ? { borderRightWidth: 0 } : {},
   ];
+  const breakAt = (c: number, header = false) => {
+    if (!fit.breakWords[c]) return undefined;
+    const chars = header ? Math.max(1, Math.floor(fit.maxWordChars[c]! * 0.9)) : fit.maxWordChars[c]!;
+    return (word: string) => chunkWord(word, chars);
+  };
 
   return (
     <View style={s.table}>
       {/* `fixed` repeats the header row on every page the table spans. */}
       <View style={s.headRow} fixed>
         {headers.map((h, c) => (
-          <Text key={c} style={[...cellStyle(c), s.headCell]}>
+          <Text key={c} style={[...cellStyle(c), s.headCell]} hyphenationCallback={breakAt(c, true)}>
             {glyphSafe(h)}
           </Text>
         ))}
@@ -257,7 +283,7 @@ function Table({ block }: { block: Extract<ReportBlock, { type: "table" }> }) {
           style={[s.row, r > 0 ? s.rowDivider : {}, r % 2 === 1 ? s.rowAlt : {}]}
         >
           {row.map((cell, c) => (
-            <TextWithLinks key={c} style={cellStyle(c)} text={cell} />
+            <TextWithLinks key={c} style={cellStyle(c)} text={cell} hyphenationCallback={breakAt(c)} />
           ))}
         </View>
       ))}

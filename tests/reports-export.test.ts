@@ -7,7 +7,7 @@ import {
   parseMarkdownToBlocks,
   sanitizeReportText,
 } from "@/lib/reports/parse-markdown";
-import { columnAlignments, columnWeights } from "@/lib/reports/layout";
+import { chunkWord, columnAlignments, columnWeights, fitTableColumns } from "@/lib/reports/layout";
 import { toExcelCell } from "@/lib/reports/xlsx-document";
 import {
   buildReportFilename,
@@ -255,6 +255,66 @@ describe("table layout", () => {
     expect(w.reduce((a, b) => a + b, 0)).toBeCloseTo(1);
     expect(w[0]).toBeGreaterThan(w[1]);
   });
+
+  // The 12-column ad set table that printed IDs and event names on top of
+  // each other: every column must fit its longest word, inside the page.
+  const WIDE_HEADERS = ["Ad Set", "ID", "Status", "Learning", "Budget", "Optimises For", "Spend", "Results", "Cost/Result", "CTR", "Freq (7d)", "Live Ads"];
+  const WIDE_ROWS = [
+    ["Broad - Job title | Google Scale", "120249718007700685", "ACTIVE", "Reset (edit 12 Oct)", "CBO $30/day", "CompleteRegistration", "$0.00", "0", "N/A", "N/A", "1.38", "3 of 3"],
+    ["Broad - Job title | Google consult", "120249717677200685", "PAUSED", "N/A", "CBO", "CompleteRegistration", "$0.00", "0", "N/A", "N/A", "N/A", "0 of 0"],
+    ["Broad Aud. - Job title | Google Audit", "120249373802720685", "PAUSED", "N/A", "CBO", "CompleteRegistration", "$0.00", "0", "N/A", "N/A", "N/A", "0 of 8"],
+  ];
+  const longestWord = (cells: string[]) => Math.max(...cells.flatMap((c) => c.split(/\s+/).map((w) => w.length)));
+
+  it("fits a wide table on the page: smaller type, every word inside its column", () => {
+    const fit = fitTableColumns(WIDE_HEADERS, WIDE_ROWS, { availableWidth: 498 });
+    const total = fit.widths.reduce((a, b) => a + b, 0);
+    expect(total).toBeLessThanOrEqual(498.01);
+    expect(fit.fontSize).toBeLessThan(8.5);
+    fit.widths.forEach((width, c) => {
+      const words = longestWord([WIDE_HEADERS[c]!, ...WIDE_ROWS.map((r) => r[c]!)]);
+      const capacity = fit.maxWordChars[c]!;
+      // Either the longest word fits, or the cell is told to break it.
+      expect(capacity >= words || fit.breakWords[c]).toBe(true);
+      expect(width).toBeGreaterThan(0);
+    });
+  });
+
+  it("keeps the normal size for a table that already fits", () => {
+    const fit = fitTableColumns(["Campaign", "Spend", "CTR"], [["Prospecting broad", "$1,234.50", "2.5%"]], {
+      availableWidth: 498,
+    });
+    expect(fit.fontSize).toBe(8.5);
+    expect(fit.breakWords.every((b) => !b)).toBe(true);
+    expect(fit.widths.reduce((a, b) => a + b, 0)).toBeCloseTo(498);
+  });
+
+  it("breaks a word only when it can't fit at the smallest size", () => {
+    const headers = Array.from({ length: 14 }, (_, i) => `Column ${i}`);
+    const rows = [headers.map(() => "120249718007700685120249718007700685")];
+    const fit = fitTableColumns(headers, rows, { availableWidth: 498 });
+    expect(fit.breakWords.some(Boolean)).toBe(true);
+    expect(chunkWord("120249718007700685120249718007700685", 10).join("")).toBe(
+      "120249718007700685120249718007700685",
+    );
+    expect(chunkWord("short", 10)).toEqual(["short"]);
+  });
+
+  it("renders the wide ad set table into a PDF with all its values", async () => {
+    const md = [
+      "## Ad Sets in TR | Lead Gen Traffic Radius | Sep 2026",
+      "",
+      `| ${WIDE_HEADERS.join(" | ")} |`,
+      `| ${WIDE_HEADERS.map(() => "---").join(" | ")} |`,
+      ...WIDE_ROWS.map((r) => `| ${r.map((c) => c.replace(/\|/g, "\\|")).join(" | ")} |`),
+    ].join("\n");
+    // Names wrap inside their cell, so compare with line breaks folded.
+    const text = (await pdfText(await exportPdf("Audit", md))).replace(/\s+/g, " ");
+    // Whole words: nothing was broken mid-word.
+    expect(text).toContain("120249718007700685");
+    expect(text).toContain("CompleteRegistration");
+    expect(text).toContain("Broad Aud. - Job title | Google Audit");
+  }, 30_000);
 });
 
 describe("exportMarkdown", () => {

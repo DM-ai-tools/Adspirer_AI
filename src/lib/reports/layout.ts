@@ -76,6 +76,92 @@ export function columnWeights(
   return raw.map((w) => w / total);
 }
 
+/** Type sizes tried, largest first, until the table's words fit the page. */
+const DENSITIES = [
+  { fontSize: 8.5, paddingX: 6 },
+  { fontSize: 7.5, paddingX: 4 },
+  { fontSize: 6.8, paddingX: 3 },
+  { fontSize: 6.2, paddingX: 2.5 },
+] as const;
+
+/** Widest average glyph we plan for, in em — Inter digits and capitals run ~0.6. */
+const CHAR_EM = 0.62;
+/** Semi-bold header text is a little wider. */
+const HEADER_CHAR_EM = 0.66;
+/** Cell border. */
+const BORDER = 0.5;
+
+export type TableFit = {
+  fontSize: number;
+  paddingX: number;
+  /** Column widths in points, summing to the available width. */
+  widths: number[];
+  /** Characters that fit on one line of each column. */
+  maxWordChars: number[];
+  /** Columns whose longest word still doesn't fit and must break mid-word. */
+  breakWords: boolean[];
+};
+
+const longestWordIn = (cells: string[]) =>
+  Math.max(0, ...cells.flatMap((cell) => cell.trim().split(/\s+/).map((w) => w.length)));
+
+/**
+ * Absolute column widths for a fixed-width page. react-pdf wraps only at
+ * spaces, so a word wider than its column (an 18-digit ID, an event name)
+ * prints over the next cell. Pick the largest type size at which every
+ * column holds its longest word, then share the spare width the way
+ * `columnWeights` would. Only when nothing fits do columns break words.
+ */
+export function fitTableColumns(
+  headers: string[],
+  rows: string[][],
+  options: { availableWidth: number },
+): TableFit {
+  const columns = Math.max(headers.length, ...rows.map((r) => r.length), 1);
+  const available = options.availableWidth;
+  const preferred = columnWeights(headers, rows).map((w) => w * available);
+  const cellWords = Array.from({ length: columns }, (_, c) => longestWordIn(rows.map((r) => r[c] ?? "")));
+  const headerWords = Array.from({ length: columns }, (_, c) => longestWordIn([headers[c] ?? ""]));
+
+  const needFor = (fontSize: number, paddingX: number) =>
+    Array.from(
+      { length: columns },
+      (_, c) =>
+        Math.max(cellWords[c]! * CHAR_EM, headerWords[c]! * HEADER_CHAR_EM) * fontSize + paddingX * 2 + BORDER,
+    );
+
+  const density = DENSITIES.find((d) => needFor(d.fontSize, d.paddingX).reduce((a, b) => a + b, 0) <= available);
+  const { fontSize, paddingX } = density ?? DENSITIES[DENSITIES.length - 1]!;
+  const need = needFor(fontSize, paddingX);
+  const needTotal = need.reduce((a, b) => a + b, 0);
+
+  let widths: number[];
+  if (needTotal <= available) {
+    // Every column gets its minimum; the spare goes to columns that want more.
+    const spare = available - needTotal;
+    const wants = need.map((n, c) => Math.max(0, preferred[c]! - n));
+    const wantTotal = wants.reduce((a, b) => a + b, 0);
+    widths = need.map((n, c) => n + spare * (wantTotal > 0 ? wants[c]! / wantTotal : n / needTotal));
+  } else {
+    widths = need.map((n) => (n / needTotal) * available);
+  }
+
+  const maxWordChars = widths.map((w) => Math.max(1, Math.floor((w - paddingX * 2 - BORDER) / (CHAR_EM * fontSize))));
+  return {
+    fontSize,
+    paddingX,
+    widths,
+    maxWordChars,
+    breakWords: maxWordChars.map((chars, c) => Math.max(cellWords[c]!, headerWords[c]!) > chars),
+  };
+}
+
+/** Split a word into pieces no longer than `size` (for hyphenation callbacks). */
+export function chunkWord(word: string, size: number): string[] {
+  if (word.length <= size || size < 1) return [word];
+  return word.match(new RegExp(`.{1,${Math.floor(size)}}`, "gu")) ?? [word];
+}
+
 /** Normalise every row to the same number of cells. */
 export function padRows(headers: string[], rows: string[][]): {
   headers: string[];
