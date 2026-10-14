@@ -1543,6 +1543,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       objective?: string;
       daily_budget?: string;
       lifetime_budget?: string;
+      bid_strategy?: string;
       special_ad_categories?: string[];
     }>(input.campaign_id, {
       fields: "account_id,objective,daily_budget,lifetime_budget,bid_strategy,special_ad_categories",
@@ -1558,6 +1559,15 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     }
     const cbo =
       positiveMinor(campaign.daily_budget) || positiveMinor(campaign.lifetime_budget);
+    // Under a campaign budget the campaign owns the bid strategy: never let a
+    // cap or ROAS floor look applied when the campaign bids differently.
+    const requested = optionalText(input.extra_args?.bid_strategy)?.toUpperCase();
+    const current = (campaign.bid_strategy ?? "LOWEST_COST_WITHOUT_CAP").toUpperCase();
+    if (cbo && requested && requested !== current) {
+      throw new Error(
+        `Campaign ${input.campaign_id} has a campaign budget bidding ${current}, so a new ad set can't use ${requested}. Change the campaign's bid strategy in Ads Manager, or leave bid_strategy off. Nothing was created.`,
+      );
+    }
     const plan = await this.planAdSet(
       { ...input, account_id: accountId },
       {

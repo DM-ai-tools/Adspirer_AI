@@ -411,10 +411,13 @@ export async function prepareApprovalArgs(input: {
   const isImageAd =
     toolName === "create_meta_image_campaign" ||
     (toolName === "create_ad" && !hasVideo && (args.ad_type == null || args.ad_type === "image"));
-  if (toolName === "create_meta_image_campaign" && Array.isArray(args.extra_ads)) {
+  if ((toolName === "create_meta_image_campaign" || toolName === "create_meta_video_campaign") && Array.isArray(args.extra_ads)) {
+    const video = toolName === "create_meta_video_campaign";
     args.extra_ads.forEach((extra, i) => {
       const ad = (extra && typeof extra === "object" ? extra : {}) as Record<string, unknown>;
-      if (!optionalString(ad.image_url) && !optionalString(ad.existing_image_hash)) {
+      if (video && !optionalString(ad.video_url) && !optionalString(ad.existing_video_id)) {
+        missing.push(`Extra ad ${i + 1} needs a video (video_url or existing_video_id).`);
+      } else if (!video && !optionalString(ad.image_url) && !optionalString(ad.existing_image_hash)) {
         missing.push(`Extra ad ${i + 1} needs an image (image_url or existing_image_hash).`);
       }
     });

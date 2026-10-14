@@ -30,6 +30,17 @@ export type AlertState = {
   approval_id: string | null;
 };
 
+/** Alerts built from the audit snapshot (ad sets and ads). */
+export const AUDIT_CODES = new Set([
+  "CPR_OVER_TARGET",
+  "LEARNING_LIMITED",
+  "WINNER_CAPPED",
+  "ADSET_OVER_TARGET",
+  "ADSET_NO_RESULTS",
+  "DISAPPROVED_AD",
+  "AD_FATIGUE",
+]);
+
 /** Health codes worth checking hourly: delivery, tracking and account status. */
 export const HOURLY_CODES = new Set(["ACCOUNT_STATUS", "SPEND_CAP", "NO_DELIVERY", "TRACKING_STOPPED", "AD_ISSUES"]);
 
@@ -49,7 +60,13 @@ export function alertsFromHealth(health: AccountHealth): MonitorAlert[] {
 const live = (status: string) => status === "ACTIVE" || status === "WITH_ISSUES";
 const spendOf = (p: PeriodPerformance | null | undefined) => p?.spendCents ?? 0;
 
-export function alertsFromAudit(snap: MetaAuditSnapshot, goals: ResolvedGoals): MonitorAlert[] {
+export function alertsFromAudit(
+  snap: MetaAuditSnapshot,
+  goals: ResolvedGoals,
+  options: { pendingPauses?: Set<string> } = {},
+): MonitorAlert[] {
+  // Ads already waiting in Approvals to be paused don't keep an ad set running.
+  const pendingPauses = options.pendingPauses ?? new Set<string>();
   const out: MonitorAlert[] = [];
   const account = snap.account.id;
   const money = (cents: number) => formatMoney(cents, snap.account.currency);
@@ -151,8 +168,10 @@ export function alertsFromAudit(snap: MetaAuditSnapshot, goals: ResolvedGoals): 
     );
     if (!verdict.fatigued) continue;
     // Never empty an ad set: something must keep delivering.
-    const siblings = liveAds.filter((a) => a.adSetId === ad.adSetId && a.id !== ad.id && !pausing.has(a.id));
-    const canPause = siblings.length > 0 && pausing.size < 3;
+    const siblings = liveAds.filter(
+      (a) => a.adSetId === ad.adSetId && a.id !== ad.id && !pausing.has(a.id) && !pendingPauses.has(a.id),
+    );
+    const canPause = siblings.length > 0 && pausing.size < 3 && !pendingPauses.has(ad.id);
     if (canPause) pausing.add(ad.id);
     out.push({
       key: `AD_FATIGUE:${ad.id}`,
@@ -222,7 +241,8 @@ export function planAlertUpdates(
       acknowledged_at: fresh ? null : (prev?.acknowledged_at ?? null),
       snoozed_until: fresh ? null : (prev?.snoozed_until ?? null),
       resolved_at: null,
-      approval_id: fresh ? null : (prev?.approval_id ?? null),
+      // Kept across resolve/return so a draft still waiting isn't queued twice.
+      approval_id: prev?.approval_id ?? null,
     });
   }
   const seen = new Set(alerts.map((a) => a.key));

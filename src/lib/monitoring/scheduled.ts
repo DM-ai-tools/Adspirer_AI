@@ -6,6 +6,7 @@ import type { AccountHealth, TrackingSignal } from "@/lib/monitoring/health";
 import {
   alertsFromAudit,
   alertsFromHealth,
+  AUDIT_CODES,
   HOURLY_CODES,
   planAlertUpdates,
   trackingDropAlerts,
@@ -33,6 +34,10 @@ export type MonitorStore = {
   notifyTeam(clientId: string, clientName: string, alerts: MonitorAlert[]): Promise<number>;
   /** Queues the alert's fix for approval; returns the approval id. */
   queueDraft(clientId: string, alert: MonitorAlert): Promise<string | null>;
+  /** Whether an approval is still waiting (pending or edited). */
+  isApprovalOpen?(approvalId: string): Promise<boolean>;
+  /** Ads with a pause waiting in Approvals. */
+  pendingPauseAdIds?(clientId: string): Promise<Set<string>>;
 };
 
 const codeOf = (key: string) => key.split(":")[0]!;
@@ -51,12 +56,22 @@ export async function evaluateClientAlerts(input: {
 }): Promise<{ alerts: MonitorAlert[]; notified: number; queued: number; resolved: number }> {
   const { clientId, store, now } = input;
   const hourly = input.mode === "hourly";
+  const pendingPauses = !hourly && input.audit ? ((await store.pendingPauseAdIds?.(clientId)) ?? new Set<string>()) : new Set<string>();
   const alerts = [
     ...alertsFromHealth(input.health).filter((a) => !hourly || HOURLY_CODES.has(codeOf(a.key))),
-    ...(hourly ? [] : input.audit ? alertsFromAudit(input.audit, input.goals) : []),
+    ...(hourly ? [] : input.audit ? alertsFromAudit(input.audit, input.goals, { pendingPauses }) : []),
     ...(hourly ? [] : trackingDropAlerts(input.health.tracking ?? [], input.baseline)),
   ];
-  const inScope = hourly ? (key: string) => HOURLY_CODES.has(codeOf(key)) : () => true;
+  // Only what this run actually checked can resolve: hourly runs check
+  // delivery codes; a run whose audit or baseline failed to load can't
+  // resolve the alerts built from them.
+  const inScope = (key: string) => {
+    const code = codeOf(key);
+    if (hourly) return HOURLY_CODES.has(code);
+    if (AUDIT_CODES.has(code)) return input.audit != null;
+    if (code === "TRACKING_DROP") return input.baseline.length > 0;
+    return true;
+  };
   const plan = planAlertUpdates(alerts, await store.loadStates(clientId), now, inScope);
   const byKey = new Map(alerts.map((a) => [a.key, a]));
   await store.saveStates(
@@ -67,9 +82,12 @@ export async function evaluateClientAlerts(input: {
   );
 
   let queued = 0;
+  const stateByKey = new Map(plan.upsert.map((s) => [s.key, s]));
   for (const alert of plan.notify) {
     if (!alert.action) continue;
     try {
+      const earlier = stateByKey.get(alert.key)?.approval_id;
+      if (earlier && (await store.isApprovalOpen?.(earlier))) continue;
       const approvalId = await store.queueDraft(clientId, alert);
       if (approvalId) {
         await store.setApproval(clientId, alert.key, approvalId);
@@ -173,6 +191,23 @@ export function supabaseMonitorStore(): MonitorStore {
       await postToSlack(`*${title}*\n${alerts.map((a) => `• ${a.title} — ${a.detail}`).join("\n")}`);
       return users.length;
     },
+    async isApprovalOpen(approvalId) {
+      const { data } = await (await admin()).from("approvals").select("status").eq("id", approvalId).maybeSingle();
+      return data?.status === "pending" || data?.status === "edited";
+    },
+    async pendingPauseAdIds(clientId) {
+      const { data } = await (await admin())
+        .from("approvals")
+        .select("proposed_args, edited_args")
+        .eq("client_id", clientId)
+        .eq("tool_name", "pause_ad")
+        .in("status", ["pending", "edited"]);
+      return new Set(
+        (data ?? [])
+          .map((r) => ((r.edited_args ?? r.proposed_args) as Record<string, unknown> | null)?.ad_id)
+          .filter((id): id is string => typeof id === "string"),
+      );
+    },
     async queueDraft(clientId, alert) {
       if (!alert.action) return null;
       const { createPendingApproval } = await import("@/lib/approvals/service");
@@ -203,17 +238,24 @@ export type MonitorClientResult = {
   message?: string;
 };
 
-/** Users with a stored Facebook token: the client's team first, then the rest. */
+/** Token holders on the client's team, in the order given (most recent first). */
+export function teamTokenHolders(holders: string[], team: string[]): string[] {
+  const members = new Set(team);
+  return holders.filter((u) => members.has(u));
+}
+
+/** The client's team members with a stored Facebook token — never anyone else's login. */
 async function tokenHolders(clientId: string): Promise<string[]> {
+  const team = await clientTeam(clientId);
+  if (!team.length) return [];
   const { createAdminClient } = await import("@/lib/supabase/admin");
   const { data } = await createAdminClient()
     .from("meta_oauth_tokens")
     .select("user_id")
+    .in("user_id", team)
     .order("updated_at", { ascending: false })
-    .limit(20);
-  const holders = (data ?? []).map((r) => r.user_id as string);
-  const team = new Set(await clientTeam(clientId));
-  return [...holders.filter((u) => team.has(u)), ...holders.filter((u) => !team.has(u))].slice(0, 5);
+    .limit(5);
+  return teamTokenHolders((data ?? []).map((r) => r.user_id as string), team);
 }
 
 /** Tracking counts from the snapshot taken about a week ago. */
