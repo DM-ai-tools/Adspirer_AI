@@ -9,16 +9,10 @@ import {
 import { isAdmin } from "@/lib/security/roles";
 import { jsonOk, withApiHandler } from "@/lib/api/response";
 import { humanToolLabel } from "@/lib/tools/display-labels";
+import { approvalAuditEvent, type AuditEvent } from "@/lib/audit/events";
+import { mapApprovalRow } from "@/lib/db/live-maps";
 
-export type AuditEvent = {
-  id: string;
-  at: string;
-  type: string;
-  client_id: string | null;
-  actor_id: string | null;
-  summary: string;
-  payload: Record<string, unknown>;
-};
+export type { AuditEvent };
 
 function sortEvents(events: AuditEvent[]): AuditEvent[] {
   return events.sort(
@@ -30,22 +24,7 @@ function buildDemoAuditEvents(): AuditEvent[] {
   const store = getDemoStore();
   const events: AuditEvent[] = [];
 
-  for (const a of store.approvals) {
-    events.push({
-      id: `audit_approval_${a.id}`,
-      at: a.updated_at,
-      type: `approval.${a.status}`,
-      client_id: a.client_id,
-      actor_id: a.reviewed_by ?? a.requested_by,
-      summary: `${humanToolLabel(a.tool_name)} → ${a.status}`,
-      payload: {
-        approvalId: a.id,
-        toolName: a.tool_name,
-        status: a.status,
-        budgetImpactCents: a.budget_impact_cents,
-      },
-    });
-  }
+  for (const a of store.approvals) events.push(approvalAuditEvent(a));
 
   for (const t of store.toolCalls) {
     const task = store.tasks.find((x) => x.id === t.task_id);
@@ -115,23 +94,9 @@ async function buildLiveAuditEvents(limit: number): Promise<AuditEvent[]> {
 
   const events: AuditEvent[] = [];
 
+  // Raw rows use database column names (decided_by, budget_impact): map first.
   for (const a of (approvals ?? []) as Array<Record<string, unknown>>) {
-    events.push({
-      id: `audit_approval_${a.id}`,
-      at: String(a.updated_at ?? a.created_at),
-      type: `approval.${a.status}`,
-      client_id: (a.client_id as string) ?? null,
-      actor_id:
-        (a.reviewed_by as string | null) ??
-        (a.requested_by as string | null),
-      summary: `${humanToolLabel(String(a.tool_name ?? "tool"))} → ${String(a.status)}`,
-      payload: {
-        approvalId: a.id,
-        toolName: a.tool_name,
-        status: a.status,
-        budgetImpactCents: a.budget_impact_cents ?? null,
-      },
-    });
+    events.push(approvalAuditEvent(mapApprovalRow(a)));
   }
 
   for (const t of (toolCalls ?? []) as Array<Record<string, unknown>>) {

@@ -3,6 +3,8 @@ import { ApprovalRequiredError } from "@/lib/errors";
 import { executeApprovedAction } from "@/lib/approvals/executor";
 import { getDemoStore } from "@/lib/demo/store";
 import { getConfig } from "@/lib/config";
+import { findMatchingApproval } from "@/lib/tools/execute/match-approval";
+import { mapApprovalRow } from "@/lib/db/live-maps";
 import {
   createAdSchema,
   createAdSetSchema,
@@ -67,25 +69,18 @@ async function findApprovedApprovalId(
   const supabase = createAdminClient();
   const { data } = await supabase
     .from("approvals")
-    .select("id, proposed_args, edited_args, status")
+    .select("*")
     .eq("client_id", clientId)
     .eq("tool_name", toolName)
     .in("status", ["approved", "edited"])
     .order("created_at", { ascending: false })
     .limit(20);
 
-  const rows = (data ?? []) as Array<{
-    id: string;
-    proposed_args: Record<string, unknown>;
-    edited_args: Record<string, unknown> | null;
-    status: string;
-  }>;
-
-  const match = rows.find(
-    (a) =>
-      JSON.stringify(a.edited_args ?? a.proposed_args) === JSON.stringify(args),
+  // The table stores args as original_input / editable_input: map the rows.
+  return findMatchingApproval(
+    ((data ?? []) as Array<Record<string, unknown>>).map(mapApprovalRow),
+    args,
   );
-  return match?.id ?? null;
 }
 
 export const updateAdsetBudgetTool = registerTool({
