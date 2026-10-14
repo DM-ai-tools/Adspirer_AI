@@ -207,7 +207,11 @@ function moneyFor(currency: string) {
   };
 }
 
-function periodLine(p: PeriodPerformance | null, money: (cents: number) => string): string {
+function periodLine(
+  p: PeriodPerformance | null,
+  money: (cents: number) => string,
+  options: { video?: boolean } = {},
+): string {
   if (!p || (p.spendCents === 0 && p.impressions === 0)) return "no delivery in the period";
   return [
     `spend ${money(p.spendCents)}`,
@@ -219,8 +223,9 @@ function periodLine(p: PeriodPerformance | null, money: (cents: number) => strin
     `link CTR ${p.linkCtr.toFixed(2)}%`,
     `CPM ${p.cpmCents != null ? money(p.cpmCents) : "n/a"}`,
     p.roas != null ? `ROAS ${p.roas.toFixed(2)}×` : null,
-    hookRate(p) != null ? `hook rate ${Math.round(hookRate(p)!)}%` : null,
-    holdRate(p) != null ? `hold rate ${Math.round(holdRate(p)!)}%` : null,
+    // Video rates only per ad: higher rows mix in image impressions.
+    options.video && hookRate(p) != null ? `hook rate ${Math.round(hookRate(p)!)}%` : null,
+    options.video && holdRate(p) != null ? `hold rate ${Math.round(holdRate(p)!)}%` : null,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -287,7 +292,7 @@ function adSetBlock(
     .slice(0, 8)
     .map(
       (ad) =>
-        `    - ${ad.name} (${ad.id}) · ${ad.status}${ad.format ? ` · ${ad.format}` : ""}${ad.issue ? ` · issue: ${ad.issue}` : ""} — ${periodLine(ad.performance, money)}`,
+        `    - ${ad.name} (${ad.id}) · ${ad.status}${ad.format ? ` · ${ad.format}` : ""}${ad.issue ? ` · issue: ${ad.issue}` : ""} — ${periodLine(ad.performance, money, { video: true })}`,
     );
   return [
     `- **${a.name} (${a.id})** · ${a.status} · ${a.learningStatus ? LEARNING_LABEL[a.learningStatus] ?? a.learningStatus : "learning status not reported"}${

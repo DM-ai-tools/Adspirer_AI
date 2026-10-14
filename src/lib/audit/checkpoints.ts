@@ -788,8 +788,9 @@ export function evaluateCheckpoints(
     const tired = liveAds.filter(
       (a) =>
         spendOf(a.performance) > 0 &&
+        a.frequency7d != null &&
         assessFatigue(
-          { impressions: a.performance!.impressions, frequency7d: a.performance!.frequency, ctrNow: a.performance!.linkCtr },
+          { impressions: a.performance!.impressions, frequency7d: a.frequency7d, ctrNow: a.performance!.linkCtr },
           { frequencyMax: goals.policy.prospecting_frequency_max },
         ).fatigued,
     );
@@ -800,7 +801,7 @@ export function evaluateCheckpoints(
         title: "No fatigued ads",
         status: "warn",
         severity: "medium",
-        evidence: `Frequency over ${goals.policy.prospecting_frequency_max} with link CTR under 0.7% on ${list(tired.map((a) => `${a.name} (${a.performance!.frequency.toFixed(1)}, ${a.performance!.linkCtr.toFixed(2)}%)`))}.`,
+        evidence: `7-day frequency over ${goals.policy.prospecting_frequency_max} with link CTR under 0.7% on ${list(tired.map((a) => `${a.name} (${a.frequency7d!.toFixed(1)}, ${a.performance!.linkCtr.toFixed(2)}%)`))}.`,
         fix: "Launch new concepts alongside these ads, then let Meta move spend; widen the audience if frequency keeps climbing.",
       });
     }
@@ -993,9 +994,17 @@ export function evaluateCheckpoints(
   }
 
   {
-    const loaded = liveAds.filter((a) => a.urlTags !== undefined);
+    // Only ads that send people to a website can carry UTMs (not lead forms,
+    // messaging or engagement); UTMs in the destination link count too.
+    const WEB_GOALS = new Set(["OFFSITE_CONVERSIONS", "LINK_CLICKS", "LANDING_PAGE_VIEWS", "VALUE"]);
+    const adSetById = new Map(snap.adSets.map((s) => [s.id, s]));
+    const toWebsite = (a: (typeof liveAds)[number]) => {
+      const set = adSetById.get(a.adSetId);
+      return Boolean(set && (set.pixelId || WEB_GOALS.has(set.optimizationGoal ?? "")));
+    };
+    const loaded = liveAds.filter((a) => (a.urlTags !== undefined || a.linkUrl !== undefined) && toWebsite(a));
     if (loaded.length) {
-      const untagged = loaded.filter((a) => !/utm_/i.test(a.urlTags ?? ""));
+      const untagged = loaded.filter((a) => !/utm_/i.test(`${a.urlTags ?? ""} ${a.linkUrl ?? ""}`));
       cp.push({
         id: "C5",
         category: "Creative",

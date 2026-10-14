@@ -130,7 +130,26 @@ export type LandingDeps = {
   checks: (url: string) => Promise<PageChecks>;
   pageSpeed: (url: string) => Promise<PageSpeed | null>;
   judgeMatch: typeof judgeMessageMatch;
+  /** Per-page budget so slow sites can't stall the audit (default 25 s). */
+  deadlineMs?: number;
 };
+
+/** The promise's value, or null once the deadline passes. */
+function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), ms);
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(null);
+      },
+    );
+  });
+}
 
 const DEFAULT_DEPS: LandingDeps = {
   scrape: (url) => scrapeWebsiteServices(url, { extractServices: false }),
@@ -145,13 +164,25 @@ export async function analyzeLandingPage(
 ): Promise<LandingPageAnalysis> {
   const url = input.url;
   try {
-    const [scraped, checks, speed] = await Promise.all([
-      deps.scrape(url),
-      deps.checks(url).catch(() => null),
-      deps.pageSpeed(url).catch(() => null),
+    const deadline = deps.deadlineMs ?? 25_000;
+    const [scrapedOrNull, rawChecks, speed] = await Promise.all([
+      withDeadline(deps.scrape(url), deadline),
+      withDeadline(deps.checks(url), deadline),
+      // PageSpeed is slow and rate-limited: our own destinations only.
+      input.role === "own" ? withDeadline(deps.pageSpeed(url), deadline) : Promise.resolve(null),
     ]);
+    const scraped: WebsiteScrapeResult = scrapedOrNull ?? { url, markdown: "", services: [], source: "heuristic" };
     const body = (scraped.markdown ?? "").trim();
-    const reachable = checks ? checks.status >= 200 && checks.status < 300 : null;
+    const textLoaded =
+      body.split(/\s+/).filter(Boolean).length >= 10 && !/\b(not found|404|page (doesn'?t|does not) exist)\b/i.test(body.slice(0, 300));
+    const status = rawChecks?.status ?? null;
+    // A bot wall (401/403/429) or a long redirect chain says nothing about
+    // what a person sees; only a dead URL whose text can't load is broken.
+    const blocked = status != null && [401, 403, 429].includes(status);
+    const deadStatus = status != null && (status === 0 || status === 404 || status === 410 || status >= 500);
+    const broken = deadStatus && !textLoaded;
+    const checks = rawChecks && status != null && status >= 200 && status < 300 ? rawChecks : null;
+    const reachable = broken ? false : checks ? true : null;
     const html = checks?.html ? pageHtmlSignals(checks.html) : null;
     const hasCtaLanguage = CTA_RE.test(body);
     const hasFormCue = html ? html.formFields > 0 : FORM_RE.test(body);
@@ -168,8 +199,8 @@ export async function analyzeLandingPage(
     if (reachable === false) {
       score100 = 0;
       findings.push(
-        checks!.status
-          ? `The page returns HTTP ${checks!.status} — paid clicks land on an error.`
+        status
+          ? `The page returns HTTP ${status} — paid clicks land on an error.`
           : "The page could not be reached (timeout or connection error).",
       );
       suggestions.push("Fix or replace the destination URL before spending more on these ads.");
@@ -182,6 +213,13 @@ export async function analyzeLandingPage(
         form: html ? formScore(html.formFields) : null,
       });
       findings.push(`Title: ${scraped.title ?? "(none)"} · ~${wordCount} words`);
+      if (blocked) {
+        findings.push(`The site blocked our check (HTTP ${status}), so redirects, form and pixel checks are missing — this is not a broken page.`);
+      } else if (status != null && status >= 300 && status < 400) {
+        findings.push("More than 5 redirects before the page — shorten the chain; each hop costs load time and can drop tracking parameters.");
+      } else if (deadStatus) {
+        findings.push(`Our check got ${status ? `HTTP ${status}` : "no response"} but the page text loaded — open the URL on a phone to confirm it works.`);
+      }
       if (h1Guess) findings.push(`Likely H1 / hero: “${h1Guess}”`);
       if (input.role === "own" && input.adContext) findings.push(`Ad→page message match: ${match}`);
       if (speed) {

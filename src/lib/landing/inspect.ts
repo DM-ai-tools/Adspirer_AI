@@ -5,6 +5,8 @@
  * (Google PageSpeed Insights). Thresholds follow Core Web Vitals.
  */
 
+import { assertPublicUrl } from "@/lib/security/public-url";
+
 const TRACKING_PARAMS = { utm_source: "campaignforge_check", fbclid: "cf_check" };
 
 export type PageChecks = {
@@ -36,17 +38,24 @@ export type HtmlSignals = {
 };
 
 /** Fetch the page as an ad click would, following redirects by hand. */
-export async function fetchPageChecks(url: string, fetchImpl: typeof fetch = fetch): Promise<PageChecks> {
-  const start = new URL(url);
-  for (const [k, v] of Object.entries(TRACKING_PARAMS)) start.searchParams.set(k, v);
-  let current = start.toString();
+export async function fetchPageChecks(
+  url: string,
+  fetchImpl: typeof fetch = fetch,
+  guard: (url: string) => Promise<void> = (u) => assertPublicUrl(u),
+): Promise<PageChecks> {
+  let current = /^https?:\/\//i.test(url.trim()) ? url.trim() : `https://${url.trim()}`;
   let redirects = 0;
   try {
+    const start = new URL(current);
+    for (const [k, v] of Object.entries(TRACKING_PARAMS)) start.searchParams.set(k, v);
+    current = start.toString();
     for (;;) {
+      // Every hop: never let a redirect point the server at an internal address.
+      await guard(current);
       const res = await fetchImpl(current, {
         redirect: "manual",
         headers: { "user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) CampaignForge-LP-check" },
-        signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(8_000),
       });
       const location = res.headers.get("location");
       if (res.status >= 300 && res.status < 400 && location && redirects < 5) {
@@ -120,7 +129,7 @@ export async function fetchPageSpeed(url: string, fetchImpl: typeof fetch = fetc
   api.searchParams.set("category", "performance");
   if (process.env.PAGESPEED_API_KEY) api.searchParams.set("key", process.env.PAGESPEED_API_KEY);
   try {
-    const res = await fetchImpl(api.toString(), { signal: AbortSignal.timeout(60_000) });
+    const res = await fetchImpl(api.toString(), { signal: AbortSignal.timeout(25_000) });
     if (!res.ok) return null;
     return pageSpeedFromResponse(await res.json());
   } catch {
