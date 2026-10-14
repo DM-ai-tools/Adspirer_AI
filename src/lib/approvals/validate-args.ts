@@ -36,7 +36,11 @@ const NEEDS_LOCATION = new Set([
 ]);
 
 /** Create tools whose ad set optimises for the objective's conversion event. */
-const CONVERSION_SOURCE_TOOLS = NEEDS_LOCATION;
+const CONVERSION_SOURCE_TOOLS = new Set([
+  "create_meta_image_campaign",
+  "create_meta_video_campaign",
+  "create_adset",
+]);
 
 /**
  * Fields Meta supports but this executor does not build yet. They used to be

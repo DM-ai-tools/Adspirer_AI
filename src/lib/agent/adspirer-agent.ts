@@ -2802,9 +2802,11 @@ export async function gatherDiagnoseEvidence(input: {
           .join("\n"),
       );
 
+      const { getClient } = await import("@/lib/approvals/service");
       const bundle = await buildFullOptimizeProposals({
         provider,
         accountId,
+        currency: await getClient(input.clientId).then((c) => c.currency).catch(() => null),
       });
       // Also record diagnose tools for audit trail
       toolCalls.push(

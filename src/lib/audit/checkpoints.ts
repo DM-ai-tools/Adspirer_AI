@@ -917,10 +917,21 @@ export function evaluateCheckpoints(
   }
 
   // ------------------------------------------------ Goals, status, hygiene
+  // Meta account_status: 1 active, 201 any active, 9 grace period (unpaid).
   cp.push(
-    snap.account.statusCode === 1
+    snap.account.statusCode === 1 || snap.account.statusCode === 201
       ? { id: "S5", category: "Account structure", title: "Ad account is active", status: "pass", severity: "critical", evidence: "The ad account is active." }
-      : {
+      : snap.account.statusCode === 9
+        ? {
+            id: "S5",
+            category: "Account structure",
+            title: "Ad account is active",
+            status: "warn",
+            severity: "high",
+            evidence: "The ad account is in a grace period: a payment failed, and delivery stops if it isn't settled.",
+            fix: "Update the payment method in Billing and settle the balance.",
+          }
+        : {
           id: "S5",
           category: "Account structure",
           title: "Ad account is active",
@@ -933,7 +944,9 @@ export function evaluateCheckpoints(
         },
   );
 
-  if (goals.target_cpa_cents) {
+  if (goals.target_cpa_cents && !liveAdSets.length) {
+    cp.push(notChecked("B6", "Bidding & budget", "Budgets can exit learning at the target cost", "No live ad sets to check."));
+  } else if (goals.target_cpa_cents) {
     // ~50 results a week at the target cost is what an ad set needs to exit learning.
     const needed = Math.ceil((goals.target_cpa_cents * BENCHMARKS.weeklyConversionsToExitLearning) / 7);
     const campaignById = new Map(snap.campaigns.map((c) => [c.id, c]));
@@ -965,7 +978,11 @@ export function evaluateCheckpoints(
   {
     const cpr = snap.totals?.costPerResultCents ?? null;
     const roas = snap.totals?.roas ?? null;
-    if (goals.target_cpa_cents && cpr != null) {
+    const label = snap.totals?.resultLabel ?? "";
+    const mixed = label === "Mixed goals";
+    // A CPA target is a cost per conversion: clicks, reach or views don't compare.
+    const conversions = CONVERSION_LABEL.test(label);
+    if (goals.target_cpa_cents && cpr != null && !mixed && conversions) {
       const ratio = cpr / goals.target_cpa_cents;
       cp.push({
         id: "B7",
@@ -988,6 +1005,17 @@ export function evaluateCheckpoints(
         evidence: `${roas.toFixed(2)}× against the client's ${goals.target_roas}× target.`,
         fix: ratio >= 1 ? undefined : "Shift budget to the ad sets above target and test new offers or creative before scaling.",
       });
+    } else if (goals.target_cpa_cents && (mixed || cpr != null)) {
+      cp.push(
+        notChecked(
+          "B7",
+          "Bidding & budget",
+          "Cost per result at or under target",
+          mixed
+            ? "The ad sets optimise for different results, so one cost per result can't be compared with the target."
+            : `Results here are ${label.toLowerCase()}, not conversions, so they can't be compared with a cost-per-result target.`,
+        ),
+      );
     } else {
       cp.push(notChecked("B7", "Bidding & budget", "Cost per result at or under target", "Set a target cost per result or ROAS in the client's goals to check this."));
     }
@@ -996,11 +1024,10 @@ export function evaluateCheckpoints(
   {
     // Only ads that send people to a website can carry UTMs (not lead forms,
     // messaging or engagement); UTMs in the destination link count too.
-    const WEB_GOALS = new Set(["OFFSITE_CONVERSIONS", "LINK_CLICKS", "LANDING_PAGE_VIEWS", "VALUE"]);
     const adSetById = new Map(snap.adSets.map((s) => [s.id, s]));
     const toWebsite = (a: (typeof liveAds)[number]) => {
       const set = adSetById.get(a.adSetId);
-      return Boolean(set && (set.pixelId || WEB_GOALS.has(set.optimizationGoal ?? "")));
+      return Boolean(set && sendsToWebsite(set));
     };
     const loaded = liveAds.filter((a) => (a.urlTags !== undefined || a.linkUrl !== undefined) && toWebsite(a));
     if (loaded.length) {
@@ -1039,15 +1066,29 @@ export function evaluateCheckpoints(
     }
   }
 
-  if (snap.totals?.linkClicks != null && snap.totals.linkClicks >= 100 && snap.totals.landingPageViews != null) {
-    const ratio = snap.totals.landingPageViews / snap.totals.linkClicks;
+  // Clicks to landing page views only mean something for website traffic:
+  // all of it from the totals, or a mix from the website ad sets alone.
+  const webSets = snap.adSets.filter(sendsToWebsite);
+  const funnel =
+    !webSets.length
+      ? null
+      : webSets.length === snap.adSets.length
+        ? { clicks: snap.totals?.linkClicks ?? null, views: snap.totals?.landingPageViews ?? null }
+        : webSets.some((a) => a.performance?.linkClicks != null)
+          ? {
+              clicks: webSets.reduce((s, a) => s + (a.performance?.linkClicks ?? 0), 0),
+              views: webSets.reduce((s, a) => s + (a.performance?.landingPageViews ?? 0), 0),
+            }
+          : null;
+  if (funnel && funnel.clicks != null && funnel.clicks >= 100 && funnel.views != null) {
+    const ratio = funnel.views / funnel.clicks;
     cp.push({
       id: "F5",
       category: "Funnel & frequency",
       title: "Clicks reach the landing page",
       status: ratio < 0.6 ? "warn" : "pass",
       severity: "low",
-      evidence: `${snap.totals.landingPageViews.toLocaleString("en")} landing page views from ${snap.totals.linkClicks.toLocaleString("en")} link clicks (${Math.round(ratio * 100)}%).`,
+      evidence: `${funnel.views.toLocaleString("en")} landing page views from ${funnel.clicks.toLocaleString("en")} link clicks (${Math.round(ratio * 100)}%).`,
       fix: ratio < 0.6 ? "Speed up the landing page (and check the pixel loads on it); many people leave before it finishes loading." : undefined,
     });
   }
@@ -1141,6 +1182,14 @@ export function campaignNames(snap: MetaAuditSnapshot) {
  * Scaling their budget only buys more unmeasured traffic, so the optimise
  * flow holds budget increases for them.
  */
+const WEB_GOALS = new Set(["OFFSITE_CONVERSIONS", "LINK_CLICKS", "LANDING_PAGE_VIEWS", "VALUE"]);
+const CONVERSION_LABEL = /lead|purchase|registration|conversion|sale|contact|schedul|appointment|submi|subscri|trial|checkout|install|messag|call|order|sign/i;
+
+/** Ad sets that send people to a website (not lead forms, messaging or engagement). */
+function sendsToWebsite(set: AuditAdSet): boolean {
+  return Boolean(set.pixelId || WEB_GOALS.has(set.optimizationGoal ?? ""));
+}
+
 export function adSetsWithSilentTracking(snap: MetaAuditSnapshot): Map<string, string> {
   const pixelById = new Map(snap.pixels.map((p) => [p.id, p]));
   const out = new Map<string, string>();

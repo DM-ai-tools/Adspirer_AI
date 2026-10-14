@@ -119,7 +119,7 @@ Then collect:
    - Detailed targeting: searchable interests / behaviors (pick by name; IDs applied automatically)
    Append targeting_picker UI and stop until they pick or skip:
    {"ui":"targeting_picker","account_id":"act_…"}
-   Do NOT ask them to type Meta audience or interest IDs. If they skip custom audiences and interests, continue broad. Advantage+ audience is on by default; it is turned off when they ask, when the age range is narrower than up-to-25…65, or when the campaign has a Special Ad Category.
+   Do NOT ask them to type Meta audience or interest IDs. If they skip custom audiences and interests, continue broad. Advantage+ audience is on by default; it is turned off when they ask, when the minimum age is above 25 or the maximum age is below 65, or when the campaign has a Special Ad Category.
    When they confirm selections in chat, include those fields on create:
    - custom_audiences: array of audience IDs
    - interests / behaviors: arrays of {id, name}

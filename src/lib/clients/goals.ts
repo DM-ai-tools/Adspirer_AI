@@ -93,6 +93,17 @@ export function parseGoalsProfile(value: unknown): GoalsProfile {
   const kept: Record<string, unknown> = {};
   const dropped: string[] = [];
   for (const [key, field] of Object.entries(value as Record<string, unknown>)) {
+    if (key === "policy" && field && typeof field === "object" && !Array.isArray(field)) {
+      // Same rule one level down: a bad policy field drops only itself.
+      const policy: Record<string, unknown> = {};
+      for (const [name, v] of Object.entries(field as Record<string, unknown>)) {
+        const one = goalsProfileSchema.safeParse({ policy: { [name]: v } });
+        if (one.success) Object.assign(policy, one.data.policy);
+        else dropped.push(`policy.${name}`);
+      }
+      if (Object.keys(policy).length) kept.policy = policy;
+      continue;
+    }
     const one = goalsProfileSchema.safeParse({ [key]: field });
     if (one.success) Object.assign(kept, one.data);
     else dropped.push(key);

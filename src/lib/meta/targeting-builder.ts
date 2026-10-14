@@ -264,7 +264,7 @@ export function buildMetaTargeting(input: {
   // Meta requires an explicit Advantage+ audience choice on new ad sets.
   // On by default (Meta's recommended setup); off when the proposal says so,
   // or when its settings are hard controls Advantage+ audience can't keep:
-  // an age range narrower than up-to-25…65, or a Special Ad Category.
+  // a minimum age above 25, a maximum below 65, or a Special Ad Category.
   const conflicts =
     (typeof input.age_min === "number" && input.age_min > 25) ||
     (typeof input.age_max === "number" && input.age_max < 65) ||

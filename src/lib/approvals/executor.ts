@@ -15,7 +15,6 @@ import {
   assertWithinBudgetCeiling,
   assertExecutableStatus,
   campaignDailySpendCents,
-  accountDailyTotalCents,
   assertTransition,
   canTransition,
   effectiveApprovalArgs,
@@ -196,8 +195,11 @@ export async function executeApprovedAction(input: {
       }
 
       const provider = await resolveProvider(providerBackend);
+      let live: LiveState | null = null;
       if (tracksLiveState(approval.tool_name)) {
-        const live = await readLiveState(provider, approval.tool_name, enrichedArgs);
+        live = await readLiveState(provider, approval.tool_name, enrichedArgs);
+        // Gone from Meta (or moved to another account): never write blind.
+        if (!live) throw new ApprovalValidationError(describeDrift(approval.tool_name, {}, null, client?.currency ?? "USD")!);
         // Someone may have changed it in Ads Manager since it was proposed.
         const before = enrichedArgs.__before as LiveState | undefined;
         if (before && typeof before === "object") {
@@ -211,7 +213,7 @@ export async function executeApprovedAction(input: {
           approval.tool_name === "update_adset_budget" || approval.tool_name === "update_campaign_budget";
         const rescored = assessRisk(
           approval.tool_name,
-          isBudget ? { ...enrichedArgs, previous_daily_budget_cents: live?.daily_budget_cents ?? undefined } : enrichedArgs,
+          isBudget ? { ...enrichedArgs, previous_daily_budget_cents: live.daily_budget_cents ?? undefined } : enrichedArgs,
           client ?? {},
         );
         if (RISK_RANK[rescored.level] > RISK_RANK[approval.risk_level]) {
@@ -221,7 +223,7 @@ export async function executeApprovedAction(input: {
       await assertWithinAccountDailyCap(approval.tool_name, enrichedArgs, provider, client);
       // A resume starts spend at whatever budget the entity has NOW, which
       // may have been raised in Ads Manager since the proposal.
-      const liveBudget = await liveResumeBudgetCents(approval.tool_name, enrichedArgs, provider);
+      const liveBudget = await liveResumeBudgetCents(approval.tool_name, enrichedArgs, provider, live);
       if (liveBudget != null && client) {
         assertWithinBudgetCeiling(client, { daily_budget_cents: liveBudget }, liveBudget);
       }
@@ -596,9 +598,13 @@ async function liveResumeBudgetCents(
   toolName: string,
   args: Record<string, unknown>,
   provider: MetaAdsProvider,
+  live: LiveState | null,
 ): Promise<number | null> {
   const accountId = optionalString(args.account_id);
   if (!accountId) return null;
+  // The state already read by id answers it without listing the account.
+  if (toolName === "resume_adset" && live) return live.daily_budget_cents ?? null;
+  if (toolName === "resume_campaign" && live?.daily_budget_cents) return live.daily_budget_cents;
   if (toolName === "resume_campaign") {
     const id = optionalString(args.campaign_id);
     const [campaigns, adsets] = await Promise.all([provider.listCampaigns(accountId), provider.listAdSets(accountId)]);
