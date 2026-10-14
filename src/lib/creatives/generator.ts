@@ -131,31 +131,31 @@ export function generateCreativeConcepts(input: {
       label: "Transparency",
       hook: `Know exactly what ${service.toLowerCase()} involves — before you commit.`,
       headline: "Clear scope. Honest timelines.",
-      cta: "Get a clear quote",
+      cta: "Get Quote",
     },
     {
       label: "Proof",
       hook: "Measurable results, not promises.",
       headline: `${brand}: proof over promises.`,
-      cta: "See the results",
+      cta: "Learn More",
     },
     {
       label: "Lasting value",
       hook: "Not a quick fix — a result that holds.",
       headline: "Outcomes you can plan around.",
-      cta: "Get your plan",
+      cta: "Get Offer",
     },
     {
       label: "Local trust",
       hook: "Work with a team that actually answers.",
       headline: "Trusted locally. Built around you.",
-      cta: "Meet the team",
+      cta: "Contact Us",
     },
     {
       label: "Offer clarity",
       hook: `What your first ${service.toLowerCase()} engagement really looks like.`,
       headline: "Your first step, demystified.",
-      cta: "Book a walkthrough",
+      cta: "Book Now",
     },
   ];
 
