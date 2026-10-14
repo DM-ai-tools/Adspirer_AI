@@ -366,7 +366,7 @@ export async function prepareApprovalArgs(input: {
     missing.push(MISSING_LOCATION_MESSAGE);
   }
   if (CONVERSION_SOURCE_TOOLS.has(toolName) && lacksConversionSource(args)) {
-    missing.push(missingConversionSourceMessage(String(args.objective)));
+    missing.push(missingConversionSourceMessage(String(args.objective), toolName));
   }
   if ((toolName === "create_ad" || toolName === "create_adset") && args.ad_type === "carousel") {
     // The provider builds one image from the first card; never pretend.
@@ -374,9 +374,11 @@ export async function prepareApprovalArgs(input: {
       field: "ad_type",
     });
   }
+  // A video_url / existing_video_id makes it a video ad, as the provider decides.
+  const hasVideo = Boolean(optionalString(args.video_url) || optionalString(args.existing_video_id));
   const isImageAd =
     toolName === "create_meta_image_campaign" ||
-    (toolName === "create_ad" && (args.ad_type == null || args.ad_type === "image"));
+    (toolName === "create_ad" && !hasVideo && (args.ad_type == null || args.ad_type === "image"));
   if (isImageAd && !optionalString(args.image_url) && !optionalString(args.existing_image_hash)) {
     missing.push(
       "An image ad needs an image (image_url or existing_image_hash) — without one Meta shows the landing page's preview image instead.",

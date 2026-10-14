@@ -13,6 +13,7 @@ import {
   assertApprovalNotExpired,
   assertWithinBudgetCeiling,
   assertExecutableStatus,
+  campaignDailySpendCents,
   assertTransition,
   canTransition,
   effectiveApprovalArgs,
@@ -531,8 +532,8 @@ async function liveResumeBudgetCents(
   if (!accountId) return null;
   if (toolName === "resume_campaign") {
     const id = optionalString(args.campaign_id);
-    const campaign = (await provider.listCampaigns(accountId)).find((c) => c.id === id);
-    return campaign?.daily_budget_cents ? campaign.daily_budget_cents : null;
+    const [campaigns, adsets] = await Promise.all([provider.listCampaigns(accountId), provider.listAdSets(accountId)]);
+    return campaignDailySpendCents(campaigns.find((c) => c.id === id), adsets);
   }
   if (toolName === "resume_adset") {
     const id = optionalString(args.adset_id) ?? optionalString(args.ad_set_id);

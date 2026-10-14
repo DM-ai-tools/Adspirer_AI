@@ -104,6 +104,18 @@ function lookbackWindow(days: number): { dateStart: string; dateStop: string } {
   };
 }
 
+/** Pixel + event an ad set optimises for, from its promoted_object. */
+function promotedConversion(value: unknown): { pixel_id?: string; custom_event_type?: string } {
+  if (!value || typeof value !== "object") return {};
+  const promoted = value as { pixel_id?: unknown; custom_event_type?: unknown };
+  return {
+    ...(typeof promoted.pixel_id === "string" && promoted.pixel_id ? { pixel_id: promoted.pixel_id } : {}),
+    ...(typeof promoted.custom_event_type === "string" && promoted.custom_event_type
+      ? { custom_event_type: promoted.custom_event_type }
+      : {}),
+  };
+}
+
 /**
  * Meta's own "Results" for the row's optimisation event (as Ads Manager shows
  * them); null when the row has no `results` field or mixes goals.
@@ -306,7 +318,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       `${campaignId}/insights`,
       {
         fields:
-          "spend,impressions,clicks,ctr,cpc,reach,frequency,actions,cost_per_action_type",
+          "spend,impressions,clicks,ctr,cpc,reach,frequency,actions,cost_per_action_type,results",
         time_range: JSON.stringify({ since: dateStart, until: dateStop }),
         level: "campaign",
       },
@@ -345,10 +357,14 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     const actions = Array.isArray(first.actions)
       ? (first.actions as Array<{ action_type?: string; value?: string }>)
       : [];
+    // Meta's own result count when the row has one; otherwise the action-name
+    // guess, which never matches the generic `offsite_conversion` (ViewContent).
+    const counted = metaResultCount(first);
     const purchase =
       actions.find((a) => /purchase|omni_purchase/i.test(String(a.action_type))) ??
-      actions.find((a) => /lead|complete_registration|offsite_conversion/i.test(String(a.action_type)));
-    const conversions = purchase?.value != null ? Number(purchase.value) : undefined;
+      actions.find((a) => /lead|complete_registration/i.test(String(a.action_type)));
+    const conversions =
+      counted ?? (purchase?.value != null ? Number(purchase.value) : undefined);
     const cpaRows = Array.isArray(first.cost_per_action_type)
       ? (first.cost_per_action_type as Array<{ action_type?: string; value?: string }>)
       : [];
@@ -371,7 +387,13 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       frequency: Number(first.frequency ?? 0),
       conversions,
       cost_per_conversion:
-        cpaMatch?.value != null ? Number(cpaMatch.value) : undefined,
+        counted != null
+          ? counted > 0
+            ? Number(first.spend ?? 0) / counted
+            : undefined
+          : cpaMatch?.value != null
+            ? Number(cpaMatch.value)
+            : undefined,
       raw: first,
     };
   }
@@ -390,7 +412,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
         paging?: { cursors?: { after?: string }; next?: string };
       }>(path, {
         fields:
-          "id,name,status,effective_status,campaign_id,daily_budget,lifetime_budget,optimization_goal,billing_event,targeting",
+          "id,name,status,effective_status,campaign_id,daily_budget,lifetime_budget,optimization_goal,billing_event,targeting,promoted_object",
         limit: 100,
         ...(after ? { after } : {}),
       });
@@ -422,6 +444,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
         row.targeting && typeof row.targeting === "object"
           ? JSON.stringify(row.targeting)
           : undefined,
+      ...promotedConversion(row.promoted_object),
     }));
   }
 

@@ -199,6 +199,27 @@ describe("updateCampaignBudget", () => {
   });
 });
 
+describe("getCampaignInsights result counting", () => {
+  const insightsFor = (row: Record<string, unknown>) =>
+    providerWith({ get: (path) => (path === "999/insights" ? { data: [{ spend: "120", ...row }] } : { currency: "USD" }) });
+
+  it("uses Meta's results for the campaign's optimisation event", async () => {
+    const { provider } = insightsFor({
+      results: [{ indicator: "actions:offsite_conversion.fb_pixel_lead", values: [{ value: "6" }] }],
+      actions: [{ action_type: "offsite_conversion.fb_pixel_view_content", value: "90" }],
+    });
+    const row = await provider.getCampaignInsights("act_111", "999", "2026-07-01", "2026-09-30");
+    expect(row.conversions).toBe(6);
+    expect(row.cost_per_conversion).toBe(20);
+  });
+
+  it("never counts ViewContent as a conversion", async () => {
+    const { provider } = insightsFor({ actions: [{ action_type: "offsite_conversion.fb_pixel_view_content", value: "90" }] });
+    const row = await provider.getCampaignInsights("act_111", "999", "2026-07-01", "2026-09-30");
+    expect(row.conversions ?? 0).toBe(0);
+  });
+});
+
 describe("optimizeBudget evidence gates (ad set budgets)", () => {
   type Row = { id: string; budget: string; spend: number; ctr: number; results?: number; actions?: Array<{ action_type: string; value: string }> };
   function aboAccount(rows: Row[]) {

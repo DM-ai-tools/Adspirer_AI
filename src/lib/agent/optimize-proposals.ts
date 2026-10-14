@@ -1,6 +1,7 @@
 import type { MetaAdsProvider, MetaAdCreative, MetaCampaign, MetaAdSet } from "@/lib/adspirer/provider";
 import type { AgentToolCallProposal } from "@/lib/agent/adspirer-agent";
 import { adSetsWithSilentTracking } from "@/lib/audit/checkpoints";
+import { campaignDailySpendCents } from "@/lib/approvals/validator";
 import type { MetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
 import {
   mergeExecuteProposals,
@@ -143,12 +144,13 @@ export async function buildFullOptimizeProposals(input: {
     .sort((a, b) => a.spend / a.results - b.spend / b.results)
     .slice(0, 2);
   for (const { campaign: c, results, spend } of proven) {
+    const restarts = campaignDailySpendCents(c, adsets);
     proposals.push({
       name: "resume_campaign",
       args: {
         account_id: accountId,
         campaign_id: c.id,
-        ...(c.daily_budget_cents ? { daily_budget_cents: c.daily_budget_cents } : {}),
+        ...(restarts ? { daily_budget_cents: restarts } : {}),
       },
       rationale: `Reactivate ${c.name} (${c.id}): ${results} results for ${spend.toFixed(2)} spend in the last 90 days.`,
     });
@@ -208,7 +210,16 @@ export async function buildFullOptimizeProposals(input: {
       })
       .find((list) => list.length) ?? [];
 
-    if (landing && !countries.length) {
+    // Sales/Leads ad sets optimise for a pixel event: reuse a sibling's, or
+    // don't propose one that can only be refused.
+    const needsPixel = ["OUTCOME_SALES", "OUTCOME_LEADS"].includes(hostCampaign.objective.toUpperCase());
+    const pixelSibling = adsets.find((a) => a.campaign_id === hostCampaign.id && a.pixel_id);
+
+    if (landing && needsPixel && !pixelSibling) {
+      blockedLines.push(
+        `- New broad / Advantage+ ad set: needs a pixel — no ad set in ${hostCampaign.name} has one to copy. Say which pixel and event to optimise for, then ask to queue again.`,
+      );
+    } else if (landing && !countries.length) {
       blockedLines.push(
         `- New broad / Advantage+ ad set: needs a location — no country could be read from the ad sets in ${hostCampaign.name}. Say which countries to target, then ask to queue again.`,
       );
@@ -229,8 +240,13 @@ export async function buildFullOptimizeProposals(input: {
           headline: (seed?.headline ?? hostCampaign.name).slice(0, 40),
           objective: hostCampaign.objective,
           publisher_platforms: [],
-          advantage_audience: true,
           locations: countries,
+          ...(needsPixel && pixelSibling
+            ? {
+                pixel_id: pixelSibling.pixel_id,
+                ...(pixelSibling.custom_event_type ? { pixel_event_name: pixelSibling.custom_event_type } : {}),
+              }
+            : {}),
         },
         rationale: `New broad Advantage+ ad set under ${hostCampaign.name} in ${countries.join(", ")} (PAUSED). It has no ad yet: add one with create_ad before activating.`,
       });

@@ -50,6 +50,26 @@ describe("sales and leads need a conversion source", () => {
     spy.mockRestore();
   });
 
+  it("doesn't suggest switching to Traffic for an ad set inside an existing campaign", async () => {
+    const queued = await createPendingApproval({
+      clientId: CLIENT_ID,
+      toolName: "create_adset",
+      proposedArgs: {
+        account_id: ACCOUNT,
+        campaign_id: "camp_mdc_npl",
+        name: "Broad",
+        objective: "OUTCOME_LEADS",
+        budget_daily: 20,
+        ad_type: "image",
+        landing_page_url: "https://moderndental.example/implants",
+        primary_text: "Book your consult",
+        locations: ["US"],
+      },
+    });
+    expect(queued.execution_error).toMatch(/pixel/);
+    expect(queued.execution_error).not.toMatch(/Traffic/);
+  });
+
   it("accepts a Leads campaign with a pixel or an instant form", async () => {
     for (const extra of [{ pixel_id: "42" }, { lead_form_id: "555" }]) {
       const queued = await createPendingApproval({
@@ -121,6 +141,17 @@ describe("creative requirements", () => {
     });
     expect(video.execution_error ?? null).toBeNull();
   });
+
+  it("treats an ad with a video and no ad_type as a video ad, not an image ad missing its image", async () => {
+    for (const media of [{ video_url: "https://moderndental.example/clip.mp4" }, { existing_video_id: "v9" }]) {
+      const queued = await createPendingApproval({
+        clientId: CLIENT_ID,
+        toolName: "create_ad",
+        proposedArgs: ad({ image_url: undefined, name: `Untyped ${Object.keys(media)[0]}`, ...media }),
+      });
+      expect(queued.execution_error ?? null).toBeNull();
+    }
+  });
 });
 
 describe("resumes respect the budget ceiling", () => {
@@ -152,6 +183,31 @@ describe("resumes respect the budget ceiling", () => {
     expect(resume).not.toHaveBeenCalled();
     resume.mockRestore();
     await provider.updateCampaignBudget({ account_id: ACCOUNT, campaign_id: "camp_mdc_retarget", daily_budget_cents: 2000 });
+  });
+
+  it("sums the live ad set budgets when the campaign has no campaign budget", async () => {
+    const provider = getProviderForBackend(null);
+    // camp_mdc_npl budgets at the ad set level here; its two ad sets add up past the 250k ceiling.
+    await provider.updateCampaignBudget({ account_id: ACCOUNT, campaign_id: "camp_mdc_npl", daily_budget_cents: 0 });
+    await provider.updateAdSetBudget({ account_id: ACCOUNT, adset_id: "adset_mdc_npl_1", daily_budget_cents: 200_000 });
+    await provider.updateAdSetBudget({ account_id: ACCOUNT, adset_id: "adset_mdc_npl_2", daily_budget_cents: 100_000 });
+    await provider.pauseCampaign(ACCOUNT, "camp_mdc_npl");
+    const resume = vi.spyOn(provider, "resumeCampaign");
+    const pending = await createPendingApproval({
+      clientId: CLIENT_ID,
+      toolName: "resume_campaign",
+      proposedArgs: { account_id: ACCOUNT, campaign_id: "camp_mdc_npl" },
+    });
+    await approve({ approvalId: pending.id, reviewedBy: REVIEWER });
+    await expect(executeApprovedAction({ approvalId: pending.id, executedBy: REVIEWER })).rejects.toBeInstanceOf(
+      BudgetCeilingViolation,
+    );
+    expect(resume).not.toHaveBeenCalled();
+    resume.mockRestore();
+    await provider.updateAdSetBudget({ account_id: ACCOUNT, adset_id: "adset_mdc_npl_1", daily_budget_cents: 4000 });
+    await provider.updateAdSetBudget({ account_id: ACCOUNT, adset_id: "adset_mdc_npl_2", daily_budget_cents: 4000 });
+    await provider.updateCampaignBudget({ account_id: ACCOUNT, campaign_id: "camp_mdc_npl", daily_budget_cents: 9600 });
+    await provider.resumeCampaign(ACCOUNT, "camp_mdc_npl");
   });
 
   it("resumes a campaign whose live budget is within the ceiling", async () => {

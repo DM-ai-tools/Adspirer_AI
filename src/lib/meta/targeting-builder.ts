@@ -318,7 +318,13 @@ function resolvePixelId(input: {
 }
 
 /** Why a Sales or Leads ad set can't be created, in words the operator can act on. */
-export function missingConversionSourceMessage(objective: string): string {
+export function missingConversionSourceMessage(objective: string, toolName?: string): string {
+  // An ad set inherits its campaign's objective, so switching objective is no fix there.
+  if (toolName === "create_adset") {
+    return objective.toUpperCase() === "OUTCOME_LEADS"
+      ? "An ad set in a Leads campaign needs a pixel or an instant form (pixel_id or lead_form_id) — use the one the campaign's other ad sets optimise for."
+      : "An ad set in a Sales campaign needs a pixel (pixel_id) — use the one the campaign's other ad sets optimise for.";
+  }
   return objective.toUpperCase() === "OUTCOME_LEADS"
     ? "A Leads campaign needs a pixel or an instant form (pixel_id or lead_form_id) — without one Meta can only optimise for link clicks. Add one, or use the Traffic objective."
     : "A Sales campaign needs a pixel (pixel_id) — without one Meta can only optimise for link clicks. Add the pixel, or use the Traffic objective.";

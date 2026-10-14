@@ -33,6 +33,9 @@ export interface MetaAdSet {
   optimization_goal?: string;
   billing_event?: string;
   targeting_summary?: string;
+  /** From promoted_object: the pixel and event the ad set optimises for. */
+  pixel_id?: string;
+  custom_event_type?: string;
 }
 
 export interface MetaAd {
