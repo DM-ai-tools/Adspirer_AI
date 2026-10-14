@@ -114,6 +114,11 @@ export function computeBudgetImpactCents(
   toolName: string,
   args: Record<string, unknown>,
 ): number | null {
+  // Resuming starts spend: the entity's whole daily budget is the impact.
+  if (toolName === "resume_campaign" || toolName === "resume_adset") {
+    const daily = numericArg(args, "daily_budget_cents");
+    return daily != null ? Math.round(daily) : null;
+  }
   if (toolName === "update_adset_budget" || toolName === "update_campaign_budget") {
     const next = numericArg(args, "daily_budget_cents");
     if (next == null) return null;

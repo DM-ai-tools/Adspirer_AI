@@ -123,6 +123,43 @@ describe("creative requirements", () => {
   });
 });
 
+describe("resumes respect the budget ceiling", () => {
+  it("counts a resumed campaign's daily budget as budget impact when queued", async () => {
+    expect(computeBudgetImpactCents("resume_campaign", { daily_budget_cents: 4000 })).toBe(4000);
+    await expect(
+      createPendingApproval({
+        clientId: CLIENT_ID,
+        toolName: "resume_campaign",
+        proposedArgs: { account_id: ACCOUNT, campaign_id: "camp_mdc_retarget", daily_budget_cents: 300_000 },
+      }),
+    ).rejects.toBeInstanceOf(BudgetCeilingViolation);
+  });
+
+  it("re-reads the live budget before resuming and refuses one above the ceiling", async () => {
+    const provider = getProviderForBackend(null);
+    // The campaign's budget was raised in Ads Manager after the proposal.
+    await provider.updateCampaignBudget({ account_id: ACCOUNT, campaign_id: "camp_mdc_retarget", daily_budget_cents: 300_000 });
+    const resume = vi.spyOn(provider, "resumeCampaign");
+    const pending = await createPendingApproval({
+      clientId: CLIENT_ID,
+      toolName: "resume_campaign",
+      proposedArgs: { account_id: ACCOUNT, campaign_id: "camp_mdc_retarget" },
+    });
+    await approve({ approvalId: pending.id, reviewedBy: REVIEWER });
+    await expect(executeApprovedAction({ approvalId: pending.id, executedBy: REVIEWER })).rejects.toBeInstanceOf(
+      BudgetCeilingViolation,
+    );
+    expect(resume).not.toHaveBeenCalled();
+    resume.mockRestore();
+    await provider.updateCampaignBudget({ account_id: ACCOUNT, campaign_id: "camp_mdc_retarget", daily_budget_cents: 2000 });
+  });
+
+  it("resumes a campaign whose live budget is within the ceiling", async () => {
+    const { approval } = await run("resume_campaign", { account_id: ACCOUNT, campaign_id: "camp_mdc_retarget" });
+    expect(approval.status).toBe("executed");
+  });
+});
+
 describe("new execute actions", () => {
   it("are execute-class tools, not blocked", () => {
     for (const tool of ["update_campaign_budget", "pause_adset", "resume_adset", "resume_ad"]) {

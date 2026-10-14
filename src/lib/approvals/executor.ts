@@ -11,6 +11,7 @@ import {
 } from "@/lib/errors";
 import {
   assertApprovalNotExpired,
+  assertWithinBudgetCeiling,
   assertExecutableStatus,
   assertTransition,
   canTransition,
@@ -182,6 +183,12 @@ export async function executeApprovedAction(input: {
       }
 
       const provider = await resolveProvider(providerBackend);
+      // A resume starts spend at whatever budget the entity has NOW, which
+      // may have been raised in Ads Manager since the proposal.
+      const liveBudget = await liveResumeBudgetCents(approval.tool_name, enrichedArgs, provider);
+      if (liveBudget != null && client) {
+        assertWithinBudgetCeiling(client, { daily_budget_cents: liveBudget }, liveBudget);
+      }
       const checkpoint = async (next: CreateProgress) => {
         progress = next;
         working = {
@@ -512,6 +519,28 @@ function collectPassthrough(
     if (args[key] !== undefined && args[key] !== null) extra[key] = args[key];
   }
   return Object.keys(extra).length ? extra : undefined;
+}
+
+/** Live daily budget of the campaign or ad set a resume would restart; null when not a resume or no daily budget. */
+async function liveResumeBudgetCents(
+  toolName: string,
+  args: Record<string, unknown>,
+  provider: MetaAdsProvider,
+): Promise<number | null> {
+  const accountId = optionalString(args.account_id);
+  if (!accountId) return null;
+  if (toolName === "resume_campaign") {
+    const id = optionalString(args.campaign_id);
+    const campaign = (await provider.listCampaigns(accountId)).find((c) => c.id === id);
+    return campaign?.daily_budget_cents ? campaign.daily_budget_cents : null;
+  }
+  if (toolName === "resume_adset") {
+    const id = optionalString(args.adset_id) ?? optionalString(args.ad_set_id);
+    const adset = (await provider.listAdSets(accountId)).find((a) => a.id === id);
+    // Ad sets under a campaign budget spend from the campaign's budget.
+    return adset?.daily_budget_cents ? adset.daily_budget_cents : null;
+  }
+  return null;
 }
 
 type DispatchOptions = {
