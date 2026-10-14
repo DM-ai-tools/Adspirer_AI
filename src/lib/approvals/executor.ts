@@ -25,7 +25,10 @@ import { prepareApprovalArgs } from "@/lib/approvals/validate-args";
 import { assertMayApprove } from "@/lib/approvals/approver";
 import { resolveGoals } from "@/lib/clients/goals";
 import { formatMoney } from "@/lib/monitoring/health";
-import { describeDrift, readLiveState, type LiveState } from "@/lib/approvals/live-state";
+import { describeDrift, readLiveState, tracksLiveState, type LiveState } from "@/lib/approvals/live-state";
+import { assessRisk, type RiskLevel } from "@/lib/approvals/risk";
+
+const RISK_RANK: Record<RiskLevel, number> = { low: 0, medium: 1, high: 2, critical: 3 };
 import { nowIso } from "@/lib/utils";
 import { toApprovalInsert } from "@/lib/db/live-maps";
 import { completeTaskIfApprovalsTerminal } from "@/lib/workflow/bindings";
@@ -193,16 +196,27 @@ export async function executeApprovedAction(input: {
       }
 
       const provider = await resolveProvider(providerBackend);
-      // Someone may have changed it in Ads Manager since it was proposed.
-      const before = enrichedArgs.__before as LiveState | undefined;
-      if (before && typeof before === "object") {
-        const drift = describeDrift(
+      if (tracksLiveState(approval.tool_name)) {
+        const live = await readLiveState(provider, approval.tool_name, enrichedArgs);
+        // Someone may have changed it in Ads Manager since it was proposed.
+        const before = enrichedArgs.__before as LiveState | undefined;
+        if (before && typeof before === "object") {
+          const drift = describeDrift(approval.tool_name, before, live, client?.currency ?? "USD");
+          if (drift) throw new ApprovalValidationError(drift);
+        }
+        // Re-score from the live budget: a risk level scored from the
+        // proposal's own claims (Meta unreadable at proposal time) is never
+        // trusted. An unknown live budget scores an increase as high.
+        const isBudget =
+          approval.tool_name === "update_adset_budget" || approval.tool_name === "update_campaign_budget";
+        const rescored = assessRisk(
           approval.tool_name,
-          before,
-          await readLiveState(provider, approval.tool_name, enrichedArgs),
-          client?.currency ?? "USD",
+          isBudget ? { ...enrichedArgs, previous_daily_budget_cents: live?.daily_budget_cents ?? undefined } : enrichedArgs,
+          client ?? {},
         );
-        if (drift) throw new ApprovalValidationError(drift);
+        if (RISK_RANK[rescored.level] > RISK_RANK[approval.risk_level]) {
+          await assertMayApprove({ risk_level: rescored.level, risk_reason: rescored.reason }, approval.reviewed_by);
+        }
       }
       await assertWithinAccountDailyCap(approval.tool_name, enrichedArgs, provider, client);
       // A resume starts spend at whatever budget the entity has NOW, which

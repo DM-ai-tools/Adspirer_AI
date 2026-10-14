@@ -45,6 +45,31 @@ describe("live before values", () => {
   });
 });
 
+describe("risk is re-scored from the live budget at execution", () => {
+  it("refuses an operator-approved increase that the live budget shows is large", async () => {
+    // Meta couldn't be read when it was proposed, so the proposal's claim stood:
+    // $100 → $110 looks like +10% (medium). Live, the budget is $40: +175%.
+    vi.spyOn(provider, "listAdSets").mockRejectedValueOnce(new Error("Meta unavailable"));
+    const queued = await createPendingApproval({ clientId: CLIENT_ID, toolName: "update_adset_budget", proposedArgs: raise(11_000, 10_000) });
+    expect(queued.risk_level).toBe("medium");
+    expect(queued.proposed_args.__before).toBeUndefined();
+    await approve({ approvalId: queued.id, reviewedBy: "profile_operator_demo" });
+    const write = vi.spyOn(provider, "updateAdSetBudget");
+    await expect(executeApprovedAction({ approvalId: queued.id, executedBy: "profile_operator_demo" })).rejects.toThrow(
+      /admin/,
+    );
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("lets an admin-approved change through after re-scoring", async () => {
+    vi.spyOn(provider, "listAdSets").mockRejectedValueOnce(new Error("Meta unavailable"));
+    const queued = await createPendingApproval({ clientId: CLIENT_ID, toolName: "update_adset_budget", proposedArgs: raise(11_000, 10_000) });
+    await approve({ approvalId: queued.id, reviewedBy: ADMIN });
+    const { approval } = await executeApprovedAction({ approvalId: queued.id, executedBy: ADMIN });
+    expect(approval.status).toBe("executed");
+  });
+});
+
 describe("drift between proposal and execution", () => {
   it("blocks a budget change when the budget changed in Meta since it was proposed", async () => {
     const queued = await createPendingApproval({ clientId: CLIENT_ID, toolName: "update_adset_budget", proposedArgs: raise(4400, 4000) });
