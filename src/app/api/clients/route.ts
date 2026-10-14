@@ -109,6 +109,7 @@ export async function POST(request: Request) {
         budget_ceiling_cents: budgetCents,
         currency: body.currency ?? "USD",
         notes: body.notes ?? null,
+        goals_profile: {},
         is_demo: true,
         created_by: user.id,
         created_at: ts,

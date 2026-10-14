@@ -1,4 +1,5 @@
 import type { Client } from "@/types";
+import { parseGoalsProfile, type GoalsProfile } from "@/lib/clients/goals";
 
 /** Map DB row (budget_ceiling dollars) → app Client (budget_ceiling_cents). */
 export function mapClientRow(row: Record<string, unknown>): Client {
@@ -26,6 +27,7 @@ export function mapClientRow(row: Record<string, unknown>): Client {
       : null,
     currency: String(row.currency ?? "USD"),
     notes: (row.notes as string | null) ?? null,
+    goals_profile: parseGoalsProfile(row.goals_profile),
     is_demo: Boolean(row.is_demo),
     created_by: (row.created_by as string | null) ?? null,
     created_at: String(row.created_at),
@@ -48,6 +50,7 @@ export function toClientDbPatch(
     budget_ceiling_cents: number | null;
     currency: string;
     notes: string | null;
+    goals_profile: GoalsProfile;
   }>,
 ): Record<string, unknown> {
   const patch: Record<string, unknown> = {};
@@ -65,6 +68,7 @@ export function toClientDbPatch(
     patch.value_proposition = body.value_proposition;
   if (body.currency !== undefined) patch.currency = body.currency;
   if (body.notes !== undefined) patch.notes = body.notes;
+  if (body.goals_profile !== undefined) patch.goals_profile = body.goals_profile;
   if (body.budget_ceiling_cents !== undefined) {
     patch.budget_ceiling =
       body.budget_ceiling_cents == null

@@ -53,7 +53,7 @@ type GlobalDemo = typeof globalThis & {
   __adspirerDemoStoreVersion?: number;
 };
 
-const DEMO_STORE_VERSION = 4;
+const DEMO_STORE_VERSION = 5;
 
 function id(prefix: string): string {
   return `${prefix}_${nanoid(10)}`;
@@ -107,6 +107,7 @@ function seedStore(): DemoStore {
       budget_ceiling_cents: 1_000_000,
       currency: "USD",
       notes: "DEMO DATA — agency partner account",
+      goals_profile: {},
       is_demo: true,
       created_by: adminId,
       created_at: ts,
@@ -126,6 +127,7 @@ function seedStore(): DemoStore {
       budget_ceiling_cents: 750_000,
       currency: "USD",
       notes: "DEMO DATA",
+      goals_profile: {},
       is_demo: true,
       created_by: adminId,
       created_at: ts,
@@ -146,6 +148,18 @@ function seedStore(): DemoStore {
       budget_ceiling_cents: 250_000,
       currency: "USD",
       notes: "DEMO DATA — primary demo client for agent audit flow",
+      goals_profile: {
+        business_model: "lead_gen",
+        optimisation_event: "LEAD",
+        target_cpa_cents: 6_000,
+        average_value_cents: 45_000,
+        gross_margin_pct: 40,
+        attribution: "7d_click_1d_view",
+        daily_account_cap_cents: 30_000,
+        max_budget_change_pct: 20,
+        allowed_countries: ["US"],
+        special_ad_category: "NONE",
+      },
       is_demo: true,
       created_by: adminId,
       created_at: ts,

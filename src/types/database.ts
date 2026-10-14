@@ -1,3 +1,4 @@
+import type { GoalsProfile } from "@/lib/clients/goals";
 /**
  * Domain types aligned with the CampaignForge database schema.
  * All timestamps are ISO-8601 strings unless noted.
@@ -82,6 +83,8 @@ export interface Client {
   budget_ceiling_cents: number | null;
   currency: string;
   notes: string | null;
+  /** Targets and guardrails (see src/lib/clients/goals.ts). */
+  goals_profile: GoalsProfile;
   is_demo: boolean;
   created_by: string | null;
   created_at: string;
