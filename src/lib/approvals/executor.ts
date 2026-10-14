@@ -21,6 +21,7 @@ import {
 import { getApproval, getClient } from "@/lib/approvals/service";
 import { prepareApprovalArgs } from "@/lib/approvals/validate-args";
 import { assertMayApprove } from "@/lib/approvals/approver";
+import { describeDrift, readLiveState, type LiveState } from "@/lib/approvals/live-state";
 import { nowIso } from "@/lib/utils";
 import { toApprovalInsert } from "@/lib/db/live-maps";
 import { completeTaskIfApprovalsTerminal } from "@/lib/workflow/bindings";
@@ -188,6 +189,17 @@ export async function executeApprovedAction(input: {
       }
 
       const provider = await resolveProvider(providerBackend);
+      // Someone may have changed it in Ads Manager since it was proposed.
+      const before = enrichedArgs.__before as LiveState | undefined;
+      if (before && typeof before === "object") {
+        const drift = describeDrift(
+          approval.tool_name,
+          before,
+          await readLiveState(provider, approval.tool_name, enrichedArgs),
+          client?.currency ?? "USD",
+        );
+        if (drift) throw new ApprovalValidationError(drift);
+      }
       // A resume starts spend at whatever budget the entity has NOW, which
       // may have been raised in Ads Manager since the proposal.
       const liveBudget = await liveResumeBudgetCents(approval.tool_name, enrichedArgs, provider);

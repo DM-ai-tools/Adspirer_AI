@@ -12,6 +12,8 @@ import {
 import { prepareApprovalArgs } from "@/lib/approvals/validate-args";
 import { assessRisk } from "@/lib/approvals/risk";
 import { assertMayApprove } from "@/lib/approvals/approver";
+import { withLiveBefore } from "@/lib/approvals/live-state";
+import { resolveProvider } from "@/lib/adspirer/client";
 import { AuthorizationError, DuplicateExecutionError } from "@/lib/errors";
 import { addHoursIso, nowIso } from "@/lib/utils";
 import { logger } from "@/lib/observability/logger";
@@ -135,7 +137,8 @@ export async function createPendingApproval(input: {
   const prepared = await prepareApprovalArgs({
     toolName: input.toolName,
     clientId: input.clientId,
-    args: input.proposedArgs,
+    // The live budget/status replaces whatever the proposal assumed.
+    args: await withLiveBefore(input.toolName, input.proposedArgs, resolveProvider),
     client,
     allowIncomplete: true,
   });
@@ -291,7 +294,7 @@ export async function edit(input: {
   const prepared = await prepareApprovalArgs({
     toolName: approval.tool_name,
     clientId: approval.client_id,
-    args: { ...input.editedArgs, ...carried },
+    args: await withLiveBefore(approval.tool_name, { ...input.editedArgs, ...carried }, resolveProvider),
     client,
   });
 
