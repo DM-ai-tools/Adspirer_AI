@@ -186,6 +186,11 @@ export function mapApprovalRow(row: Record<string, unknown>): Approval {
     budget_impact_cents: Number.isFinite(budget as number)
       ? (budget as number)
       : null,
+    risk_level:
+      row.risk_level === "low" || row.risk_level === "high" || row.risk_level === "critical"
+        ? row.risk_level
+        : "medium",
+    risk_reason: (row.risk_reason as string | null) ?? null,
     idempotency_key: String(row.idempotency_key),
     requested_by: (row.requested_by as string | null) ?? null,
     reviewed_by:
@@ -221,6 +226,8 @@ export function toApprovalInsert(approval: Approval): Record<string, unknown> {
         ? null
         : approval.budget_impact_cents / 100,
     status: approval.status,
+    risk_level: approval.risk_level,
+    risk_reason: approval.risk_reason,
     requested_by: approval.requested_by,
     decided_by: approval.reviewed_by,
     decided_at: approval.reviewed_at,

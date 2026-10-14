@@ -53,7 +53,7 @@ type GlobalDemo = typeof globalThis & {
   __adspirerDemoStoreVersion?: number;
 };
 
-const DEMO_STORE_VERSION = 5;
+const DEMO_STORE_VERSION = 6;
 
 function id(prefix: string): string {
   return `${prefix}_${nanoid(10)}`;
@@ -326,6 +326,8 @@ function seedStore(): DemoStore {
       rationale:
         "Increase New Patient Leads daily budget to improve delivery while staying under client ceiling.",
       budget_impact_cents: 1500,
+      risk_level: "high",
+      risk_reason: "Budget increase of 38%, above the client's 20% limit per approval.",
       idempotency_key: `idem_${approvalId}`,
       requested_by: operatorId,
       reviewed_by: null,

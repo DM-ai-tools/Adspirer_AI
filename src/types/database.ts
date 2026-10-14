@@ -160,6 +160,9 @@ export interface Approval {
   status: ApprovalStatus;
   rationale: string | null;
   budget_impact_cents: number | null;
+  /** From src/lib/approvals/risk.ts; high needs an admin to approve. */
+  risk_level: "low" | "medium" | "high" | "critical";
+  risk_reason: string | null;
   idempotency_key: string;
   requested_by: string | null;
   reviewed_by: string | null;

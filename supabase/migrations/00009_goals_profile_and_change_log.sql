@@ -11,3 +11,7 @@ alter table public.clients
 alter table public.clients
   add constraint clients_goals_profile_is_object
   check (jsonb_typeof(goals_profile) = 'object');
+
+-- Phase 2: why an approval got its risk level (risk_level already exists).
+alter table public.approvals
+  add column if not exists risk_reason text;

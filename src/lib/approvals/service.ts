@@ -10,6 +10,7 @@ import {
   assertWithinBudgetCeiling,
 } from "@/lib/approvals/validator";
 import { prepareApprovalArgs } from "@/lib/approvals/validate-args";
+import { assessRisk } from "@/lib/approvals/risk";
 import { AuthorizationError, DuplicateExecutionError } from "@/lib/errors";
 import { addHoursIso, nowIso } from "@/lib/utils";
 import { logger } from "@/lib/observability/logger";
@@ -138,6 +139,7 @@ export async function createPendingApproval(input: {
     allowIncomplete: true,
   });
   const proposedArgs = prepared.args;
+  const risk = assessRisk(input.toolName, proposedArgs, client);
   const budgetImpactCents =
     prepared.budgetImpactCents ?? input.budgetImpactCents ?? null;
   if (prepared.budgetImpactCents == null && input.budgetImpactCents != null) {
@@ -190,6 +192,8 @@ export async function createPendingApproval(input: {
     status: "pending",
     rationale: input.rationale ?? null,
     budget_impact_cents: budgetImpactCents,
+    risk_level: risk.level,
+    risk_reason: risk.reason,
     idempotency_key: idempotencyKey,
     requested_by: input.requestedBy ?? null,
     reviewed_by: null,
@@ -296,6 +300,10 @@ export async function edit(input: {
     status: "edited",
     edited_args: prepared.args,
     budget_impact_cents: prepared.budgetImpactCents,
+    ...(() => {
+      const risk = assessRisk(approval.tool_name, prepared.args, client);
+      return { risk_level: risk.level, risk_reason: risk.reason };
+    })(),
     // The previous failure no longer describes these args.
     execution_error: null,
     reviewed_by: input.reviewedBy,
