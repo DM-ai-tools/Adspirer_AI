@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MetaConnectButton } from "@/components/meta-connect-button";
+import { AlertsPanel } from "@/components/monitoring/alerts-panel";
 import {
   Delta,
   SEVERITY_META,
@@ -388,6 +389,7 @@ function ClientDetail({
     <div className="space-y-4">
       <HealthHeader health={health} onRefresh={onRefresh} refreshing={refreshing} />
       <KpiGrid health={health} />
+      <AlertsPanel clientId={clientId} />
 
       <div className="grid gap-4 xl:grid-cols-3">
         <Card className="xl:col-span-2">

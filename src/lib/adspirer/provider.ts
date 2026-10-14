@@ -279,9 +279,18 @@ export interface CreateAdInput {
   facebook_page_id?: string;
   instagram_account_id?: string;
   lead_form_id?: string;
+  /** Extra primary texts / headlines / descriptions Meta rotates (up to 5 each). */
+  text_options?: TextOptions;
   resume?: CreateProgress;
   onProgress?: CreateProgressCallback;
 }
+
+export type TextOptions = { primary_texts?: string[]; headlines?: string[]; descriptions?: string[] };
+
+/** The ad to preview: what create_ad would send, before anything exists. */
+export type AdPreviewInput = Omit<CreateAdInput, "ad_set_id" | "resume" | "onProgress" | "name">;
+/** One placement's preview; iframeSrc is null when Meta's frame can't be shown (or in demo). */
+export type AdPreview = { format: string; iframeSrc: string | null };
 
 export interface UpdateAdSetBudgetInput {
   /**
@@ -351,6 +360,8 @@ export interface MetaAdsProvider {
   }>;
   createAdSet(input: CreateAdSetInput): Promise<MetaAdSet & { raw_text?: string }>;
   createAd(input: CreateAdInput): Promise<MetaAd & { raw_text?: string }>;
+  /** Meta's rendering of an ad that doesn't exist yet (generatepreviews). */
+  previewAd?(input: AdPreviewInput, formats: string[]): Promise<AdPreview[]>;
   pauseAd(accountId: string, adId: string): Promise<MetaAd>;
   /**
    * One entity's current status (and daily budget for campaigns / ad sets),

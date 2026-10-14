@@ -9,13 +9,17 @@ export type CreateProgress = {
   adset_id?: string;
   creative_id?: string;
   ad_id?: string;
+  /** Further ads in the same ad set, in order. */
+  extra_ads?: Array<{ creative_id?: string; ad_id?: string; video_id?: string }>;
 };
 
 export type CreateProgressCallback = (
   progress: CreateProgress,
 ) => void | Promise<void>;
 
-const LABELS: Array<[keyof CreateProgress, string]> = [
+type ScalarKey = Exclude<keyof CreateProgress, "extra_ads">;
+
+const LABELS: Array<[ScalarKey, string]> = [
   ["campaign_id", "campaign"],
   ["adset_id", "ad set"],
   ["creative_id", "creative"],
@@ -25,9 +29,12 @@ const LABELS: Array<[keyof CreateProgress, string]> = [
 
 export function describeProgress(progress: CreateProgress | null | undefined): string {
   if (!progress) return "";
-  return LABELS.filter(([key]) => progress[key])
-    .map(([key, label]) => `${label} ${progress[key]}`)
-    .join(", ");
+  return [
+    ...LABELS.filter(([key]) => progress[key]).map(([key, label]) => `${label} ${progress[key]}`),
+    ...(progress.extra_ads ?? []).flatMap((a, i) =>
+      a?.ad_id ? [`extra ad ${i + 1} ${a.ad_id}`] : a?.creative_id ? [`extra creative ${i + 1} ${a.creative_id}`] : [],
+    ),
+  ].join(", ");
 }
 
 export function hasProgress(progress: CreateProgress | null | undefined): boolean {
@@ -39,9 +46,16 @@ export function parseProgress(value: unknown): CreateProgress | null {
   if (!value || typeof value !== "object") return null;
   const row = value as Record<string, unknown>;
   const out: CreateProgress = {};
+  const id = (v: unknown) => (typeof v === "string" && /^\d+$/.test(v.trim()) ? v.trim() : undefined);
   for (const [key] of LABELS) {
-    const v = row[key];
-    if (typeof v === "string" && /^\d+$/.test(v.trim())) out[key] = v.trim();
+    const v = id(row[key]);
+    if (v) out[key] = v;
+  }
+  if (Array.isArray(row.extra_ads)) {
+    out.extra_ads = row.extra_ads.map((a) => {
+      const o = (a && typeof a === "object" ? a : {}) as Record<string, unknown>;
+      return { creative_id: id(o.creative_id), ad_id: id(o.ad_id), video_id: id(o.video_id) };
+    });
   }
   return hasProgress(out) ? out : null;
 }

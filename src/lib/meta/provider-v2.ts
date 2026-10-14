@@ -12,6 +12,9 @@ import type {
   MetaInsights,
   UpdateAdSetBudgetInput,
   UpdateCampaignBudgetInput,
+  TextOptions,
+  AdPreviewInput,
+  AdPreview,
 } from "@/lib/adspirer/provider";
 import { MetaGraphClient } from "@/lib/meta/graph-client";
 import { fetchMetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
@@ -27,6 +30,7 @@ import {
 import { resolvePromotePageId, formatMissingPageHelp } from "@/lib/meta/resolve-page";
 import { logger } from "@/lib/observability/logger";
 import { centsToMetaMinor, metaMinorToCents } from "@/lib/meta/currency";
+import { ATTRIBUTION_SPEC, BID_STRATEGIES, DEFAULT_URL_TAGS } from "@/lib/meta/conventions";
 import { ExecutionVerificationError } from "@/lib/errors";
 import { assessFatigue } from "@/lib/creative/fatigue";
 import {
@@ -185,6 +189,159 @@ function mergeCampaignExtra(
       ? { pixel_event_name: input.pixel_event_name }
       : {}),
   };
+}
+
+/** object_story_spec for an image or video ad (also what previews render). */
+function buildStorySpec(
+  input: AdPreviewInput,
+  o: { pageId: string; videoId?: string; ctaType: string; leadFormId?: string; isVideo: boolean },
+): Record<string, unknown> {
+  const ctaValue: Record<string, string> = { link: input.landing_page_url };
+  if (o.leadFormId) ctaValue.lead_gen_form_id = o.leadFormId;
+  const callToAction = { type: o.ctaType, value: ctaValue };
+  const storySpec: Record<string, unknown> = {
+    page_id: o.pageId,
+    // v22+: instagram_actor_id was replaced by instagram_user_id.
+    ...(input.instagram_account_id ? { instagram_user_id: input.instagram_account_id } : {}),
+  };
+  if (o.isVideo) {
+    storySpec.video_data = {
+      video_id: o.videoId,
+      message: input.primary_text,
+      ...(input.headline ? { title: input.headline } : {}),
+      ...(input.description ? { link_description: input.description } : {}),
+      ...(input.thumbnail_url ? { image_url: input.thumbnail_url } : {}),
+      call_to_action: callToAction,
+    };
+  } else {
+    storySpec.link_data = {
+      link: input.landing_page_url,
+      message: input.primary_text,
+      ...(input.headline ? { name: input.headline } : {}),
+      ...(input.description ? { description: input.description } : {}),
+      ...(input.display_link ? { caption: input.display_link } : {}),
+      // link_data takes `picture` (a URL) or `image_hash` — never image_url.
+      ...(input.existing_image_hash
+        ? { image_hash: input.existing_image_hash }
+        : input.image_url
+          ? { picture: input.image_url }
+          : {}),
+      call_to_action: callToAction,
+    };
+  }
+  return storySpec;
+}
+
+/** The preview frame's URL, only when it is Meta's own (https facebook.com). */
+function previewFrameSrc(body: string | undefined): string | null {
+  const raw = body ? /src="([^"]+)"/i.exec(body)?.[1] : undefined;
+  if (!raw) return null;
+  try {
+    const url = new URL(raw.replace(/&amp;/g, "&"));
+    return url.protocol === "https:" && /^(www|business|m)\.facebook\.com$/.test(url.hostname) ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+const strings = (v: unknown): string[] =>
+  Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x.trim().length > 0).map((x) => x.trim()) : [];
+
+function textOptionsFrom(extra: Record<string, unknown> | undefined): TextOptions | undefined {
+  if (!extra) return undefined;
+  const options = {
+    primary_texts: strings(extra.primary_texts),
+    headlines: strings(extra.headlines),
+    descriptions: strings(extra.descriptions),
+  };
+  return options.primary_texts.length || options.headlines.length || options.descriptions.length ? options : undefined;
+}
+
+/**
+ * Multiple text options: Meta rotates the primary texts, headlines and
+ * descriptions (the ad's own first) and shows each person the best one.
+ */
+function textOptionsFeed(input: CreateAdInput): Record<string, unknown> | null {
+  const o = input.text_options;
+  if (!o) return null;
+  const list = (first: string | undefined, more: string[] | undefined) =>
+    [...new Set([first, ...(more ?? [])].filter((t): t is string => Boolean(t?.trim())))].slice(0, 5).map((text) => ({ text }));
+  const feed: Record<string, unknown> = {};
+  if (o.primary_texts?.length) feed.bodies = list(input.primary_text, o.primary_texts);
+  if (o.headlines?.length) feed.titles = list(input.headline, o.headlines);
+  if (o.descriptions?.length) feed.descriptions = list(input.description, o.descriptions);
+  if (!Object.keys(feed).length) return null;
+  feed.optimization_type = "DEGREES_OF_FREEDOM";
+  return feed;
+}
+
+type ExtraAd = {
+  primary_text?: string;
+  headline?: string;
+  landing_page_url?: string;
+  image_url?: string;
+  existing_image_hash?: string;
+  video_url?: string;
+  existing_video_id?: string;
+  thumbnail_url?: string;
+  name?: string;
+};
+
+function extraAdsFrom(extra: Record<string, unknown> | undefined): ExtraAd[] {
+  const raw = extra?.extra_ads;
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, 5).map((a) => {
+    const o = (a && typeof a === "object" ? a : {}) as Record<string, unknown>;
+    const pick = (k: string) => optionalText(o[k]);
+    return {
+      primary_text: pick("primary_text"),
+      headline: pick("headline"),
+      landing_page_url: pick("landing_page_url"),
+      image_url: pick("image_url"),
+      existing_image_hash: pick("existing_image_hash"),
+      video_url: pick("video_url"),
+      existing_video_id: pick("existing_video_id"),
+      thumbnail_url: pick("thumbnail_url"),
+      name: pick("name"),
+    };
+  });
+}
+
+/**
+ * Bid strategy for a new campaign/ad set, validated before any POST. Under a
+ * campaign budget the strategy sits on the campaign; the cap or ROAS floor
+ * always sits on the ad set. A minimum-ROAS bid optimises for purchase value.
+ */
+function bidPlan(
+  extra: Record<string, unknown>,
+  objective: string | undefined,
+  currency: string,
+): { strategy: string; adset: Record<string, string>; valueGoal: boolean } {
+  const strategy = (optionalText(extra.bid_strategy) ?? "LOWEST_COST_WITHOUT_CAP").toUpperCase();
+  if (!(BID_STRATEGIES as readonly string[]).includes(strategy)) {
+    throw new Error(`Unknown bid_strategy "${strategy}" — use one of ${BID_STRATEGIES.join(", ")}. Nothing was created.`);
+  }
+  const adset: Record<string, string> = {};
+  if (strategy === "COST_CAP" || strategy === "LOWEST_COST_WITH_BID_CAP") {
+    const amount = positiveNumber(extra.bid_amount);
+    if (amount == null) {
+      throw new Error(
+        `${strategy === "COST_CAP" ? "A cost cap" : "A bid cap"} needs bid_amount (major units, e.g. 30 for 30 per result). Nothing was created.`,
+      );
+    }
+    adset.bid_amount = String(centsToMetaMinor(Math.round(amount * 100), currency));
+  }
+  if (strategy === "LOWEST_COST_WITH_MIN_ROAS") {
+    if ((objective ?? "").toUpperCase() !== "OUTCOME_SALES") {
+      throw new Error("A minimum ROAS bid only works for Sales campaigns that optimise for purchase value. Nothing was created.");
+    }
+    const floor = positiveNumber(extra.roas_average_floor);
+    if (floor == null) {
+      throw new Error("A minimum ROAS bid needs roas_average_floor (e.g. 2.5 for 2.5×). Nothing was created.");
+    }
+    adset.bid_constraints = JSON.stringify({ roas_average_floor: Math.round(floor * 10_000) });
+  }
+  return { strategy, adset, valueGoal: strategy === "LOWEST_COST_WITH_MIN_ROAS" };
 }
 
 export class MetaGraphProviderV2 implements MetaAdsProvider {
@@ -1105,6 +1262,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       : daily != null
         ? { daily_budget_cents: campaignBudgetCents }
         : { lifetime_budget_cents: campaignBudgetCents };
+    const bids = bidPlan(adSetInput.extra_args ?? {}, objective, currency);
 
     // A recorded campaign must still exist in this account; never re-create it.
     if (progress.campaign_id) {
@@ -1146,6 +1304,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
           status: "PAUSED",
           special_ad_categories: input.special_ad_categories,
           ...campaignBudget,
+          ...(useCbo ? { bid_strategy: bids.strategy } : {}),
         }),
       );
       await record({ campaign_id: campaign.id });
@@ -1205,9 +1364,45 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
         instagram_account_id: input.instagram_account_id,
         lead_form_id: leadFormId,
         name: input.ad_name ?? `${input.campaign_name} - ${kind === "video" ? "Video Ad" : "Ad"}`,
+        text_options: textOptionsFrom(adSetInput.extra_args),
       },
       { progress, record, step, adSetVerified: true, pageId: facebookPageId },
     );
+
+    // ---- 6. Further ads in the same ad set --------------------------------
+    for (const [i, extra] of extraAdsFrom(adSetInput.extra_args).entries()) {
+      const sub: CreateProgress = { ...(progress.extra_ads?.[i] ?? {}) };
+      const recordSub = async (patch: CreateProgress) => {
+        Object.assign(sub, patch);
+        const list = [...(progress.extra_ads ?? [])];
+        list[i] = { creative_id: sub.creative_id, ad_id: sub.ad_id, video_id: sub.video_id };
+        await record({ extra_ads: list });
+      };
+      await this.createAdSteps(
+        {
+          account_id: accountId,
+          ad_set_id: adset.id,
+          ad_type: kind,
+          primary_text: extra.primary_text ?? input.primary_text,
+          headline: extra.headline ?? input.headline,
+          description: input.description,
+          call_to_action: cta,
+          landing_page_url: extra.landing_page_url ?? input.landing_page_url,
+          display_link: input.display_link,
+          url_tags: input.url_tags,
+          image_url: kind === "image" ? extra.image_url : undefined,
+          existing_image_hash: kind === "image" ? extra.existing_image_hash : undefined,
+          video_url: kind === "video" ? extra.video_url : undefined,
+          existing_video_id: kind === "video" ? extra.existing_video_id : undefined,
+          thumbnail_url: kind === "video" ? extra.thumbnail_url : undefined,
+          facebook_page_id: facebookPageId,
+          instagram_account_id: input.instagram_account_id,
+          lead_form_id: leadFormId,
+          name: extra.name ?? `${input.ad_name ?? input.campaign_name} #${i + 2}`,
+        },
+        { progress: sub, record: recordSub, step, adSetVerified: true, pageId: facebookPageId },
+      );
+    }
 
     return {
       campaign: { ...campaign, account_id: accountId },
@@ -1240,10 +1435,11 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     const leadFormId = input.lead_form_id ?? resolveLeadFormId({ extra_args: extra });
     if (leadFormId) extra.lead_form_id = leadFormId;
 
-    const { optimization_goal, billing_event } = optimizationForObjective(
-      objective,
-      { pixel_id: input.pixel_id, extra_args: extra },
-    );
+    const currencyForBids = campaign.currency ?? (await this.requireAccountCurrency(accountId));
+    const bids = bidPlan(extra, objective, currencyForBids);
+    const resolved = optimizationForObjective(objective, { pixel_id: input.pixel_id, extra_args: extra });
+    const billing_event = resolved.billing_event;
+    const optimization_goal = bids.valueGoal ? "VALUE" : resolved.optimization_goal;
     // Throws a clear error when no location was given (never defaults to US).
     const targeting = buildMetaTargeting({
       age_min: input.age_min,
@@ -1299,7 +1495,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       if (lifetime != null) assertFutureEndTime(input.end_time, true);
       const currency =
         campaign.currency ?? (await this.requireAccountCurrency(accountId));
-      body.bid_strategy = "LOWEST_COST_WITHOUT_CAP";
+      body.bid_strategy = bids.strategy;
       if (daily != null) {
         dailyCents = budgetToMinorUnits(daily) ?? 0;
         body.daily_budget = this.budgetMinor(dailyCents, currency, "Ad set daily budget");
@@ -1320,6 +1516,12 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     const dsaPayor = optionalText(extra.dsa_payor);
     if (dsaPayor) body.dsa_payor = dsaPayor;
     if (promoted) body.promoted_object = JSON.stringify(promoted);
+    Object.assign(body, bids.adset);
+    // Attribution applies where Meta optimises for a conversion.
+    const attribution = optionalText(extra.attribution);
+    if (attribution && ATTRIBUTION_SPEC[attribution] && (optimization_goal === "OFFSITE_CONVERSIONS" || optimization_goal === "VALUE")) {
+      body.attribution_spec = JSON.stringify(ATTRIBUTION_SPEC[attribution]);
+    }
 
     return {
       body,
@@ -1341,6 +1543,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       objective?: string;
       daily_budget?: string;
       lifetime_budget?: string;
+      bid_strategy?: string;
       special_ad_categories?: string[];
     }>(input.campaign_id, {
       fields: "account_id,objective,daily_budget,lifetime_budget,bid_strategy,special_ad_categories",
@@ -1356,6 +1559,15 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     }
     const cbo =
       positiveMinor(campaign.daily_budget) || positiveMinor(campaign.lifetime_budget);
+    // Under a campaign budget the campaign owns the bid strategy: never let a
+    // cap or ROAS floor look applied when the campaign bids differently.
+    const requested = optionalText(input.extra_args?.bid_strategy)?.toUpperCase();
+    const current = (campaign.bid_strategy ?? "LOWEST_COST_WITHOUT_CAP").toUpperCase();
+    if (cbo && requested && requested !== current) {
+      throw new Error(
+        `Campaign ${input.campaign_id} has a campaign budget bidding ${current}, so a new ad set can't use ${requested}. Change the campaign's bid strategy in Ads Manager, or leave bid_strategy off. Nothing was created.`,
+      );
+    }
     const plan = await this.planAdSet(
       { ...input, account_id: accountId },
       {
@@ -1401,6 +1613,36 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       }
     };
     return this.createAdSteps(input, { progress, record, step, adSetVerified: false });
+  }
+
+  /**
+   * Meta's preview of an ad before anything is created. Video previews need
+   * the video in Meta already (it is uploaded on approval).
+   */
+  async previewAd(input: AdPreviewInput, formats: string[]): Promise<AdPreview[]> {
+    const accountId = normalizeAccountId(input.account_id);
+    const isVideo = Boolean(input.ad_type === "video" || input.video_url || input.existing_video_id);
+    if (isVideo && !input.existing_video_id) {
+      throw new Error("A video ad can be previewed after the video is uploaded to Meta — it uploads when the approval runs, and the ad is created PAUSED.");
+    }
+    const pageId = await this.resolveFacebookPageId(accountId, input.facebook_page_id);
+    const storySpec = buildStorySpec(input, {
+      pageId,
+      videoId: input.existing_video_id,
+      ctaType: normalizeCallToAction(input.call_to_action) ?? "LEARN_MORE",
+      leadFormId: input.lead_form_id?.trim() || undefined,
+      isVideo,
+    });
+    const creative = JSON.stringify({ object_story_spec: storySpec });
+    return Promise.all(
+      formats.map(async (format) => {
+        const res = await this.graph.get<{ data?: Array<{ body?: string }> }>(`${accountId}/generatepreviews`, {
+          creative,
+          ad_format: format,
+        });
+        return { format, iframeSrc: previewFrameSrc(res.data?.[0]?.body) };
+      }),
+    );
   }
 
   /** Creative + ad, resuming from `progress` (creative_id / ad_id / video_id). */
@@ -1449,48 +1691,18 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
         );
         await record({ video_id: videoId });
       }
-      const ctaValue: Record<string, string> = { link: input.landing_page_url };
-      if (leadFormId) ctaValue.lead_gen_form_id = leadFormId;
-      const callToAction = { type: ctaType, value: ctaValue };
-
-      const storySpec: Record<string, unknown> = {
-        page_id: pageId,
-        // v22+: instagram_actor_id was replaced by instagram_user_id.
-        ...(input.instagram_account_id
-          ? { instagram_user_id: input.instagram_account_id }
-          : {}),
-      };
-      if (isVideo) {
-        storySpec.video_data = {
-          video_id: videoId,
-          message: input.primary_text,
-          ...(input.headline ? { title: input.headline } : {}),
-          ...(input.description ? { link_description: input.description } : {}),
-          ...(input.thumbnail_url ? { image_url: input.thumbnail_url } : {}),
-          call_to_action: callToAction,
-        };
-      } else {
-        storySpec.link_data = {
-          link: input.landing_page_url,
-          message: input.primary_text,
-          ...(input.headline ? { name: input.headline } : {}),
-          ...(input.description ? { description: input.description } : {}),
-          ...(input.display_link ? { caption: input.display_link } : {}),
-          // link_data takes `picture` (a URL) or `image_hash` — never image_url.
-          ...(input.existing_image_hash
-            ? { image_hash: input.existing_image_hash }
-            : input.image_url
-              ? { picture: input.image_url }
-              : {}),
-          call_to_action: callToAction,
-        };
-      }
+      const storySpec = buildStorySpec(input, { pageId, videoId, ctaType, leadFormId, isVideo });
 
       const creativeBody: Record<string, string | number | boolean | null | undefined> = {
         name: input.name ?? "Creative",
         object_story_spec: JSON.stringify(storySpec),
       };
-      if (input.url_tags) creativeBody.url_tags = input.url_tags;
+      const feed = textOptionsFeed(input);
+      if (feed) creativeBody.asset_feed_spec = JSON.stringify(feed);
+      // Standard UTMs unless the operator set their own or the link has them.
+      const urlTags =
+        input.url_tags ?? (leadFormId || /[?&]utm_/i.test(input.landing_page_url) ? undefined : DEFAULT_URL_TAGS);
+      if (urlTags) creativeBody.url_tags = urlTags;
 
       const creative = await step("Create ad creative", () =>
         this.graph.post<{ id: string }>(`${accountId}/adcreatives`, creativeBody),

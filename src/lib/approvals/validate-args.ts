@@ -1,3 +1,5 @@
+import { adNameByConvention, adSetNameByConvention } from "@/lib/meta/conventions";
+import { resolveGoals, type GoalsProfile } from "@/lib/clients/goals";
 import type { Client } from "@/types";
 import { ApprovalValidationError, isAppError } from "@/lib/errors";
 import { getExecuteToolSchema } from "@/lib/tools/execute/schemas";
@@ -51,9 +53,6 @@ const UNSUPPORTED_KEYS: Record<string, string> = {
   multi_advertiser: "multi-advertiser ads opt-in",
   advantage_plus_creative: "Advantage+ creative enhancements",
   disabled_creative_features: "Advantage+ creative feature opt-outs",
-  primary_texts: "multiple primary texts (dynamic creative)",
-  headlines: "multiple headlines (dynamic creative)",
-  descriptions: "multiple descriptions (dynamic creative)",
   story_image_url: "a separate Stories image",
   right_column_image_url: "a separate right-column image",
   daily_min_spend_target: "ad set minimum daily spend",
@@ -70,6 +69,8 @@ const NUMERIC_KEYS: Record<string, "int" | "decimal"> = {
   budget_lifetime: "decimal",
   age_min: "int",
   age_max: "int",
+  bid_amount: "decimal",
+  roas_average_floor: "decimal",
 };
 
 const BOOLEAN_KEYS = ["campaign_budget_optimization"];
@@ -276,11 +277,38 @@ export type PreparedApprovalArgs = {
  * checks the account is one of the client's granted Meta accounts, and
  * enforces the client budget ceiling on the coerced values.
  */
+/**
+ * Defaults shown on the approval card: the client's attribution setting and
+ * convention names for an ad set or ad the proposal left unnamed.
+ */
+function applyCreateDefaults(
+  toolName: string,
+  args: Record<string, unknown>,
+  client: { goals_profile?: GoalsProfile | null } | null,
+): void {
+  if (args.attribution == null && client) args.attribution = resolveGoals(client).attribution;
+  const format = optionalString(args.video_url) || optionalString(args.existing_video_id) || args.ad_type === "video" ? "Video" : "Image";
+  if (toolName === "create_meta_image_campaign" || toolName === "create_meta_video_campaign") {
+    if (!optionalString(args.ad_set_name)) args.ad_set_name = adSetNameByConvention(args);
+    if (!optionalString(args.ad_name)) args.ad_name = adNameByConvention(args, toolName === "create_meta_video_campaign" ? "Video" : format);
+    if (Array.isArray(args.extra_ads)) {
+      args.extra_ads = args.extra_ads.map((extra) => {
+        const ad = (extra && typeof extra === "object" ? extra : {}) as Record<string, unknown>;
+        return optionalString(ad.name) ? ad : { ...ad, name: adNameByConvention({ ...args, ...ad }, toolName === "create_meta_video_campaign" ? "Video" : format) };
+      });
+    }
+  } else if (toolName === "create_adset" && !optionalString(args.name)) {
+    args.name = adSetNameByConvention(args);
+  } else if (toolName === "create_ad" && !optionalString(args.name) && !optionalString(args.ad_name)) {
+    args.name = adNameByConvention(args, format);
+  }
+}
+
 export async function prepareApprovalArgs(input: {
   toolName: string;
   clientId: string;
   args: Record<string, unknown>;
-  client?: Pick<Client, "id" | "budget_ceiling_cents" | "currency"> | null;
+  client?: (Pick<Client, "id" | "budget_ceiling_cents" | "currency"> & { goals_profile?: GoalsProfile | null }) | null;
   /**
    * Proposal time only: queue an approval whose only problem is missing
    * required values (e.g. a creative queued for the operator to add a budget
@@ -383,6 +411,17 @@ export async function prepareApprovalArgs(input: {
   const isImageAd =
     toolName === "create_meta_image_campaign" ||
     (toolName === "create_ad" && !hasVideo && (args.ad_type == null || args.ad_type === "image"));
+  if ((toolName === "create_meta_image_campaign" || toolName === "create_meta_video_campaign") && Array.isArray(args.extra_ads)) {
+    const video = toolName === "create_meta_video_campaign";
+    args.extra_ads.forEach((extra, i) => {
+      const ad = (extra && typeof extra === "object" ? extra : {}) as Record<string, unknown>;
+      if (video && !optionalString(ad.video_url) && !optionalString(ad.existing_video_id)) {
+        missing.push(`Extra ad ${i + 1} needs a video (video_url or existing_video_id).`);
+      } else if (!video && !optionalString(ad.image_url) && !optionalString(ad.existing_image_hash)) {
+        missing.push(`Extra ad ${i + 1} needs an image (image_url or existing_image_hash).`);
+      }
+    });
+  }
   if (isImageAd && !optionalString(args.image_url) && !optionalString(args.existing_image_hash)) {
     missing.push(
       "An image ad needs an image (image_url or existing_image_hash) — without one Meta shows the landing page's preview image instead.",
@@ -423,6 +462,7 @@ export async function prepareApprovalArgs(input: {
     ...data,
     ...internal,
   };
+  if (CREATE_TOOLS.has(toolName)) applyCreateDefaults(toolName, merged, input.client ?? null);
 
   const budgetImpactCents = computeBudgetImpactCents(toolName, merged);
   if (input.client) {

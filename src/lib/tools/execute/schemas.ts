@@ -1,3 +1,5 @@
+import { BID_STRATEGIES } from "@/lib/meta/conventions";
+import { ATTRIBUTION_SETTINGS } from "@/lib/clients/goals";
 import { z } from "zod";
 
 /**
@@ -58,6 +60,12 @@ const targetingFields = {
   start_time: isoDate.optional(),
   end_time: isoDate.optional(),
   facebook_page_id: z.string().optional(),
+  bid_strategy: z.enum(BID_STRATEGIES).optional(),
+  /** Cost or bid cap, major units per result. */
+  bid_amount: z.number().positive().optional(),
+  /** Minimum ROAS, e.g. 2.5 for 2.5×. */
+  roas_average_floor: z.number().positive().optional(),
+  attribution: z.enum(ATTRIBUTION_SETTINGS).optional(),
 };
 
 /** Creative fields shared by the create tools. */
@@ -67,7 +75,28 @@ const creativeFields = {
   display_link: z.string().optional(),
   url_tags: z.string().optional(),
   instagram_account_id: z.string().optional(),
+  /** Text options Meta rotates (up to 5 each, the ad's own included). */
+  primary_texts: z.array(z.string().min(1)).max(5).optional(),
+  headlines: z.array(z.string().min(1).max(255)).max(5).optional(),
+  descriptions: z.array(z.string().min(1).max(255)).max(5).optional(),
 };
+
+/** Further ads in the same ad set (each falls back to the main ad's copy). */
+const extraAds = z
+  .array(
+    z.object({
+      primary_text: z.string().min(1).optional(),
+      headline: z.string().optional(),
+      landing_page_url: z.string().url().optional(),
+      image_url: z.string().url().optional(),
+      existing_image_hash: z.string().optional(),
+      video_url: z.string().url().optional(),
+      existing_video_id: z.string().optional(),
+      thumbnail_url: z.string().url().optional(),
+      name: z.string().optional(),
+    }),
+  )
+  .max(5);
 
 type BudgetShape = {
   budget_daily?: number;
@@ -161,6 +190,7 @@ const campaignBase = {
   landing_page_url: z.string().url(),
   special_ad_categories: z.array(z.string()).optional(),
   campaign_budget_optimization: z.boolean().optional(),
+  extra_ads: extraAds.optional(),
   ...targetingFields,
   ...creativeFields,
 };

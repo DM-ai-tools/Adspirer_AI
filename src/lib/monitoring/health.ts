@@ -567,6 +567,27 @@ function accountResults(campaignRows: Row[]): { count: number | null; label: str
   return { count: null, label: indicators.size ? "Mixed goals" : "Results" };
 }
 
+/** Every page of a Graph list (up to `maxPages`), following the cursor. */
+async function allPages(
+  graph: MetaGraphClient,
+  path: string,
+  params: Record<string, unknown>,
+  maxPages = 10,
+): Promise<{ data: Row[] }> {
+  const data: Row[] = [];
+  let after: string | undefined;
+  for (let page = 0; page < maxPages; page++) {
+    const res = await graph.get<{ data?: Row[]; paging?: { cursors?: { after?: string }; next?: string } }>(path, {
+      ...params,
+      ...(after ? { after } : {}),
+    } as never);
+    data.push(...(res.data ?? []));
+    after = res.paging?.next ? res.paging?.cursors?.after : undefined;
+    if (!after) break;
+  }
+  return { data };
+}
+
 async function settle<T>(label: string, warnings: string[], p: Promise<T>): Promise<T | null> {
   try {
     return await p;
@@ -606,7 +627,7 @@ export async function fetchHealthSnapshot(
     settle(
       "Campaign performance",
       warnings,
-      graph.get<{ data?: Row[] }>(`${id}/insights`, {
+      allPages(graph, `${id}/insights`, {
         level: "campaign",
         time_ranges: timeRanges,
         fields:
@@ -626,7 +647,7 @@ export async function fetchHealthSnapshot(
     settle(
       "Ad set budgets",
       warnings,
-      graph.get<{ data?: Row[] }>(`${id}/adsets`, {
+      allPages(graph, `${id}/adsets`, {
         fields: "name,campaign_id,daily_budget,promoted_object",
         effective_status: active,
         limit: 500,

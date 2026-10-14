@@ -16,6 +16,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { humanToolLabel } from "@/lib/tools/display-labels";
+import { AdPreviewPanel } from "@/components/approvals/ad-preview-panel";
 
 function isBudgetChange(approval: Approval): boolean {
   return (
@@ -530,6 +531,17 @@ export function ApprovalCard({
             </p>
           </div>
         )}
+
+        {pending && isCreate && approval.tool_name !== "create_adset" ? (
+          <AdPreviewPanel
+            approvalId={approval.id}
+            fallback={{
+              headline: typeof args.headline === "string" ? args.headline : undefined,
+              primaryText: typeof args.primary_text === "string" ? args.primary_text : undefined,
+              imageUrl: typeof args.image_url === "string" ? args.image_url : undefined,
+            }}
+          />
+        ) : null}
 
         {executed ? (
           <div className="rounded-lg border border-accent/30 bg-accent/5 px-3 py-2 text-xs">

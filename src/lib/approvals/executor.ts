@@ -558,6 +558,14 @@ const CAMPAIGN_PASSTHROUGH_KEYS = [
   "destination_type",
   "dsa_beneficiary",
   "dsa_payor",
+  "bid_strategy",
+  "bid_amount",
+  "roas_average_floor",
+  "attribution",
+  "extra_ads",
+  "primary_texts",
+  "headlines",
+  "descriptions",
 ] as const;
 
 function collectPassthrough(
@@ -834,6 +842,11 @@ async function dispatchToProvider(
         facebook_page_id: optionalString(args.facebook_page_id),
         instagram_account_id: optionalString(args.instagram_account_id),
         lead_form_id: optionalString(args.lead_form_id),
+        text_options: {
+          primary_texts: optionalStringArray(args.primary_texts),
+          headlines: optionalStringArray(args.headlines),
+          descriptions: optionalStringArray(args.descriptions),
+        },
         resume: options.resume,
         onProgress: options.onProgress,
       });

@@ -38,6 +38,8 @@ export type FormattedImageChoice = {
   headline?: string;
   primary_text?: string;
   reference_notes?: string;
+  /** "4:5" (feed, default), "9:16" (Reels/Stories) or "1:1". */
+  format?: string;
 };
 
 /** Image vs video campaign format picker (asked first in campaign intake). */
@@ -932,6 +934,7 @@ export function extractImageChoice(text: string): FormattedImageChoice | null {
       headline?: string;
       primary_text?: string;
       reference_notes?: string;
+      format?: string;
     };
     if (obj.ui !== "image_choice") continue;
     return {
@@ -940,6 +943,7 @@ export function extractImageChoice(text: string): FormattedImageChoice | null {
       headline: obj.headline?.trim(),
       primary_text: obj.primary_text?.trim(),
       reference_notes: obj.reference_notes?.trim(),
+      ...(typeof obj.format === "string" && obj.format.trim() ? { format: obj.format.trim() } : {}),
     };
   }
   return null;
