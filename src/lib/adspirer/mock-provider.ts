@@ -523,6 +523,23 @@ export class MockMetaAdsProvider implements MetaAdsProvider {
     return { ...ad };
   }
 
+  async getEntityState(
+    accountId: string,
+    entityType: "campaign" | "adset" | "ad",
+    entityId: string,
+  ): Promise<{ status: string; daily_budget_cents?: number | null } | null> {
+    const state = getState();
+    if (entityType === "ad") {
+      const ad = state.ads.find((a) => a.id === entityId && a.account_id === accountId);
+      return ad ? { status: ad.status } : null;
+    }
+    const row =
+      entityType === "campaign"
+        ? state.campaigns.find((c) => c.id === entityId && c.account_id === accountId)
+        : state.adsets.find((a) => a.id === entityId && a.account_id === accountId);
+    return row ? { status: row.status, daily_budget_cents: row.daily_budget_cents || null } : null;
+  }
+
   async resumeAd(accountId: string, adId: string): Promise<MetaAd> {
     const ad = getState().ads.find(
       (a) => a.id === adId && a.account_id === accountId,

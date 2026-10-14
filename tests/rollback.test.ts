@@ -65,6 +65,15 @@ describe("rollbackChange", () => {
     expect(await liveAdSetBudget()).toBe(4600);
   });
 
+  it("reads the live state directly, and says so when Meta can't be read rather than claiming it changed", async () => {
+    const change = await run("pause_ad", { account_id: ACCOUNT, ad_id: "ad_mdc_npl_b" });
+    const list = vi.spyOn(provider, "listAds");
+    vi.spyOn(provider, "getEntityState").mockResolvedValueOnce(null);
+    await expect(rollbackChange({ changeId: change.id, userId: ADMIN })).rejects.toThrow(/couldn't read its current state/);
+    expect(list).not.toHaveBeenCalled();
+    await provider.resumeAd(ACCOUNT, "ad_mdc_npl_b");
+  });
+
   it("refuses changes that can't be undone with one action", async () => {
     const created = {
       ...(await run("pause_campaign", { account_id: ACCOUNT, campaign_id: "camp_mdc_npl" })),

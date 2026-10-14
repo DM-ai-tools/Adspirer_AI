@@ -352,6 +352,15 @@ export interface MetaAdsProvider {
   createAdSet(input: CreateAdSetInput): Promise<MetaAdSet & { raw_text?: string }>;
   createAd(input: CreateAdInput): Promise<MetaAd & { raw_text?: string }>;
   pauseAd(accountId: string, adId: string): Promise<MetaAd>;
+  /**
+   * One entity's current status (and daily budget for campaigns / ad sets),
+   * read directly by id. null when it doesn't exist or isn't in the account.
+   */
+  getEntityState?(
+    accountId: string,
+    entityType: "campaign" | "adset" | "ad",
+    entityId: string,
+  ): Promise<{ status: string; daily_budget_cents?: number | null } | null>;
   resumeAd(accountId: string, adId: string): Promise<MetaAd>;
 
   /** Adspirer list_meta_custom_audiences — for picker UIs (names, not raw ID entry). */

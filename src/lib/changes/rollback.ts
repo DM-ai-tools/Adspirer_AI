@@ -48,8 +48,12 @@ export async function rollbackChange(input: {
   const { toolName, args } = inverseOf(change);
 
   const live = await readLiveState(await resolveProvider(), change.tool_name, args);
+  if (!live) {
+    throw new ApprovalValidationError(
+      "CampaignForge couldn't read its current state from Meta, so it can't be rolled back safely right now. Try again shortly.",
+    );
+  }
   const changedSince =
-    !live ||
     (change.after?.daily_budget_cents !== undefined && live.daily_budget_cents !== change.after.daily_budget_cents) ||
     (change.after?.status !== undefined && live.status !== change.after.status);
   if (changedSince) {

@@ -32,6 +32,16 @@ export async function readLiveState(
   const account = str(args.account_id) ?? str(args.ad_account_id);
   if (!account || !tracksLiveState(toolName)) return null;
   const accountId = actId(account);
+  // One direct read by id when the provider supports it — account-wide lists
+  // are slow and truncated on large accounts.
+  if (provider.getEntityState) {
+    const [type, id] = ADSET_TOOLS.has(toolName)
+      ? (["adset", str(args.adset_id) ?? str(args.ad_set_id)] as const)
+      : CAMPAIGN_TOOLS.has(toolName)
+        ? (["campaign", str(args.campaign_id)] as const)
+        : (["ad", str(args.ad_id)] as const);
+    return id ? provider.getEntityState(accountId, type, id) : null;
+  }
   if (ADSET_TOOLS.has(toolName)) {
     const id = str(args.adset_id) ?? str(args.ad_set_id);
     const adset = (await provider.listAdSets(accountId)).find((a) => a.id === id);

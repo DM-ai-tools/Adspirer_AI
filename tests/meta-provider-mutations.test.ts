@@ -199,6 +199,53 @@ describe("updateCampaignBudget", () => {
   });
 });
 
+describe("getEntityState", () => {
+  it("reads one entity's status and daily budget directly, in app cents", async () => {
+    const { provider, get } = providerWith({
+      get: (path, params) => {
+        if (path === "act_111") return { currency: "JPY" };
+        if (path === "777") {
+          expect(params.fields).toBe("account_id,status,daily_budget");
+          return { account_id: "111", status: "ACTIVE", daily_budget: "5000" };
+        }
+        throw new Error(`unexpected GET ${path}`);
+      },
+    });
+    await expect(provider.getEntityState("act_111", "adset", "777")).resolves.toEqual({
+      status: "ACTIVE",
+      daily_budget_cents: 500_000,
+    });
+    expect(get).not.toHaveBeenCalledWith("act_111/adsets", expect.anything());
+  });
+
+  it("reads only the status of an ad, and nothing for an entity in another account", async () => {
+    const { provider } = providerWith({
+      get: (path) => {
+        if (path === "555") return { account_id: "111", status: "PAUSED" };
+        if (path === "556") return { account_id: "999", status: "ACTIVE" };
+        return { currency: "USD" };
+      },
+    });
+    await expect(provider.getEntityState("act_111", "ad", "555")).resolves.toEqual({ status: "PAUSED" });
+    await expect(provider.getEntityState("act_111", "ad", "556")).resolves.toBeNull();
+  });
+
+  it("returns null for an entity Meta says doesn't exist, and throws on other errors", async () => {
+    const missing = providerWith({
+      get: () => {
+        throw new Error("(#100) Object with ID '777' does not exist, cannot be loaded due to missing permissions");
+      },
+    });
+    await expect(missing.provider.getEntityState("act_111", "campaign", "777")).resolves.toBeNull();
+    const down = providerWith({
+      get: () => {
+        throw new Error("Service temporarily unavailable");
+      },
+    });
+    await expect(down.provider.getEntityState("act_111", "campaign", "777")).rejects.toThrow(/unavailable/);
+  });
+});
+
 describe("getCampaignInsights result counting", () => {
   const insightsFor = (row: Record<string, unknown>) =>
     providerWith({ get: (path) => (path === "999/insights" ? { data: [{ spend: "120", ...row }] } : { currency: "USD" }) });
