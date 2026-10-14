@@ -126,27 +126,45 @@ export async function buildFullOptimizeProposals(input: {
     }
   }
 
-  // 2) Reactivate paused campaigns (resume_campaign)
-  const pausedCampaigns = campaigns
-    .filter((c) => c.status === "PAUSED")
+  // 2) Reactivate paused campaigns only with evidence they produced results
+  //    in the last 90 days — resuming starts real spend.
+  const day = (offset: number) => new Date(Date.now() - offset * 86_400_000).toISOString().slice(0, 10);
+  const paused = campaigns.filter((c) => c.status === "PAUSED").slice(0, 5);
+  const history = await Promise.all(
+    paused.map((c) =>
+      provider
+        .getCampaignInsights(accountId, c.id, day(90), day(1))
+        .then((row) => ({ campaign: c, results: row.conversions ?? 0, spend: row.spend }))
+        .catch(() => ({ campaign: c, results: 0, spend: 0 })),
+    ),
+  );
+  const proven = history
+    .filter((h) => h.results > 0)
+    .sort((a, b) => a.spend / a.results - b.spend / b.results)
     .slice(0, 2);
-  for (const c of pausedCampaigns) {
+  for (const { campaign: c, results, spend } of proven) {
     proposals.push({
       name: "resume_campaign",
       args: {
         account_id: accountId,
         campaign_id: c.id,
+        ...(c.daily_budget_cents ? { daily_budget_cents: c.daily_budget_cents } : {}),
       },
-      rationale: `Reactivate paused campaign ${c.name} (${c.id}).`,
+      rationale: `Reactivate ${c.name} (${c.id}): ${results} results for ${spend.toFixed(2)} spend in the last 90 days.`,
     });
     queueableLines.push(
-      `- REACTIVATE: ${c.name} (${c.id}) → tool \`resume_campaign\``,
+      `- REACTIVATE: ${c.name} (${c.id}) — ${results} results in the last 90 days → tool \`resume_campaign\``,
     );
   }
-  if (!pausedCampaigns.length) {
+  const unproven = history.filter((h) => !proven.includes(h));
+  if (unproven.length) {
     blockedLines.push(
-      "- Reactivate campaign: no PAUSED campaigns found on this account.",
+      `- Reactivate campaign: not proposed for ${unproven
+        .map((h) => h.campaign.name)
+        .join(", ")} — no results in the last 90 days. Ask explicitly if you still want one resumed.`,
     );
+  } else if (!paused.length) {
+    blockedLines.push("- Reactivate campaign: no PAUSED campaigns found on this account.");
   }
 
   // 3) New broad / Advantage+ ad set under the best ACTIVE campaign
@@ -177,7 +195,24 @@ export async function buildFullOptimizeProposals(input: {
         ? Math.max(1, Math.round(sibling.daily_budget_cents / 100))
         : 10;
 
-    if (landing) {
+    // Countries from a sibling ad set — never a guessed country.
+    const countries = adsets
+      .filter((a) => a.campaign_id === hostCampaign.id)
+      .map((a) => {
+        try {
+          const geo = (JSON.parse(a.targeting_summary ?? "{}") as { geo_locations?: { countries?: unknown } }).geo_locations;
+          return Array.isArray(geo?.countries) ? (geo!.countries as unknown[]).filter((c): c is string => typeof c === "string") : [];
+        } catch {
+          return [];
+        }
+      })
+      .find((list) => list.length) ?? [];
+
+    if (landing && !countries.length) {
+      blockedLines.push(
+        `- New broad / Advantage+ ad set: needs a location — no country could be read from the ad sets in ${hostCampaign.name}. Say which countries to target, then ask to queue again.`,
+      );
+    } else if (landing) {
       const name = `Broad Advantage+ | ${hostCampaign.name}`.slice(0, 120);
       // One create_adset covers "new broad ad set" + Advantage+ placements
       // (empty publisher_platforms → Meta Advantage+ placements).
@@ -194,11 +229,13 @@ export async function buildFullOptimizeProposals(input: {
           headline: (seed?.headline ?? hostCampaign.name).slice(0, 40),
           objective: hostCampaign.objective,
           publisher_platforms: [],
+          advantage_audience: true,
+          locations: countries,
         },
-        rationale: `New broad Advantage+ ad set under ${hostCampaign.name} (PAUSED until you activate). Covers placement expansion + broad audience test.`,
+        rationale: `New broad Advantage+ ad set under ${hostCampaign.name} in ${countries.join(", ")} (PAUSED). It has no ad yet: add one with create_ad before activating.`,
       });
       queueableLines.push(
-        `- BROAD / ADVANTAGE+ AD SET: ${name} under campaign ${hostCampaign.id} → tool \`create_adset\` (covers Advantage+ placements + new broad ad set)`,
+        `- BROAD / ADVANTAGE+ AD SET: ${name} under campaign ${hostCampaign.id} in ${countries.join(", ")} → tool \`create_adset\` (Advantage+ audience and placements; created PAUSED with no ad yet — add an ad before activating)`,
       );
     } else {
       blockedLines.push(
