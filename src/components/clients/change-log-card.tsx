@@ -4,7 +4,9 @@ import { useEffect, useState } from "react";
 import type { ChangeLogEntry, ChangeState } from "@/lib/changes/change-log";
 import { apiFetch, formatCents, formatRelative } from "@/lib/api-client";
 import { humanToolLabel } from "@/lib/tools/display-labels";
+import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 function stateText(state: ChangeState | null, currency: string): string {
@@ -43,6 +45,29 @@ export function ChangeLogCard({ clientId, currency }: { clientId: string; curren
     };
   }, [clientId, version]);
 
+  const [rollingBack, setRollingBack] = useState<string | null>(null);
+  const rolledBack = new Set((changes ?? []).map((c) => c.rollback_of).filter(Boolean));
+  const canRollBack = (c: ChangeLogEntry) =>
+    !rolledBack.has(c.id) &&
+    ((/^update_(adset|campaign)_budget$/.test(c.tool_name) && c.before?.daily_budget_cents != null) ||
+      (/^(pause|resume)_/.test(c.tool_name) && Boolean(c.before?.status)));
+
+  async function rollBack(c: ChangeLogEntry) {
+    if (!window.confirm(`Roll back this change? ${stateText(c.after, currency)} goes back to ${stateText(c.before, currency)} in Meta.`)) {
+      return;
+    }
+    setRollingBack(c.id);
+    try {
+      await apiFetch(`/api/changes/${c.id}/rollback`, { method: "POST" });
+      toast.success("Rolled back in Meta");
+      setVersion((v) => v + 1);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Rollback failed");
+    } finally {
+      setRollingBack(null);
+    }
+  }
+
   const who = (id: string | null) => (id ? (people[id] ?? "someone") : "—");
 
   return (
@@ -61,7 +86,19 @@ export function ChangeLogCard({ clientId, currency }: { clientId: string; curren
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-sm font-medium text-foreground">{humanToolLabel(c.tool_name)}</span>
                 {c.rollback_of ? <Badge variant="secondary">Rollback</Badge> : null}
+                {rolledBack.has(c.id) ? <Badge variant="secondary">Rolled back</Badge> : null}
                 <span className="text-xs text-muted">{formatRelative(c.created_at)}</span>
+                {canRollBack(c) ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="ml-auto"
+                    disabled={rollingBack !== null}
+                    onClick={() => void rollBack(c)}
+                  >
+                    {rollingBack === c.id ? "Rolling back…" : "Roll back"}
+                  </Button>
+                ) : null}
               </div>
               <p className="text-sm text-foreground/90">
                 <span className="font-mono">{stateText(c.before, currency)}</span>
