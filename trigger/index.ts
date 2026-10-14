@@ -1,8 +1,4 @@
-export {
-  monitorClientTask,
-  monitorAllClientsTask,
-  monitorDeliveryHourlyTask,
-} from "./monitor-client";
+export { monitorClientTask } from "./monitor-client";
 export { runMonitorClient } from "@/lib/monitoring/scheduled";
 export {
   runRefreshCompetitors,
