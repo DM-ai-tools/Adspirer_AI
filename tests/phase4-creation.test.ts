@@ -139,3 +139,72 @@ describe("UTMs and naming", () => {
     expect(prepared.args.ad_name).toBe("ImplantsFrom99_Image_BookYourConsult");
   });
 });
+
+describe("several ads per ad set and text options", () => {
+  const extraAds = [
+    { headline: "Same-day crowns", image_url: "https://example.com/b.jpg" },
+    { primary_text: "Free consult this month", image_url: "https://example.com/c.jpg", name: "Offer_Image_FreeConsult" },
+  ];
+
+  it("creates every extra ad in the same ad set", async () => {
+    const { provider, posts } = providerWith({ get: () => ({ currency: "GBP" }) });
+    const result = await provider.createImageCampaign({ ...base, extra_args: { extra_ads: extraAds } });
+    const ads = posts.filter(([p]) => p === "act_111/ads").map(([, b]) => b);
+    expect(ads).toHaveLength(3);
+    expect(new Set(ads.map((a) => a.adset_id)).size).toBe(1);
+    const creatives = posts.filter(([p]) => p === "act_111/adcreatives").map(([, b]) => JSON.parse(String(b.object_story_spec)).link_data);
+    expect(creatives[1]).toMatchObject({ name: "Same-day crowns", message: "Book your consult today", picture: "https://example.com/b.jpg" });
+    expect(creatives[2]).toMatchObject({ message: "Free consult this month", picture: "https://example.com/c.jpg" });
+    expect(ads[2]!.name).toBe("Offer_Image_FreeConsult");
+    expect(result.created.extra_ads).toHaveLength(2);
+  });
+
+  it("resumes without re-creating extra ads that already exist", async () => {
+    const { provider, posts } = providerWith({ get: (path) => (path === "act_111" ? { currency: "GBP" } : { account_id: "act_111" }) });
+    await provider.createImageCampaign({
+      ...base,
+      extra_args: { extra_ads: extraAds },
+      resume: { campaign_id: "1", adset_id: "2", creative_id: "3", ad_id: "4", extra_ads: [{ creative_id: "5", ad_id: "6" }] },
+    });
+    expect(posts.filter(([p]) => p === "act_111/ads")).toHaveLength(1);
+  });
+
+  it("records the extra ads already made when a later one fails", async () => {
+    let ads = 0;
+    const { provider } = providerWith({
+      get: () => ({ currency: "GBP" }),
+      post: (path) => {
+        if (path === "act_111/ads" && ++ads === 3) throw new Error("Meta said no");
+        return { id: String(5000 + ads + Math.floor(Math.random() * 1000)) };
+      },
+    });
+    const error = await provider.createImageCampaign({ ...base, extra_args: { extra_ads: extraAds } }).catch((e) => e);
+    expect(error.progress.extra_ads?.[0]?.ad_id).toBeTruthy();
+    expect(error.progress.extra_ads?.[1]?.ad_id).toBeUndefined();
+  });
+
+  it("sends extra primary texts and headlines as text options", async () => {
+    const { provider, posts } = providerWith({ get: () => ({ currency: "GBP" }) });
+    await provider.createImageCampaign({ ...base, extra_args: { primary_texts: ["Smile again", "Book your consult today"], headlines: ["Implants, done right"] } });
+    const creative = body(posts, "act_111/adcreatives");
+    expect(JSON.parse(String(creative.asset_feed_spec))).toEqual({
+      bodies: [{ text: "Book your consult today" }, { text: "Smile again" }],
+      titles: [{ text: "Implants from $99" }, { text: "Implants, done right" }],
+      optimization_type: "DEGREES_OF_FREEDOM",
+    });
+  });
+
+  it("accepts text options and extra ads at proposal time, within Meta's limits", async () => {
+    const prep = (extra: Record<string, unknown>) =>
+      prepareApprovalArgs({
+        toolName: "create_meta_image_campaign",
+        clientId: "c1",
+        args: { ...base, ...extra },
+        loadAccounts: async () => [{ meta_account_id: "act_111", access_status: "granted", currency: "GBP" }],
+      });
+    const ok = await prep({ primary_texts: ["A", "B"], extra_ads: [{ headline: "Two", image_url: "https://example.com/b.jpg" }] });
+    expect((ok.args.extra_ads as Array<{ name: string }>)[0]!.name).toBe("Two_Image_BookYourConsult");
+    await expect(prep({ primary_texts: ["1", "2", "3", "4", "5", "6"] })).rejects.toThrow(/primary_texts/);
+    await expect(prep({ extra_ads: [{ headline: "No image" }] })).rejects.toThrow(/image/);
+  });
+});

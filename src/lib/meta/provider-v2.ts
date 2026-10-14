@@ -12,6 +12,7 @@ import type {
   MetaInsights,
   UpdateAdSetBudgetInput,
   UpdateCampaignBudgetInput,
+  TextOptions,
 } from "@/lib/adspirer/provider";
 import { MetaGraphClient } from "@/lib/meta/graph-client";
 import { fetchMetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
@@ -186,6 +187,69 @@ function mergeCampaignExtra(
       ? { pixel_event_name: input.pixel_event_name }
       : {}),
   };
+}
+
+const strings = (v: unknown): string[] =>
+  Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x.trim().length > 0).map((x) => x.trim()) : [];
+
+function textOptionsFrom(extra: Record<string, unknown> | undefined): TextOptions | undefined {
+  if (!extra) return undefined;
+  const options = {
+    primary_texts: strings(extra.primary_texts),
+    headlines: strings(extra.headlines),
+    descriptions: strings(extra.descriptions),
+  };
+  return options.primary_texts.length || options.headlines.length || options.descriptions.length ? options : undefined;
+}
+
+/**
+ * Multiple text options: Meta rotates the primary texts, headlines and
+ * descriptions (the ad's own first) and shows each person the best one.
+ */
+function textOptionsFeed(input: CreateAdInput): Record<string, unknown> | null {
+  const o = input.text_options;
+  if (!o) return null;
+  const list = (first: string | undefined, more: string[] | undefined) =>
+    [...new Set([first, ...(more ?? [])].filter((t): t is string => Boolean(t?.trim())))].slice(0, 5).map((text) => ({ text }));
+  const feed: Record<string, unknown> = {};
+  if (o.primary_texts?.length) feed.bodies = list(input.primary_text, o.primary_texts);
+  if (o.headlines?.length) feed.titles = list(input.headline, o.headlines);
+  if (o.descriptions?.length) feed.descriptions = list(input.description, o.descriptions);
+  if (!Object.keys(feed).length) return null;
+  feed.optimization_type = "DEGREES_OF_FREEDOM";
+  return feed;
+}
+
+type ExtraAd = {
+  primary_text?: string;
+  headline?: string;
+  landing_page_url?: string;
+  image_url?: string;
+  existing_image_hash?: string;
+  video_url?: string;
+  existing_video_id?: string;
+  thumbnail_url?: string;
+  name?: string;
+};
+
+function extraAdsFrom(extra: Record<string, unknown> | undefined): ExtraAd[] {
+  const raw = extra?.extra_ads;
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, 5).map((a) => {
+    const o = (a && typeof a === "object" ? a : {}) as Record<string, unknown>;
+    const pick = (k: string) => optionalText(o[k]);
+    return {
+      primary_text: pick("primary_text"),
+      headline: pick("headline"),
+      landing_page_url: pick("landing_page_url"),
+      image_url: pick("image_url"),
+      existing_image_hash: pick("existing_image_hash"),
+      video_url: pick("video_url"),
+      existing_video_id: pick("existing_video_id"),
+      thumbnail_url: pick("thumbnail_url"),
+      name: pick("name"),
+    };
+  });
 }
 
 /**
@@ -1245,9 +1309,45 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
         instagram_account_id: input.instagram_account_id,
         lead_form_id: leadFormId,
         name: input.ad_name ?? `${input.campaign_name} - ${kind === "video" ? "Video Ad" : "Ad"}`,
+        text_options: textOptionsFrom(adSetInput.extra_args),
       },
       { progress, record, step, adSetVerified: true, pageId: facebookPageId },
     );
+
+    // ---- 6. Further ads in the same ad set --------------------------------
+    for (const [i, extra] of extraAdsFrom(adSetInput.extra_args).entries()) {
+      const sub: CreateProgress = { ...(progress.extra_ads?.[i] ?? {}) };
+      const recordSub = async (patch: CreateProgress) => {
+        Object.assign(sub, patch);
+        const list = [...(progress.extra_ads ?? [])];
+        list[i] = { creative_id: sub.creative_id, ad_id: sub.ad_id, video_id: sub.video_id };
+        await record({ extra_ads: list });
+      };
+      await this.createAdSteps(
+        {
+          account_id: accountId,
+          ad_set_id: adset.id,
+          ad_type: kind,
+          primary_text: extra.primary_text ?? input.primary_text,
+          headline: extra.headline ?? input.headline,
+          description: input.description,
+          call_to_action: cta,
+          landing_page_url: extra.landing_page_url ?? input.landing_page_url,
+          display_link: input.display_link,
+          url_tags: input.url_tags,
+          image_url: kind === "image" ? extra.image_url : undefined,
+          existing_image_hash: kind === "image" ? extra.existing_image_hash : undefined,
+          video_url: kind === "video" ? extra.video_url : undefined,
+          existing_video_id: kind === "video" ? extra.existing_video_id : undefined,
+          thumbnail_url: kind === "video" ? extra.thumbnail_url : undefined,
+          facebook_page_id: facebookPageId,
+          instagram_account_id: input.instagram_account_id,
+          lead_form_id: leadFormId,
+          name: extra.name ?? `${input.ad_name ?? input.campaign_name} #${i + 2}`,
+        },
+        { progress: sub, record: recordSub, step, adSetVerified: true, pageId: facebookPageId },
+      );
+    }
 
     return {
       campaign: { ...campaign, account_id: accountId },
@@ -1537,6 +1637,8 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
         name: input.name ?? "Creative",
         object_story_spec: JSON.stringify(storySpec),
       };
+      const feed = textOptionsFeed(input);
+      if (feed) creativeBody.asset_feed_spec = JSON.stringify(feed);
       // Standard UTMs unless the operator set their own or the link has them.
       const urlTags =
         input.url_tags ?? (leadFormId || /[?&]utm_/i.test(input.landing_page_url) ? undefined : DEFAULT_URL_TAGS);

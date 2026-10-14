@@ -53,9 +53,6 @@ const UNSUPPORTED_KEYS: Record<string, string> = {
   multi_advertiser: "multi-advertiser ads opt-in",
   advantage_plus_creative: "Advantage+ creative enhancements",
   disabled_creative_features: "Advantage+ creative feature opt-outs",
-  primary_texts: "multiple primary texts (dynamic creative)",
-  headlines: "multiple headlines (dynamic creative)",
-  descriptions: "multiple descriptions (dynamic creative)",
   story_image_url: "a separate Stories image",
   right_column_image_url: "a separate right-column image",
   daily_min_spend_target: "ad set minimum daily spend",
@@ -294,6 +291,12 @@ function applyCreateDefaults(
   if (toolName === "create_meta_image_campaign" || toolName === "create_meta_video_campaign") {
     if (!optionalString(args.ad_set_name)) args.ad_set_name = adSetNameByConvention(args);
     if (!optionalString(args.ad_name)) args.ad_name = adNameByConvention(args, toolName === "create_meta_video_campaign" ? "Video" : format);
+    if (Array.isArray(args.extra_ads)) {
+      args.extra_ads = args.extra_ads.map((extra) => {
+        const ad = (extra && typeof extra === "object" ? extra : {}) as Record<string, unknown>;
+        return optionalString(ad.name) ? ad : { ...ad, name: adNameByConvention({ ...args, ...ad }, toolName === "create_meta_video_campaign" ? "Video" : format) };
+      });
+    }
   } else if (toolName === "create_adset" && !optionalString(args.name)) {
     args.name = adSetNameByConvention(args);
   } else if (toolName === "create_ad" && !optionalString(args.name) && !optionalString(args.ad_name)) {
@@ -408,6 +411,14 @@ export async function prepareApprovalArgs(input: {
   const isImageAd =
     toolName === "create_meta_image_campaign" ||
     (toolName === "create_ad" && !hasVideo && (args.ad_type == null || args.ad_type === "image"));
+  if (toolName === "create_meta_image_campaign" && Array.isArray(args.extra_ads)) {
+    args.extra_ads.forEach((extra, i) => {
+      const ad = (extra && typeof extra === "object" ? extra : {}) as Record<string, unknown>;
+      if (!optionalString(ad.image_url) && !optionalString(ad.existing_image_hash)) {
+        missing.push(`Extra ad ${i + 1} needs an image (image_url or existing_image_hash).`);
+      }
+    });
+  }
   if (isImageAd && !optionalString(args.image_url) && !optionalString(args.existing_image_hash)) {
     missing.push(
       "An image ad needs an image (image_url or existing_image_hash) — without one Meta shows the landing page's preview image instead.",

@@ -114,6 +114,7 @@ Then collect:
    Bid strategy: leave the default (highest volume, no cap) unless the client has a firm target. Then recommend a cost cap at 1.2–1.5× their target cost per result (bid_strategy COST_CAP, bid_amount in major units), or for Sales with a ROAS target a minimum ROAS (bid_strategy LOWEST_COST_WITH_MIN_ROAS, roas_average_floor e.g. 2.5). Attribution comes from the client's goals (default 7-day click, 1-day view); offer attribution "7d_click" for lead campaigns that want click-only credit. UTMs are added automatically.
 4. Landing page URL (required for brand analysis + create)
 5. Primary text + headline (or run Ad copy studio first). Headline is optional for video ads but recommended.
+   Recommend 3–6 genuinely different concepts per ad set: put the first in the main fields and the rest in extra_ads (each with its own image_url or video, and its own primary_text/headline if they differ). Extra copy variants of the same concept go in primary_texts / headlines (up to 5 each) — Meta rotates them. Keep primary text's key message in the first 125 characters and headlines under 40.
 6. **Advanced targeting (ad set)** — after the brief fields above, offer this once before creative:
    - Locations first: countries, regions, cities or postcodes by name. Locations are required — the campaign is not created without one, and you must never assume a country.
    - Custom audiences from the connected Meta account (multi-select by name)

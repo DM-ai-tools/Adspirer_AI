@@ -279,9 +279,13 @@ export interface CreateAdInput {
   facebook_page_id?: string;
   instagram_account_id?: string;
   lead_form_id?: string;
+  /** Extra primary texts / headlines / descriptions Meta rotates (up to 5 each). */
+  text_options?: TextOptions;
   resume?: CreateProgress;
   onProgress?: CreateProgressCallback;
 }
+
+export type TextOptions = { primary_texts?: string[]; headlines?: string[]; descriptions?: string[] };
 
 export interface UpdateAdSetBudgetInput {
   /**
