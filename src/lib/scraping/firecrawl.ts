@@ -48,7 +48,10 @@ export type WebsiteScrapeResult = {
  */
 export async function scrapeWebsiteServices(
   url: string,
+  options: { extractServices?: boolean } = {},
 ): Promise<WebsiteScrapeResult> {
+  // Landing-page scoring only needs the text: skip the service-extraction model call.
+  const extract = options.extractServices ?? true;
   const normalized = normalizeUrl(url);
   const config = getConfig();
 
@@ -58,7 +61,7 @@ export async function scrapeWebsiteServices(
         normalized,
         config.FIRECRAWL_API_KEY,
       );
-      const services = await extractServices(scraped.markdown ?? "", normalized);
+      const services = extract ? await extractServices(scraped.markdown ?? "", normalized) : [];
       return {
         url: normalized,
         title: scraped.title,
@@ -76,7 +79,7 @@ export async function scrapeWebsiteServices(
   }
 
   const fetched = await scrapeWithFetch(normalized);
-  const services = await extractServices(fetched.markdown ?? "", normalized);
+  const services = extract ? await extractServices(fetched.markdown ?? "", normalized) : [];
   return {
     url: normalized,
     title: fetched.title,
