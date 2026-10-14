@@ -6,6 +6,8 @@ import { normalizeCreateAdArgs } from "@/lib/meta/resolve-ad-set";
 import {
   MISSING_LOCATION_MESSAGE,
   hasTargetingLocation,
+  lacksConversionSource,
+  missingConversionSourceMessage,
   normalizeCallToAction,
 } from "@/lib/meta/targeting-builder";
 import {
@@ -32,6 +34,9 @@ const NEEDS_LOCATION = new Set([
   "create_meta_video_campaign",
   "create_adset",
 ]);
+
+/** Create tools whose ad set optimises for the objective's conversion event. */
+const CONVERSION_SOURCE_TOOLS = NEEDS_LOCATION;
 
 /**
  * Fields Meta supports but this executor does not build yet. They used to be
@@ -359,6 +364,9 @@ export async function prepareApprovalArgs(input: {
       fail(`${toolName}: ${MISSING_LOCATION_MESSAGE}`, { field: "locations" });
     }
     missing.push(MISSING_LOCATION_MESSAGE);
+  }
+  if (CONVERSION_SOURCE_TOOLS.has(toolName) && lacksConversionSource(args)) {
+    missing.push(missingConversionSourceMessage(String(args.objective)));
   }
 
   const parsed = schema.safeParse(args);

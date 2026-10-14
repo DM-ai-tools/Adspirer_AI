@@ -317,6 +317,23 @@ function resolvePixelId(input: {
   return direct ?? fromExtra;
 }
 
+/** Why a Sales or Leads ad set can't be created, in words the operator can act on. */
+export function missingConversionSourceMessage(objective: string): string {
+  return objective.toUpperCase() === "OUTCOME_LEADS"
+    ? "A Leads campaign needs a pixel or an instant form (pixel_id or lead_form_id) — without one Meta can only optimise for link clicks. Add one, or use the Traffic objective."
+    : "A Sales campaign needs a pixel (pixel_id) — without one Meta can only optimise for link clicks. Add the pixel, or use the Traffic objective.";
+}
+
+/** Sales/Leads proposal with no pixel and no instant form. */
+export function lacksConversionSource(args: Record<string, unknown>): boolean {
+  const objective = typeof args.objective === "string" ? args.objective.toUpperCase() : "";
+  if (objective !== "OUTCOME_SALES" && objective !== "OUTCOME_LEADS") return false;
+  if (resolvePixelId({ pixel_id: typeof args.pixel_id === "string" ? args.pixel_id : undefined, extra_args: args })) {
+    return false;
+  }
+  return !(objective === "OUTCOME_LEADS" && resolveLeadFormId({ extra_args: args }));
+}
+
 export function optimizationForObjective(
   objective?: string,
   options?: { pixel_id?: string; extra_args?: Record<string, unknown> },
@@ -345,10 +362,9 @@ export function optimizationForObjective(
           billing_event: "IMPRESSIONS",
         };
       }
-      return {
-        optimization_goal: "LINK_CLICKS",
-        billing_event: "IMPRESSIONS",
-      };
+      // Never quietly optimise a Sales/Leads campaign for link clicks: it
+      // spends like a traffic campaign while reporting zero results.
+      throw new Error(missingConversionSourceMessage(upper));
     case "OUTCOME_ENGAGEMENT":
       return {
         optimization_goal: "POST_ENGAGEMENT",

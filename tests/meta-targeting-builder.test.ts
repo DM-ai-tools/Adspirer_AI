@@ -163,12 +163,12 @@ describe("optimizationForObjective", () => {
     ).toBe("OFFSITE_CONVERSIONS");
   });
 
-  it("falls back to link clicks for sales/leads without a pixel", () => {
-    expect(optimizationForObjective("OUTCOME_SALES").optimization_goal).toBe(
-      "LINK_CLICKS",
-    );
-    expect(optimizationForObjective("OUTCOME_LEADS").optimization_goal).toBe(
-      "LINK_CLICKS",
-    );
+  it("refuses sales/leads without a pixel instead of quietly optimising for link clicks", () => {
+    expect(() => optimizationForObjective("OUTCOME_SALES")).toThrow(/needs a pixel/);
+    expect(() => optimizationForObjective("OUTCOME_LEADS")).toThrow(/pixel or an instant form/);
+    expect(
+      optimizationForObjective("OUTCOME_LEADS", { pixel_id: "42" }).optimization_goal,
+    ).toBe("OFFSITE_CONVERSIONS");
+    expect(optimizationForObjective("OUTCOME_TRAFFIC").optimization_goal).toBe("LINK_CLICKS");
   });
 });

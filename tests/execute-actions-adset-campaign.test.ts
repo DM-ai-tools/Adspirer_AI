@@ -18,6 +18,50 @@ async function run(toolName: string, proposedArgs: Record<string, unknown>) {
   return { pending, approval };
 }
 
+describe("sales and leads need a conversion source", () => {
+  const leadsCampaign = (over: Record<string, unknown> = {}) => ({
+    account_id: ACCOUNT,
+    campaign_name: "Implants — Leads",
+    objective: "OUTCOME_LEADS",
+    budget_daily: 25,
+    primary_text: "Book your consult",
+    headline: "Dental implants",
+    landing_page_url: "https://moderndental.example/implants",
+    image_url: "https://moderndental.example/hero.jpg",
+    locations: ["US"],
+    facebook_page_id: "123456",
+    ...over,
+  });
+
+  it("queues a Leads campaign without a pixel or form as needing a fix, and never creates it", async () => {
+    const provider = getProviderForBackend(null);
+    const spy = vi.spyOn(provider, "createImageCampaign");
+    const queued = await createPendingApproval({
+      clientId: CLIENT_ID,
+      toolName: "create_meta_image_campaign",
+      proposedArgs: leadsCampaign(),
+    });
+    expect(queued.execution_error).toMatch(/pixel or an instant form/);
+    await approve({ approvalId: queued.id, reviewedBy: REVIEWER });
+    await expect(executeApprovedAction({ approvalId: queued.id, executedBy: REVIEWER })).rejects.toThrow(
+      /pixel or an instant form/,
+    );
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it("accepts a Leads campaign with a pixel or an instant form", async () => {
+    for (const extra of [{ pixel_id: "42" }, { lead_form_id: "555" }]) {
+      const queued = await createPendingApproval({
+        clientId: CLIENT_ID,
+        toolName: "create_meta_image_campaign",
+        proposedArgs: leadsCampaign({ campaign_name: `Implants ${Object.keys(extra)[0]}`, ...extra }),
+      });
+      expect(queued.execution_error ?? null).toBeNull();
+    }
+  });
+});
+
 describe("new execute actions", () => {
   it("are execute-class tools, not blocked", () => {
     for (const tool of ["update_campaign_budget", "pause_adset", "resume_adset", "resume_ad"]) {
