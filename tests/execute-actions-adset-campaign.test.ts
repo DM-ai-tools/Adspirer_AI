@@ -62,6 +62,67 @@ describe("sales and leads need a conversion source", () => {
   });
 });
 
+describe("creative requirements", () => {
+  const imageCampaign = (over: Record<string, unknown> = {}) => ({
+    account_id: ACCOUNT,
+    campaign_name: "Implants — Traffic",
+    objective: "OUTCOME_TRAFFIC",
+    budget_daily: 25,
+    primary_text: "Book your consult",
+    headline: "Dental implants",
+    landing_page_url: "https://moderndental.example/implants",
+    image_url: "https://moderndental.example/hero.jpg",
+    locations: ["US"],
+    facebook_page_id: "123456",
+    ...over,
+  });
+  const ad = (over: Record<string, unknown> = {}) => ({
+    account_id: ACCOUNT,
+    ad_set_id: "adset_mdc_npl_1",
+    primary_text: "Book your consult",
+    landing_page_url: "https://moderndental.example/implants",
+    image_url: "https://moderndental.example/hero.jpg",
+    ...over,
+  });
+
+  it("rejects carousel ads, which are not built yet, instead of creating a single image", async () => {
+    await expect(
+      createPendingApproval({ clientId: CLIENT_ID, toolName: "create_ad", proposedArgs: ad({ ad_type: "carousel" }) }),
+    ).rejects.toThrow(/Carousel ads aren't supported yet/);
+  });
+
+  it("flags an image campaign or image ad with no image as needing a fix", async () => {
+    const campaign = await createPendingApproval({
+      clientId: CLIENT_ID,
+      toolName: "create_meta_image_campaign",
+      proposedArgs: imageCampaign({ image_url: undefined }),
+    });
+    expect(campaign.execution_error).toMatch(/needs an image/);
+
+    const noImageAd = await createPendingApproval({
+      clientId: CLIENT_ID,
+      toolName: "create_ad",
+      proposedArgs: ad({ image_url: undefined, name: "No image" }),
+    });
+    expect(noImageAd.execution_error).toMatch(/needs an image/);
+  });
+
+  it("accepts an existing image hash, and video ads need no image", async () => {
+    const hashed = await createPendingApproval({
+      clientId: CLIENT_ID,
+      toolName: "create_meta_image_campaign",
+      proposedArgs: imageCampaign({ image_url: undefined, existing_image_hash: "abc123", campaign_name: "Hashed" }),
+    });
+    expect(hashed.execution_error ?? null).toBeNull();
+    const video = await createPendingApproval({
+      clientId: CLIENT_ID,
+      toolName: "create_ad",
+      proposedArgs: ad({ image_url: undefined, ad_type: "video", existing_video_id: "v1", name: "Video" }),
+    });
+    expect(video.execution_error ?? null).toBeNull();
+  });
+});
+
 describe("new execute actions", () => {
   it("are execute-class tools, not blocked", () => {
     for (const tool of ["update_campaign_budget", "pause_adset", "resume_adset", "resume_ad"]) {
