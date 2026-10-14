@@ -1,10 +1,11 @@
-import type { Approval } from "@/types";
+import type { Approval, Client } from "@/types";
 import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
 import { resolveProvider } from "@/lib/adspirer/client";
 import type { MetaAdsProvider } from "@/lib/adspirer/provider";
 import {
   ApprovalValidationError,
+  BudgetCeilingViolation,
   DuplicateExecutionError,
   ExecutionVerificationError,
   ProviderUnavailableError,
@@ -14,6 +15,7 @@ import {
   assertWithinBudgetCeiling,
   assertExecutableStatus,
   campaignDailySpendCents,
+  accountDailyTotalCents,
   assertTransition,
   canTransition,
   effectiveApprovalArgs,
@@ -21,6 +23,8 @@ import {
 import { getApproval, getClient } from "@/lib/approvals/service";
 import { prepareApprovalArgs } from "@/lib/approvals/validate-args";
 import { assertMayApprove } from "@/lib/approvals/approver";
+import { resolveGoals } from "@/lib/clients/goals";
+import { formatMoney } from "@/lib/monitoring/health";
 import { describeDrift, readLiveState, type LiveState } from "@/lib/approvals/live-state";
 import { nowIso } from "@/lib/utils";
 import { toApprovalInsert } from "@/lib/db/live-maps";
@@ -200,6 +204,7 @@ export async function executeApprovedAction(input: {
         );
         if (drift) throw new ApprovalValidationError(drift);
       }
+      await assertWithinAccountDailyCap(approval.tool_name, enrichedArgs, provider, client);
       // A resume starts spend at whatever budget the entity has NOW, which
       // may have been raised in Ads Manager since the proposal.
       const liveBudget = await liveResumeBudgetCents(approval.tool_name, enrichedArgs, provider);
@@ -536,6 +541,49 @@ function collectPassthrough(
     if (args[key] !== undefined && args[key] !== null) extra[key] = args[key];
   }
   return Object.keys(extra).length ? extra : undefined;
+}
+
+/**
+ * The client's daily account cap: all live daily budgets on the account,
+ * plus what this change adds, may not exceed it. Read live from Meta;
+ * decreases and pauses are never blocked.
+ */
+async function assertWithinAccountDailyCap(
+  toolName: string,
+  args: Record<string, unknown>,
+  provider: MetaAdsProvider,
+  client: Client | null,
+): Promise<void> {
+  const cap = client ? resolveGoals(client).daily_account_cap_cents : undefined;
+  const accountId = optionalString(args.account_id);
+  const adds = ["update_adset_budget", "update_campaign_budget", "resume_campaign", "resume_adset"].includes(toolName);
+  if (!cap || !accountId || !adds || !client) return;
+
+  const [campaigns, adsets] = await Promise.all([provider.listCampaigns(accountId), provider.listAdSets(accountId)]);
+  const campaignId = optionalString(args.campaign_id);
+  const adsetId = optionalString(args.adset_id) ?? optionalString(args.ad_set_id);
+  const next = typeof args.daily_budget_cents === "number" ? args.daily_budget_cents : 0;
+  let added = 0;
+  if (toolName === "update_campaign_budget") {
+    added = next - (campaigns.find((c) => c.id === campaignId)?.daily_budget_cents ?? 0);
+  } else if (toolName === "update_adset_budget") {
+    added = next - (adsets.find((a) => a.id === adsetId)?.daily_budget_cents ?? 0);
+  } else if (toolName === "resume_campaign") {
+    const campaign = campaigns.find((c) => c.id === campaignId);
+    added = campaign && campaign.status !== "ACTIVE" ? (campaignDailySpendCents(campaign, adsets) ?? 0) : 0;
+  } else {
+    const adset = adsets.find((a) => a.id === adsetId);
+    added = adset && adset.status !== "ACTIVE" ? adset.daily_budget_cents : 0;
+  }
+  if (added <= 0) return;
+
+  const projected = accountDailyTotalCents(campaigns, adsets) + added;
+  if (projected > cap) {
+    throw new BudgetCeilingViolation(
+      `This would bring the account's live daily budgets to ${formatMoney(projected, client.currency)}, above the client's daily cap of ${formatMoney(cap, client.currency)}. Lower the change, reduce another budget, or raise the cap in the client's goals.`,
+      { clientId: client.id, projected_cents: projected, daily_account_cap_cents: cap },
+    );
+  }
 }
 
 /** Live daily budget of the campaign or ad set a resume would restart; null when not a resume or no daily budget. */

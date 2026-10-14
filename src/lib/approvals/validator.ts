@@ -123,6 +123,16 @@ export function campaignDailySpendCents(
   return total > 0 ? total : null;
 }
 
+/** Sum of what every live campaign on the account spends per day. */
+export function accountDailyTotalCents(
+  campaigns: Array<{ id: string; status: string; daily_budget_cents?: number }>,
+  adsets: Array<{ campaign_id: string; status: string; daily_budget_cents: number }>,
+): number {
+  return campaigns
+    .filter((c) => c.status === "ACTIVE")
+    .reduce((sum, c) => sum + (campaignDailySpendCents(c, adsets) ?? 0), 0);
+}
+
 /**
  * Budget impact (cents/day) derived from the final args — never trusted from
  * the client or the LLM, so an edit cannot understate it.
