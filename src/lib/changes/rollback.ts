@@ -4,7 +4,7 @@ import { approve, createPendingApproval } from "@/lib/approvals/service";
 import { executeApprovedAction } from "@/lib/approvals/executor";
 import { readLiveState } from "@/lib/approvals/live-state";
 import { getChange, listChanges, type ChangeLogEntry } from "@/lib/changes/change-log";
-import { ApprovalValidationError, AuthorizationError } from "@/lib/errors";
+import { ApprovalValidationError, AuthorizationError, DuplicateExecutionError } from "@/lib/errors";
 import { humanToolLabel } from "@/lib/tools/display-labels";
 
 const ID_FIELD = { campaign: "campaign_id", adset: "adset_id", ad: "ad_id" } as const;
@@ -69,14 +69,22 @@ export async function rollbackChange(input: {
     rationale: `Roll back: ${humanToolLabel(change.tool_name)} on ${change.entity_type === "adset" ? "ad set" : change.entity_type} ${change.entity_id ?? ""} from ${change.created_at.slice(0, 10)}.`,
     requestedBy: input.userId,
   });
+  // A second click reuses the same approval; if the first click already took
+  // it past review, say so instead of failing on a status transition.
+  if (pending.status !== "pending" && pending.status !== "edited") {
+    throw new ApprovalValidationError("This rollback is already in progress.");
+  }
   try {
     await approve({ approvalId: pending.id, reviewedBy: input.userId });
+    const { approval } = await executeApprovedAction({ approvalId: pending.id, executedBy: input.userId });
+    return { approval, rolledBack: change };
   } catch (error) {
     if (error instanceof AuthorizationError) {
       throw new AuthorizationError(`${error.message} The rollback is waiting in Approvals.`);
     }
+    if (error instanceof DuplicateExecutionError) {
+      throw new ApprovalValidationError("This rollback is already in progress.");
+    }
     throw error;
   }
-  const { approval } = await executeApprovedAction({ approvalId: pending.id, executedBy: input.userId });
-  return { approval, rolledBack: change };
 }

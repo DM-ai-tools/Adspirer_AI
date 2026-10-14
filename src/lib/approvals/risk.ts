@@ -19,8 +19,18 @@ export function assessRisk(
   toolName: string,
   args: Record<string, unknown>,
   client: { goals_profile?: GoalsProfile | null },
+  context: { projectedAccountDailyCents?: number | null } = {},
 ): RiskAssessment {
   const goals = resolveGoals(client);
+
+  // Over the daily cap: execution will refuse it whoever approves.
+  const projected = context.projectedAccountDailyCents;
+  if (goals.daily_account_cap_cents && projected != null && projected > goals.daily_account_cap_cents) {
+    return {
+      level: "high",
+      reason: "Would take the account's live daily budgets over the client's daily cap; it will be blocked unless another budget is lowered or the cap raised.",
+    };
+  }
 
   if (toolName.startsWith("pause_")) return { level: "low", reason: "Pausing stops spend." };
 
@@ -33,8 +43,9 @@ export function assessRisk(
     if (next == null || prev == null || prev <= 0) {
       return { level: "high", reason: "Budget increase from an unknown current budget." };
     }
-    const pct = Math.round(((next - prev) / prev) * 100);
-    return pct > goals.max_budget_change_pct
+    const exact = ((next - prev) / prev) * 100;
+    const pct = Math.round(exact);
+    return exact > goals.max_budget_change_pct
       ? {
           level: "high",
           reason: `Budget increase of ${pct}%, above the client's ${goals.max_budget_change_pct}% limit per approval.`,

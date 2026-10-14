@@ -12,6 +12,7 @@ export type ErrorCode =
   | "PROVIDER_UNAVAILABLE"
   | "APPROVAL_VALIDATION_ERROR"
   | "EXECUTION_VERIFICATION_ERROR"
+  | "NOT_FOUND"
   | "INTERNAL_ERROR";
 
 export class AppError extends Error {
@@ -41,6 +42,12 @@ export class AppError extends Error {
       statusCode: this.statusCode,
       details: this.details,
     };
+  }
+}
+
+export class NotFoundError extends AppError {
+  constructor(message = "Not found", details?: Record<string, unknown>) {
+    super("NOT_FOUND", message, 404, details);
   }
 }
 

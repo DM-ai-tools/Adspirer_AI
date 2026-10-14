@@ -48,7 +48,10 @@ export type WebsiteScrapeResult = {
  */
 export async function scrapeWebsiteServices(
   url: string,
+  options: { extractServices?: boolean } = {},
 ): Promise<WebsiteScrapeResult> {
+  // Landing-page scoring only needs the text: skip the service-extraction model call.
+  const extract = options.extractServices ?? true;
   const normalized = normalizeUrl(url);
   const config = getConfig();
 
@@ -58,7 +61,7 @@ export async function scrapeWebsiteServices(
         normalized,
         config.FIRECRAWL_API_KEY,
       );
-      const services = await extractServices(scraped.markdown ?? "", normalized);
+      const services = extract ? await extractServices(scraped.markdown ?? "", normalized) : [];
       return {
         url: normalized,
         title: scraped.title,
@@ -76,7 +79,7 @@ export async function scrapeWebsiteServices(
   }
 
   const fetched = await scrapeWithFetch(normalized);
-  const services = await extractServices(fetched.markdown ?? "", normalized);
+  const services = extract ? await extractServices(fetched.markdown ?? "", normalized) : [];
   return {
     url: normalized,
     title: fetched.title,
@@ -136,10 +139,20 @@ async function scrapeWithFetch(
   url: string,
 ): Promise<{ title?: string; markdown?: string; source: "fetch" | "heuristic" }> {
   try {
-    const response = await fetch(url, {
-      headers: { "User-Agent": "AdspirerAIBot/1.0" },
-      signal: AbortSignal.timeout(12_000),
-    });
+    const { assertPublicUrl } = await import("@/lib/security/public-url");
+    let current = url;
+    let response: Response;
+    for (let hop = 0; ; hop++) {
+      await assertPublicUrl(current); // no internal addresses, on every redirect
+      response = await fetch(current, {
+        headers: { "User-Agent": "AdspirerAIBot/1.0" },
+        redirect: "manual",
+        signal: AbortSignal.timeout(12_000),
+      });
+      const location = response.headers.get("location");
+      if (response.status < 300 || response.status >= 400 || !location || hop >= 5) break;
+      current = new URL(location, current).toString();
+    }
     const html = await response.text();
     const title = html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim();
     const text = html

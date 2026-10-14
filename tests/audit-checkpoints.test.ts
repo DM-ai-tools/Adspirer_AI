@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   adSetsWithSilentTracking,
   evaluateCheckpoints,
+  weightedAreaScore,
   type Checkpoint,
 } from "@/lib/audit/checkpoints";
 import {
@@ -97,7 +98,9 @@ describe("evaluateCheckpoints", () => {
     expect(get(cps, "T4")).toMatchObject({ status: "fail" });
     expect(get(cps, "T6")).toMatchObject({ status: "warn" }); // 44%: below 70% target, above 40% floor
     expect(get(cps, "T7")).toMatchObject({ status: "warn" });
-    expect(get(cps, "B1")).toMatchObject({ status: "warn" });
+    // 1 of 4 live ad sets learning limited is under the 30% threshold.
+    expect(get(cps, "B1")).toMatchObject({ status: "pass" });
+    expect(get(cps, "B1")?.evidence).toMatch(/1 of 4/);
     expect(get(cps, "A2")).toMatchObject({ status: "warn" }); // no customer exclusions
     expect(get(cps, "A3")).toMatchObject({ status: "warn" }); // 820-person audience
     expect(get(cps, "C1")).toMatchObject({ status: "fail" });
@@ -145,7 +148,8 @@ describe("scoring", () => {
     );
     expect(card.possible).toBe(possible);
     expect(card.earned).toBe(earned);
-    expect(card.score).toBe(Math.round((earned / possible) * 100));
+    // Overall score weights the areas 30/30/20/20 (see weightedAreaScore).
+    expect(card.score).toBe(weightedAreaScore(card.byCategory));
     for (const area of card.byCategory) {
       if (area.possible === 0) expect(area.score).toBeNull();
       else expect(area.score).toBe(Math.round((area.earned / area.possible) * 100));

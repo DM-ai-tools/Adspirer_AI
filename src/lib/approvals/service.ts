@@ -12,7 +12,9 @@ import {
 import { prepareApprovalArgs } from "@/lib/approvals/validate-args";
 import { assessRisk } from "@/lib/approvals/risk";
 import { assertMayApprove } from "@/lib/approvals/approver";
-import { withLiveBefore } from "@/lib/approvals/live-state";
+import { projectAccountDailyCents, withLiveBefore } from "@/lib/approvals/live-state";
+import { resolveGoals } from "@/lib/clients/goals";
+import type { WorkspaceExecutionBackend } from "@/lib/runtime/workspace-context";
 import { resolveProvider } from "@/lib/adspirer/client";
 import { AuthorizationError, DuplicateExecutionError } from "@/lib/errors";
 import { addHoursIso, nowIso } from "@/lib/utils";
@@ -143,7 +145,9 @@ export async function createPendingApproval(input: {
     allowIncomplete: true,
   });
   const proposedArgs = prepared.args;
-  const risk = assessRisk(input.toolName, proposedArgs, client);
+  const risk = assessRisk(input.toolName, proposedArgs, client, {
+    projectedAccountDailyCents: await projectedTotalBestEffort(input.toolName, proposedArgs, client),
+  });
   const budgetImpactCents =
     prepared.budgetImpactCents ?? input.budgetImpactCents ?? null;
   if (prepared.budgetImpactCents == null && input.budgetImpactCents != null) {
@@ -284,9 +288,13 @@ export async function edit(input: {
 
   // Keep routing keys (e.g. __provider_backend) the edit form may have dropped.
   const original = approval.edited_args ?? approval.proposed_args;
+  // Bookkeeping keys come from the original, never the edit body:
+  // __before is re-read live below, __rollback_of can't be forged.
+  const LOCKED = ["__before", "__rollback_of"];
+  const editedArgs = Object.fromEntries(Object.entries(input.editedArgs).filter(([k]) => !LOCKED.includes(k)));
   const carried = Object.fromEntries(
     Object.entries(original ?? {}).filter(
-      ([k]) => k.startsWith("__") && input.editedArgs[k] === undefined,
+      ([k]) => k.startsWith("__") && k !== "__before" && editedArgs[k] === undefined,
     ),
   );
 
@@ -294,10 +302,11 @@ export async function edit(input: {
   const prepared = await prepareApprovalArgs({
     toolName: approval.tool_name,
     clientId: approval.client_id,
-    args: await withLiveBefore(approval.tool_name, { ...input.editedArgs, ...carried }, resolveProvider),
+    args: await withLiveBefore(approval.tool_name, { ...editedArgs, ...carried }, resolveProvider),
     client,
   });
 
+  const projected = await projectedTotalBestEffort(approval.tool_name, prepared.args, client);
   const ts = nowIso();
   const updated: Approval = {
     ...approval,
@@ -305,7 +314,7 @@ export async function edit(input: {
     edited_args: prepared.args,
     budget_impact_cents: prepared.budgetImpactCents,
     ...(() => {
-      const risk = assessRisk(approval.tool_name, prepared.args, client);
+      const risk = assessRisk(approval.tool_name, prepared.args, client, { projectedAccountDailyCents: projected });
       return { risk_level: risk.level, risk_reason: risk.reason };
     })(),
     // The previous failure no longer describes these args.
@@ -316,6 +325,22 @@ export async function edit(input: {
   };
 
   return saveApproval(updated, approval.status);
+}
+
+/** The account's daily total after this change, for risk; null when unknown. */
+async function projectedTotalBestEffort(
+  toolName: string,
+  args: Record<string, unknown>,
+  client: Parameters<typeof resolveGoals>[0],
+): Promise<number | null> {
+  if (!resolveGoals(client).daily_account_cap_cents) return null;
+  try {
+    const backend =
+      typeof args.__provider_backend === "string" ? (args.__provider_backend as WorkspaceExecutionBackend) : null;
+    return await projectAccountDailyCents(await resolveProvider(backend), toolName, args);
+  } catch {
+    return null; // execution re-checks the cap against live budgets
+  }
 }
 
 async function transitionApproval(

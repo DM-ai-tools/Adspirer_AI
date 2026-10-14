@@ -132,6 +132,8 @@ export async function getChange(id: string): Promise<ChangeLogEntry | null> {
   if (config.isDemoMode || !config.hasSupabase) {
     return getDemoStore().changeLog.find((c) => c.id === id) ?? null;
   }
+  // Live ids are uuids; anything else can't exist (and would be a Postgres error).
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return null;
   const { createAdminClient } = await import("@/lib/supabase/admin");
   const { data, error } = await createAdminClient().from("change_log").select("*").eq("id", id).maybeSingle();
   if (error) throw new Error(error.message);

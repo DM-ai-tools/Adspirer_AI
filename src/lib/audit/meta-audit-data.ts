@@ -59,6 +59,12 @@ export type PeriodPerformance = {
   resultLabel: string;
   costPerResultCents: number | null;
   roas: number | null;
+  /** Inline link clicks and landing page views, when Meta returned them. */
+  linkClicks?: number;
+  landingPageViews?: number | null;
+  /** Video: 3-second plays and ThruPlays, when the ad has video. */
+  videoViews3s?: number | null;
+  thruplays?: number | null;
 };
 
 export type AuditCampaign = {
@@ -116,6 +122,14 @@ export type AuditAd = {
   format: string | null;
   issue: string | null;
   performance: PeriodPerformance | null;
+  /** The creative's url_tags (UTMs); undefined when not loaded. */
+  urlTags?: string | null;
+  /** The creative's destination link, when Meta returns it. */
+  linkUrl?: string | null;
+  /** Frequency over the last 7 days (fatigue is judged weekly). */
+  frequency7d?: number | null;
+  /** Meta's quality / engagement / conversion rankings, when reported. */
+  rankings?: { quality: string | null; engagement: string | null; conversion: string | null } | null;
 };
 
 export type MetaAuditSnapshot = {
@@ -194,6 +208,12 @@ function performanceFrom(row: Row | undefined): PeriodPerformance | null {
   const count = indicator && indicator !== "mixed" ? num(results[0]?.values?.[0]?.value) : null;
   const spendCents = major(row.spend);
   const roasRows = Array.isArray(row.purchase_roas) ? (row.purchase_roas as Array<{ value?: string }>) : [];
+  const actions = Array.isArray(row.actions) ? (row.actions as Array<{ action_type?: string; value?: string }>) : [];
+  const lpv = actions.find((a) => a.action_type === "landing_page_view");
+  const videoView = actions.find((a) => a.action_type === "video_view");
+  const thru = Array.isArray(row.video_thruplay_watched_actions)
+    ? (row.video_thruplay_watched_actions as Array<{ value?: string }>)[0]
+    : undefined;
   return {
     spendCents,
     impressions: num(row.impressions),
@@ -205,6 +225,9 @@ function performanceFrom(row: Row | undefined): PeriodPerformance | null {
     resultLabel: indicator === "mixed" ? "Mixed goals" : indicator ? resultLabelFor(indicator) : "Results",
     costPerResultCents: count && count > 0 ? Math.round(spendCents / count) : null,
     roas: roasRows[0]?.value != null ? num(roasRows[0].value) : null,
+    ...(row.inline_link_clicks != null ? { linkClicks: num(row.inline_link_clicks) } : {}),
+    ...(row.actions !== undefined ? { landingPageViews: lpv ? num(lpv.value) : 0 } : {}),
+    ...(videoView ? { videoViews3s: num(videoView.value), thruplays: thru ? num(thru.value) : null } : {}),
   };
 }
 
@@ -287,11 +310,11 @@ export async function fetchMetaAuditSnapshot(
   const toCents = (minor: unknown) => metaMinorToCents(num(minor), currency);
   const notDeleted = JSON.stringify(["ACTIVE", "PAUSED", "CAMPAIGN_PAUSED", "ADSET_PAUSED", "WITH_ISSUES", "DISAPPROVED", "PENDING_REVIEW", "IN_PROCESS"]);
   const insightFields =
-    "spend,impressions,reach,frequency,inline_link_click_ctr,cpm,results,cost_per_result,purchase_roas";
+    "spend,impressions,reach,frequency,inline_link_click_ctr,inline_link_clicks,actions,cpm,results,cost_per_result,purchase_roas";
 
   const [
     pixels, customConversions, audiences, campaigns, adSets, ads, totals, campaignIns, adSetIns, adIns, placements, adSetWeek,
-    previousTotals, previousCampaignIns, previousAdSetIns,
+    previousTotals, previousCampaignIns, previousAdSetIns, adWeek,
   ] =
     await Promise.all([
       settle("Pixels", warnings, paged(graph, `${id}/adspixels`, {
@@ -318,7 +341,7 @@ export async function fetchMetaAuditSnapshot(
         limit: 200,
       })),
       settle("Ads", warnings, paged(graph, `${id}/ads`, {
-        fields: "id,name,adset_id,campaign_id,effective_status,created_time,issues_info,creative{object_type,video_id,image_hash,asset_feed_spec}",
+        fields: "id,name,adset_id,campaign_id,effective_status,created_time,issues_info,creative{object_type,video_id,image_hash,asset_feed_spec,url_tags,link_url}",
         effective_status: notDeleted,
         limit: 200,
       }, 3)),
@@ -332,7 +355,7 @@ export async function fetchMetaAuditSnapshot(
         level: "adset", time_range: timeRange, fields: `adset_id,${insightFields}`, limit: 200,
       }, 3)),
       settle("Ad performance", warnings, paged(graph, `${id}/insights`, {
-        level: "ad", time_range: timeRange, fields: `ad_id,${insightFields}`, sort: "spend_descending", limit: 200,
+        level: "ad", time_range: timeRange, fields: `ad_id,quality_ranking,engagement_rate_ranking,conversion_rate_ranking,video_thruplay_watched_actions,${insightFields}`, sort: "spend_descending", limit: 200,
       }, 2)),
       settle("Placement breakdown", warnings, graph.get<{ data?: Row[] }>(`${id}/insights`, {
         level: "account", time_range: timeRange, breakdowns: "publisher_platform", fields: "spend,results",
@@ -350,6 +373,9 @@ export async function fetchMetaAuditSnapshot(
       settle("Previous period ad set performance", warnings, paged(graph, `${id}/insights`, {
         level: "adset", time_range: previousRange, fields: `adset_id,${insightFields}`, limit: 200,
       }, 3)),
+      settle("Ad frequency (7d)", warnings, paged(graph, `${id}/insights`, {
+        level: "ad", date_preset: "last_7d", fields: "ad_id,frequency", limit: 200,
+      }, 2)),
     ]);
 
   const byKey = (rows: Row[] | null, key: string) => new Map((rows ?? []).map((r) => [String(r[key] ?? ""), r]));
@@ -357,6 +383,7 @@ export async function fetchMetaAuditSnapshot(
   const adSetPerf = byKey(adSetIns, "adset_id");
   const adPerf = byKey(adIns, "ad_id");
   const weekFrequency = byKey(adSetWeek, "adset_id");
+  const adWeekFrequency = byKey(adWeek, "ad_id");
   const previousCampaignPerf = byKey(previousCampaignIns, "campaign_id");
   const previousAdSetPerf = byKey(previousAdSetIns, "adset_id");
   // Only compare when the previous window actually loaded.
@@ -515,6 +542,16 @@ export async function fetchMetaAuditSnapshot(
             : str(creative.object_type),
         issue: str(issues[0]?.error_summary),
         performance: performanceFrom(adPerf.get(String(a.id))),
+        urlTags: str(creative.url_tags),
+        linkUrl: str(creative.link_url),
+        frequency7d: adWeekFrequency.has(String(a.id)) ? num(adWeekFrequency.get(String(a.id))!.frequency) : null,
+        rankings: (() => {
+          const row = adPerf.get(String(a.id));
+          const rank = (v: unknown) => (str(v) && v !== "UNKNOWN" ? String(v) : null);
+          if (!row) return null;
+          const r = { quality: rank(row.quality_ranking), engagement: rank(row.engagement_rate_ranking), conversion: rank(row.conversion_rate_ranking) };
+          return r.quality || r.engagement || r.conversion ? r : null;
+        })(),
       };
     }),
     placements: (placements?.data ?? []).map((p) => {

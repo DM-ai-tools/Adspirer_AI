@@ -82,10 +82,23 @@ export type ResolvedGoals = Omit<GoalsProfile, "policy" | "attribution" | "max_b
   break_even_roas: number | null;
 };
 
-/** A stored profile that no longer validates is dropped, never fatal. */
+/**
+ * A stored profile, keeping every field that still validates: one bad or
+ * unknown field drops only itself (and is logged), never the guardrails.
+ */
 export function parseGoalsProfile(value: unknown): GoalsProfile {
   const parsed = goalsProfileSchema.safeParse(value ?? {});
-  return parsed.success ? parsed.data : {};
+  if (parsed.success) return parsed.data;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const kept: Record<string, unknown> = {};
+  const dropped: string[] = [];
+  for (const [key, field] of Object.entries(value as Record<string, unknown>)) {
+    const one = goalsProfileSchema.safeParse({ [key]: field });
+    if (one.success) Object.assign(kept, one.data);
+    else dropped.push(key);
+  }
+  if (dropped.length) console.warn(`Ignoring invalid goals profile fields: ${dropped.join(", ")}`);
+  return kept as GoalsProfile;
 }
 
 export function resolveGoals(client: { goals_profile?: GoalsProfile | null }): ResolvedGoals {

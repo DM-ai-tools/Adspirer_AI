@@ -25,7 +25,7 @@ import { prepareApprovalArgs } from "@/lib/approvals/validate-args";
 import { assertMayApprove } from "@/lib/approvals/approver";
 import { resolveGoals } from "@/lib/clients/goals";
 import { formatMoney } from "@/lib/monitoring/health";
-import { describeDrift, readLiveState, tracksLiveState, type LiveState } from "@/lib/approvals/live-state";
+import { describeDrift, projectAccountDailyCents, readLiveState, tracksLiveState, type LiveState } from "@/lib/approvals/live-state";
 import { assessRisk, type RiskLevel } from "@/lib/approvals/risk";
 
 const RISK_RANK: Record<RiskLevel, number> = { low: 0, medium: 1, high: 2, critical: 3 };
@@ -580,29 +580,9 @@ async function assertWithinAccountDailyCap(
   client: Client | null,
 ): Promise<void> {
   const cap = client ? resolveGoals(client).daily_account_cap_cents : undefined;
-  const accountId = optionalString(args.account_id);
-  const adds = ["update_adset_budget", "update_campaign_budget", "resume_campaign", "resume_adset"].includes(toolName);
-  if (!cap || !accountId || !adds || !client) return;
-
-  const [campaigns, adsets] = await Promise.all([provider.listCampaigns(accountId), provider.listAdSets(accountId)]);
-  const campaignId = optionalString(args.campaign_id);
-  const adsetId = optionalString(args.adset_id) ?? optionalString(args.ad_set_id);
-  const next = typeof args.daily_budget_cents === "number" ? args.daily_budget_cents : 0;
-  let added = 0;
-  if (toolName === "update_campaign_budget") {
-    added = next - (campaigns.find((c) => c.id === campaignId)?.daily_budget_cents ?? 0);
-  } else if (toolName === "update_adset_budget") {
-    added = next - (adsets.find((a) => a.id === adsetId)?.daily_budget_cents ?? 0);
-  } else if (toolName === "resume_campaign") {
-    const campaign = campaigns.find((c) => c.id === campaignId);
-    added = campaign && campaign.status !== "ACTIVE" ? (campaignDailySpendCents(campaign, adsets) ?? 0) : 0;
-  } else {
-    const adset = adsets.find((a) => a.id === adsetId);
-    added = adset && adset.status !== "ACTIVE" ? adset.daily_budget_cents : 0;
-  }
-  if (added <= 0) return;
-
-  const projected = accountDailyTotalCents(campaigns, adsets) + added;
+  if (!cap || !client) return;
+  const projected = await projectAccountDailyCents(provider, toolName, args);
+  if (projected == null) return;
   if (projected > cap) {
     throw new BudgetCeilingViolation(
       `This would bring the account's live daily budgets to ${formatMoney(projected, client.currency)}, above the client's daily cap of ${formatMoney(cap, client.currency)}. Lower the change, reduce another budget, or raise the cap in the client's goals.`,

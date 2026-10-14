@@ -7,6 +7,7 @@ import {
   type CheckpointStatus,
 } from "@/lib/audit/checkpoints";
 import { escapeTableCell } from "@/lib/reports/table-row";
+import { hookRate, holdRate } from "@/lib/creative/fatigue";
 import type { AuditAd, AuditAdSet, MetaAuditSnapshot, PeriodPerformance } from "@/lib/audit/meta-audit-data";
 
 const STATUS_LABEL: Record<CheckpointStatus, string> = {
@@ -51,7 +52,10 @@ export function renderScorecardEvidence(scorecard: AuditScorecard, snap: MetaAud
   return [
     `### Audit checkpoint scorecard (computed from live Meta data — authoritative)`,
     scope ? `Scope: ${scope} — structure, bidding, audience, creative and funnel checks cover only these; tracking checks are account-wide.` : "",
-    `Period: ${snap.period.since} → ${snap.period.until} (${snap.period.days} days) · Score ${scorecard.score}/100 (grade ${scorecard.grade}) · ${scorecard.counts.fail} fail, ${scorecard.counts.warn} warning, ${scorecard.counts.pass} pass`,
+    `Period: ${snap.period.since} → ${snap.period.until} (${snap.period.days} days) · ${gradeLine(scorecard)} · ${scorecard.counts.fail} fail, ${scorecard.counts.warn} warning, ${scorecard.counts.pass} pass`,
+    scorecard.gradeStatus === "graded"
+      ? ""
+      : "The score is provisional or withheld because too many checks had no data — say so, and list what to connect or set (e.g. targets in the client's goals) rather than presenting it as a firm grade.",
     `By area: ${scorecard.byCategory
       .map((c) => `${c.category} ${c.score == null ? "not scored" : `${c.score}/100`}`)
       .join(" · ")}`,
@@ -81,6 +85,15 @@ export function renderScorecardEvidence(scorecard: AuditScorecard, snap: MetaAud
 }
 
 const pts = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(1));
+
+/** "Score 72/100 (grade C)", or why there is no firm grade. */
+function gradeLine(scorecard: AuditScorecard, bold = false): string {
+  const coverage = `${Math.round(scorecard.coverage * 100)}% of checks had data`;
+  const score = bold ? `**${scorecard.score}/100**` : `${scorecard.score}/100`;
+  if (scorecard.gradeStatus === "not_graded") return `Not graded (${coverage})`;
+  if (scorecard.gradeStatus === "provisional") return `Provisional score ${score} (grade ${scorecard.grade}, ${coverage})`;
+  return `Score ${score} (grade ${scorecard.grade}, ${coverage})`;
+}
 
 const STATUS_ORDER: Record<CheckpointStatus, number> = { fail: 0, warn: 1, pass: 2, info: 3, not_checked: 4 };
 
@@ -118,12 +131,13 @@ export function renderScorecardMarkdown(scorecard: AuditScorecard, snap: MetaAud
   const lines = [
     "## Audit checklist",
     "",
-    `Score **${scorecard.score}/100** (grade ${scorecard.grade}) from ${scorecard.checkpoints.length} checkpoints, ${snap.period.since} → ${snap.period.until}${scope ? ` for ${scope}` : ""}: ${scorecard.counts.fail} failed, ${scorecard.counts.warn} warnings, ${scorecard.counts.pass} passed${unscored ? `, ${unscored} notes (not scored)` : ""}.`,
+    `${gradeLine(scorecard, true)} from ${scorecard.checkpoints.length} checkpoints, ${snap.period.since} → ${snap.period.until}${scope ? ` for ${scope}` : ""}: ${scorecard.counts.fail} failed, ${scorecard.counts.warn} warnings, ${scorecard.counts.pass} passed${unscored ? `, ${unscored} notes or not checked (not scored)` : ""}.`,
     "",
     "### How the score works",
     `- Each checkpoint is worth points by severity: Critical ${SEVERITY_POINTS.critical}, High ${SEVERITY_POINTS.high}, Medium ${SEVERITY_POINTS.medium}, Low ${SEVERITY_POINTS.low}.`,
     "- **Pass** earns all its points, **Warning** half, **Fail** none. **Notes** (and anything that couldn't be checked) are listed for information but don't count.",
-    `- An area's score is the points it earned divided by the points possible in that area. The overall score does the same across every scored checkpoint: ${pts(scorecard.earned)} of ${pts(scorecard.possible)} points = ${scorecard.score}/100.`,
+    "- An area's score is the points it earned divided by the points possible in that area. The overall score weights the areas: tracking 30%, creative and frequency 30%, structure and budget 20%, audiences 20%.",
+    `- Coverage: ${Math.round(scorecard.coverage * 100)}% of applicable checks had data. 80%+ is graded, 60–79% provisional, below 60% not graded. Missing data lowers coverage, never the score.`,
     `- Grades: ${bands}.`,
     "- An area with only notes shows \"Not scored\" — there was nothing in it to pass or fail.",
     "",
@@ -193,7 +207,11 @@ function moneyFor(currency: string) {
   };
 }
 
-function periodLine(p: PeriodPerformance | null, money: (cents: number) => string): string {
+function periodLine(
+  p: PeriodPerformance | null,
+  money: (cents: number) => string,
+  options: { video?: boolean } = {},
+): string {
   if (!p || (p.spendCents === 0 && p.impressions === 0)) return "no delivery in the period";
   return [
     `spend ${money(p.spendCents)}`,
@@ -205,6 +223,9 @@ function periodLine(p: PeriodPerformance | null, money: (cents: number) => strin
     `link CTR ${p.linkCtr.toFixed(2)}%`,
     `CPM ${p.cpmCents != null ? money(p.cpmCents) : "n/a"}`,
     p.roas != null ? `ROAS ${p.roas.toFixed(2)}×` : null,
+    // Video rates only per ad: higher rows mix in image impressions.
+    options.video && hookRate(p) != null ? `hook rate ${Math.round(hookRate(p)!)}%` : null,
+    options.video && holdRate(p) != null ? `hold rate ${Math.round(holdRate(p)!)}%` : null,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -271,7 +292,7 @@ function adSetBlock(
     .slice(0, 8)
     .map(
       (ad) =>
-        `    - ${ad.name} (${ad.id}) · ${ad.status}${ad.format ? ` · ${ad.format}` : ""}${ad.issue ? ` · issue: ${ad.issue}` : ""} — ${periodLine(ad.performance, money)}`,
+        `    - ${ad.name} (${ad.id}) · ${ad.status}${ad.format ? ` · ${ad.format}` : ""}${ad.issue ? ` · issue: ${ad.issue}` : ""} — ${periodLine(ad.performance, money, { video: true })}`,
     );
   return [
     `- **${a.name} (${a.id})** · ${a.status} · ${a.learningStatus ? LEARNING_LABEL[a.learningStatus] ?? a.learningStatus : "learning status not reported"}${

@@ -3,6 +3,8 @@ import type {
   MetaAuditSnapshot,
   PeriodPerformance,
 } from "@/lib/audit/meta-audit-data";
+import { resolveGoals, type ResolvedGoals } from "@/lib/clients/goals";
+import { assessFatigue, hookRate, holdRate } from "@/lib/creative/fatigue";
 
 /**
  * Deterministic Meta audit checkpoints. Data extraction and scoring happen
@@ -66,6 +68,10 @@ export type AuditScorecard = {
   /** Points earned / possible across all scored checkpoints. */
   earned: number;
   possible: number;
+  /** Share of applicable checks that had data (pass/warn/fail ÷ those + not checked). */
+  coverage: number;
+  /** 80%+ coverage → graded; 60–79% → provisional; below → no grade. */
+  gradeStatus: "graded" | "provisional" | "not_graded";
   /** Failures and warnings, most severe and most expensive first. */
   priorities: Checkpoint[];
 };
@@ -157,11 +163,40 @@ function daysSince(iso: string | null, now: number) {
   return (now - Date.parse(iso)) / 86_400_000;
 }
 
+/** Area weights of the strongest public checklist: tracking and creative count most. */
+const AREA_GROUPS: Array<{ weight: number; categories: CheckpointCategory[] }> = [
+  { weight: 30, categories: ["Tracking & measurement"] },
+  { weight: 30, categories: ["Creative", "Funnel & frequency"] },
+  { weight: 20, categories: ["Account structure", "Bidding & budget"] },
+  { weight: 20, categories: ["Audiences & targeting"] },
+];
+
+/**
+ * Overall score: each area group's score (its categories weighted by points
+ * possible), weighted 30/30/20/20 across the groups that had anything to
+ * score. null when nothing could be scored.
+ */
+export function weightedAreaScore(
+  areas: Array<{ category: string; score: number | null; possible: number }>,
+): number | null {
+  let total = 0;
+  let weights = 0;
+  for (const group of AREA_GROUPS) {
+    const scored = areas.filter((a) => group.categories.includes(a.category as CheckpointCategory) && a.score != null && a.possible > 0);
+    const possible = scored.reduce((s, a) => s + a.possible, 0);
+    if (!possible) continue;
+    total += group.weight * (scored.reduce((s, a) => s + a.score! * a.possible, 0) / possible);
+    weights += group.weight;
+  }
+  return weights ? Math.round(total / weights) : null;
+}
+
 export function evaluateCheckpoints(
   snap: MetaAuditSnapshot,
-  options: { now?: Date } = {},
+  options: { now?: Date; goals?: ResolvedGoals } = {},
 ): AuditScorecard {
   const now = (options.now ?? new Date()).getTime();
+  const goals = options.goals ?? resolveGoals({ goals_profile: {} });
   const cp: Checkpoint[] = [];
   const money = (cents: number) => {
     try {
@@ -312,11 +347,14 @@ export function evaluateCheckpoints(
       cp.push(notChecked("T4", "Tracking & measurement", "Conversions API (server events) active", "No pixel event data to check."));
     } else {
       const browserOnly = used.filter((p) => (p.stats7d!.serverShare ?? 0) === 0);
+      // Pixel + server for every event ≈ half the events server-side; under a
+      // third means many events reach Meta from the browser only.
+      const thin = used.filter((p) => !browserOnly.includes(p) && (p.stats7d!.serverShare ?? 0) < 0.33);
       cp.push({
         id: "T4",
         category: "Tracking & measurement",
         title: "Conversions API (server events) active",
-        status: browserOnly.length ? "fail" : "pass",
+        status: browserOnly.length ? "fail" : thin.length ? "warn" : "pass",
         severity: "high",
         evidence: browserOnly.length
           ? `${list(browserOnly.map((p) => p.name))} only receives browser events — no server events in 7 days.`
@@ -325,7 +363,9 @@ export function evaluateCheckpoints(
               .join("; "),
         fix: browserOnly.length
           ? "Set up the Conversions API (partner integration, CAPI Gateway or server GTM) and send each event with the same event_id as the pixel so Meta de-duplicates them."
-          : undefined,
+          : thin.length
+            ? `Send every event the pixel sends through the Conversions API too (${list(thin.map((p) => p.name))} has under a third of events server-side), with a shared event_id.`
+            : undefined,
         impact: browserOnly.length
           ? "Browser-only tracking typically misses a meaningful share of conversions (ad blockers, iOS, cookie limits), which under-reports results and weakens optimisation."
           : undefined,
@@ -536,14 +576,17 @@ export function evaluateCheckpoints(
     const learning = liveAdSets.filter((a) => a.learningStatus === "LEARNING");
     if (liveAdSets.length) {
       const atStake = limited.reduce((s, a) => s + spendOf(a.performance), 0);
+      const share = limited.length / liveAdSets.length;
       cp.push({
         id: "B1",
         category: "Bidding & budget",
-        title: "Ad sets out of learning",
-        status: limited.length ? "warn" : "pass",
+        title: "Under 30% of ad sets learning limited",
+        status: share > 0.5 ? "fail" : share >= 0.3 ? "warn" : "pass",
         severity: "high",
         evidence: [
-          limited.length ? `Learning limited: ${list(limited.map((a) => a.name))}.` : "",
+          limited.length
+            ? `${limited.length} of ${liveAdSets.length} live ad sets (${Math.round(share * 100)}%) are learning limited: ${list(limited.map((a) => a.name))}.`
+            : "",
           learning.length ? `Still learning: ${list(learning.map((a) => a.name))}.` : "",
         ].filter(Boolean).join(" ") || "No live ad set is learning limited.",
         fix: limited.length
@@ -569,7 +612,7 @@ export function evaluateCheckpoints(
   {
     const lowVolume = liveAdSets.filter((a) => {
       const results = a.performance?.results;
-      return results != null && spendOf(a.performance) > 0 && (results / days) * 7 < 10;
+      return results != null && spendOf(a.performance) > 0 && (results / days) * 7 < BENCHMARKS.weeklyConversionsToExitLearning;
     });
     if (lowVolume.length) {
       cp.push({
@@ -578,7 +621,7 @@ export function evaluateCheckpoints(
         title: "Enough conversion volume per ad set",
         status: "warn",
         severity: "medium",
-        evidence: `${list(lowVolume.map((a) => `${a.name} (${(((a.performance!.results ?? 0) / days) * 7).toFixed(1)}/week)`))} get fewer than 10 results a week.`,
+        evidence: `${list(lowVolume.map((a) => `${a.name} (${(((a.performance!.results ?? 0) / days) * 7).toFixed(1)}/week)`))} get fewer than the ~${BENCHMARKS.weeklyConversionsToExitLearning} results a week needed to exit learning.`,
         fix: "Fewer, larger ad sets learn faster. Merge overlapping audiences or move to campaign budget (CBO) so spend concentrates where results are.",
       });
     }
@@ -643,7 +686,7 @@ export function evaluateCheckpoints(
       });
     }
     const prospecting = liveAdSets.filter((a) => !isRetargeting(a, lookalikeIds));
-    const customerLists = snap.audiences.filter((a) => a.ready && a.subtype === "CUSTOM");
+    const customerLists = snap.audiences.filter((a) => a.ready && (a.subtype === "CUSTOM" || a.subtype === "WEBSITE"));
     const noExclusions = prospecting.filter((a) => a.excludedAudienceIds.length === 0);
     if (prospecting.length && customerLists.length) {
       cp.push({
@@ -740,7 +783,17 @@ export function evaluateCheckpoints(
         fix: formats.size >= 2 ? undefined : "Add a different format (short vertical video, carousel or static) — formats reach different people at different costs.",
       });
     }
-    const tired = liveAds.filter((a) => (a.performance?.frequency ?? 0) >= 4 && spendOf(a.performance) > 0);
+    // The shared fatigue rule (frequency over the client's limit with weak or
+    // falling link CTR). Ads carry no earlier period here, so the CTR floor applies.
+    const tired = liveAds.filter(
+      (a) =>
+        spendOf(a.performance) > 0 &&
+        a.frequency7d != null &&
+        assessFatigue(
+          { impressions: a.performance!.impressions, frequency7d: a.frequency7d, ctrNow: a.performance!.linkCtr },
+          { frequencyMax: goals.policy.prospecting_frequency_max },
+        ).fatigued,
+    );
     if (tired.length) {
       cp.push({
         id: "C4",
@@ -748,8 +801,29 @@ export function evaluateCheckpoints(
         title: "No fatigued ads",
         status: "warn",
         severity: "medium",
-        evidence: `Frequency 4+ on ${list(tired.map((a) => `${a.name} (${a.performance!.frequency.toFixed(1)})`))}.`,
-        fix: "Rotate in fresh creative for these audiences or widen them.",
+        evidence: `7-day frequency over ${goals.policy.prospecting_frequency_max} with link CTR under 0.7% on ${list(tired.map((a) => `${a.name} (${a.frequency7d!.toFixed(1)}, ${a.performance!.linkCtr.toFixed(2)}%)`))}.`,
+        fix: "Launch new concepts alongside these ads, then let Meta move spend; widen the audience if frequency keeps climbing.",
+      });
+    }
+    const videos = liveAds.filter((a) => a.performance && hookRate(a.performance) != null && a.performance.impressions >= 1000);
+    if (videos.length) {
+      const weakHooks = videos.filter((a) => hookRate(a.performance!)! < 25);
+      const rates = (a: (typeof videos)[number]) => {
+        const hold = holdRate(a.performance!);
+        return `hook ${Math.round(hookRate(a.performance!)!)}%${hold != null ? `, hold ${Math.round(hold)}%` : ""}`;
+      };
+      cp.push({
+        id: "C7",
+        category: "Creative",
+        title: "Video hooks stop the scroll (25%+ hook rate)",
+        status: weakHooks.length ? "warn" : "pass",
+        severity: "medium",
+        evidence: weakHooks.length
+          ? `${list(weakHooks.map((a) => `${a.name} (${rates(a)})`))} — under 25% of impressions watch 3 seconds.`
+          : `All ${videos.length} live video ad${videos.length === 1 ? "" : "s"} hook 25%+ of viewers (${list(videos.map((a) => `${a.name}: ${rates(a)}`))}).`,
+        fix: weakHooks.length
+          ? "Rework the first 3 seconds: open on the result, a face or movement, and put the offer on screen early. If hook is fine but hold is low, fix seconds 3–15."
+          : undefined,
       });
     }
   }
@@ -785,8 +859,8 @@ export function evaluateCheckpoints(
     const measured = spending.filter((a) => weekly(a) != null);
     const highFreq = measured.filter((a) => {
       const limit = isRetargeting(a, lookalikeIds)
-        ? BENCHMARKS.retargetingFrequency.max
-        : BENCHMARKS.prospectingFrequency.max;
+        ? goals.policy.retargeting_frequency_max
+        : goals.policy.prospecting_frequency_max;
       return (weekly(a) ?? 0) > limit;
     });
     if (measured.length) {
@@ -797,26 +871,30 @@ export function evaluateCheckpoints(
         status: highFreq.length ? "warn" : "pass",
         severity: "medium",
         evidence: highFreq.length
-          ? `${list(highFreq.map((a) => `${a.name} (${(weekly(a) ?? 0).toFixed(1)} in 7 days, ${isRetargeting(a, lookalikeIds) ? "retargeting" : "prospecting"})`))} — above the ${BENCHMARKS.prospectingFrequency.low}–${BENCHMARKS.prospectingFrequency.high} prospecting or ${BENCHMARKS.retargetingFrequency.low}–${BENCHMARKS.retargetingFrequency.high} retargeting 7-day range.`
-          : `7-day frequency is within range for all ${measured.length} measured ad set${measured.length === 1 ? "" : "s"} (${BENCHMARKS.prospectingFrequency.low}–${BENCHMARKS.prospectingFrequency.high} prospecting, ${BENCHMARKS.retargetingFrequency.low}–${BENCHMARKS.retargetingFrequency.high} retargeting).`,
+          ? `${list(highFreq.map((a) => `${a.name} (${(weekly(a) ?? 0).toFixed(1)} in 7 days, ${isRetargeting(a, lookalikeIds) ? "retargeting" : "prospecting"})`))} — above the 7-day limit of ${goals.policy.prospecting_frequency_max} prospecting / ${goals.policy.retargeting_frequency_max} retargeting.`
+          : `7-day frequency is within the limit for all ${measured.length} measured ad set${measured.length === 1 ? "" : "s"} (${goals.policy.prospecting_frequency_max} prospecting, ${goals.policy.retargeting_frequency_max} retargeting).`,
         fix: highFreq.length ? "Widen these audiences, add new creative, or lower budget so the same people aren't shown the ad repeatedly." : undefined,
       });
     }
-    const roasSets = spending.filter((a) => a.performance?.roas != null);
-    const weak = roasSets.filter((a) => {
-      const target = isRetargeting(a, lookalikeIds) ? BENCHMARKS.retargetingRoas : BENCHMARKS.prospectingRoas;
-      return (a.performance!.roas ?? 0) < target;
-    });
+    // ROAS only means something for sales; judge it against the client's
+    // target, or the e-commerce funnel guide when it sells online.
+    const judgeRoas = goals.target_roas != null || goals.business_model === "ecommerce";
+    const roasTarget = (a: AuditAdSet) =>
+      goals.target_roas ?? (isRetargeting(a, lookalikeIds) ? BENCHMARKS.retargetingRoas : BENCHMARKS.prospectingRoas);
+    const roasSets = judgeRoas ? spending.filter((a) => a.performance?.roas != null) : [];
+    const weak = roasSets.filter((a) => (a.performance!.roas ?? 0) < roasTarget(a));
     if (roasSets.length) {
       cp.push({
         id: "F3",
         category: "Funnel & frequency",
-        title: "ROAS meets funnel-stage targets",
+        title: "ROAS meets target",
         status: weak.length ? "warn" : "pass",
         severity: "high",
         evidence: weak.length
-          ? `${list(weak.map((a) => `${a.name} (${a.performance!.roas!.toFixed(2)}×)`))} below ${BENCHMARKS.prospectingRoas}× prospecting / ${BENCHMARKS.retargetingRoas}× retargeting.`
-          : `All purchase ad sets meet ${BENCHMARKS.prospectingRoas}× (prospecting) / ${BENCHMARKS.retargetingRoas}× (retargeting).`,
+          ? `${list(weak.map((a) => `${a.name} (${a.performance!.roas!.toFixed(2)}× vs ${roasTarget(a)}×)`))} below target.`
+          : goals.target_roas != null
+            ? `All purchase ad sets meet the client's ${goals.target_roas}× target.`
+            : `All purchase ad sets meet ${BENCHMARKS.prospectingRoas}× (prospecting) / ${BENCHMARKS.retargetingRoas}× (retargeting).`,
         fix: weak.length ? "Cut spend on the weakest ad sets and test new offers/creative; check margins before scaling anything under target." : undefined,
         spendAtStakeCents: weak.reduce((s, a) => s + spendOf(a.performance), 0),
       });
@@ -834,6 +912,160 @@ export function evaluateCheckpoints(
           ? `${list(lowCtr.map((a) => `${a.name} (${a.performance!.linkCtr.toFixed(2)}%)`))}.`
           : "All ad sets with 1,000+ impressions clear the floor.",
         fix: lowCtr.length ? "Test stronger hooks in the first 3 seconds/line and a clearer offer; low CTR also raises CPM." : undefined,
+      });
+    }
+  }
+
+  // ------------------------------------------------ Goals, status, hygiene
+  cp.push(
+    snap.account.statusCode === 1
+      ? { id: "S5", category: "Account structure", title: "Ad account is active", status: "pass", severity: "critical", evidence: "The ad account is active." }
+      : {
+          id: "S5",
+          category: "Account structure",
+          title: "Ad account is active",
+          status: "fail",
+          severity: "critical",
+          evidence: `The ad account is not active (status ${snap.account.statusCode}${snap.account.disableReason ? `, ${snap.account.disableReason}` : ""}).`,
+          fix: "Open Account Quality in Business Manager, resolve the restriction or unpaid balance, and request a review.",
+          impact: "Nothing can deliver until the account is active again.",
+          spendAtStakeCents: totalSpend,
+        },
+  );
+
+  if (goals.target_cpa_cents) {
+    // ~50 results a week at the target cost is what an ad set needs to exit learning.
+    const needed = Math.ceil((goals.target_cpa_cents * BENCHMARKS.weeklyConversionsToExitLearning) / 7);
+    const campaignById = new Map(snap.campaigns.map((c) => [c.id, c]));
+    const budgetOf = (a: AuditAdSet) => {
+      if (a.dailyBudgetCents) return a.dailyBudgetCents;
+      const campaignBudget = campaignById.get(a.campaignId)?.dailyBudgetCents;
+      const siblings = liveAdSets.filter((x) => x.campaignId === a.campaignId).length;
+      return campaignBudget && siblings ? campaignBudget / siblings : null;
+    };
+    const short = liveAdSets.filter((a) => {
+      const b = budgetOf(a);
+      return b != null && b < needed;
+    });
+    cp.push({
+      id: "B6",
+      category: "Bidding & budget",
+      title: "Budgets can exit learning at the target cost",
+      status: short.length ? "warn" : "pass",
+      severity: "medium",
+      evidence: short.length
+        ? `${list(short.map((a) => `${a.name} (${money(budgetOf(a)!)}/day)`))} ${short.length === 1 ? "is" : "are"} below the ${money(needed)}/day needed for ~${BENCHMARKS.weeklyConversionsToExitLearning} results a week at the ${money(goals.target_cpa_cents)} target.`
+        : `Every live ad set has at least ${money(needed)}/day, enough for ~${BENCHMARKS.weeklyConversionsToExitLearning} results a week at the target cost.`,
+      fix: short.length ? "Consolidate ad sets so each has enough budget, or optimise for a higher-volume event." : undefined,
+    });
+  } else {
+    cp.push(notChecked("B6", "Bidding & budget", "Budgets can exit learning at the target cost", "Set a target cost per result in the client's goals to check this."));
+  }
+
+  {
+    const cpr = snap.totals?.costPerResultCents ?? null;
+    const roas = snap.totals?.roas ?? null;
+    if (goals.target_cpa_cents && cpr != null) {
+      const ratio = cpr / goals.target_cpa_cents;
+      cp.push({
+        id: "B7",
+        category: "Bidding & budget",
+        title: "Cost per result at or under target",
+        status: ratio <= 1 ? "pass" : ratio <= 1.5 ? "warn" : "fail",
+        severity: "high",
+        evidence: `${money(cpr)} per result against the client's ${money(goals.target_cpa_cents)} target (${Math.round(ratio * 100)}%).`,
+        fix: ratio <= 1 ? undefined : "Cut spend on the ad sets furthest over target and move it to those under target; test new creative before raising budgets.",
+        spendAtStakeCents: ratio <= 1 ? undefined : totalSpend,
+      });
+    } else if (goals.target_roas && roas != null) {
+      const ratio = roas / goals.target_roas;
+      cp.push({
+        id: "B7",
+        category: "Bidding & budget",
+        title: "ROAS at or above target",
+        status: ratio >= 1 ? "pass" : ratio >= 0.67 ? "warn" : "fail",
+        severity: "high",
+        evidence: `${roas.toFixed(2)}× against the client's ${goals.target_roas}× target.`,
+        fix: ratio >= 1 ? undefined : "Shift budget to the ad sets above target and test new offers or creative before scaling.",
+      });
+    } else {
+      cp.push(notChecked("B7", "Bidding & budget", "Cost per result at or under target", "Set a target cost per result or ROAS in the client's goals to check this."));
+    }
+  }
+
+  {
+    // Only ads that send people to a website can carry UTMs (not lead forms,
+    // messaging or engagement); UTMs in the destination link count too.
+    const WEB_GOALS = new Set(["OFFSITE_CONVERSIONS", "LINK_CLICKS", "LANDING_PAGE_VIEWS", "VALUE"]);
+    const adSetById = new Map(snap.adSets.map((s) => [s.id, s]));
+    const toWebsite = (a: (typeof liveAds)[number]) => {
+      const set = adSetById.get(a.adSetId);
+      return Boolean(set && (set.pixelId || WEB_GOALS.has(set.optimizationGoal ?? "")));
+    };
+    const loaded = liveAds.filter((a) => (a.urlTags !== undefined || a.linkUrl !== undefined) && toWebsite(a));
+    if (loaded.length) {
+      const untagged = loaded.filter((a) => !/utm_/i.test(`${a.urlTags ?? ""} ${a.linkUrl ?? ""}`));
+      cp.push({
+        id: "C5",
+        category: "Creative",
+        title: "UTM tags on every live ad",
+        status: untagged.length ? "warn" : "pass",
+        severity: "medium",
+        evidence: untagged.length
+          ? `${untagged.length} of ${loaded.length} live ads have no UTM tags: ${list(untagged.map((a) => a.name))}.`
+          : `All ${loaded.length} live ads carry UTM tags.`,
+        fix: untagged.length
+          ? "Add URL parameters to each ad: utm_source={{site_source_name}}&utm_medium={{placement}}&utm_campaign={{campaign.id}}&utm_content={{ad.id}}&utm_term={{adset.id}}."
+          : undefined,
+        impact: untagged.length ? "Without UTMs, analytics and the CRM can't tell which ad a lead or sale came from." : undefined,
+      });
+    }
+    const ranked = liveAds.filter((a) => a.rankings);
+    if (ranked.length) {
+      const below = ranked.filter((a) =>
+        [a.rankings!.quality, a.rankings!.engagement, a.rankings!.conversion].some((r) => r?.startsWith("BELOW_AVERAGE")),
+      );
+      cp.push({
+        id: "C6",
+        category: "Creative",
+        title: "No ads ranked below average",
+        status: below.length ? "warn" : "pass",
+        severity: "medium",
+        evidence: below.length
+          ? `Meta ranks these below average for quality, engagement or conversion: ${list(below.map((a) => a.name))}.`
+          : `None of the ${ranked.length} ranked live ads is below average.`,
+        fix: below.length ? "Replace or rework these ads: below-average rankings raise costs for the whole ad set." : undefined,
+      });
+    }
+  }
+
+  if (snap.totals?.linkClicks != null && snap.totals.linkClicks >= 100 && snap.totals.landingPageViews != null) {
+    const ratio = snap.totals.landingPageViews / snap.totals.linkClicks;
+    cp.push({
+      id: "F5",
+      category: "Funnel & frequency",
+      title: "Clicks reach the landing page",
+      status: ratio < 0.6 ? "warn" : "pass",
+      severity: "low",
+      evidence: `${snap.totals.landingPageViews.toLocaleString("en")} landing page views from ${snap.totals.linkClicks.toLocaleString("en")} link clicks (${Math.round(ratio * 100)}%).`,
+      fix: ratio < 0.6 ? "Speed up the landing page (and check the pixel loads on it); many people leave before it finishes loading." : undefined,
+    });
+  }
+
+  if (snap.placements.length) {
+    const spend = snap.placements.reduce((s, p) => s + p.spendCents, 0);
+    if (spend > 0) {
+      cp.push({
+        id: "A5",
+        category: "Audiences & targeting",
+        title: "Spend by platform",
+        status: "info",
+        severity: "low",
+        evidence: snap.placements
+          .slice()
+          .sort((a, b) => b.spendCents - a.spendCents)
+          .map((p) => `${p.platform} ${Math.round((p.spendCents / spend) * 100)}%`)
+          .join(", ") + ". Judge platforms on the campaign's overall result, not each platform's average cost.",
       });
     }
   }
@@ -858,17 +1090,8 @@ export function evaluateCheckpoints(
     };
   };
   const overall = pointsOf(cp);
-  const score = overall.score ?? 100;
   const categories = [...new Set(cp.map((c) => c.category))];
-
-  return {
-    score,
-    grade: GRADE_BANDS.find((b) => score >= b.min)!.grade,
-    earned: overall.earned,
-    possible: overall.possible,
-    checkpoints: cp,
-    counts,
-    byCategory: categories.map((category) => {
+  const byCategory = categories.map((category) => {
       const items = cp.filter((c) => c.category === category);
       const pts = pointsOf(items);
       return {
@@ -881,7 +1104,22 @@ export function evaluateCheckpoints(
         possible: pts.possible,
         score: pts.score,
       };
-    }),
+    });
+  // Missing data lowers confidence, never the score: grade on coverage.
+  const scoredCount = counts.pass + counts.warn + counts.fail;
+  const coverage = scoredCount + counts.not_checked ? scoredCount / (scoredCount + counts.not_checked) : 0;
+  const score = weightedAreaScore(byCategory) ?? 0;
+
+  return {
+    score,
+    grade: GRADE_BANDS.find((b) => score >= b.min)!.grade,
+    earned: overall.earned,
+    possible: overall.possible,
+    coverage,
+    gradeStatus: !scoredCount ? "not_graded" : coverage >= 0.8 ? "graded" : coverage >= 0.6 ? "provisional" : "not_graded",
+    checkpoints: cp,
+    counts,
+    byCategory,
     priorities: cp
       .filter((c) => c.status === "fail" || c.status === "warn")
       .sort(

@@ -28,6 +28,7 @@ import { resolvePromotePageId, formatMissingPageHelp } from "@/lib/meta/resolve-
 import { logger } from "@/lib/observability/logger";
 import { centsToMetaMinor, metaMinorToCents } from "@/lib/meta/currency";
 import { ExecutionVerificationError } from "@/lib/errors";
+import { assessFatigue } from "@/lib/creative/fatigue";
 import {
   PartialCreateError,
   type CreateProgress,
@@ -2011,11 +2012,12 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     options: Record<string, unknown> = {},
   ): Promise<{ text: string; structured?: Record<string, unknown> | null }> {
     const id = normalizeAccountId(accountId);
-    const lookbackDays = Math.min(
-      90,
-      Math.max(3, Number(options.lookback_days ?? 14) || 14),
-    );
-    const { dateStart, dateStop } = lookbackWindow(lookbackDays);
+    // This week vs the week before, judged by the shared fatigue rule.
+    const day = (offset: number) => new Date(Date.now() - offset * 86_400_000).toISOString().slice(0, 10);
+    const dateStart = day(6);
+    const dateStop = day(0);
+    const lookbackDays = 14;
+    const frequencyMax = Number(options.frequency_max) > 0 ? Number(options.frequency_max) : undefined;
     const ads = await this.listAds(id);
     const activeAds = ads.filter((a) => a.status === "ACTIVE");
 
@@ -2024,68 +2026,55 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       args: Record<string, unknown>;
       rationale: string;
     }> = [];
-    const lines: string[] = [
-      `### Creative fatigue (${id}) · ${dateStart} → ${dateStop}`,
-    ];
+    const lines: string[] = [`### Creative fatigue (${id}) · ${dateStart} → ${dateStop} vs the week before`];
 
     try {
-      const data = await this.graph.get<{
-        data?: Array<Record<string, unknown>>;
-      }>(`${id}/insights`, {
-        fields:
-          "ad_id,ad_name,spend,impressions,clicks,ctr,frequency,actions",
-        level: "ad",
-        time_range: JSON.stringify({ since: dateStart, until: dateStop }),
-        limit: 50,
-      });
-      const rows = (data.data ?? [])
+      const window = (since: string, until: string) =>
+        this.graph.get<{ data?: Array<Record<string, unknown>> }>(`${id}/insights`, {
+          fields: "ad_id,ad_name,adset_id,spend,impressions,frequency,inline_link_click_ctr",
+          level: "ad",
+          time_range: JSON.stringify({ since, until }),
+          limit: 200,
+        });
+      const [now, before] = await Promise.all([window(dateStart, dateStop), window(day(13), day(7)).catch(() => ({ data: [] }))]);
+      const ctrBefore = new Map((before.data ?? []).map((r) => [String(r.ad_id ?? ""), Number(r.inline_link_click_ctr ?? 0)]));
+      const fatigued = (now.data ?? [])
         .map((row) => {
           const adId = String(row.ad_id ?? "");
-          const frequency = Number(row.frequency ?? 0);
-          const ctr = Number(row.ctr ?? 0);
-          const spend = Number(row.spend ?? 0);
-          const impressions = Number(row.impressions ?? 0);
-          return {
-            ad_id: adId,
-            name: String(row.ad_name ?? adId),
-            frequency,
-            ctr,
-            spend,
-            impressions,
-            fatigued:
-              frequency >= 3.5 && ctr < 0.8 && impressions >= 1000 && spend > 0,
-          };
-        })
-        .filter((r) => r.ad_id);
-
-      const fatigued = rows.filter((r) => r.fatigued).slice(0, 3);
-      if (!fatigued.length) {
-        lines.push(
-          "- No clear fatigue signals (freq ≥ 3.5 with weak CTR) in the lookback window.",
-        );
-      }
-      for (const f of fatigued) {
-        const live = activeAds.find((a) => a.id === f.ad_id);
-        if (!live) {
-          lines.push(
-            `- ${f.name} (${f.ad_id}): freq ${f.frequency.toFixed(2)} · CTR ${f.ctr.toFixed(2)}% — already not ACTIVE.`,
+          const verdict = assessFatigue(
+            {
+              impressions: Number(row.impressions ?? 0),
+              frequency7d: Number(row.frequency ?? 0),
+              ctrNow: Number(row.inline_link_click_ctr ?? 0),
+              ctrBefore: ctrBefore.has(adId) ? ctrBefore.get(adId)! : null,
+            },
+            { frequencyMax },
           );
+          return { adId, name: String(row.ad_name ?? adId), adsetId: String(row.adset_id ?? ""), ...verdict };
+        })
+        .filter((r) => r.adId && r.fatigued);
+
+      if (!fatigued.length) lines.push("- No ad meets the fatigue rule (7-day frequency over the limit and link CTR down 20%+).");
+      const pausing = new Set<string>();
+      for (const f of fatigued) {
+        const live = activeAds.find((a) => a.id === f.adId);
+        if (!live) {
+          lines.push(`- ${f.name} (${f.adId}): ${f.reason} Already not active.`);
           continue;
         }
-        const rationale = `Pause fatigued ad ${f.name}: frequency ${f.frequency.toFixed(2)}, CTR ${f.ctr.toFixed(2)}%.`;
-        proposals.push({
-          tool: "pause_ad",
-          args: { account_id: id, ad_id: f.ad_id },
-          rationale,
-        });
-        lines.push(
-          `- PAUSE ${f.name} (${f.ad_id}): freq ${f.frequency.toFixed(2)} · CTR ${f.ctr.toFixed(2)}%`,
-        );
+        // Never empty an ad set: something must keep delivering.
+        const siblings = activeAds.filter((a) => a.adset_id === live.adset_id && a.id !== f.adId && !pausing.has(a.id));
+        if (!siblings.length) {
+          lines.push(`- ${f.name} (${f.adId}): ${f.reason} Not proposed — it's the only live ad in its ad set; add a replacement first.`);
+          continue;
+        }
+        if (pausing.size >= 3) continue;
+        pausing.add(f.adId);
+        proposals.push({ tool: "pause_ad", args: { account_id: id, ad_id: f.adId }, rationale: `Pause fatigued ad ${f.name}: ${f.reason}` });
+        lines.push(`- PAUSE ${f.name} (${f.adId}): ${f.reason}`);
       }
     } catch {
-      lines.push(
-        `- Could not load ad-level insights. Active ads on file: ${activeAds.length}.`,
-      );
+      lines.push(`- Could not load ad-level insights. Active ads on file: ${activeAds.length}.`);
     }
 
     lines.push(
