@@ -60,15 +60,32 @@ describe("buildMetaTargeting", () => {
     expect(hasTargetingLocation(["gb"])).toBe(true);
   });
 
-  it("sets Advantage+ audience explicitly (off unless requested)", () => {
+  it("turns Advantage+ audience on by default (Meta's current recommended setup)", () => {
     expect(buildMetaTargeting({ locations: ["GB"] }).targeting_automation).toEqual({
-      advantage_audience: 0,
+      advantage_audience: 1,
     });
     expect(
-      buildMetaTargeting({
-        locations: ["GB"],
-        extra_args: { advantage_audience: true },
-      }).targeting_automation,
+      buildMetaTargeting({ locations: ["GB"], age_min: 25, age_max: 65 }).targeting_automation,
+    ).toEqual({ advantage_audience: 1 });
+  });
+
+  it("keeps Advantage+ audience off when asked, or when the settings conflict with it", () => {
+    const off = { advantage_audience: 0 };
+    expect(
+      buildMetaTargeting({ locations: ["GB"], extra_args: { advantage_audience: false } }).targeting_automation,
+    ).toEqual(off);
+    expect(
+      buildMetaTargeting({ locations: ["GB"], extra_args: { advantage_audience: "no" } }).targeting_automation,
+    ).toEqual(off);
+    // A narrower age range is a hard control Advantage+ audience can't keep.
+    expect(buildMetaTargeting({ locations: ["GB"], age_max: 45 }).targeting_automation).toEqual(off);
+    expect(buildMetaTargeting({ locations: ["GB"], age_min: 30 }).targeting_automation).toEqual(off);
+    // Special Ad Categories restrict audience options.
+    expect(
+      buildMetaTargeting({ locations: ["GB"], special_ad_categories: ["HOUSING"] }).targeting_automation,
+    ).toEqual(off);
+    expect(
+      buildMetaTargeting({ locations: ["GB"], special_ad_categories: [] }).targeting_automation,
     ).toEqual({ advantage_audience: 1 });
   });
 
@@ -146,12 +163,12 @@ describe("optimizationForObjective", () => {
     ).toBe("OFFSITE_CONVERSIONS");
   });
 
-  it("falls back to link clicks for sales/leads without a pixel", () => {
-    expect(optimizationForObjective("OUTCOME_SALES").optimization_goal).toBe(
-      "LINK_CLICKS",
-    );
-    expect(optimizationForObjective("OUTCOME_LEADS").optimization_goal).toBe(
-      "LINK_CLICKS",
-    );
+  it("refuses sales/leads without a pixel instead of quietly optimising for link clicks", () => {
+    expect(() => optimizationForObjective("OUTCOME_SALES")).toThrow(/needs a pixel/);
+    expect(() => optimizationForObjective("OUTCOME_LEADS")).toThrow(/pixel or an instant form/);
+    expect(
+      optimizationForObjective("OUTCOME_LEADS", { pixel_id: "42" }).optimization_goal,
+    ).toBe("OFFSITE_CONVERSIONS");
+    expect(optimizationForObjective("OUTCOME_TRAFFIC").optimization_goal).toBe("LINK_CLICKS");
   });
 });

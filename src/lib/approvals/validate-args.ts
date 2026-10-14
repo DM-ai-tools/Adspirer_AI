@@ -6,6 +6,8 @@ import { normalizeCreateAdArgs } from "@/lib/meta/resolve-ad-set";
 import {
   MISSING_LOCATION_MESSAGE,
   hasTargetingLocation,
+  lacksConversionSource,
+  missingConversionSourceMessage,
   normalizeCallToAction,
 } from "@/lib/meta/targeting-builder";
 import {
@@ -32,6 +34,9 @@ const NEEDS_LOCATION = new Set([
   "create_meta_video_campaign",
   "create_adset",
 ]);
+
+/** Create tools whose ad set optimises for the objective's conversion event. */
+const CONVERSION_SOURCE_TOOLS = NEEDS_LOCATION;
 
 /**
  * Fields Meta supports but this executor does not build yet. They used to be
@@ -169,6 +174,14 @@ function canonicalize(
   if (typeof args.objective === "string") {
     args.objective = args.objective.trim().toUpperCase();
   }
+  if (
+    (toolName === "pause_adset" || toolName === "resume_adset" || toolName === "update_adset_budget") &&
+    !optionalString(args.adset_id) &&
+    optionalString(args.ad_set_id)
+  ) {
+    args.adset_id = optionalString(args.ad_set_id);
+    delete args.ad_set_id;
+  }
   if (toolName === "create_adset") args = normalizeCreateAdSetArgs(args);
   if (toolName === "create_ad") args = normalizeCreateAdArgs(args);
 
@@ -277,7 +290,7 @@ export async function prepareApprovalArgs(input: {
   const schema = getExecuteToolSchema(toolName);
   if (!schema) {
     fail(
-      `"${toolName}" cannot be executed from an approval — CampaignForge has no executor for it. Use create_meta_image_campaign / create_meta_video_campaign, create_adset, create_ad, update_adset_budget, pause_campaign, resume_campaign or pause_ad.`,
+      `"${toolName}" cannot be executed from an approval — CampaignForge has no executor for it. Use create_meta_image_campaign / create_meta_video_campaign, create_adset, create_ad, update_adset_budget, update_campaign_budget, pause_campaign, resume_campaign, pause_adset, resume_adset, pause_ad or resume_ad.`,
       { toolName },
     );
   }
@@ -351,6 +364,25 @@ export async function prepareApprovalArgs(input: {
       fail(`${toolName}: ${MISSING_LOCATION_MESSAGE}`, { field: "locations" });
     }
     missing.push(MISSING_LOCATION_MESSAGE);
+  }
+  if (CONVERSION_SOURCE_TOOLS.has(toolName) && lacksConversionSource(args)) {
+    missing.push(missingConversionSourceMessage(String(args.objective), toolName));
+  }
+  if ((toolName === "create_ad" || toolName === "create_adset") && args.ad_type === "carousel") {
+    // The provider builds one image from the first card; never pretend.
+    fail(`${toolName}: Carousel ads aren't supported yet — use an image or video ad, or build the carousel in Ads Manager.`, {
+      field: "ad_type",
+    });
+  }
+  // A video_url / existing_video_id makes it a video ad, as the provider decides.
+  const hasVideo = Boolean(optionalString(args.video_url) || optionalString(args.existing_video_id));
+  const isImageAd =
+    toolName === "create_meta_image_campaign" ||
+    (toolName === "create_ad" && !hasVideo && (args.ad_type == null || args.ad_type === "image"));
+  if (isImageAd && !optionalString(args.image_url) && !optionalString(args.existing_image_hash)) {
+    missing.push(
+      "An image ad needs an image (image_url or existing_image_hash) — without one Meta shows the landing page's preview image instead.",
+    );
   }
 
   const parsed = schema.safeParse(args);

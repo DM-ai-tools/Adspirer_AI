@@ -170,9 +170,20 @@ function summarizeArgs(
       rows.push(["Campaign", formatArgValue(args.campaign_name ?? args.campaign_id)]);
       rows.push(["Action", toolName === "pause_campaign" ? "Pause" : "Resume (starts spending)"]);
       break;
+    case "update_campaign_budget":
+      rows.push(["Campaign", formatArgValue(args.campaign_name ?? args.campaign_id)]);
+      rows.push(["New campaign daily budget", money(asNumber(args.daily_budget_cents))]);
+      rows.push(["Current", money(asNumber(args.previous_daily_budget_cents))]);
+      break;
+    case "pause_adset":
+    case "resume_adset":
+      rows.push(["Ad set", formatArgValue(args.adset_name ?? args.adset_id ?? args.ad_set_id)]);
+      rows.push(["Action", toolName === "pause_adset" ? "Pause" : "Resume (starts spending)"]);
+      break;
     case "pause_ad":
+    case "resume_ad":
       rows.push(["Ad", formatArgValue(args.ad_name ?? args.ad_id)]);
-      rows.push(["Action", "Pause"]);
+      rows.push(["Action", toolName === "pause_ad" ? "Pause" : "Resume (starts spending)"]);
       break;
     default: {
       const name =
@@ -248,8 +259,16 @@ function successHint(toolName: string): string {
       return "Campaign is now paused in Meta.";
     case "pause_ad":
       return "Ad is now paused in Meta.";
+    case "resume_ad":
+      return "Ad is now active in Meta.";
+    case "pause_adset":
+      return "Ad set is now paused in Meta.";
+    case "resume_adset":
+      return "Ad set is now active in Meta.";
     case "update_adset_budget":
       return "Daily budget updated in Meta.";
+    case "update_campaign_budget":
+      return "Campaign daily budget updated in Meta.";
     default:
       return "Created in Meta as PAUSED (not published/live).";
   }

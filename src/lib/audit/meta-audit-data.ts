@@ -73,6 +73,8 @@ export type AuditCampaign = {
   specialAdCategories: string[];
   createdTime: string | null;
   performance: PeriodPerformance | null;
+  /** Same-length period just before the audit window. */
+  previousPerformance?: PeriodPerformance | null;
 };
 
 export type AuditAdSet = {
@@ -100,6 +102,8 @@ export type AuditAdSet = {
   /** Frequency over the last 7 days (benchmarks are weekly). */
   frequency7d: number | null;
   performance: PeriodPerformance | null;
+  /** Same-length period just before the audit window. */
+  previousPerformance?: PeriodPerformance | null;
 };
 
 export type AuditAd = {
@@ -127,6 +131,9 @@ export type MetaAuditSnapshot = {
   };
   period: { days: number; since: string; until: string };
   totals: PeriodPerformance | null;
+  /** Same-length window just before `period`, for change-over-time. Absent when not loaded. */
+  previousPeriod?: { since: string; until: string };
+  previousTotals?: PeriodPerformance | null;
   pixels: AuditPixel[];
   customConversions: AuditCustomConversion[];
   audiences: AuditAudience[];
@@ -247,6 +254,18 @@ function dayString(d: Date) {
   return d.toISOString().slice(0, 10);
 }
 
+const DAY_MS = 86_400_000;
+
+/** The same number of days immediately before `since` → `until`. */
+export function previousPeriodOf(since: string, until: string): { since: string; until: string } {
+  const start = Date.parse(`${since}T00:00:00Z`);
+  const days = Math.round((Date.parse(`${until}T00:00:00Z`) - start) / DAY_MS) + 1;
+  return {
+    since: dayString(new Date(start - days * DAY_MS)),
+    until: dayString(new Date(start - DAY_MS)),
+  };
+}
+
 export async function fetchMetaAuditSnapshot(
   graph: Graph,
   accountId: string,
@@ -254,10 +273,12 @@ export async function fetchMetaAuditSnapshot(
 ): Promise<MetaAuditSnapshot> {
   const id = accountId.startsWith("act_") ? accountId : `act_${accountId}`;
   const warnings: string[] = [];
-  const days = options.days ?? 30;
-  const until = options.until ?? dayString(new Date(Date.now() - 86_400_000));
-  const since = options.since ?? dayString(new Date(Date.parse(`${until}T00:00:00Z`) - (days - 1) * 86_400_000));
+  const until = options.until ?? dayString(new Date(Date.now() - DAY_MS));
+  const since = options.since ?? dayString(new Date(Date.parse(`${until}T00:00:00Z`) - ((options.days ?? 30) - 1) * DAY_MS));
+  const days = Math.round((Date.parse(`${until}T00:00:00Z`) - Date.parse(`${since}T00:00:00Z`)) / DAY_MS) + 1;
   const timeRange = JSON.stringify({ since, until });
+  const previousPeriod = previousPeriodOf(since, until);
+  const previousRange = JSON.stringify(previousPeriod);
 
   const account = await graph.get<Row>(id, {
     fields: "name,currency,timezone_name,account_status,disable_reason,amount_spent,spend_cap",
@@ -268,7 +289,10 @@ export async function fetchMetaAuditSnapshot(
   const insightFields =
     "spend,impressions,reach,frequency,inline_link_click_ctr,cpm,results,cost_per_result,purchase_roas";
 
-  const [pixels, customConversions, audiences, campaigns, adSets, ads, totals, campaignIns, adSetIns, adIns, placements, adSetWeek] =
+  const [
+    pixels, customConversions, audiences, campaigns, adSets, ads, totals, campaignIns, adSetIns, adIns, placements, adSetWeek,
+    previousTotals, previousCampaignIns, previousAdSetIns,
+  ] =
     await Promise.all([
       settle("Pixels", warnings, paged(graph, `${id}/adspixels`, {
         fields: "id,name,last_fired_time,enable_automatic_matching",
@@ -316,6 +340,16 @@ export async function fetchMetaAuditSnapshot(
       settle("Ad set frequency (7d)", warnings, paged(graph, `${id}/insights`, {
         level: "adset", date_preset: "last_7d", fields: "adset_id,frequency", limit: 200,
       }, 2)),
+      // Same-length window just before, for change-over-time.
+      settle("Previous period account performance", warnings, graph.get<{ data?: Row[] }>(`${id}/insights`, {
+        level: "account", time_range: previousRange, fields: insightFields,
+      })),
+      settle("Previous period campaign performance", warnings, paged(graph, `${id}/insights`, {
+        level: "campaign", time_range: previousRange, fields: `campaign_id,${insightFields}`, limit: 200,
+      }, 2)),
+      settle("Previous period ad set performance", warnings, paged(graph, `${id}/insights`, {
+        level: "adset", time_range: previousRange, fields: `adset_id,${insightFields}`, limit: 200,
+      }, 3)),
     ]);
 
   const byKey = (rows: Row[] | null, key: string) => new Map((rows ?? []).map((r) => [String(r[key] ?? ""), r]));
@@ -323,6 +357,10 @@ export async function fetchMetaAuditSnapshot(
   const adSetPerf = byKey(adSetIns, "adset_id");
   const adPerf = byKey(adIns, "ad_id");
   const weekFrequency = byKey(adSetWeek, "adset_id");
+  const previousCampaignPerf = byKey(previousCampaignIns, "campaign_id");
+  const previousAdSetPerf = byKey(previousAdSetIns, "adset_id");
+  // Only compare when the previous window actually loaded.
+  const hasPrevious = previousCampaignIns != null;
 
   const auditAdSets: AuditAdSet[] = (adSets ?? []).map((a) => {
     const promoted = (a.promoted_object ?? {}) as Row;
@@ -356,6 +394,7 @@ export async function fetchMetaAuditSnapshot(
       countries: Array.isArray(geo.countries) ? (geo.countries as string[]) : [],
       frequency7d: weekFrequency.has(String(a.id)) ? num(weekFrequency.get(String(a.id))!.frequency) : null,
       performance: performanceFrom(adSetPerf.get(String(a.id))),
+      ...(previousAdSetIns != null ? { previousPerformance: performanceFrom(previousAdSetPerf.get(String(a.id))) } : {}),
     };
   });
 
@@ -417,6 +456,7 @@ export async function fetchMetaAuditSnapshot(
     },
     period: { days, since, until },
     totals: performanceFrom(totals?.data?.[0]),
+    ...(hasPrevious ? { previousPeriod, previousTotals: performanceFrom(previousTotals?.data?.[0]) } : {}),
     pixels: auditPixels,
     customConversions: (customConversions ?? []).map((c) => ({
       id: String(c.id),
@@ -455,6 +495,7 @@ export async function fetchMetaAuditSnapshot(
       specialAdCategories: Array.isArray(c.special_ad_categories) ? (c.special_ad_categories as string[]) : [],
       createdTime: str(c.created_time),
       performance: performanceFrom(campaignPerf.get(String(c.id))),
+      ...(hasPrevious ? { previousPerformance: performanceFrom(previousCampaignPerf.get(String(c.id))) } : {}),
     })),
     adSets: auditAdSets,
     ads: (ads ?? []).map((a) => {
@@ -529,6 +570,13 @@ export function scopeAuditSnapshot(snap: MetaAuditSnapshot, campaignIds: string[
     adSets: snap.adSets.filter((a) => ids.has(a.campaignId)),
     ads: snap.ads.filter((a) => ids.has(a.campaignId)),
     totals: sumPerformance(campaigns.map((c) => c.performance).filter((p): p is PeriodPerformance => p != null)),
+    ...(snap.previousPeriod
+      ? {
+          previousTotals: sumPerformance(
+            campaigns.map((c) => c.previousPerformance).filter((p): p is PeriodPerformance => p != null),
+          ),
+        }
+      : {}),
     placements: [],
     scope: { campaigns: campaigns.map((c) => ({ id: c.id, name: c.name })) },
   };
@@ -594,6 +642,8 @@ export function demoMetaAuditSnapshot(accountId: string, accountName: string, da
     },
     period: { days, since, until },
     totals: perf(388_000, 92, 2.6, 0.92),
+    previousPeriod: previousPeriodOf(since, until),
+    previousTotals: perf(360_000, 80, 2.4, 0.95),
     pixels: [
       {
         id: "demo_pixel_1",
@@ -612,13 +662,13 @@ export function demoMetaAuditSnapshot(accountId: string, accountName: string, da
       { id: "aud_lal", name: "Lookalike (AU, 1%) - Customers", subtype: "LOOKALIKE", sizeLower: 190_000, ready: true, problem: null },
     ],
     campaigns: [
-      { id: "demo_campaign_1", name: "Implants | Leads | Broad | Oct", objective: "OUTCOME_LEADS", status: "ACTIVE", bidStrategy: null, dailyBudgetCents: null, lifetimeBudgetCents: null, advantagePlus: false, specialAdCategories: [], createdTime: old, performance: perf(178_000, 49, 2.2, 1.02) },
-      { id: "demo_campaign_2", name: "Veneers Advantage+", objective: "OUTCOME_LEADS", status: "ACTIVE", bidStrategy: "COST_CAP", dailyBudgetCents: 7_000, lifetimeBudgetCents: null, advantagePlus: true, specialAdCategories: [], createdTime: old, performance: perf(134_000, 29, 4.4, 0.61) },
-      { id: "demo_campaign_3", name: "Brand | Retargeting | Visitors", objective: "OUTCOME_LEADS", status: "ACTIVE", bidStrategy: null, dailyBudgetCents: null, lifetimeBudgetCents: null, advantagePlus: false, specialAdCategories: [], createdTime: old, performance: perf(76_000, 14, 5.1, 0.88) },
+      { id: "demo_campaign_1", name: "Implants | Leads | Broad | Oct", objective: "OUTCOME_LEADS", status: "ACTIVE", bidStrategy: null, dailyBudgetCents: null, lifetimeBudgetCents: null, advantagePlus: false, specialAdCategories: [], createdTime: old, performance: perf(178_000, 49, 2.2, 1.02), previousPerformance: perf(150_000, 40, 2.0, 1.05) },
+      { id: "demo_campaign_2", name: "Veneers Advantage+", objective: "OUTCOME_LEADS", status: "ACTIVE", bidStrategy: "COST_CAP", dailyBudgetCents: 7_000, lifetimeBudgetCents: null, advantagePlus: true, specialAdCategories: [], createdTime: old, performance: perf(134_000, 29, 4.4, 0.61), previousPerformance: perf(120_000, 30, 3.8, 0.7) },
+      { id: "demo_campaign_3", name: "Brand | Retargeting | Visitors", objective: "OUTCOME_LEADS", status: "ACTIVE", bidStrategy: null, dailyBudgetCents: null, lifetimeBudgetCents: null, advantagePlus: false, specialAdCategories: [], createdTime: old, performance: perf(76_000, 14, 5.1, 0.88), previousPerformance: perf(90_000, 10, 4.6, 0.95) },
     ],
     adSets: [
-      adSet("as_1", "Implants – Broad AU 30-65", "demo_campaign_1", { performance: perf(118_000, 38, 2.1, 1.1) }),
-      adSet("as_2", "Implants – Interests: dental", "demo_campaign_1", { learningStatus: "FAIL", dailyBudgetCents: 2_000, performance: perf(60_000, 11, 2.4, 0.9) }),
+      adSet("as_1", "Implants – Broad AU 30-65", "demo_campaign_1", { performance: perf(118_000, 38, 2.1, 1.1), previousPerformance: perf(150_000, 40, 2.0, 1.05) }),
+      adSet("as_2", "Implants – Interests: dental", "demo_campaign_1", { learningStatus: "FAIL", dailyBudgetCents: 2_000, performance: perf(60_000, 11, 2.4, 0.9), previousPerformance: null }),
       adSet("as_3", "Veneers – Advantage+ audience", "demo_campaign_2", { dailyBudgetCents: null, bidStrategy: "COST_CAP", attributionWindows: ["7d_click"], publisherPlatforms: ["instagram"], frequency7d: 3.9, performance: perf(134_000, 29, 4.4, 0.61) }),
       adSet("as_4", "Retargeting – Website visitors 30d", "demo_campaign_3", { includedAudienceIds: ["aud_web30"], frequency7d: 4.2, performance: perf(76_000, 14, 5.1, 0.88) }),
     ],

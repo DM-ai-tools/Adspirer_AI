@@ -4,6 +4,7 @@ import { getDemoStore } from "@/lib/demo/store";
 import { createPendingApproval } from "@/lib/approvals/service";
 import type { CreativeDraft } from "@/lib/creatives/drafts";
 import { getTaskById } from "@/lib/workflow/state";
+import { normalizeCallToAction } from "@/lib/meta/targeting-builder";
 import {
   targetingSelectionToCreateArgs,
   type CampaignTargetingSelection,
@@ -50,24 +51,14 @@ function truncate(value: string, max: number): string {
   return value.length > max ? `${value.slice(0, max - 1).trimEnd()}…` : value;
 }
 
-/** CTAs Adspirer accepts for create_meta_image_campaign. */
-const META_CTAS = new Set([
-  "LEARN_MORE",
-  "SHOP_NOW",
-  "SIGN_UP",
-  "DOWNLOAD",
-  "BOOK_TRAVEL",
-  "CONTACT_US",
-  "GET_QUOTE",
-  "SUBSCRIBE",
-  "WATCH_MORE",
-]);
-
 /** "Book Now" → BOOK_NOW; anything Meta doesn't accept falls back to LEARN_MORE. */
-function toMetaCta(label: string | null | undefined): string | undefined {
+export function toMetaCta(label: string | null | undefined): string | undefined {
   if (!label) return undefined;
-  const candidate = label.trim().toUpperCase().replace(/[\s-]+/g, "_");
-  return META_CTAS.has(candidate) ? candidate : "LEARN_MORE";
+  try {
+    return normalizeCallToAction(label) ?? "LEARN_MORE";
+  } catch {
+    return "LEARN_MORE";
+  }
 }
 
 /**

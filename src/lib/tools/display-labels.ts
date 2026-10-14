@@ -36,6 +36,10 @@ const TOOL_LABELS: Record<string, string> = {
   create_adset: "Create ad set",
   create_ad: "Create ad",
   pause_ad: "Pause ad",
+  resume_ad: "Resume ad",
+  update_campaign_budget: "Update campaign budget",
+  pause_adset: "Pause ad set",
+  resume_adset: "Resume ad set",
 };
 
 /** Progress labels while a diagnose tool is running (keep task-style wording). */
@@ -69,6 +73,10 @@ const TOOL_PROGRESS_LABELS: Record<string, string> = {
   create_adset: "Preparing ad set create…",
   create_ad: "Preparing ad create…",
   pause_ad: "Preparing ad pause…",
+  resume_ad: "Preparing ad resume…",
+  update_campaign_budget: "Preparing campaign budget update…",
+  pause_adset: "Preparing ad set pause…",
+  resume_adset: "Preparing ad set resume…",
 };
 
 function titleFromSnake(name: string): string {

@@ -107,6 +107,23 @@ export function effectiveDailyBudgetCents(
 }
 
 /**
+ * Daily spend a resumed campaign restarts: its campaign budget, or (when its
+ * ad sets hold the budgets) the sum of its live ad sets' daily budgets.
+ * null when neither is known (e.g. a lifetime budget).
+ */
+export function campaignDailySpendCents(
+  campaign: { id: string; daily_budget_cents?: number } | undefined,
+  adsets: Array<{ campaign_id: string; status: string; daily_budget_cents: number }>,
+): number | null {
+  if (!campaign) return null;
+  if (campaign.daily_budget_cents && campaign.daily_budget_cents > 0) return campaign.daily_budget_cents;
+  const total = adsets
+    .filter((a) => a.campaign_id === campaign.id && a.status === "ACTIVE")
+    .reduce((sum, a) => sum + (a.daily_budget_cents > 0 ? a.daily_budget_cents : 0), 0);
+  return total > 0 ? total : null;
+}
+
+/**
  * Budget impact (cents/day) derived from the final args — never trusted from
  * the client or the LLM, so an edit cannot understate it.
  */
@@ -114,7 +131,12 @@ export function computeBudgetImpactCents(
   toolName: string,
   args: Record<string, unknown>,
 ): number | null {
-  if (toolName === "update_adset_budget") {
+  // Resuming starts spend: the entity's whole daily budget is the impact.
+  if (toolName === "resume_campaign" || toolName === "resume_adset") {
+    const daily = numericArg(args, "daily_budget_cents");
+    return daily != null ? Math.round(daily) : null;
+  }
+  if (toolName === "update_adset_budget" || toolName === "update_campaign_budget") {
     const next = numericArg(args, "daily_budget_cents");
     if (next == null) return null;
     const prev = numericArg(args, "previous_daily_budget_cents") ?? 0;

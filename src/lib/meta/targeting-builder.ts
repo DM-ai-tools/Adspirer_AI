@@ -223,6 +223,7 @@ export function buildMetaTargeting(input: {
   genders?: string[];
   locations?: unknown[];
   publisher_platforms?: string[];
+  special_ad_categories?: string[];
   extra_args?: Record<string, unknown>;
 }): Record<string, unknown> {
   const extra = input.extra_args ?? {};
@@ -261,9 +262,17 @@ export function buildMetaTargeting(input: {
   applyPublisherPlatforms(targeting, platforms, extra);
 
   // Meta requires an explicit Advantage+ audience choice on new ad sets.
-  // Off (0) unless the proposal asks for it.
+  // On by default (Meta's recommended setup); off when the proposal says so,
+  // or when its settings are hard controls Advantage+ audience can't keep:
+  // an age range narrower than up-to-25…65, or a Special Ad Category.
+  const conflicts =
+    (typeof input.age_min === "number" && input.age_min > 25) ||
+    (typeof input.age_max === "number" && input.age_max < 65) ||
+    (input.special_ad_categories ?? []).some((c) => c && c !== "NONE");
+  const asked = extra.advantage_audience;
   targeting.targeting_automation = {
-    advantage_audience: isTruthyFlag(extra.advantage_audience) ? 1 : 0,
+    advantage_audience:
+      asked == null || asked === "" ? (conflicts ? 0 : 1) : isTruthyFlag(asked) ? 1 : 0,
   };
 
   return targeting;
@@ -308,6 +317,29 @@ function resolvePixelId(input: {
   return direct ?? fromExtra;
 }
 
+/** Why a Sales or Leads ad set can't be created, in words the operator can act on. */
+export function missingConversionSourceMessage(objective: string, toolName?: string): string {
+  // An ad set inherits its campaign's objective, so switching objective is no fix there.
+  if (toolName === "create_adset") {
+    return objective.toUpperCase() === "OUTCOME_LEADS"
+      ? "An ad set in a Leads campaign needs a pixel or an instant form (pixel_id or lead_form_id) — use the one the campaign's other ad sets optimise for."
+      : "An ad set in a Sales campaign needs a pixel (pixel_id) — use the one the campaign's other ad sets optimise for.";
+  }
+  return objective.toUpperCase() === "OUTCOME_LEADS"
+    ? "A Leads campaign needs a pixel or an instant form (pixel_id or lead_form_id) — without one Meta can only optimise for link clicks. Add one, or use the Traffic objective."
+    : "A Sales campaign needs a pixel (pixel_id) — without one Meta can only optimise for link clicks. Add the pixel, or use the Traffic objective.";
+}
+
+/** Sales/Leads proposal with no pixel and no instant form. */
+export function lacksConversionSource(args: Record<string, unknown>): boolean {
+  const objective = typeof args.objective === "string" ? args.objective.toUpperCase() : "";
+  if (objective !== "OUTCOME_SALES" && objective !== "OUTCOME_LEADS") return false;
+  if (resolvePixelId({ pixel_id: typeof args.pixel_id === "string" ? args.pixel_id : undefined, extra_args: args })) {
+    return false;
+  }
+  return !(objective === "OUTCOME_LEADS" && resolveLeadFormId({ extra_args: args }));
+}
+
 export function optimizationForObjective(
   objective?: string,
   options?: { pixel_id?: string; extra_args?: Record<string, unknown> },
@@ -336,10 +368,9 @@ export function optimizationForObjective(
           billing_event: "IMPRESSIONS",
         };
       }
-      return {
-        optimization_goal: "LINK_CLICKS",
-        billing_event: "IMPRESSIONS",
-      };
+      // Never quietly optimise a Sales/Leads campaign for link clicks: it
+      // spends like a traffic campaign while reporting zero results.
+      throw new Error(missingConversionSourceMessage(upper));
     case "OUTCOME_ENGAGEMENT":
       return {
         optimization_goal: "POST_ENGAGEMENT",
