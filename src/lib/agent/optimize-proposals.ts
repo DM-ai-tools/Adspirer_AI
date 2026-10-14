@@ -1,5 +1,7 @@
 import type { MetaAdsProvider, MetaAdCreative, MetaCampaign, MetaAdSet } from "@/lib/adspirer/provider";
 import type { AgentToolCallProposal } from "@/lib/agent/adspirer-agent";
+import { adSetsWithSilentTracking } from "@/lib/audit/checkpoints";
+import type { MetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
 import {
   mergeExecuteProposals,
   proposalsFromOptimizeStructured,
@@ -12,6 +14,48 @@ export type OptimizeProposalBundle = {
   /** Items that need operator input before Approvals. */
   blockedLines: string[];
 };
+
+/**
+ * Budget increases on ad sets whose optimisation event wasn't recorded this
+ * week only buy unmeasured traffic, so they are held back — for a campaign
+ * budget, when any of its ad sets is silent. Decreases and pauses pass.
+ */
+export function holdIncreasesOnSilentTracking(
+  proposals: AgentToolCallProposal[],
+  snapshot: MetaAuditSnapshot | null,
+): { kept: AgentToolCallProposal[]; heldLines: string[]; heldIds: string[] } {
+  const silent = snapshot ? adSetsWithSilentTracking(snapshot) : new Map<string, string>();
+  const kept: AgentToolCallProposal[] = [];
+  const heldLines: string[] = [];
+  const heldIds: string[] = [];
+  for (const proposal of proposals) {
+    const next = Number(proposal.args.daily_budget_cents);
+    const prev = Number(proposal.args.previous_daily_budget_cents);
+    const isIncrease = Number.isFinite(next) && Number.isFinite(prev) && next > prev;
+    const adSetId = typeof proposal.args.adset_id === "string" ? proposal.args.adset_id : null;
+    const campaignId = typeof proposal.args.campaign_id === "string" ? proposal.args.campaign_id : null;
+
+    if (isIncrease && proposal.name === "update_adset_budget" && adSetId && silent.has(adSetId)) {
+      heldLines.push(
+        `- Held back: budget increase on ad set ${adSetId} — its optimisation event (${silent.get(adSetId)}) wasn't recorded in the last 7 days. Fix tracking first, then scale.`,
+      );
+      heldIds.push(adSetId);
+      continue;
+    }
+    if (isIncrease && proposal.name === "update_campaign_budget" && campaignId && snapshot) {
+      const quiet = snapshot.adSets.find((a) => a.campaignId === campaignId && silent.has(a.id));
+      if (quiet) {
+        heldLines.push(
+          `- Held back: budget increase on campaign ${campaignId} — ad set ${quiet.name} (${quiet.id}) recorded no ${silent.get(quiet.id)} events in the last 7 days. Fix tracking first, then scale.`,
+        );
+        heldIds.push(campaignId);
+        continue;
+      }
+    }
+    kept.push(proposal);
+  }
+  return { kept, heldLines, heldIds };
+}
 
 function isHttpsUrl(value: string | null | undefined): value is string {
   return Boolean(value && /^https?:\/\//i.test(value.trim()));

@@ -3,7 +3,7 @@ import {
   asksAboutDeliveryStructure,
   gatherDeliveryStructure,
 } from "@/lib/agent/delivery-structure";
-import { adSetsWithSilentTracking, evaluateCheckpoints } from "@/lib/audit/checkpoints";
+import { evaluateCheckpoints } from "@/lib/audit/checkpoints";
 import { scopeAuditSnapshot } from "@/lib/audit/meta-audit-data";
 import {
   renderAdSetEvidence,
@@ -37,7 +37,7 @@ import {
 import {
   wantsQueueApprovals,
 } from "@/lib/agent/optimize-queue";
-import { buildFullOptimizeProposals } from "@/lib/agent/optimize-proposals";
+import { buildFullOptimizeProposals, holdIncreasesOnSilentTracking } from "@/lib/agent/optimize-proposals";
 import {
   buildAuditClarifyingQuestion,
   resolveAuditBrief,
@@ -2815,25 +2815,11 @@ export async function gatherDiagnoseEvidence(input: {
       );
 
       const snapshot = await snapshotPromise;
-      const silent = snapshot ? adSetsWithSilentTracking(snapshot) : new Map<string, string>();
-      const held = new Set<string>();
-      for (const proposal of bundle.proposals) {
-        const adSetId = typeof proposal.args.adset_id === "string" ? proposal.args.adset_id : null;
-        const next = Number(proposal.args.daily_budget_cents);
-        const prev = Number(proposal.args.previous_daily_budget_cents);
-        const isIncrease =
-          proposal.name === "update_adset_budget" && Number.isFinite(next) && Number.isFinite(prev) && next > prev;
-        if (isIncrease && adSetId && silent.has(adSetId)) {
-          bundle.blockedLines.push(
-            `- Held back: budget increase on ad set ${adSetId} — its optimisation event (${silent.get(adSetId)}) wasn't recorded in the last 7 days. Fix tracking first, then scale.`,
-          );
-          held.add(adSetId);
-          continue;
-        }
-        executeProposals.push(proposal);
-      }
+      const hold = holdIncreasesOnSilentTracking(bundle.proposals, snapshot);
+      executeProposals.push(...hold.kept);
+      bundle.blockedLines.push(...hold.heldLines);
       const queueableLines = bundle.queueableLines.filter(
-        (line) => ![...held].some((id) => line.includes(id)),
+        (line) => !hold.heldIds.some((id) => line.includes(id)),
       );
       if (snapshot) {
         sections.push(renderOptimisationSignals(evaluateCheckpoints(snapshot)));
