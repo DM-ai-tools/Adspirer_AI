@@ -491,6 +491,15 @@ export function ApprovalCard({
       </CardHeader>
 
       <CardContent className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <Badge variant={approval.risk_level === "low" ? "secondary" : approval.risk_level === "medium" ? "warning" : "danger"}>
+            {approval.risk_level === "low" ? "Low risk" : approval.risk_level === "medium" ? "Medium risk" : "High risk"}
+          </Badge>
+          {approval.risk_level === "high" || approval.risk_level === "critical" ? (
+            <span className="text-muted">Needs an admin to approve.</span>
+          ) : null}
+          {approval.risk_reason ? <span className="text-muted">{approval.risk_reason}</span> : null}
+        </div>
         {approval.rationale ? (
           <p className="text-sm text-foreground/90">{approval.rationale}</p>
         ) : null}

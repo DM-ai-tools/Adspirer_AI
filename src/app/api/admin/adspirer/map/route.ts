@@ -70,6 +70,7 @@ export async function POST(request: Request) {
           budget_ceiling_cents: config.BUDGET_CEILING_DEFAULT_CENTS,
           currency: account.currency ?? "USD",
           notes: `Created from Meta account ${account.meta_account_id}`,
+          goals_profile: {},
           is_demo: true,
           created_by: user.id,
           created_at: ts,

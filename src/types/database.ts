@@ -1,3 +1,4 @@
+import type { GoalsProfile } from "@/lib/clients/goals";
 /**
  * Domain types aligned with the CampaignForge database schema.
  * All timestamps are ISO-8601 strings unless noted.
@@ -82,6 +83,8 @@ export interface Client {
   budget_ceiling_cents: number | null;
   currency: string;
   notes: string | null;
+  /** Targets and guardrails (see src/lib/clients/goals.ts). */
+  goals_profile: GoalsProfile;
   is_demo: boolean;
   created_by: string | null;
   created_at: string;
@@ -157,6 +160,9 @@ export interface Approval {
   status: ApprovalStatus;
   rationale: string | null;
   budget_impact_cents: number | null;
+  /** From src/lib/approvals/risk.ts; high needs an admin to approve. */
+  risk_level: "low" | "medium" | "high" | "critical";
+  risk_reason: string | null;
   idempotency_key: string;
   requested_by: string | null;
   reviewed_by: string | null;

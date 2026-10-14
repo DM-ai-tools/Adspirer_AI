@@ -1528,6 +1528,32 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     };
   }
 
+  async getEntityState(
+    accountId: string,
+    entityType: "campaign" | "adset" | "ad",
+    entityId: string,
+  ): Promise<{ status: string; daily_budget_cents?: number | null } | null> {
+    let row: { account_id?: unknown; status?: unknown; daily_budget?: unknown };
+    try {
+      row = await this.graph.get(entityId, {
+        fields: entityType === "ad" ? "account_id,status" : "account_id,status,daily_budget",
+      });
+    } catch (error) {
+      // Missing is an answer; anything else (outage, auth) must fail closed.
+      if (error instanceof Error && /does not exist/i.test(error.message)) return null;
+      throw error;
+    }
+    const owner = row.account_id != null && String(row.account_id).trim() ? normalizeAccountId(String(row.account_id)) : null;
+    if (owner !== normalizeAccountId(accountId)) return null;
+    const status = String(row.status ?? "");
+    if (entityType === "ad") return { status };
+    const minor = Number(row.daily_budget ?? 0);
+    return {
+      status,
+      daily_budget_cents: minor > 0 ? metaMinorToCents(minor, await this.accountCurrency(accountId)) : null,
+    };
+  }
+
   async pauseAd(accountId: string, adId: string) {
     return this.setAdStatus(accountId, adId, "PAUSED");
   }

@@ -17,6 +17,8 @@ import { ErrorState } from "@/components/shared/error-state";
 import { StatCard } from "@/components/shared/stat-card";
 import { ClientStatusBadge } from "@/components/clients/client-status-badge";
 import { ApprovalCard } from "@/components/approvals/approval-card";
+import { GoalsProfileForm } from "@/components/clients/goals-profile-form";
+import { ChangeLogCard } from "@/components/clients/change-log-card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -68,8 +70,8 @@ export default function ClientDetailPage() {
           ),
           apiFetch<{ tasks: Task[] }>(`/api/tasks?clientId=${clientId}`),
           apiFetch<{
-            findings: MonitoringFinding[];
-            recommendations: Recommendation[];
+            findings?: MonitoringFinding[];
+            recommendations?: Recommendation[];
             accountUpdates?: AccountUpdate[];
           }>(`/api/monitoring/${clientId}`),
         ]);
@@ -77,8 +79,10 @@ export default function ClientDetailPage() {
       setClient(clientRes.client);
       setApprovals(approvalsRes.approvals);
       setTasks(tasksRes.tasks);
-      setFindings(monitoringRes.findings);
-      setRecommendations(monitoringRes.recommendations);
+      // The monitoring API returns health alerts, not findings, since it was
+      // rebuilt; missing lists are empty rather than a crash.
+      setFindings(monitoringRes.findings ?? []);
+      setRecommendations(monitoringRes.recommendations ?? []);
       setAccountUpdates(monitoringRes.accountUpdates ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load client");
@@ -400,7 +404,8 @@ export default function ClientDetailPage() {
           )}
         </TabsContent>
 
-        <TabsContent value="audit">
+        <TabsContent value="audit" className="space-y-4">
+          <ChangeLogCard clientId={client.id} currency={client.currency} />
           <Card>
             <CardContent className="flex items-center justify-between gap-4 p-6">
               <div>
@@ -416,7 +421,8 @@ export default function ClientDetailPage() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="settings">
+        <TabsContent value="settings" className="space-y-4">
+          <GoalsProfileForm client={client} onSaved={setClient} />
           <Card>
             <CardContent className="p-6">
               <form className="space-y-4" onSubmit={saveSettings}>

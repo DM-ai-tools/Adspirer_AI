@@ -249,6 +249,12 @@ describe("new execute actions", () => {
   });
 
   it("executes a campaign budget change with proof", async () => {
+    // Start from the seeded 8,000 — the live budget is what the approval measures from.
+    await getProviderForBackend(null).updateCampaignBudget({
+      account_id: ACCOUNT,
+      campaign_id: "camp_mdc_npl",
+      daily_budget_cents: 8000,
+    });
     const { pending, approval } = await run("update_campaign_budget", {
       account_id: ACCOUNT,
       campaign_id: "camp_mdc_npl",

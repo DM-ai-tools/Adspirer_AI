@@ -10,6 +10,10 @@ import {
   assertWithinBudgetCeiling,
 } from "@/lib/approvals/validator";
 import { prepareApprovalArgs } from "@/lib/approvals/validate-args";
+import { assessRisk } from "@/lib/approvals/risk";
+import { assertMayApprove } from "@/lib/approvals/approver";
+import { withLiveBefore } from "@/lib/approvals/live-state";
+import { resolveProvider } from "@/lib/adspirer/client";
 import { AuthorizationError, DuplicateExecutionError } from "@/lib/errors";
 import { addHoursIso, nowIso } from "@/lib/utils";
 import { logger } from "@/lib/observability/logger";
@@ -133,11 +137,13 @@ export async function createPendingApproval(input: {
   const prepared = await prepareApprovalArgs({
     toolName: input.toolName,
     clientId: input.clientId,
-    args: input.proposedArgs,
+    // The live budget/status replaces whatever the proposal assumed.
+    args: await withLiveBefore(input.toolName, input.proposedArgs, resolveProvider),
     client,
     allowIncomplete: true,
   });
   const proposedArgs = prepared.args;
+  const risk = assessRisk(input.toolName, proposedArgs, client);
   const budgetImpactCents =
     prepared.budgetImpactCents ?? input.budgetImpactCents ?? null;
   if (prepared.budgetImpactCents == null && input.budgetImpactCents != null) {
@@ -190,6 +196,8 @@ export async function createPendingApproval(input: {
     status: "pending",
     rationale: input.rationale ?? null,
     budget_impact_cents: budgetImpactCents,
+    risk_level: risk.level,
+    risk_reason: risk.reason,
     idempotency_key: idempotencyKey,
     requested_by: input.requestedBy ?? null,
     reviewed_by: null,
@@ -286,7 +294,7 @@ export async function edit(input: {
   const prepared = await prepareApprovalArgs({
     toolName: approval.tool_name,
     clientId: approval.client_id,
-    args: { ...input.editedArgs, ...carried },
+    args: await withLiveBefore(approval.tool_name, { ...input.editedArgs, ...carried }, resolveProvider),
     client,
   });
 
@@ -296,6 +304,10 @@ export async function edit(input: {
     status: "edited",
     edited_args: prepared.args,
     budget_impact_cents: prepared.budgetImpactCents,
+    ...(() => {
+      const risk = assessRisk(approval.tool_name, prepared.args, client);
+      return { risk_level: risk.level, risk_reason: risk.reason };
+    })(),
     // The previous failure no longer describes these args.
     execution_error: null,
     reviewed_by: input.reviewedBy,
@@ -322,6 +334,7 @@ async function transitionApproval(
   if (!reviewedBy) {
     throw new AuthorizationError("reviewedBy is required");
   }
+  if (to === "approved") await assertMayApprove(approval, reviewedBy);
 
   const ts = nowIso();
   const updated: Approval = {
