@@ -558,6 +558,10 @@ const CAMPAIGN_PASSTHROUGH_KEYS = [
   "destination_type",
   "dsa_beneficiary",
   "dsa_payor",
+  "bid_strategy",
+  "bid_amount",
+  "roas_average_floor",
+  "attribution",
 ] as const;
 
 function collectPassthrough(

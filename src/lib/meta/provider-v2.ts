@@ -27,6 +27,7 @@ import {
 import { resolvePromotePageId, formatMissingPageHelp } from "@/lib/meta/resolve-page";
 import { logger } from "@/lib/observability/logger";
 import { centsToMetaMinor, metaMinorToCents } from "@/lib/meta/currency";
+import { ATTRIBUTION_SPEC, BID_STRATEGIES, DEFAULT_URL_TAGS } from "@/lib/meta/conventions";
 import { ExecutionVerificationError } from "@/lib/errors";
 import { assessFatigue } from "@/lib/creative/fatigue";
 import {
@@ -185,6 +186,43 @@ function mergeCampaignExtra(
       ? { pixel_event_name: input.pixel_event_name }
       : {}),
   };
+}
+
+/**
+ * Bid strategy for a new campaign/ad set, validated before any POST. Under a
+ * campaign budget the strategy sits on the campaign; the cap or ROAS floor
+ * always sits on the ad set. A minimum-ROAS bid optimises for purchase value.
+ */
+function bidPlan(
+  extra: Record<string, unknown>,
+  objective: string | undefined,
+  currency: string,
+): { strategy: string; adset: Record<string, string>; valueGoal: boolean } {
+  const strategy = (optionalText(extra.bid_strategy) ?? "LOWEST_COST_WITHOUT_CAP").toUpperCase();
+  if (!(BID_STRATEGIES as readonly string[]).includes(strategy)) {
+    throw new Error(`Unknown bid_strategy "${strategy}" — use one of ${BID_STRATEGIES.join(", ")}. Nothing was created.`);
+  }
+  const adset: Record<string, string> = {};
+  if (strategy === "COST_CAP" || strategy === "LOWEST_COST_WITH_BID_CAP") {
+    const amount = positiveNumber(extra.bid_amount);
+    if (amount == null) {
+      throw new Error(
+        `${strategy === "COST_CAP" ? "A cost cap" : "A bid cap"} needs bid_amount (major units, e.g. 30 for 30 per result). Nothing was created.`,
+      );
+    }
+    adset.bid_amount = String(centsToMetaMinor(Math.round(amount * 100), currency));
+  }
+  if (strategy === "LOWEST_COST_WITH_MIN_ROAS") {
+    if ((objective ?? "").toUpperCase() !== "OUTCOME_SALES") {
+      throw new Error("A minimum ROAS bid only works for Sales campaigns that optimise for purchase value. Nothing was created.");
+    }
+    const floor = positiveNumber(extra.roas_average_floor);
+    if (floor == null) {
+      throw new Error("A minimum ROAS bid needs roas_average_floor (e.g. 2.5 for 2.5×). Nothing was created.");
+    }
+    adset.bid_constraints = JSON.stringify({ roas_average_floor: Math.round(floor * 10_000) });
+  }
+  return { strategy, adset, valueGoal: strategy === "LOWEST_COST_WITH_MIN_ROAS" };
 }
 
 export class MetaGraphProviderV2 implements MetaAdsProvider {
@@ -1105,6 +1143,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       : daily != null
         ? { daily_budget_cents: campaignBudgetCents }
         : { lifetime_budget_cents: campaignBudgetCents };
+    const bids = bidPlan(adSetInput.extra_args ?? {}, objective, currency);
 
     // A recorded campaign must still exist in this account; never re-create it.
     if (progress.campaign_id) {
@@ -1146,6 +1185,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
           status: "PAUSED",
           special_ad_categories: input.special_ad_categories,
           ...campaignBudget,
+          ...(useCbo ? { bid_strategy: bids.strategy } : {}),
         }),
       );
       await record({ campaign_id: campaign.id });
@@ -1240,10 +1280,11 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     const leadFormId = input.lead_form_id ?? resolveLeadFormId({ extra_args: extra });
     if (leadFormId) extra.lead_form_id = leadFormId;
 
-    const { optimization_goal, billing_event } = optimizationForObjective(
-      objective,
-      { pixel_id: input.pixel_id, extra_args: extra },
-    );
+    const currencyForBids = campaign.currency ?? (await this.requireAccountCurrency(accountId));
+    const bids = bidPlan(extra, objective, currencyForBids);
+    const resolved = optimizationForObjective(objective, { pixel_id: input.pixel_id, extra_args: extra });
+    const billing_event = resolved.billing_event;
+    const optimization_goal = bids.valueGoal ? "VALUE" : resolved.optimization_goal;
     // Throws a clear error when no location was given (never defaults to US).
     const targeting = buildMetaTargeting({
       age_min: input.age_min,
@@ -1299,7 +1340,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       if (lifetime != null) assertFutureEndTime(input.end_time, true);
       const currency =
         campaign.currency ?? (await this.requireAccountCurrency(accountId));
-      body.bid_strategy = "LOWEST_COST_WITHOUT_CAP";
+      body.bid_strategy = bids.strategy;
       if (daily != null) {
         dailyCents = budgetToMinorUnits(daily) ?? 0;
         body.daily_budget = this.budgetMinor(dailyCents, currency, "Ad set daily budget");
@@ -1320,6 +1361,12 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     const dsaPayor = optionalText(extra.dsa_payor);
     if (dsaPayor) body.dsa_payor = dsaPayor;
     if (promoted) body.promoted_object = JSON.stringify(promoted);
+    Object.assign(body, bids.adset);
+    // Attribution applies where Meta optimises for a conversion.
+    const attribution = optionalText(extra.attribution);
+    if (attribution && ATTRIBUTION_SPEC[attribution] && (optimization_goal === "OFFSITE_CONVERSIONS" || optimization_goal === "VALUE")) {
+      body.attribution_spec = JSON.stringify(ATTRIBUTION_SPEC[attribution]);
+    }
 
     return {
       body,
@@ -1490,7 +1537,10 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
         name: input.name ?? "Creative",
         object_story_spec: JSON.stringify(storySpec),
       };
-      if (input.url_tags) creativeBody.url_tags = input.url_tags;
+      // Standard UTMs unless the operator set their own or the link has them.
+      const urlTags =
+        input.url_tags ?? (leadFormId || /[?&]utm_/i.test(input.landing_page_url) ? undefined : DEFAULT_URL_TAGS);
+      if (urlTags) creativeBody.url_tags = urlTags;
 
       const creative = await step("Create ad creative", () =>
         this.graph.post<{ id: string }>(`${accountId}/adcreatives`, creativeBody),

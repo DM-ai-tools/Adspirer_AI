@@ -1,3 +1,5 @@
+import { adNameByConvention, adSetNameByConvention } from "@/lib/meta/conventions";
+import { resolveGoals, type GoalsProfile } from "@/lib/clients/goals";
 import type { Client } from "@/types";
 import { ApprovalValidationError, isAppError } from "@/lib/errors";
 import { getExecuteToolSchema } from "@/lib/tools/execute/schemas";
@@ -70,6 +72,8 @@ const NUMERIC_KEYS: Record<string, "int" | "decimal"> = {
   budget_lifetime: "decimal",
   age_min: "int",
   age_max: "int",
+  bid_amount: "decimal",
+  roas_average_floor: "decimal",
 };
 
 const BOOLEAN_KEYS = ["campaign_budget_optimization"];
@@ -276,11 +280,32 @@ export type PreparedApprovalArgs = {
  * checks the account is one of the client's granted Meta accounts, and
  * enforces the client budget ceiling on the coerced values.
  */
+/**
+ * Defaults shown on the approval card: the client's attribution setting and
+ * convention names for an ad set or ad the proposal left unnamed.
+ */
+function applyCreateDefaults(
+  toolName: string,
+  args: Record<string, unknown>,
+  client: { goals_profile?: GoalsProfile | null } | null,
+): void {
+  if (args.attribution == null && client) args.attribution = resolveGoals(client).attribution;
+  const format = optionalString(args.video_url) || optionalString(args.existing_video_id) || args.ad_type === "video" ? "Video" : "Image";
+  if (toolName === "create_meta_image_campaign" || toolName === "create_meta_video_campaign") {
+    if (!optionalString(args.ad_set_name)) args.ad_set_name = adSetNameByConvention(args);
+    if (!optionalString(args.ad_name)) args.ad_name = adNameByConvention(args, toolName === "create_meta_video_campaign" ? "Video" : format);
+  } else if (toolName === "create_adset" && !optionalString(args.name)) {
+    args.name = adSetNameByConvention(args);
+  } else if (toolName === "create_ad" && !optionalString(args.name) && !optionalString(args.ad_name)) {
+    args.name = adNameByConvention(args, format);
+  }
+}
+
 export async function prepareApprovalArgs(input: {
   toolName: string;
   clientId: string;
   args: Record<string, unknown>;
-  client?: Pick<Client, "id" | "budget_ceiling_cents" | "currency"> | null;
+  client?: (Pick<Client, "id" | "budget_ceiling_cents" | "currency"> & { goals_profile?: GoalsProfile | null }) | null;
   /**
    * Proposal time only: queue an approval whose only problem is missing
    * required values (e.g. a creative queued for the operator to add a budget
@@ -423,6 +448,7 @@ export async function prepareApprovalArgs(input: {
     ...data,
     ...internal,
   };
+  if (CREATE_TOOLS.has(toolName)) applyCreateDefaults(toolName, merged, input.client ?? null);
 
   const budgetImpactCents = computeBudgetImpactCents(toolName, merged);
   if (input.client) {

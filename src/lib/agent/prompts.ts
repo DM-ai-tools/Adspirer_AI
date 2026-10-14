@@ -109,8 +109,9 @@ Do not ask for budget, landing page, or creative until format is chosen. If they
 
 Then collect:
 1. Campaign objective (OUTCOME_TRAFFIC | OUTCOME_LEADS | OUTCOME_SALES | OUTCOME_ENGAGEMENT | OUTCOME_AWARENESS). OUTCOME_SALES needs a pixel (pixel_id); OUTCOME_LEADS needs a pixel (pixel_id) or an instant form (lead_form_id) — ask for it here. Without one the create is refused, never turned into a link-click campaign.
-2. Campaign name
+2. Campaign name — suggest one in the format Client_Objective_Audience_Geo_YYYYMM (e.g. ModernDental_Leads_Broad_AU_202610); use theirs if they give one. Ad set and ad names are filled in by convention (Audience_Geo, Concept_Format_Hook) — don't ask for them.
 3. Daily budget, in the ad account's currency (never assume USD)
+   Bid strategy: leave the default (highest volume, no cap) unless the client has a firm target. Then recommend a cost cap at 1.2–1.5× their target cost per result (bid_strategy COST_CAP, bid_amount in major units), or for Sales with a ROAS target a minimum ROAS (bid_strategy LOWEST_COST_WITH_MIN_ROAS, roas_average_floor e.g. 2.5). Attribution comes from the client's goals (default 7-day click, 1-day view); offer attribution "7d_click" for lead campaigns that want click-only credit. UTMs are added automatically.
 4. Landing page URL (required for brand analysis + create)
 5. Primary text + headline (or run Ad copy studio first). Headline is optional for video ads but recommended.
 6. **Advanced targeting (ad set)** — after the brief fields above, offer this once before creative:

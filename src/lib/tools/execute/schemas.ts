@@ -1,3 +1,5 @@
+import { BID_STRATEGIES } from "@/lib/meta/conventions";
+import { ATTRIBUTION_SETTINGS } from "@/lib/clients/goals";
 import { z } from "zod";
 
 /**
@@ -58,6 +60,12 @@ const targetingFields = {
   start_time: isoDate.optional(),
   end_time: isoDate.optional(),
   facebook_page_id: z.string().optional(),
+  bid_strategy: z.enum(BID_STRATEGIES).optional(),
+  /** Cost or bid cap, major units per result. */
+  bid_amount: z.number().positive().optional(),
+  /** Minimum ROAS, e.g. 2.5 for 2.5×. */
+  roas_average_floor: z.number().positive().optional(),
+  attribution: z.enum(ATTRIBUTION_SETTINGS).optional(),
 };
 
 /** Creative fields shared by the create tools. */
