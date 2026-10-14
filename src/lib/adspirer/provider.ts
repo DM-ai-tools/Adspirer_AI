@@ -290,6 +290,14 @@ export interface UpdateAdSetBudgetInput {
   daily_budget_cents: number;
 }
 
+/** Daily budget of a campaign that owns the budget (CBO / Advantage+ campaign budget). */
+export interface UpdateCampaignBudgetInput {
+  /** Expected account; the live provider derives the real one from the campaign. */
+  account_id?: string;
+  campaign_id: string;
+  daily_budget_cents: number;
+}
+
 /**
  * Domain-oriented Meta Ads provider.
  * Implementations: MockMetaAdsProvider, AdspirerMCPProvider.
@@ -320,8 +328,11 @@ export interface MetaAdsProvider {
   getAccountOverview(accountId: string): Promise<MetaAccountOverview>;
 
   updateAdSetBudget(input: UpdateAdSetBudgetInput): Promise<MetaAdSet>;
+  updateCampaignBudget(input: UpdateCampaignBudgetInput): Promise<MetaCampaign>;
   pauseCampaign(accountId: string, campaignId: string): Promise<MetaCampaign>;
   resumeCampaign(accountId: string, campaignId: string): Promise<MetaCampaign>;
+  pauseAdSet(accountId: string, adSetId: string): Promise<MetaAdSet>;
+  resumeAdSet(accountId: string, adSetId: string): Promise<MetaAdSet>;
   createCampaign(input: CreateCampaignInput): Promise<MetaCampaign>;
   createImageCampaign(input: CreateImageCampaignInput): Promise<{
     campaign: MetaCampaign;
@@ -338,6 +349,7 @@ export interface MetaAdsProvider {
   createAdSet(input: CreateAdSetInput): Promise<MetaAdSet & { raw_text?: string }>;
   createAd(input: CreateAdInput): Promise<MetaAd & { raw_text?: string }>;
   pauseAd(accountId: string, adId: string): Promise<MetaAd>;
+  resumeAd(accountId: string, adId: string): Promise<MetaAd>;
 
   /** Adspirer list_meta_custom_audiences — for picker UIs (names, not raw ID entry). */
   listCustomAudiences?(accountId: string): Promise<

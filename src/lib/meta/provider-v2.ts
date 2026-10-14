@@ -11,6 +11,7 @@ import type {
   MetaCampaign,
   MetaInsights,
   UpdateAdSetBudgetInput,
+  UpdateCampaignBudgetInput,
 } from "@/lib/adspirer/provider";
 import { MetaGraphClient } from "@/lib/meta/graph-client";
 import { fetchMetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
@@ -692,9 +693,114 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     };
   }
 
+  /**
+   * Daily budget of a campaign that owns its budget (CBO / Advantage+
+   * campaign budget). Campaigns whose ad sets hold the budgets go through
+   * updateAdSetBudget instead.
+   */
+  async updateCampaignBudget(input: UpdateCampaignBudgetInput): Promise<
+    MetaCampaign & {
+      currency: string;
+      previous_daily_budget_cents: number | null;
+      daily_budget_cents: number;
+      effective_status?: string;
+      verified: boolean;
+      verification_error?: string;
+    }
+  > {
+    const campaign = await this.graph.get<{
+      id?: string;
+      name?: string;
+      status?: string;
+      objective?: string;
+      account_id?: unknown;
+      daily_budget?: string;
+      lifetime_budget?: string;
+    }>(input.campaign_id, {
+      fields: "id,name,status,objective,account_id,daily_budget,lifetime_budget",
+    });
+    const name = campaign.name ?? input.campaign_id;
+
+    // The account comes from the campaign itself, never from the proposal.
+    const accountId =
+      campaign.account_id != null && String(campaign.account_id).trim()
+        ? normalizeAccountId(String(campaign.account_id).trim())
+        : null;
+    if (!accountId) {
+      throw new Error(
+        `Could not confirm which ad account campaign ${input.campaign_id} belongs to. Nothing was changed.`,
+      );
+    }
+    if (input.account_id && normalizeAccountId(input.account_id) !== accountId) {
+      throw new Error(
+        `Campaign "${name}" belongs to ad account ${accountId}, not ${normalizeAccountId(input.account_id)}. Nothing was changed.`,
+      );
+    }
+    if (positiveMinor(campaign.lifetime_budget)) {
+      throw new Error(
+        `Campaign "${name}" uses a lifetime budget, not a daily budget — change it in Ads Manager. Nothing was changed.`,
+      );
+    }
+    if (!positiveMinor(campaign.daily_budget)) {
+      throw new Error(
+        `Campaign "${name}" has no campaign budget — its ad set budgets control spend, so change those with update_adset_budget. Nothing was changed.`,
+      );
+    }
+
+    const currency = await this.requireAccountCurrency(accountId);
+    const requestedMinor = this.budgetMinor(input.daily_budget_cents, currency, "Campaign daily budget");
+    const previousCents = metaMinorToCents(Number(campaign.daily_budget), currency);
+
+    await this.graph.post(input.campaign_id, { daily_budget: requestedMinor });
+    this.invalidateCampaigns(accountId);
+
+    const base = {
+      id: input.campaign_id,
+      account_id: accountId,
+      name,
+      objective: campaign.objective ?? "",
+      status: String(campaign.status ?? "PAUSED") as MetaCampaign["status"],
+      currency,
+      previous_daily_budget_cents: previousCents,
+    };
+
+    // Read back: the change succeeded on Meta, so a failed re-read is
+    // reported as unverified (never as a failure that invites a retry).
+    let after: { daily_budget?: string; status?: string; effective_status?: string };
+    try {
+      after = await this.graph.get(input.campaign_id, {
+        fields: "daily_budget,status,effective_status",
+      });
+    } catch (error) {
+      return {
+        ...base,
+        daily_budget_cents: input.daily_budget_cents,
+        verified: false,
+        verification_error: error instanceof Error ? error.message : "Read-back failed",
+      };
+    }
+    const actualMinor = Number(after.daily_budget);
+    if (!Number.isFinite(actualMinor) || String(actualMinor) !== requestedMinor) {
+      const shown = Number.isFinite(actualMinor)
+        ? formatMoney(metaMinorToCents(actualMinor, currency), currency)
+        : "no daily budget";
+      throw new ExecutionVerificationError(
+        `Meta accepted the budget update for "${name}", but reading it back shows ${shown} instead of ${formatMoney(input.daily_budget_cents, currency)}. Check the campaign in Ads Manager before trying again.`,
+        { campaign_id: input.campaign_id, requested_minor: requestedMinor, actual_minor: after.daily_budget ?? null },
+      );
+    }
+    return {
+      ...base,
+      status: String(after.status ?? base.status) as MetaCampaign["status"],
+      daily_budget_cents: metaMinorToCents(actualMinor, currency),
+      effective_status: after.effective_status,
+      verified: true,
+    };
+  }
+
   /** POST a status change and read it back. */
   private async setStatusVerified(
-    label: "Campaign" | "Ad",
+    label: "Campaign" | "Ad set" | "Ad",
     accountId: string,
     entityId: string,
     status: "ACTIVE" | "PAUSED",
@@ -716,7 +822,9 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
         fields:
           label === "Campaign"
             ? "name,status,effective_status,objective"
-            : "name,status,effective_status,adset_id,campaign_id",
+            : label === "Ad set"
+              ? "name,status,effective_status,campaign_id"
+              : "name,status,effective_status,adset_id,campaign_id",
       });
     } catch (error) {
       return {
@@ -779,6 +887,34 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       verified: res.verified,
       ...(res.verification_error ? { verification_error: res.verification_error } : {}),
     };
+  }
+
+  private async setAdSetStatus(
+    accountId: string,
+    adSetId: string,
+    status: "ACTIVE" | "PAUSED",
+  ): Promise<MetaAdSet & { effective_status?: string; verified: boolean; verification_error?: string }> {
+    const res = await this.setStatusVerified("Ad set", accountId, adSetId, status);
+    return {
+      id: adSetId,
+      campaign_id: res.campaign_id ?? "unknown",
+      account_id: normalizeAccountId(accountId),
+      name: res.name ?? adSetId,
+      status: res.status as MetaAdSet["status"],
+      // Status only — the budget is untouched and not re-read here.
+      daily_budget_cents: 0,
+      effective_status: res.effective_status,
+      verified: res.verified,
+      ...(res.verification_error ? { verification_error: res.verification_error } : {}),
+    };
+  }
+
+  async pauseAdSet(accountId: string, adSetId: string) {
+    return this.setAdSetStatus(accountId, adSetId, "PAUSED");
+  }
+
+  async resumeAdSet(accountId: string, adSetId: string) {
+    return this.setAdSetStatus(accountId, adSetId, "ACTIVE");
   }
 
   async createCampaign(input: CreateCampaignInput): Promise<MetaCampaign> {
@@ -1349,11 +1485,20 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     };
   }
 
-  async pauseAd(
+  async pauseAd(accountId: string, adId: string) {
+    return this.setAdStatus(accountId, adId, "PAUSED");
+  }
+
+  async resumeAd(accountId: string, adId: string) {
+    return this.setAdStatus(accountId, adId, "ACTIVE");
+  }
+
+  private async setAdStatus(
     accountId: string,
     adId: string,
+    status: "ACTIVE" | "PAUSED",
   ): Promise<MetaAd & { effective_status?: string; verified: boolean; verification_error?: string }> {
-    const res = await this.setStatusVerified("Ad", accountId, adId, "PAUSED");
+    const res = await this.setStatusVerified("Ad", accountId, adId, status);
     return {
       id: adId,
       adset_id: res.adset_id ?? "unknown",
@@ -1481,12 +1626,15 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       Math.max(3, Number(options.lookback_days ?? 7) || 7),
     );
     const { dateStart, dateStop } = lookbackWindow(lookbackDays);
-    const [adsets, currency] = await Promise.all([
+    const [adsets, currency, campaigns] = await Promise.all([
       this.listAdSets(id),
       this.accountCurrency(id),
+      this.listCampaigns(id).catch(() => [] as MetaCampaign[]),
     ]);
     const money = (cents: number) => formatMoney(cents, currency);
     let insightsError: string | null = null;
+    // Every ad set's window performance, budgeted or not (CBO ad sets carry no budget).
+    const perAdSet = new Map<string, { spend: number; conversions: number }>();
     const budgeted = adsets.filter((a) => a.daily_budget_cents > 0);
     const pool =
       budgeted.filter((a) => a.status === "ACTIVE").length > 0
@@ -1554,6 +1702,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
         const clicks = Number(row.clicks ?? 0);
         const ctr = Number(row.ctr ?? 0);
         const { conversions, cpa } = extractConversionMetrics(row);
+        perAdSet.set(adsetId, { spend, conversions });
         existing.spend = spend;
         existing.clicks = clicks;
         existing.ctr = ctr;
@@ -1606,8 +1755,14 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       };
     }
 
-    if (!ranked.length) {
-      lines.push("- No ad sets with a daily budget found to rebalance.");
+    // Campaign budget (CBO): the campaign owns the money, so it is scaled or
+    // trimmed there, and an ad set wasting it is paused instead of trimmed.
+    const cboCampaigns = campaigns.filter(
+      (c) => c.status === "ACTIVE" && (c.daily_budget_cents ?? 0) > 0,
+    );
+
+    if (!ranked.length && !cboCampaigns.length) {
+      lines.push("- No ad sets or campaigns with a daily budget found to rebalance.");
       return {
         text: lines.join("\n"),
         structured: { accountId: id, lookback_days: lookbackDays, proposals: [] },
@@ -1676,6 +1831,67 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       }
     }
 
+    const cboRows = cboCampaigns.map((c) => {
+      const own = adsets.filter((a) => a.campaign_id === c.id);
+      const live = own.filter((a) => a.status === "ACTIVE");
+      const perf = own.map((a) => ({ adset: a, ...(perAdSet.get(a.id) ?? { spend: 0, conversions: 0 }) }));
+      const spend = perf.reduce((sum, p) => sum + p.spend, 0);
+      const conversions = perf.reduce((sum, p) => sum + p.conversions, 0);
+      return { campaign: c, budget: c.daily_budget_cents!, live, perf, spend, conversions };
+    });
+    const cboWinners = cboRows
+      .filter((r) => r.conversions > 0)
+      .sort((a, b) => a.spend / a.conversions - b.spend / b.conversions)
+      .slice(0, 2);
+
+    for (const r of cboRows) {
+      const { campaign: c, budget } = r;
+      if (cboWinners.includes(r)) {
+        const next = Math.max(budget + 100, Math.round(budget * 1.2));
+        const cpa = Math.round((r.spend * 100) / r.conversions);
+        proposals.push({
+          tool: "update_campaign_budget",
+          args: { account_id: id, campaign_id: c.id, daily_budget_cents: next, previous_daily_budget_cents: budget },
+          rationale: `Scale ${c.name}: ${r.conversions} conv · CPA ${money(cpa)} · +20% campaign daily budget.`,
+        });
+        lines.push(`- SCALE campaign ${c.name} (${c.id}): ${money(budget)} → ${money(next)}/day (campaign budget)`);
+      } else if (r.conversions === 0 && r.spend >= Math.max(10, budget / 100) && budget >= 500) {
+        const next = Math.max(100, Math.round(budget * 0.8));
+        if (next < budget) {
+          proposals.push({
+            tool: "update_campaign_budget",
+            args: { account_id: id, campaign_id: c.id, daily_budget_cents: next, previous_daily_budget_cents: budget },
+            rationale: `Trim ${c.name}: ${money(Math.round(r.spend * 100))} spend with 0 conversions in window · −20% campaign daily budget.`,
+          });
+          lines.push(`- TRIM campaign ${c.name} (${c.id}): ${money(budget)} → ${money(next)}/day (campaign budget)`);
+        }
+      }
+
+      // Pause an ad set that spent with nothing to show while a sibling
+      // converts — Meta then moves its share to the proven one. Never the
+      // last live ad set: that would stop the campaign.
+      if (r.conversions === 0) continue;
+      const wasters = r.perf
+        .filter(
+          (p) =>
+            p.adset.status === "ACTIVE" &&
+            p.conversions === 0 &&
+            p.spend >= Math.max(10, budget / 100),
+        )
+        .sort((a, b) => b.spend - a.spend);
+      let liveLeft = r.live.length;
+      for (const w of wasters.slice(0, 2)) {
+        if (liveLeft <= 1) break;
+        liveLeft -= 1;
+        proposals.push({
+          tool: "pause_adset",
+          args: { account_id: id, adset_id: w.adset.id },
+          rationale: `Pause ${w.adset.name}: ${money(Math.round(w.spend * 100))} spend with 0 conversions while other ad sets in ${c.name} convert.`,
+        });
+        lines.push(`- PAUSE ad set ${w.adset.name} (${w.adset.id}): ${money(Math.round(w.spend * 100))} spend, 0 conversions`);
+      }
+    }
+
     if (!proposals.length) {
       // Always surface at least one concrete mutate when budgets exist.
       const primary = winners[0] ?? ranked[0];
@@ -1702,7 +1918,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
 
     lines.push(
       "",
-      "These are proposals only. Queue `update_adset_budget` execute tools for Approvals — Meta is not changed until approved.",
+      "These are proposals only. Queue the `update_adset_budget` / `update_campaign_budget` / `pause_adset` execute tools for Approvals — Meta is not changed until approved.",
     );
 
     return {

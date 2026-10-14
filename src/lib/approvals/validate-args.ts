@@ -169,6 +169,14 @@ function canonicalize(
   if (typeof args.objective === "string") {
     args.objective = args.objective.trim().toUpperCase();
   }
+  if (
+    (toolName === "pause_adset" || toolName === "resume_adset" || toolName === "update_adset_budget") &&
+    !optionalString(args.adset_id) &&
+    optionalString(args.ad_set_id)
+  ) {
+    args.adset_id = optionalString(args.ad_set_id);
+    delete args.ad_set_id;
+  }
   if (toolName === "create_adset") args = normalizeCreateAdSetArgs(args);
   if (toolName === "create_ad") args = normalizeCreateAdArgs(args);
 
@@ -277,7 +285,7 @@ export async function prepareApprovalArgs(input: {
   const schema = getExecuteToolSchema(toolName);
   if (!schema) {
     fail(
-      `"${toolName}" cannot be executed from an approval — CampaignForge has no executor for it. Use create_meta_image_campaign / create_meta_video_campaign, create_adset, create_ad, update_adset_budget, pause_campaign, resume_campaign or pause_ad.`,
+      `"${toolName}" cannot be executed from an approval — CampaignForge has no executor for it. Use create_meta_image_campaign / create_meta_video_campaign, create_adset, create_ad, update_adset_budget, update_campaign_budget, pause_campaign, resume_campaign, pause_adset, resume_adset, pause_ad or resume_ad.`,
       { toolName },
     );
   }

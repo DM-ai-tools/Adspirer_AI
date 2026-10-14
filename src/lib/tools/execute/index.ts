@@ -10,9 +10,13 @@ import {
   createMetaImageCampaignSchema,
   createMetaVideoCampaignSchema,
   pauseAdSchema,
+  pauseAdSetSchema,
   pauseCampaignSchema,
+  resumeAdSchema,
+  resumeAdSetSchema,
   resumeCampaignSchema,
   updateAdsetBudgetSchema,
+  updateCampaignBudgetSchema,
 } from "@/lib/tools/execute/schemas";
 
 export { EXECUTE_TOOL_SCHEMAS, getExecuteToolSchema } from "@/lib/tools/execute/schemas";
@@ -171,5 +175,42 @@ export const pauseAdTool = registerTool({
   inputSchema: pauseAdSchema,
   async execute(args, ctx) {
     return requireAndExecute("pause_ad", args, ctx);
+  },
+});
+
+export const resumeAdTool = registerTool({
+  name: "resume_ad",
+  description: "Resume a paused ad so it can spend again (requires approval)",
+  inputSchema: resumeAdSchema,
+  async execute(args, ctx) {
+    return requireAndExecute("resume_ad", args, ctx);
+  },
+});
+
+export const updateCampaignBudgetTool = registerTool({
+  name: "update_campaign_budget",
+  description:
+    "Update the daily budget of a campaign that uses a campaign budget (CBO / Advantage+ campaign budget) (requires approval). For campaigns whose ad sets hold the budgets, use update_adset_budget.",
+  inputSchema: updateCampaignBudgetSchema,
+  async execute(args, ctx) {
+    return requireAndExecute("update_campaign_budget", args, ctx);
+  },
+});
+
+export const pauseAdSetTool = registerTool({
+  name: "pause_adset",
+  description: "Pause an ad set (requires approval)",
+  inputSchema: pauseAdSetSchema,
+  async execute(args, ctx) {
+    return requireAndExecute("pause_adset", args, ctx);
+  },
+});
+
+export const resumeAdSetTool = registerTool({
+  name: "resume_adset",
+  description: "Resume a paused ad set so it can spend again (requires approval)",
+  inputSchema: resumeAdSetSchema,
+  async execute(args, ctx) {
+    return requireAndExecute("resume_adset", args, ctx);
   },
 });

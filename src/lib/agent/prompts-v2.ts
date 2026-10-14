@@ -111,7 +111,7 @@ export function buildStaticSystemPromptV2(): string {
     "- Saying \"here are recommendations\" is not permission to mutate Meta.",
     "- When they do ask to optimize: run live optimize evidence, present concrete changes with real ad set / ad IDs.",
     "- When they ask to **send / queue / apply for Approvals** (or say Approvals is empty): append EXECUTE tool JSON",
-    "  (`update_adset_budget`, `pause_ad`, etc.) from the Ready-to-queue proposals in evidence.",
+    "  (`update_adset_budget`, `update_campaign_budget`, `pause_adset`, `pause_ad`, etc.) from the Ready-to-queue proposals in evidence.",
     "- NEVER invent a \"known limitation\" that tool submissions did not fire. If proposals exist, queue them.",
     "- Mutations still require Approvals — never claim Meta was changed until executed proof IDs appear.",
     "",

@@ -124,7 +124,208 @@ describe("updateAdSetBudget", () => {
   });
 });
 
+function campaignRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "999",
+    name: "TR | Lead Gen",
+    status: "ACTIVE",
+    account_id: "111",
+    daily_budget: "3000",
+    lifetime_budget: "0",
+    ...overrides,
+  };
+}
+
+describe("updateCampaignBudget", () => {
+  it("writes the campaign (CBO) daily budget and verifies the read-back", async () => {
+    let written: string | undefined;
+    const { provider, post } = providerWith({
+      get: (path, params) => {
+        if (path === "act_111") return { currency: "USD" };
+        if (path === "999" && String(params.fields).includes("account_id")) return campaignRow();
+        if (path === "999") return { daily_budget: written, status: "ACTIVE" };
+        throw new Error(`unexpected GET ${path}`);
+      },
+      post: (_path, body) => {
+        written = String(body.daily_budget);
+        return { success: true };
+      },
+    });
+    const result = await provider.updateCampaignBudget({ campaign_id: "999", daily_budget_cents: 3600 });
+    expect(post).toHaveBeenCalledWith("999", { daily_budget: "3600" });
+    expect(result).toMatchObject({
+      id: "999",
+      account_id: "act_111",
+      currency: "USD",
+      daily_budget_cents: 3600,
+      previous_daily_budget_cents: 3000,
+      verified: true,
+    });
+  });
+
+  it("refuses campaigns without a campaign daily budget", async () => {
+    const abo = providerWith({ get: () => campaignRow({ daily_budget: "0" }) });
+    await expect(
+      abo.provider.updateCampaignBudget({ campaign_id: "999", daily_budget_cents: 5000 }),
+    ).rejects.toThrow(/ad set budgets/);
+    expect(abo.post).not.toHaveBeenCalled();
+
+    const lifetime = providerWith({ get: () => campaignRow({ daily_budget: "0", lifetime_budget: "90000" }) });
+    await expect(
+      lifetime.provider.updateCampaignBudget({ campaign_id: "999", daily_budget_cents: 5000 }),
+    ).rejects.toThrow(/lifetime budget/);
+    expect(lifetime.post).not.toHaveBeenCalled();
+  });
+
+  it("refuses when the proposal's account does not own the campaign", async () => {
+    const { provider, post } = providerWith({ get: () => campaignRow() });
+    await expect(
+      provider.updateCampaignBudget({ account_id: "act_222", campaign_id: "999", daily_budget_cents: 5000 }),
+    ).rejects.toThrow(/belongs to ad account act_111/);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("raises a verification error when the read-back differs", async () => {
+    const { provider } = providerWith({
+      get: (path, params) => {
+        if (path === "act_111") return { currency: "USD" };
+        if (String(params.fields).includes("account_id")) return campaignRow();
+        return { daily_budget: "3000", status: "ACTIVE" };
+      },
+    });
+    await expect(
+      provider.updateCampaignBudget({ campaign_id: "999", daily_budget_cents: 3600 }),
+    ).rejects.toBeInstanceOf(ExecutionVerificationError);
+  });
+});
+
+describe("optimizeBudget with a campaign budget (CBO)", () => {
+  type AdSetIn = { id: string; status?: string; spend: number; leads: number };
+  function cboAccount(campaign: { daily_budget: string }, adsets: AdSetIn[]) {
+    return providerWith({
+      get: (path) => {
+        if (path === "act_111") return { currency: "USD" };
+        if (path === "act_111/campaigns") {
+          return { data: [{ id: "999", name: "TR | Lead Gen", status: "ACTIVE", objective: "OUTCOME_LEADS", ...campaign }] };
+        }
+        if (path === "act_111/adsets") {
+          return {
+            data: adsets.map((a) => ({
+              id: a.id,
+              name: `Ad set ${a.id}`,
+              status: a.status ?? "ACTIVE",
+              campaign_id: "999",
+              daily_budget: "0",
+            })),
+          };
+        }
+        if (path === "act_111/insights") {
+          return {
+            data: adsets.map((a) => ({
+              adset_id: a.id,
+              adset_name: `Ad set ${a.id}`,
+              spend: String(a.spend),
+              clicks: "40",
+              ctr: "1.2",
+              actions: a.leads ? [{ action_type: "lead", value: String(a.leads) }] : [],
+            })),
+          };
+        }
+        throw new Error(`unexpected GET ${path}`);
+      },
+    });
+  }
+  const proposalsOf = async (provider: MetaGraphProviderV2) =>
+    ((await provider.optimizeBudget("act_111")).structured?.proposals ?? []) as Array<{
+      tool: string;
+      args: Record<string, unknown>;
+    }>;
+
+  it("scales a converting CBO campaign and pauses its ad set that spent with no results", async () => {
+    const { provider } = cboAccount({ daily_budget: "3000" }, [
+      { id: "777", spend: 80, leads: 4 },
+      { id: "778", spend: 40, leads: 0 },
+    ]);
+    const proposals = await proposalsOf(provider);
+    expect(proposals).toContainEqual(
+      expect.objectContaining({
+        tool: "update_campaign_budget",
+        args: expect.objectContaining({ campaign_id: "999", daily_budget_cents: 3600, previous_daily_budget_cents: 3000 }),
+      }),
+    );
+    expect(proposals).toContainEqual(
+      expect.objectContaining({ tool: "pause_adset", args: { account_id: "act_111", adset_id: "778" } }),
+    );
+    expect(proposals.some((p) => p.tool === "update_adset_budget")).toBe(false);
+  });
+
+  it("trims a CBO campaign that spent with no results, without pausing its ad sets", async () => {
+    const { provider } = cboAccount({ daily_budget: "3000" }, [
+      { id: "777", spend: 60, leads: 0 },
+      { id: "778", spend: 40, leads: 0 },
+    ]);
+    const proposals = await proposalsOf(provider);
+    expect(proposals).toEqual([
+      expect.objectContaining({
+        tool: "update_campaign_budget",
+        args: expect.objectContaining({ campaign_id: "999", daily_budget_cents: 2400 }),
+      }),
+    ]);
+  });
+
+  it("never proposes pausing the campaign's last live ad set", async () => {
+    const { provider } = cboAccount({ daily_budget: "3000" }, [
+      { id: "777", spend: 80, leads: 4 },
+      { id: "778", status: "PAUSED", spend: 0, leads: 0 },
+      { id: "779", spend: 40, leads: 0 },
+    ]);
+    const pauses = (await proposalsOf(provider)).filter((p) => p.tool === "pause_adset");
+    expect(pauses.map((p) => p.args.adset_id)).toEqual(["779"]);
+
+    const single = cboAccount({ daily_budget: "3000" }, [{ id: "777", spend: 60, leads: 0 }]);
+    expect((await proposalsOf(single.provider)).some((p) => p.tool === "pause_adset")).toBe(false);
+  });
+});
+
 describe("status changes", () => {
+  it("pauses and resumes ad sets with a verified read-back", async () => {
+    let status = "ACTIVE";
+    const { provider, post } = providerWith({
+      get: (_path, params) =>
+        String(params.fields) === "account_id"
+          ? { account_id: "111" }
+          : { name: "Broad AU", status, effective_status: status, campaign_id: "999" },
+      post: (_path, body) => {
+        status = String(body.status);
+        return { success: true };
+      },
+    });
+    await expect(provider.pauseAdSet("act_111", "777")).resolves.toMatchObject({
+      id: "777",
+      status: "PAUSED",
+      campaign_id: "999",
+      verified: true,
+    });
+    await expect(provider.resumeAdSet("act_111", "777")).resolves.toMatchObject({ status: "ACTIVE", verified: true });
+    expect(post).toHaveBeenCalledWith("777", { status: "ACTIVE" });
+  });
+
+  it("refuses to change an ad set in another account", async () => {
+    const { provider, post } = providerWith({ get: () => ({ account_id: "222" }) });
+    await expect(provider.pauseAdSet("act_111", "777")).rejects.toThrow(/belongs to ad account act_222/);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("resumes an ad", async () => {
+    const { provider } = providerWith({
+      get: (_path, params) =>
+        String(params.fields) === "account_id"
+          ? { account_id: "111" }
+          : { name: "Ad 1", status: "ACTIVE", adset_id: "777", campaign_id: "999" },
+    });
+    await expect(provider.resumeAd("act_111", "555")).resolves.toMatchObject({ status: "ACTIVE", verified: true });
+  });
+
   it("verifies resume_campaign reads back ACTIVE", async () => {
     const { provider } = providerWith({
       get: (_path, params) =>

@@ -1,0 +1,100 @@
+import { describe, expect, it, vi } from "vitest";
+import { approve, createPendingApproval } from "@/lib/approvals/service";
+import { executeApprovedAction } from "@/lib/approvals/executor";
+import { computeBudgetImpactCents } from "@/lib/approvals/validator";
+import { BudgetCeilingViolation } from "@/lib/errors";
+import { classify } from "@/lib/tools/policy";
+import { getProviderForBackend } from "@/lib/adspirer/client";
+
+// Modern Dental demo client: ceiling 250_000 cents, granted act_100200300 (USD).
+const CLIENT_ID = "client_modern_dental";
+const REVIEWER = "profile_admin_demo";
+const ACCOUNT = "act_100200300";
+
+async function run(toolName: string, proposedArgs: Record<string, unknown>) {
+  const pending = await createPendingApproval({ clientId: CLIENT_ID, toolName, proposedArgs });
+  await approve({ approvalId: pending.id, reviewedBy: REVIEWER });
+  const { approval } = await executeApprovedAction({ approvalId: pending.id, executedBy: REVIEWER });
+  return { pending, approval };
+}
+
+describe("new execute actions", () => {
+  it("are execute-class tools, not blocked", () => {
+    for (const tool of ["update_campaign_budget", "pause_adset", "resume_adset", "resume_ad"]) {
+      expect(classify(tool)).toBe("execute");
+    }
+  });
+
+  it("counts a campaign budget increase as budget impact", () => {
+    expect(
+      computeBudgetImpactCents("update_campaign_budget", {
+        daily_budget_cents: 9600,
+        previous_daily_budget_cents: 8000,
+      }),
+    ).toBe(1600);
+    expect(
+      computeBudgetImpactCents("update_campaign_budget", {
+        daily_budget_cents: 6400,
+        previous_daily_budget_cents: 8000,
+      }),
+    ).toBe(0);
+  });
+
+  it("enforces the client budget ceiling on campaign budgets", async () => {
+    await expect(
+      createPendingApproval({
+        clientId: CLIENT_ID,
+        toolName: "update_campaign_budget",
+        proposedArgs: { account_id: ACCOUNT, campaign_id: "camp_mdc_npl", daily_budget_cents: "500000" },
+      }),
+    ).rejects.toBeInstanceOf(BudgetCeilingViolation);
+  });
+
+  it("executes a campaign budget change with proof", async () => {
+    const { pending, approval } = await run("update_campaign_budget", {
+      account_id: ACCOUNT,
+      campaign_id: "camp_mdc_npl",
+      daily_budget_cents: "9600",
+      previous_daily_budget_cents: 8000,
+    });
+    expect(pending.budget_impact_cents).toBe(1600);
+    expect(approval.status).toBe("executed");
+    expect(approval.execution_result?.proof).toMatchObject({
+      campaign_id: "camp_mdc_npl",
+      daily_budget_cents: 9600,
+    });
+    const campaigns = await getProviderForBackend(null).listCampaigns(ACCOUNT);
+    expect(campaigns.find((c) => c.id === "camp_mdc_npl")?.daily_budget_cents).toBe(9600);
+  });
+
+  it("pauses then resumes an ad set (ad_set_id accepted as an alias)", async () => {
+    const paused = await run("pause_adset", { account_id: ACCOUNT, ad_set_id: "adset_mdc_npl_2" });
+    expect(paused.approval.status).toBe("executed");
+    expect(paused.approval.execution_result?.proof).toMatchObject({ ad_set_id: "adset_mdc_npl_2", status: "PAUSED" });
+
+    const resumed = await run("resume_adset", { account_id: ACCOUNT, adset_id: "adset_mdc_npl_2" });
+    expect(resumed.approval.execution_result?.proof).toMatchObject({ ad_set_id: "adset_mdc_npl_2", status: "ACTIVE" });
+  });
+
+  it("resumes an ad", async () => {
+    await run("pause_ad", { account_id: ACCOUNT, ad_id: "ad_mdc_npl_b" });
+    const { approval } = await run("resume_ad", { account_id: ACCOUNT, ad_id: "ad_mdc_npl_b" });
+    expect(approval.status).toBe("executed");
+    expect(approval.execution_result?.proof).toMatchObject({ ad_id: "ad_mdc_npl_b", status: "ACTIVE" });
+  });
+
+  it("queues an ad set pause with no ad set id as needing a fix, and never runs it", async () => {
+    const provider = getProviderForBackend(null);
+    const spy = vi.spyOn(provider, "pauseAdSet");
+    const queued = await createPendingApproval({
+      clientId: CLIENT_ID,
+      toolName: "pause_adset",
+      proposedArgs: { account_id: ACCOUNT },
+    });
+    expect(queued.execution_error).toMatch(/adset_id/);
+    await approve({ approvalId: queued.id, reviewedBy: REVIEWER });
+    await expect(executeApprovedAction({ approvalId: queued.id, executedBy: REVIEWER })).rejects.toThrow(/adset_id/);
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+});

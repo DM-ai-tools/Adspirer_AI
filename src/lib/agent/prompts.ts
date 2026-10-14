@@ -163,7 +163,7 @@ When the operator asks to optimize:
 {"ui":"ad_picker","ads":[{"id":"...","name":"...","status":"...","creative_summary":"..."}]}
 2. Use diagnose tools evidence: optimize_meta_budget, optimize_meta_placements, detect_meta_creative_fatigue.
 3. Present recommendations in prose with real IDs and amounts from evidence.
-4. When they ask to send/queue/apply for Approvals (or say Approvals is empty): append EXECUTE JSON from Ready-to-queue proposals (\`update_adset_budget\`, \`pause_ad\`, …). Never invent a "known limitation" that tools did not fire.
+4. When they ask to send/queue/apply for Approvals (or say Approvals is empty): append EXECUTE JSON from Ready-to-queue proposals (\`update_adset_budget\`, \`update_campaign_budget\`, \`pause_adset\`, \`pause_ad\`, …). Never invent a "known limitation" that tools did not fire.
 5. Queue EXECUTE mutations via Approvals only — never claim applied yet.
 6. For creative refresh on **image** ads: generate replacement stills inline in this chat; once the operator picks one, its image_url is attached to create_ad automatically. For **video** ads, ask for a new video_url / existing_video_id (no generation).
 

@@ -43,6 +43,13 @@ function outcomeLine(approval: Approval): string {
       return `The campaign is now **PAUSED**.${unverified}`;
     case "pause_ad":
       return `The ad is now **PAUSED**.${unverified}`;
+    case "resume_ad":
+      return `The ad is now **ACTIVE** and can start spending.${unverified}`;
+    case "pause_adset":
+      return `The ad set is now **PAUSED**.${unverified}`;
+    case "resume_adset":
+      return `The ad set is now **ACTIVE** and can start spending.${unverified}`;
+    case "update_campaign_budget":
     case "update_adset_budget": {
       const money = formatMoneyCents(result.daily_budget_cents, result.currency);
       return `${money ? `Daily budget is now **${money}**` : "Daily budget updated"}${

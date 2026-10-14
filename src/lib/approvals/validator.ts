@@ -114,7 +114,7 @@ export function computeBudgetImpactCents(
   toolName: string,
   args: Record<string, unknown>,
 ): number | null {
-  if (toolName === "update_adset_budget") {
+  if (toolName === "update_adset_budget" || toolName === "update_campaign_budget") {
     const next = numericArg(args, "daily_budget_cents");
     if (next == null) return null;
     const prev = numericArg(args, "previous_daily_budget_cents") ?? 0;

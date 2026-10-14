@@ -259,11 +259,32 @@ export const pauseAdSchema = z.object({
   ad_id: z.string().min(1),
 });
 
+export const resumeAdSchema = pauseAdSchema;
+
+/** Campaign budget (CBO / Advantage+ campaign budget) — daily only. */
+export const updateCampaignBudgetSchema = z.object({
+  account_id: accountId,
+  campaign_id: z.string().min(1),
+  daily_budget_cents: cents,
+  previous_daily_budget_cents: z.number().int().nonnegative().optional(),
+});
+
+export const pauseAdSetSchema = z.object({
+  account_id: accountId,
+  adset_id: z.string().min(1, "adset_id is required"),
+});
+
+export const resumeAdSetSchema = pauseAdSetSchema;
+
 /** Every tool the approval executor can actually dispatch to Meta. */
 export const EXECUTE_TOOL_SCHEMAS: Readonly<Record<string, z.ZodType>> = {
   update_adset_budget: updateAdsetBudgetSchema,
+  update_campaign_budget: updateCampaignBudgetSchema,
   pause_campaign: pauseCampaignSchema,
   resume_campaign: resumeCampaignSchema,
+  pause_adset: pauseAdSetSchema,
+  resume_adset: resumeAdSetSchema,
+  resume_ad: resumeAdSchema,
   create_campaign: createCampaignSchema,
   create_meta_image_campaign: createMetaImageCampaignSchema,
   create_meta_video_campaign: createMetaVideoCampaignSchema,

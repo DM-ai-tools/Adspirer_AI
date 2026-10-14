@@ -388,10 +388,19 @@ function buildExecutionResult(
       proof.daily_budget_cents = obj.daily_budget_cents;
     }
     if (typeof obj.currency === "string") proof.currency = obj.currency;
+  } else if (toolName === "update_campaign_budget") {
+    if (typeof obj.id === "string") proof.campaign_id = obj.id;
+    if (typeof obj.daily_budget_cents === "number") {
+      proof.daily_budget_cents = obj.daily_budget_cents;
+    }
+    if (typeof obj.currency === "string") proof.currency = obj.currency;
   } else if (toolName === "pause_campaign" || toolName === "resume_campaign") {
     if (typeof obj.id === "string") proof.campaign_id = obj.id;
     if (typeof obj.status === "string") proof.status = obj.status;
-  } else if (toolName === "pause_ad") {
+  } else if (toolName === "pause_adset" || toolName === "resume_adset") {
+    if (typeof obj.id === "string") proof.ad_set_id = obj.id;
+    if (typeof obj.status === "string") proof.status = obj.status;
+  } else if (toolName === "pause_ad" || toolName === "resume_ad") {
     if (typeof obj.id === "string") proof.ad_id = obj.id;
     if (typeof obj.status === "string") proof.status = obj.status;
   }
@@ -525,6 +534,24 @@ async function dispatchToProvider(
         adset_id: requireString(args, "adset_id", toolName),
         daily_budget_cents: args.daily_budget_cents as number,
       });
+    case "update_campaign_budget":
+      return provider.updateCampaignBudget({
+        // Expected account only — the provider derives the real one from the
+        // campaign and refuses on mismatch.
+        account_id: optionalString(args.account_id),
+        campaign_id: requireString(args, "campaign_id", toolName),
+        daily_budget_cents: args.daily_budget_cents as number,
+      });
+    case "pause_adset":
+      return provider.pauseAdSet(
+        requireString(args, "account_id", toolName),
+        requireString(args, "adset_id", toolName, ["ad_set_id"]),
+      );
+    case "resume_adset":
+      return provider.resumeAdSet(
+        requireString(args, "account_id", toolName),
+        requireString(args, "adset_id", toolName, ["ad_set_id"]),
+      );
     case "pause_campaign":
       return provider.pauseCampaign(
         requireString(args, "account_id", toolName),
@@ -708,6 +735,11 @@ async function dispatchToProvider(
     }
     case "pause_ad":
       return provider.pauseAd(
+        requireString(args, "account_id", toolName),
+        requireString(args, "ad_id", toolName),
+      );
+    case "resume_ad":
+      return provider.resumeAd(
         requireString(args, "account_id", toolName),
         requireString(args, "ad_id", toolName),
       );

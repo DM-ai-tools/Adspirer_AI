@@ -12,6 +12,7 @@ import type {
   MetaInsights,
   MetaAccountOverview,
   UpdateAdSetBudgetInput,
+  UpdateCampaignBudgetInput,
 } from "./provider";
 
 const MDC_ACCOUNT = "act_100200300";
@@ -341,6 +342,31 @@ export class MockMetaAdsProvider implements MetaAdsProvider {
     return { ...adset };
   }
 
+  async updateCampaignBudget(input: UpdateCampaignBudgetInput): Promise<MetaCampaign> {
+    const campaign = getState().campaigns.find(
+      (c) => c.id === input.campaign_id && (!input.account_id || c.account_id === input.account_id),
+    );
+    if (!campaign) throw new Error(`Campaign not found: ${input.campaign_id}`);
+    campaign.daily_budget_cents = input.daily_budget_cents;
+    campaign.updated_time = new Date().toISOString();
+    return { ...campaign };
+  }
+
+  private setAdSetStatus(accountId: string, adSetId: string, status: "ACTIVE" | "PAUSED"): MetaAdSet {
+    const adset = getState().adsets.find((a) => a.id === adSetId && a.account_id === accountId);
+    if (!adset) throw new Error(`Ad set not found: ${adSetId}`);
+    adset.status = status;
+    return { ...adset };
+  }
+
+  async pauseAdSet(accountId: string, adSetId: string): Promise<MetaAdSet> {
+    return this.setAdSetStatus(accountId, adSetId, "PAUSED");
+  }
+
+  async resumeAdSet(accountId: string, adSetId: string): Promise<MetaAdSet> {
+    return this.setAdSetStatus(accountId, adSetId, "ACTIVE");
+  }
+
   async pauseCampaign(accountId: string, campaignId: string): Promise<MetaCampaign> {
     const campaign = getState().campaigns.find(
       (c) => c.id === campaignId && c.account_id === accountId,
@@ -494,6 +520,15 @@ export class MockMetaAdsProvider implements MetaAdsProvider {
     );
     if (!ad) throw new Error(`Ad not found: ${adId}`);
     ad.status = "PAUSED";
+    return { ...ad };
+  }
+
+  async resumeAd(accountId: string, adId: string): Promise<MetaAd> {
+    const ad = getState().ads.find(
+      (a) => a.id === adId && a.account_id === accountId,
+    );
+    if (!ad) throw new Error(`Ad not found: ${adId}`);
+    ad.status = "ACTIVE";
     return { ...ad };
   }
 

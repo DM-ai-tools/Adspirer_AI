@@ -559,7 +559,7 @@ function buildWriterMessages(input: WriterInput): {
       ? [
           "- Operator asked to optimize (or queue optimizations for Approvals).",
           "- ONLY mark items as Ready to queue if they appear in Ready-to-queue EXECUTE proposals JSON.",
-          "- Typical queueable tools: update_adset_budget, resume_campaign, pause_ad, create_adset (broad/Advantage+).",
+          "- Typical queueable tools: update_adset_budget, update_campaign_budget (campaign-budget / CBO campaigns), pause_adset, resume_adset, pause_ad, resume_ad, resume_campaign, create_adset (broad/Advantage+).",
           "- Creative refresh / Pixel verification stay waiting until the operator provides image / Pixel ID — never claim those were queued.",
           "- When queuing: do NOT show ad_picker. Confirm separate Approvals cards for each tool.",
           "- NEVER invent a 'known limitation' that tool calls did not fire.",

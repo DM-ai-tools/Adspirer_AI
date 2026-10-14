@@ -38,6 +38,10 @@ const TOOL_POLICY: Record<string, ToolSafetyClass> = {
   create_adset: "execute",
   create_ad: "execute",
   pause_ad: "execute",
+  resume_ad: "execute",
+  update_campaign_budget: "execute",
+  pause_adset: "execute",
+  resume_adset: "execute",
 };
 
 export function classify(toolName: string): ToolSafetyClass {

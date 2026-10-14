@@ -210,7 +210,42 @@ function periodLine(p: PeriodPerformance | null, money: (cents: number) => strin
     .join(" · ");
 }
 
-function adSetBlock(a: AuditAdSet, ads: AuditAd[], campaignSpend: number, money: (cents: number) => string): string {
+/** "+19%" / "−12%" / "new" — change from `before` to `after`. */
+function pctChange(before: number, after: number): string {
+  if (before === 0) return after === 0 ? "no change" : "new";
+  const pct = Math.round(((after - before) / before) * 100);
+  return pct === 0 ? "no change" : `${pct > 0 ? "+" : "−"}${Math.abs(pct)}%`;
+}
+
+/** Previous period → this period, for the numbers that decide a verdict. */
+function changeLine(
+  current: PeriodPerformance | null,
+  previous: PeriodPerformance | null | undefined,
+  money: (cents: number) => string,
+): string {
+  if (!previous || (previous.spendCents === 0 && previous.impressions === 0)) return "no delivery in the previous period";
+  const now = current ?? { ...previous, spendCents: 0, impressions: 0, results: 0, costPerResultCents: null, linkCtr: 0 };
+  return [
+    `spend ${money(previous.spendCents)} → ${money(now.spendCents)} (${pctChange(previous.spendCents, now.spendCents)})`,
+    previous.results != null || now.results != null
+      ? `${now.resultLabel || previous.resultLabel} ${previous.results ?? "n/a"} → ${now.results ?? "n/a"}`
+      : null,
+    previous.costPerResultCents != null && now.costPerResultCents != null
+      ? `cost per result ${money(previous.costPerResultCents)} → ${money(now.costPerResultCents)} (${pctChange(previous.costPerResultCents, now.costPerResultCents)})`
+      : null,
+    `link CTR ${previous.linkCtr.toFixed(2)}% → ${now.linkCtr.toFixed(2)}%`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function adSetBlock(
+  a: AuditAdSet,
+  ads: AuditAd[],
+  campaignSpend: number,
+  money: (cents: number) => string,
+  compare: boolean,
+): string {
   const spend = a.performance?.spendCents ?? 0;
   const liveAds = ads.filter((ad) => isLiveStatus(ad.status));
   const budget = a.dailyBudgetCents
@@ -246,9 +281,12 @@ function adSetBlock(a: AuditAdSet, ads: AuditAd[], campaignSpend: number, money:
     `  - Period: ${periodLine(a.performance, money)}${
       campaignSpend > 0 && spend > 0 ? ` · ${Math.round((spend / campaignSpend) * 100)}% of campaign spend` : ""
     }${a.frequency7d != null ? ` · 7-day frequency ${a.frequency7d.toFixed(2)}` : ""}`,
+    compare ? `  - vs previous period: ${changeLine(a.performance, a.previousPerformance, money)}` : null,
     `  - Ads: live ads ${liveAds.length} of ${ads.length}${ads.length > 8 ? " (top 8 by spend below)" : ""}`,
     ...adLines,
-  ].join("\n");
+  ]
+    .filter((l) => l != null)
+    .join("\n");
 }
 
 /**
@@ -275,7 +313,15 @@ export function renderAdSetEvidence(snap: MetaAuditSnapshot, maxAdSets = 40): st
   const campaignOrder = [...snap.campaigns].sort(
     (x, y) => (y.performance?.spendCents ?? 0) - (x.performance?.spendCents ?? 0),
   );
+  const previous = snap.previousPeriod;
+  const compare = Boolean(previous);
   const lines: string[] = [header];
+  if (previous) {
+    lines.push(
+      `Totals: ${periodLine(snap.totals, money)}`,
+      `Totals vs previous period (${previous.since} → ${previous.until}): ${changeLine(snap.totals, snap.previousTotals, money)}`,
+    );
+  }
   let shown = 0;
   for (const c of campaignOrder) {
     const own = adSets.filter((a) => a.campaignId === c.id).sort(bySpend);
@@ -287,9 +333,10 @@ export function renderAdSetEvidence(snap: MetaAuditSnapshot, maxAdSets = 40): st
         c.dailyBudgetCents ? ` · campaign daily budget ${money(c.dailyBudgetCents)}` : ""
       } — ${own.length} ad set${own.length === 1 ? "" : "s"}, ${live} live`,
       `Campaign period: ${periodLine(c.performance, money)}`,
+      ...(compare ? [`Campaign vs previous period: ${changeLine(c.performance, c.previousPerformance, money)}`] : []),
     );
     for (const a of own.slice(0, maxAdSets - shown)) {
-      lines.push(adSetBlock(a, snap.ads.filter((ad) => ad.adSetId === a.id), c.performance?.spendCents ?? 0, money));
+      lines.push(adSetBlock(a, snap.ads.filter((ad) => ad.adSetId === a.id), c.performance?.spendCents ?? 0, money, compare));
       shown += 1;
     }
   }
@@ -297,6 +344,9 @@ export function renderAdSetEvidence(snap: MetaAuditSnapshot, maxAdSets = 40): st
   lines.push(
     "",
     "Use these numbers for the per-ad-set audit. A metric marked \"not reported\" or \"n/a\" was not measured — say so; never estimate it.",
+    ...(compare
+      ? ["The \"vs previous period\" lines compare against the same number of days immediately before — use them to say whether each campaign and ad set is improving or getting worse."]
+      : []),
   );
   return lines.join("\n");
 }
