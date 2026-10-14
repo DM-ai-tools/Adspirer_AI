@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { assessRisk } from "@/lib/approvals/risk";
 import { approve, createPendingApproval, edit } from "@/lib/approvals/service";
+import { executeApprovedAction } from "@/lib/approvals/executor";
+import { AuthorizationError } from "@/lib/errors";
+import { getDemoStore } from "@/lib/demo/store";
 
 const goals = (max_budget_change_pct?: number) => ({ goals_profile: max_budget_change_pct ? { max_budget_change_pct } : {} });
 const budget = (prev: number | undefined, next: number) => ({
@@ -34,6 +37,40 @@ describe("assessRisk", () => {
     expect(assessRisk("resume_ad", {}, goals()).level).toBe("medium");
     expect(assessRisk("create_meta_image_campaign", {}, goals()).level).toBe("medium");
     expect(assessRisk("create_campaign", { status: "ACTIVE" }, goals()).level).toBe("high");
+  });
+});
+
+describe("high-risk approvals need an admin", () => {
+  const CLIENT_ID = "client_modern_dental";
+  const ADMIN = "profile_admin_demo";
+  const OPERATOR = "profile_operator_demo";
+  const raise = (next: number) => ({
+    account_id: "act_100200300",
+    adset_id: "adset_mdc_npl_1",
+    daily_budget_cents: next,
+    previous_daily_budget_cents: 4000,
+  });
+
+  it("refuses an operator approving a high-risk change", async () => {
+    const queued = await createPendingApproval({ clientId: CLIENT_ID, toolName: "update_adset_budget", proposedArgs: raise(8000) });
+    expect(queued.risk_level).toBe("high");
+    await expect(approve({ approvalId: queued.id, reviewedBy: OPERATOR })).rejects.toBeInstanceOf(AuthorizationError);
+    await expect(approve({ approvalId: queued.id, reviewedBy: OPERATOR })).rejects.toThrow(/admin/);
+    expect((await approve({ approvalId: queued.id, reviewedBy: ADMIN })).status).toBe("approved");
+  });
+
+  it("lets an operator approve low and medium-risk changes", async () => {
+    const queued = await createPendingApproval({ clientId: CLIENT_ID, toolName: "update_adset_budget", proposedArgs: raise(4400) });
+    expect((await approve({ approvalId: queued.id, reviewedBy: OPERATOR })).status).toBe("approved");
+  });
+
+  it("refuses to execute a high-risk approval that no admin approved", async () => {
+    const queued = await createPendingApproval({ clientId: CLIENT_ID, toolName: "update_adset_budget", proposedArgs: raise(8000) });
+    // Approved by an operator before this rule existed.
+    const stored = getDemoStore().approvals.find((a) => a.id === queued.id)!;
+    stored.status = "approved";
+    stored.reviewed_by = OPERATOR;
+    await expect(executeApprovedAction({ approvalId: queued.id, executedBy: OPERATOR })).rejects.toThrow(/admin/);
   });
 });
 

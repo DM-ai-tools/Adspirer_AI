@@ -11,6 +11,7 @@ import {
 } from "@/lib/approvals/validator";
 import { prepareApprovalArgs } from "@/lib/approvals/validate-args";
 import { assessRisk } from "@/lib/approvals/risk";
+import { assertMayApprove } from "@/lib/approvals/approver";
 import { AuthorizationError, DuplicateExecutionError } from "@/lib/errors";
 import { addHoursIso, nowIso } from "@/lib/utils";
 import { logger } from "@/lib/observability/logger";
@@ -330,6 +331,7 @@ async function transitionApproval(
   if (!reviewedBy) {
     throw new AuthorizationError("reviewedBy is required");
   }
+  if (to === "approved") await assertMayApprove(approval, reviewedBy);
 
   const ts = nowIso();
   const updated: Approval = {

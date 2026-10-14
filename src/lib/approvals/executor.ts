@@ -20,6 +20,7 @@ import {
 } from "@/lib/approvals/validator";
 import { getApproval, getClient } from "@/lib/approvals/service";
 import { prepareApprovalArgs } from "@/lib/approvals/validate-args";
+import { assertMayApprove } from "@/lib/approvals/approver";
 import { nowIso } from "@/lib/utils";
 import { toApprovalInsert } from "@/lib/db/live-maps";
 import { completeTaskIfApprovalsTerminal } from "@/lib/workflow/bindings";
@@ -78,6 +79,9 @@ export async function executeApprovedAction(input: {
 
   assertExecutableStatus(approval);
   assertApprovalNotExpired(approval);
+  // Backstop for approvals approved (or edited) before the admin rule, or
+  // by a path that skipped approve().
+  await assertMayApprove(approval, approval.reviewed_by);
 
   // In-flight guard (process-local + demo store)
   if (executingKeys.has(idempotencyKey)) {
