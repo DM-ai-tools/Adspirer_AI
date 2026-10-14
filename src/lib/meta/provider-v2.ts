@@ -2012,10 +2012,8 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     options: Record<string, unknown> = {},
   ): Promise<{ text: string; structured?: Record<string, unknown> | null }> {
     const id = normalizeAccountId(accountId);
-    // This week vs the week before, judged by the shared fatigue rule.
-    const day = (offset: number) => new Date(Date.now() - offset * 86_400_000).toISOString().slice(0, 10);
-    const dateStart = day(6);
-    const dateStop = day(0);
+    // This week vs the week before, judged by the shared fatigue rule. Meta's
+    // presets use the account's time zone; the earlier week is 14 days − 7.
     const lookbackDays = 14;
     const frequencyMax = Number(options.frequency_max) > 0 ? Number(options.frequency_max) : undefined;
     const ads = await this.listAds(id);
@@ -2026,27 +2024,48 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       args: Record<string, unknown>;
       rationale: string;
     }> = [];
-    const lines: string[] = [`### Creative fatigue (${id}) · ${dateStart} → ${dateStop} vs the week before`];
+    let dateStart = "";
+    let dateStop = "";
+    const lines: string[] = [];
 
     try {
-      const window = (since: string, until: string) =>
-        this.graph.get<{ data?: Array<Record<string, unknown>> }>(`${id}/insights`, {
-          fields: "ad_id,ad_name,adset_id,spend,impressions,frequency,inline_link_click_ctr",
-          level: "ad",
-          time_range: JSON.stringify({ since, until }),
-          limit: 200,
-        });
-      const [now, before] = await Promise.all([window(dateStart, dateStop), window(day(13), day(7)).catch(() => ({ data: [] }))]);
-      const ctrBefore = new Map((before.data ?? []).map((r) => [String(r.ad_id ?? ""), Number(r.inline_link_click_ctr ?? 0)]));
-      const fatigued = (now.data ?? [])
+      const insights = async (preset: "last_7d" | "last_14d") => {
+        const rows: Array<Record<string, unknown>> = [];
+        let after: string | undefined;
+        for (let page = 0; page < 10; page++) {
+          const data = await this.graph.get<{
+            data?: Array<Record<string, unknown>>;
+            paging?: { cursors?: { after?: string }; next?: string };
+          }>(`${id}/insights`, {
+            fields: "ad_id,ad_name,adset_id,spend,impressions,frequency,inline_link_clicks,date_start,date_stop",
+            level: "ad",
+            date_preset: preset,
+            limit: 200,
+            ...(after ? { after } : {}),
+          });
+          rows.push(...(data.data ?? []));
+          after = data.paging?.next ? data.paging?.cursors?.after : undefined;
+          if (!after) break;
+        }
+        return rows;
+      };
+      const [now, fortnight] = await Promise.all([insights("last_7d"), insights("last_14d").catch(() => [])]);
+      dateStart = String(now[0]?.date_start ?? "");
+      dateStop = String(now[0]?.date_stop ?? "");
+      const totals14 = new Map(fortnight.map((r) => [String(r.ad_id ?? ""), { imps: Number(r.impressions ?? 0), clicks: Number(r.inline_link_clicks ?? 0) }]));
+      const fatigued = now
         .map((row) => {
           const adId = String(row.ad_id ?? "");
+          const imps = Number(row.impressions ?? 0);
+          const clicks = Number(row.inline_link_clicks ?? 0);
+          const all = totals14.get(adId);
+          const impsBefore = all ? all.imps - imps : 0;
           const verdict = assessFatigue(
             {
-              impressions: Number(row.impressions ?? 0),
+              impressions: imps,
               frequency7d: Number(row.frequency ?? 0),
-              ctrNow: Number(row.inline_link_click_ctr ?? 0),
-              ctrBefore: ctrBefore.has(adId) ? ctrBefore.get(adId)! : null,
+              ctrNow: imps > 0 ? (clicks / imps) * 100 : 0,
+              ctrBefore: all && impsBefore > 0 ? ((all.clicks - clicks) / impsBefore) * 100 : null,
             },
             { frequencyMax },
           );
@@ -2076,6 +2095,9 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     } catch {
       lines.push(`- Could not load ad-level insights. Active ads on file: ${activeAds.length}.`);
     }
+    lines.unshift(
+      `### Creative fatigue (${id}) · ${dateStart && dateStop ? `${dateStart} → ${dateStop}` : "last 7 days"} vs the 7 days before`,
+    );
 
     lines.push(
       "",

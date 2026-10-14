@@ -52,9 +52,16 @@ describe("detectCreativeFatigue uses the shared rule and never empties an ad set
       if (path === "act_1") return { currency: "USD" };
       if (path === "act_1/ads") return { data: ads };
       if (path === "act_1/insights") {
-        const range = JSON.parse(String(params.time_range ?? "{}")) as { until?: string };
-        const isNow = range.until === new Date().toISOString().slice(0, 10);
-        return { data: isNow ? rows.now : rows.before };
+        if (params.date_preset === "last_7d") return { data: rows.now };
+        // last_14d = this week plus the week before
+        return {
+          data: rows.now.map((r) => {
+            const b = rows.before.find((x) => x.ad_id === r.ad_id);
+            return b
+              ? { ...r, impressions: String(Number(r.impressions) + Number(b.impressions)), inline_link_clicks: String(Number(r.inline_link_clicks) + Number(b.inline_link_clicks)) }
+              : r;
+          }),
+        };
       }
       throw new Error(`unexpected ${path}`);
     });
@@ -63,7 +70,7 @@ describe("detectCreativeFatigue uses the shared rule and never empties an ad set
   }
   const ad = (id: string, adset: string) => ({ id, name: `Ad ${id}`, adset_id: adset, campaign_id: "c1", status: "ACTIVE", effective_status: "ACTIVE" });
   const row = (id: string, adset: string, ctr: number, freq: number) => ({
-    ad_id: id, ad_name: `Ad ${id}`, adset_id: adset, impressions: "5000", spend: "50", frequency: String(freq), inline_link_click_ctr: String(ctr),
+    ad_id: id, ad_name: `Ad ${id}`, adset_id: adset, impressions: "5000", spend: "50", frequency: String(freq), inline_link_clicks: String(ctr * 50),
   });
 
   it("pauses a fatigued ad that has a live sibling, but not an ad set's only live ad", async () => {

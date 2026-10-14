@@ -2,6 +2,7 @@ import type { MetaAdsProvider, MetaAdCreative, MetaCampaign, MetaAdSet } from "@
 import type { AgentToolCallProposal } from "@/lib/agent/adspirer-agent";
 import { adSetsWithSilentTracking } from "@/lib/audit/checkpoints";
 import { campaignDailySpendCents } from "@/lib/approvals/validator";
+import { formatMoney } from "@/lib/monitoring/health";
 import type { MetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
 import {
   mergeExecuteProposals,
@@ -30,11 +31,18 @@ export function holdIncreasesOnSilentTracking(
   const heldLines: string[] = [];
   const heldIds: string[] = [];
   for (const proposal of proposals) {
-    const next = Number(proposal.args.daily_budget_cents);
-    const prev = Number(proposal.args.previous_daily_budget_cents);
-    const isIncrease = Number.isFinite(next) && Number.isFinite(prev) && next > prev;
     const adSetId = typeof proposal.args.adset_id === "string" ? proposal.args.adset_id : null;
     const campaignId = typeof proposal.args.campaign_id === "string" ? proposal.args.campaign_id : null;
+    const next = Number(proposal.args.daily_budget_cents);
+    // The proposal's own "before", else the snapshot's; unknown counts as an increase.
+    const stated = proposal.args.previous_daily_budget_cents;
+    const prev =
+      stated != null && Number.isFinite(Number(stated))
+        ? Number(stated)
+        : proposal.name === "update_adset_budget"
+          ? (snapshot?.adSets.find((a) => a.id === adSetId)?.dailyBudgetCents ?? null)
+          : (snapshot?.campaigns.find((c) => c.id === campaignId)?.dailyBudgetCents ?? null);
+    const isIncrease = Number.isFinite(next) && (prev == null || next > prev);
 
     if (isIncrease && proposal.name === "update_adset_budget" && adSetId && silent.has(adSetId)) {
       heldLines.push(
@@ -44,7 +52,8 @@ export function holdIncreasesOnSilentTracking(
       continue;
     }
     if (isIncrease && proposal.name === "update_campaign_budget" && campaignId && snapshot) {
-      const quiet = snapshot.adSets.find((a) => a.campaignId === campaignId && silent.has(a.id));
+      // Only ad sets that are delivering would spend the extra budget.
+      const quiet = snapshot.adSets.find((a) => a.campaignId === campaignId && a.status === "ACTIVE" && silent.has(a.id));
       if (quiet) {
         heldLines.push(
           `- Held back: budget increase on campaign ${campaignId} — ad set ${quiet.name} (${quiet.id}) recorded no ${silent.get(quiet.id)} events in the last 7 days. Fix tracking first, then scale.`,
@@ -56,6 +65,11 @@ export function holdIncreasesOnSilentTracking(
     kept.push(proposal);
   }
   return { kept, heldLines, heldIds };
+}
+
+function targetId(p: AgentToolCallProposal): string {
+  const { adset_id, campaign_id, ad_id } = p.args;
+  return String(adset_id ?? campaign_id ?? ad_id ?? "");
 }
 
 function isHttpsUrl(value: string | null | undefined): value is string {
@@ -87,6 +101,8 @@ export async function buildFullOptimizeProposals(input: {
   accountId: string;
   /** Optional client website — used only if live creatives lack a landing URL. */
   fallbackLandingUrl?: string | null;
+  /** The client's currency, for spend in rationales. */
+  currency?: string | null;
 }): Promise<OptimizeProposalBundle> {
   const { provider, accountId } = input;
   const proposals: AgentToolCallProposal[] = [];
@@ -109,8 +125,9 @@ export async function buildFullOptimizeProposals(input: {
     );
     for (const p of fromBudget) {
       proposals.push(p);
+      // The id lets a held increase be taken back out of the queueable list.
       queueableLines.push(
-        `- BUDGET: ${p.rationale ?? "update_adset_budget"} → tool \`${p.name}\``,
+        `- BUDGET: ${p.rationale ?? "update_adset_budget"} (${targetId(p)}) → tool \`${p.name}\``,
       );
     }
   }
@@ -122,7 +139,7 @@ export async function buildFullOptimizeProposals(input: {
     for (const p of fromFatigue) {
       proposals.push(p);
       queueableLines.push(
-        `- FATIGUE: ${p.rationale ?? "pause_ad"} → tool \`${p.name}\``,
+        `- FATIGUE: ${p.rationale ?? "pause_ad"} (${targetId(p)}) → tool \`${p.name}\``,
       );
     }
   }
@@ -152,7 +169,7 @@ export async function buildFullOptimizeProposals(input: {
         campaign_id: c.id,
         ...(restarts ? { daily_budget_cents: restarts } : {}),
       },
-      rationale: `Reactivate ${c.name} (${c.id}): ${results} results for ${spend.toFixed(2)} spend in the last 90 days.`,
+      rationale: `Reactivate ${c.name} (${c.id}): ${results} results for ${formatMoney(Math.round(spend * 100), input.currency ?? "USD")} spend in the last 90 days.`,
     });
     queueableLines.push(
       `- REACTIVATE: ${c.name} (${c.id}) — ${results} results in the last 90 days → tool \`resume_campaign\``,

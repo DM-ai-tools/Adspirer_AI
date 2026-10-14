@@ -578,7 +578,18 @@ function sumPerformance(rows: PeriodPerformance[]): PeriodPerformance | null {
   const counted = rows.filter((p) => p.results != null);
   const results = counted.length ? counted.reduce((sum, p) => sum + p.results!, 0) : null;
   const labels = new Set(counted.map((p) => p.resultLabel));
+  // Optional counts: summed when any row has them, left out otherwise.
+  const optional = <K extends "linkClicks" | "landingPageViews" | "videoViews3s" | "thruplays">(key: K) => {
+    const present = rows.filter((p) => p[key] != null);
+    return present.length ? { [key]: present.reduce((sum, p) => sum + (p[key] as number), 0) } : {};
+  };
+  const withRoas = rows.filter((p) => p.roas != null);
+  const roasSpend = withRoas.reduce((sum, p) => sum + p.spendCents, 0);
   return {
+    ...optional("linkClicks"),
+    ...optional("landingPageViews"),
+    ...optional("videoViews3s"),
+    ...optional("thruplays"),
     spendCents,
     impressions,
     reach,
@@ -588,7 +599,8 @@ function sumPerformance(rows: PeriodPerformance[]): PeriodPerformance | null {
     results,
     resultLabel: labels.size === 1 ? [...labels][0]! : labels.size ? "Mixed goals" : "Results",
     costPerResultCents: results && results > 0 ? Math.round(spendCents / results) : null,
-    roas: null,
+    // Spend-weighted, and only when every row reports it.
+    roas: withRoas.length === rows.length && roasSpend > 0 ? withRoas.reduce((sum, p) => sum + p.roas! * p.spendCents, 0) / roasSpend : null,
   };
 }
 

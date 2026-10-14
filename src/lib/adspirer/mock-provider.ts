@@ -85,7 +85,9 @@ function seedState(): MutableState {
         daily_budget_cents: 4000,
         optimization_goal: "OFFSITE_CONVERSIONS",
         billing_event: "IMPRESSIONS",
-        targeting_summary: "US · 25-54 · interest: dentistry + lookalikes",
+        targeting_summary: JSON.stringify({ geo_locations: { countries: ["US"] }, age_min: 25, age_max: 54 }),
+        pixel_id: "px_mdc_demo",
+        custom_event_type: "LEAD",
       },
       {
         id: "adset_mdc_npl_2",
@@ -96,7 +98,9 @@ function seedState(): MutableState {
         daily_budget_cents: 4000,
         optimization_goal: "OFFSITE_CONVERSIONS",
         billing_event: "IMPRESSIONS",
-        targeting_summary: "10-mile radius around clinic",
+        targeting_summary: JSON.stringify({ geo_locations: { custom_locations: [{ radius: 10, distance_unit: "mile" }] } }),
+        pixel_id: "px_mdc_demo",
+        custom_event_type: "LEAD",
       },
       {
         id: "adset_mdc_cosmetic_1",
@@ -107,7 +111,7 @@ function seedState(): MutableState {
         daily_budget_cents: 5000,
         optimization_goal: "OFFSITE_CONVERSIONS",
         billing_event: "IMPRESSIONS",
-        targeting_summary: "Advantage+ · conversion optimized",
+        targeting_summary: JSON.stringify({ geo_locations: { countries: ["US"] }, targeting_automation: { advantage_audience: 1 } }),
       },
     ],
     ads: [
@@ -715,6 +719,7 @@ export class MockMetaAdsProvider implements MetaAdsProvider {
         `Demo primary text for ${a.name}. Connect live Adspirer for real creatives.`,
       description: "Demo desc",
       call_to_action_type: "LEARN_MORE",
+      landing_page_url: "https://moderndental.example.com/new-patients",
       creative_type: "image",
       spend: 120,
       impressions: 8000,
