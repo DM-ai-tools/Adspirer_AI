@@ -4,6 +4,17 @@ import {
   gatherDeliveryStructure,
 } from "@/lib/agent/delivery-structure";
 import { evaluateCheckpoints } from "@/lib/audit/checkpoints";
+import { resolveGoals, type ResolvedGoals } from "@/lib/clients/goals";
+
+/** The client's goals for judging the account; defaults when it can't be loaded. */
+async function clientGoals(clientId: string): Promise<ResolvedGoals> {
+  try {
+    const { getClient } = await import("@/lib/approvals/service");
+    return resolveGoals(await getClient(clientId));
+  } catch {
+    return resolveGoals({ goals_profile: {} });
+  }
+}
 import { scopeAuditSnapshot } from "@/lib/audit/meta-audit-data";
 import {
   renderAdSetEvidence,
@@ -2040,7 +2051,7 @@ export async function gatherDiagnoseEvidence(input: {
                 brief.scope === "campaigns"
                   ? scopeAuditSnapshot(accountSnapshot, matchedCampaigns.map((c) => c.id))
                   : accountSnapshot;
-              const scorecard = evaluateCheckpoints(snapshot);
+              const scorecard = evaluateCheckpoints(snapshot, { goals: await clientGoals(input.clientId) });
               sections.push(renderScorecardEvidence(scorecard, snapshot));
               sections.push(renderAdSetEvidence(snapshot));
               auditAppendix = renderScorecardMarkdown(scorecard, snapshot);
@@ -2822,7 +2833,7 @@ export async function gatherDiagnoseEvidence(input: {
         (line) => !hold.heldIds.some((id) => line.includes(id)),
       );
       if (snapshot) {
-        sections.push(renderOptimisationSignals(evaluateCheckpoints(snapshot)));
+        sections.push(renderOptimisationSignals(evaluateCheckpoints(snapshot, { goals: await clientGoals(input.clientId) })));
         toolCalls.push({
           name: "audit_checkpoints",
           args: { account_id: accountId, days: 14 },
