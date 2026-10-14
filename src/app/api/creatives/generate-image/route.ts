@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { IMAGE_FORMATS } from "@/lib/creatives/formats";
 import { getCurrentUser } from "@/lib/security/auth";
 import {
   assertAuthenticated,
@@ -13,6 +14,7 @@ export const maxDuration = 180;
 const bodySchema = z.object({
   draftId: z.string().min(1),
   brandName: z.string().optional(),
+  format: z.enum(IMAGE_FORMATS).optional(),
 });
 
 export async function POST(request: Request) {
@@ -25,7 +27,7 @@ export async function POST(request: Request) {
     if (!existing) throw new Error("Creative draft not found");
     await assertClientAccess(user.id, existing.client_id);
 
-    const result = await generateImageForDraft(body.draftId, body.brandName);
+    const result = await generateImageForDraft(body.draftId, body.brandName, null, body.format);
 
     return jsonOk({
       draft: {

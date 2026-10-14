@@ -1,3 +1,4 @@
+import type { ImageFormat } from "@/lib/creatives/formats";
 import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
 import { analyzeBrandFromUrl } from "@/lib/brand/analyze-url";
@@ -31,6 +32,8 @@ export type GenerateCreativesInput = {
   /** Competitor / reference notes for art direction. */
   referenceBrief?: string;
   analyzeBrand?: boolean;
+  /** 4:5 feed (default), 9:16 Reels/Stories or 1:1. */
+  imageFormat?: ImageFormat;
 };
 
 export type GenerateCreativesResult = {
@@ -292,12 +295,13 @@ export async function generateImagesForDrafts(input: {
   brandName?: string;
   conversationId?: string;
   taskId?: string;
+  imageFormat?: ImageFormat;
 }): Promise<CreativeDraft[]> {
   // Generated in parallel so one slow or failing still cannot truncate the
   // batch, and so N variants cost roughly one image's wall time instead of N.
   const results = await Promise.allSettled(
     input.draftIds.map((draftId) =>
-      generateImageForDraft(draftId, input.brandName),
+      generateImageForDraft(draftId, input.brandName, null, input.imageFormat),
     ),
   );
 
@@ -397,6 +401,7 @@ export async function startCreativeGeneration(
         brandName,
         conversationId: input.conversationId,
         taskId: input.taskId,
+        imageFormat: input.imageFormat,
       }),
   };
 }
@@ -416,6 +421,7 @@ export async function runFullCreativeGeneration(
     brandName,
     conversationId: input.conversationId,
     taskId: input.taskId,
+    imageFormat: input.imageFormat,
   });
 
   // Keep every requested variant in the result, even ones whose image failed,

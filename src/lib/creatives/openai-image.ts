@@ -1,3 +1,4 @@
+import { cropToFormat, formatPromptRule, type ImageFormat } from "@/lib/creatives/formats";
 import { getConfig } from "@/lib/config";
 import { logger } from "@/lib/observability/logger";
 
@@ -20,6 +21,8 @@ export async function generateOpenAIImage(input: {
   size?: "1024x1024" | "1024x1536" | "1536x1024";
   quality?: "low" | "medium" | "high";
   logoUrl?: string | null;
+  /** Crop the render to this shape (before the logo goes on). */
+  format?: ImageFormat;
 }): Promise<OpenAIImageResult> {
   const config = getConfig();
   const model = config.OPENAI_IMAGE_MODEL || "gpt-image-2";
@@ -70,6 +73,21 @@ export async function generateOpenAIImage(input: {
     const first = payload?.data?.[0];
     let b64 = first?.b64_json ?? null;
     let imageUrl: string | null = first?.url ?? null;
+    if (input.format && input.format !== "1:1") {
+      try {
+        const raw =
+          b64 ??
+          (imageUrl
+            ? Buffer.from(await (await fetch(imageUrl, { signal: AbortSignal.timeout(30_000) })).arrayBuffer()).toString("base64")
+            : null);
+        if (raw) {
+          b64 = await cropToFormat(raw, input.format);
+          imageUrl = `data:image/png;base64,${b64}`;
+        }
+      } catch (error) {
+        logger.warn("Image crop failed", { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
     if (input.logoUrl) {
       try {
         const sourceImage = b64
@@ -87,6 +105,8 @@ export async function generateOpenAIImage(input: {
           const branded = await compositeOfficialLogo(
             sourceImage,
             input.logoUrl,
+            // Reels/Stories: below the top 14% Meta covers with the account name.
+            input.format === "9:16" ? { top: 230 } : {},
           );
           b64 = branded.toString("base64");
           imageUrl = `data:image/png;base64,${b64}`;
@@ -141,6 +161,7 @@ export function buildBrandImagePrompt(input: {
   landingPageUrl?: string | null;
   revisionNotes?: string | null;
   variantLabel?: string | null;
+  format?: ImageFormat;
 }): string {
   const palette = input.colors?.filter(Boolean).slice(0, 4) ?? [];
   const [primary, secondary, tertiary] = palette;
@@ -180,7 +201,7 @@ export function buildBrandImagePrompt(input: {
     // Left unchecked the model converges on one house style for every variant.
     "Do not default to the generic layout of a laptop or dashboard on a desk with a rising green arrow and a city skyline unless the art direction explicitly asks for it. Commit fully to the stated art direction's composition and subject matter.",
     input.revisionNotes ? `Operator revision request: ${input.revisionNotes}` : null,
-    "Square 1:1 composition for Instagram feed. No watermarks, no dense paragraphs of text on the image.",
+    formatPromptRule(input.format ?? "1:1"),
   ]
     .filter(Boolean)
     .join(" ");
@@ -189,6 +210,7 @@ export function buildBrandImagePrompt(input: {
 async function compositeOfficialLogo(
   sourceImage: Buffer,
   logoUrl: string,
+  placement: { top?: number } = {},
 ): Promise<Buffer> {
   const logo = await loadLogoBuffer(logoUrl);
   const sharpModule = await import("sharp");
@@ -210,7 +232,7 @@ async function compositeOfficialLogo(
   const cardWidth = 220;
   const cardHeight = 104;
   const cardLeft = 36;
-  const cardTop = 36;
+  const cardTop = placement.top ?? 36;
   const logoLeft = cardLeft + Math.round((cardWidth - resized.info.width) / 2);
   const logoTop = cardTop + Math.round((cardHeight - resized.info.height) / 2);
   const card = Buffer.from(

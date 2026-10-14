@@ -1,3 +1,4 @@
+import { parseImageFormat } from "@/lib/creatives/formats";
 import { nanoid } from "nanoid";
 import type { Approval, Task, TaskStatus, ToolCall } from "@/types";
 import { getConfig } from "@/lib/config";
@@ -686,6 +687,7 @@ export async function runTask(
             headline: imageUi.headline,
             primaryText: imageUi.primary_text,
             referenceBrief: imageUi.reference_notes,
+            imageFormat: parseImageFormat(agentUi?.format ?? gatheredUi?.format),
             count: CREATIVE_VARIANT_COUNT,
             generateImages: true,
             analyzeBrand: true,

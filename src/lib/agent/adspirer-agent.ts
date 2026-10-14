@@ -148,6 +148,8 @@ export type ImageChoiceUi = {
   primary_text?: string;
   /** Competitor / reference guidance for art direction. */
   reference_notes?: string;
+  /** "4:5" (feed, default), "9:16" (Reels/Stories) or "1:1". */
+  format?: string;
 };
 
 export type FormatChoiceUi = {

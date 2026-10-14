@@ -1,3 +1,4 @@
+import { generationSize, type ImageFormat } from "@/lib/creatives/formats";
 import {
   buildBrandImagePrompt,
   generateOpenAIImage,
@@ -25,6 +26,7 @@ export async function generateImageForDraft(
   draftId: string,
   brandName?: string,
   revisionNotes?: string | null,
+  format: ImageFormat = "4:5",
 ): Promise<DraftImageResult> {
   const existing = await getCreativeDraftAsync(draftId);
   if (!existing) {
@@ -53,15 +55,17 @@ export async function generateImageForDraft(
     landingPageUrl: existing.landing_page_url ?? undefined,
     revisionNotes: revisionNotes ?? existing.revision_notes,
     variantLabel: existing.concept.split("—").pop()?.trim() ?? null,
+    format,
   });
 
   let image: Awaited<ReturnType<typeof generateOpenAIImage>>;
   try {
     image = await generateOpenAIImage({
       prompt,
-      size: "1024x1024",
+      size: generationSize(format),
       quality: "medium",
       logoUrl: existing.logo_url,
+      format,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
