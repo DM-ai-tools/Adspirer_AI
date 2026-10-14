@@ -78,7 +78,7 @@ export function buildStaticSystemPromptV2(): string {
     "8. Website URL — landing_page_url (full https destination)",
     "9. Display URL — display_link (short URL shown on the ad; DIFFERENT from landing_page_url / website URL)",
     "10. Creative — primary_text, headline, description, CTA, image_url or video, facebook_page_id",
-    "11. Optional — url_tags (UTMs), pixel_id + pixel_event_name for Sales/Leads, special_ad_categories",
+    "11. Tracking — pixel_id + pixel_event_name (required for Sales; Leads needs a pixel or lead_form_id), url_tags (UTMs), special_ad_categories",
     "",
     "When queuing create_meta_image_campaign / create_meta_video_campaign, include:",
     "locations, custom_audiences, excluded_custom_audiences, interests, behaviors,",
