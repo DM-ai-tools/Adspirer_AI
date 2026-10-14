@@ -70,8 +70,8 @@ export default function ClientDetailPage() {
           ),
           apiFetch<{ tasks: Task[] }>(`/api/tasks?clientId=${clientId}`),
           apiFetch<{
-            findings: MonitoringFinding[];
-            recommendations: Recommendation[];
+            findings?: MonitoringFinding[];
+            recommendations?: Recommendation[];
             accountUpdates?: AccountUpdate[];
           }>(`/api/monitoring/${clientId}`),
         ]);
@@ -79,8 +79,10 @@ export default function ClientDetailPage() {
       setClient(clientRes.client);
       setApprovals(approvalsRes.approvals);
       setTasks(tasksRes.tasks);
-      setFindings(monitoringRes.findings);
-      setRecommendations(monitoringRes.recommendations);
+      // The monitoring API returns health alerts, not findings, since it was
+      // rebuilt; missing lists are empty rather than a crash.
+      setFindings(monitoringRes.findings ?? []);
+      setRecommendations(monitoringRes.recommendations ?? []);
       setAccountUpdates(monitoringRes.accountUpdates ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load client");
