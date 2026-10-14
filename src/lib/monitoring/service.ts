@@ -46,6 +46,8 @@ export async function getClientHealth(input: {
   accountId?: string | null;
   /** Skip the cache (manual refresh, scheduled job). */
   fresh?: boolean;
+  /** Scheduled jobs pass the token they run with (e.g. a system-user token). */
+  token?: string;
 }): Promise<ClientHealthResult> {
   const mapped = (await loadMappedMetaAccounts(input.clientId)).filter(
     (a) => a.access_status === "granted",
@@ -90,7 +92,7 @@ export async function getClientHealth(input: {
   let token: string;
   try {
     const { getUserMetaToken } = await import("@/lib/meta/get-user-token");
-    token = (await getUserMetaToken()).accessToken;
+    token = input.token ?? (await getUserMetaToken()).accessToken;
   } catch (error) {
     return {
       state: "not_connected",
@@ -150,6 +152,8 @@ export async function persistHealthSnapshot(clientId: string, health: AccountHea
       frequency: cur.frequency,
       currency: health.account.currency,
       days: health.window.days,
+      // Week-on-week baseline for the tracking-drop alert.
+      tracking: health.tracking ?? [],
     },
     findings: health.findings,
   };
