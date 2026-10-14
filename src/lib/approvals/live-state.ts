@@ -1,4 +1,5 @@
 import type { MetaAdsProvider } from "@/lib/adspirer/provider";
+import { accountDailyTotalCents, campaignDailySpendCents } from "@/lib/approvals/validator";
 import type { WorkspaceExecutionBackend } from "@/lib/runtime/workspace-context";
 import { formatMoney } from "@/lib/monitoring/health";
 import { logger } from "@/lib/observability/logger";
@@ -85,6 +86,41 @@ export async function withLiveBefore(
     });
     return args;
   }
+}
+
+/**
+ * The account's live daily budgets after this change, or null when the
+ * change adds no daily spend (decreases, pauses, paused creates).
+ */
+export async function projectAccountDailyCents(
+  provider: MetaAdsProvider,
+  toolName: string,
+  args: Record<string, unknown>,
+): Promise<number | null> {
+  const account = str(args.account_id);
+  const adds = ["update_adset_budget", "update_campaign_budget", "resume_campaign", "resume_adset", "create_campaign"];
+  if (!account || !adds.includes(toolName)) return null;
+  if (toolName === "create_campaign" && args.status !== "ACTIVE") return null;
+  const accountId = actId(account);
+  const [campaigns, adsets] = await Promise.all([provider.listCampaigns(accountId), provider.listAdSets(accountId)]);
+  const campaignId = str(args.campaign_id);
+  const adsetId = str(args.adset_id) ?? str(args.ad_set_id);
+  const next = typeof args.daily_budget_cents === "number" ? args.daily_budget_cents : 0;
+  let added = 0;
+  if (toolName === "update_campaign_budget") {
+    added = next - (campaigns.find((c) => c.id === campaignId)?.daily_budget_cents ?? 0);
+  } else if (toolName === "update_adset_budget") {
+    added = next - (adsets.find((a) => a.id === adsetId)?.daily_budget_cents ?? 0);
+  } else if (toolName === "resume_campaign") {
+    const campaign = campaigns.find((c) => c.id === campaignId);
+    added = campaign && campaign.status !== "ACTIVE" ? (campaignDailySpendCents(campaign, adsets) ?? 0) : 0;
+  } else if (toolName === "resume_adset") {
+    const adset = adsets.find((a) => a.id === adsetId);
+    added = adset && adset.status !== "ACTIVE" ? adset.daily_budget_cents : 0;
+  } else {
+    added = next; // a campaign created ACTIVE spends from day one
+  }
+  return added > 0 ? accountDailyTotalCents(campaigns, adsets) + added : null;
 }
 
 /** Why the approval no longer matches Meta, or null when nothing it depends on changed. */
