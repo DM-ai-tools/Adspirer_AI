@@ -104,6 +104,20 @@ function lookbackWindow(days: number): { dateStart: string; dateStop: string } {
   };
 }
 
+/**
+ * Meta's own "Results" for the row's optimisation event (as Ads Manager shows
+ * them); null when the row has no `results` field or mixes goals.
+ */
+function metaResultCount(row: Record<string, unknown>): number | null {
+  const results = Array.isArray(row.results)
+    ? (row.results as Array<{ indicator?: string; values?: Array<{ value?: string }> }>)
+    : null;
+  const first = results?.[0];
+  if (!first?.indicator || first.indicator === "mixed") return null;
+  const n = Number(first.values?.[0]?.value ?? 0);
+  return Number.isFinite(n) ? n : null;
+}
+
 function extractConversionMetrics(row: Record<string, unknown>): {
   conversions: number;
   cpa: number | null;
@@ -115,10 +129,9 @@ function extractConversionMetrics(row: Record<string, unknown>): {
     actions.find((a) =>
       /purchase|omni_purchase/i.test(String(a.action_type ?? "")),
     ) ??
+    // Not the generic `offsite_conversion` prefix: it also matches ViewContent.
     actions.find((a) =>
-      /lead|complete_registration|offsite_conversion/i.test(
-        String(a.action_type ?? ""),
-      ),
+      /lead|complete_registration/i.test(String(a.action_type ?? "")),
     );
   const conversions =
     purchase?.value != null ? Number(purchase.value) : 0;
@@ -1682,7 +1695,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
         data?: Array<Record<string, unknown>>;
       }>(`${id}/insights`, {
         fields:
-          "adset_id,adset_name,spend,impressions,clicks,ctr,cpc,actions,cost_per_action_type,frequency",
+          "adset_id,adset_name,spend,impressions,clicks,ctr,cpc,actions,cost_per_action_type,frequency,results",
         level: "adset",
         time_range: JSON.stringify({ since: dateStart, until: dateStop }),
         limit: 100,
@@ -1708,7 +1721,12 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
         const spend = Number(row.spend ?? 0);
         const clicks = Number(row.clicks ?? 0);
         const ctr = Number(row.ctr ?? 0);
-        const { conversions, cpa } = extractConversionMetrics(row);
+        // Meta's result count for the ad set's own optimisation event; the
+        // action-name guess only for rows without it.
+        const counted = metaResultCount(row);
+        const legacy = extractConversionMetrics(row);
+        const conversions = counted ?? legacy.conversions;
+        const cpa = counted != null ? (counted > 0 ? spend / counted : null) : legacy.cpa;
         perAdSet.set(adsetId, { spend, conversions });
         existing.spend = spend;
         existing.clicks = clicks;
@@ -1777,8 +1795,9 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     }
 
     const withSpend = ranked.filter((r) => r.spend > 0);
-    const winners = (withSpend.length ? withSpend : ranked).slice(0, 2);
-    const losers = [...(withSpend.length ? withSpend : ranked)]
+    // Scale only on results — never on CTR or delivery alone.
+    const winners = withSpend.filter((r) => r.conversions > 0).slice(0, 2);
+    const losers = [...withSpend]
       .reverse()
       .filter((r) => !winners.some((w) => w.adset_id === r.adset_id))
       .slice(0, 2);
@@ -1790,11 +1809,9 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
         Math.round(w.daily_budget_cents * 1.2),
       );
       if (next === w.daily_budget_cents) continue;
-      const rationale = w.conversions
-        ? `Scale ${w.name}: ${w.conversions} conv · CPA ${
-            w.cpa != null ? money(Math.round(w.cpa * 100)) : "n/a"
-          } · +20% daily budget.`
-        : `Scale ${w.name}: stronger relative CTR/delivery · +20% daily budget.`;
+      const rationale = `Scale ${w.name}: ${w.conversions} conv · CPA ${
+        w.cpa != null ? money(Math.round(w.cpa * 100)) : "n/a"
+      } · +20% daily budget.`;
       proposals.push({
         tool: "update_adset_budget",
         args: {
@@ -1900,27 +1917,10 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     }
 
     if (!proposals.length) {
-      // Always surface at least one concrete mutate when budgets exist.
-      const primary = winners[0] ?? ranked[0];
-      if (primary?.daily_budget_cents > 0) {
-        const next = Math.max(
-          primary.daily_budget_cents + 100,
-          Math.round(primary.daily_budget_cents * 1.15),
-        );
-        proposals.push({
-          tool: "update_adset_budget",
-          args: {
-            account_id: id,
-            adset_id: primary.adset_id,
-            daily_budget_cents: next,
-            previous_daily_budget_cents: primary.daily_budget_cents,
-          },
-          rationale: `Rebalance toward ${primary.name} (+15% daily budget) pending operator approval.`,
-        });
-        lines.push(
-          `- PROPOSE ${primary.name} (${primary.adset_id}): ${money(primary.daily_budget_cents)} → ${money(next)}/day`,
-        );
-      }
+      // No proposal is better than a guess: nothing cleared an evidence gate.
+      lines.push(
+        "- No budget change proposed: no ad set or campaign has enough results or wasted spend in this window to justify one.",
+      );
     }
 
     lines.push(

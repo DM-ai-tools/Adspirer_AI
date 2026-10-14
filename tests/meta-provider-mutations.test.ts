@@ -199,6 +199,66 @@ describe("updateCampaignBudget", () => {
   });
 });
 
+describe("optimizeBudget evidence gates (ad set budgets)", () => {
+  type Row = { id: string; budget: string; spend: number; ctr: number; results?: number; actions?: Array<{ action_type: string; value: string }> };
+  function aboAccount(rows: Row[]) {
+    return providerWith({
+      get: (path) => {
+        if (path === "act_111") return { currency: "USD" };
+        if (path === "act_111/campaigns") return { data: [{ id: "999", name: "Prospecting", status: "ACTIVE", objective: "OUTCOME_LEADS" }] };
+        if (path === "act_111/adsets") {
+          return { data: rows.map((r) => ({ id: r.id, name: `Ad set ${r.id}`, status: "ACTIVE", campaign_id: "999", daily_budget: r.budget })) };
+        }
+        if (path === "act_111/insights") {
+          return {
+            data: rows.map((r) => ({
+              adset_id: r.id,
+              spend: String(r.spend),
+              clicks: "30",
+              ctr: String(r.ctr),
+              actions: r.actions ?? [],
+              ...(r.results != null
+                ? { results: [{ indicator: "actions:offsite_conversion.fb_pixel_lead", values: [{ value: String(r.results) }] }] }
+                : {}),
+            })),
+          };
+        }
+        throw new Error(`unexpected GET ${path}`);
+      },
+    });
+  }
+  const proposalsOf = async (provider: MetaGraphProviderV2) =>
+    ((await provider.optimizeBudget("act_111")).structured?.proposals ?? []) as Array<{ tool: string; args: Record<string, unknown> }>;
+
+  it("proposes nothing when no ad set has results — no forced increase, no scaling on CTR alone", async () => {
+    const { provider } = aboAccount([
+      { id: "701", budget: "2000", spend: 5, ctr: 3.2, results: 0 },
+      { id: "702", budget: "2000", spend: 4, ctr: 0.4, results: 0 },
+    ]);
+    expect(await proposalsOf(provider)).toEqual([]);
+  });
+
+  it("does not count ViewContent as a conversion", async () => {
+    const viewContent = [{ action_type: "offsite_conversion.fb_pixel_view_content", value: "40" }];
+    const withResults = aboAccount([{ id: "701", budget: "2000", spend: 5, ctr: 2, results: 0, actions: viewContent }]);
+    expect(await proposalsOf(withResults.provider)).toEqual([]);
+    // Older rows without Meta's `results` field: ViewContent still isn't a result.
+    const legacy = aboAccount([{ id: "701", budget: "2000", spend: 5, ctr: 2, actions: viewContent }]);
+    expect(await proposalsOf(legacy.provider)).toEqual([]);
+  });
+
+  it("scales an ad set on Meta's own result count", async () => {
+    const { provider } = aboAccount([
+      { id: "701", budget: "2000", spend: 60, ctr: 1.1, results: 6 },
+      { id: "702", budget: "2000", spend: 5, ctr: 2.5, results: 0 },
+    ]);
+    const proposals = await proposalsOf(provider);
+    expect(proposals).toEqual([
+      expect.objectContaining({ tool: "update_adset_budget", args: expect.objectContaining({ adset_id: "701", daily_budget_cents: 2400 }) }),
+    ]);
+  });
+});
+
 describe("optimizeBudget with a campaign budget (CBO)", () => {
   type AdSetIn = { id: string; status?: string; spend: number; leads: number };
   function cboAccount(campaign: { daily_budget: string }, adsets: AdSetIn[]) {
