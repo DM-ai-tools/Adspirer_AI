@@ -103,3 +103,75 @@ export function resolveGoals(client: { goals_profile?: GoalsProfile | null }): R
     break_even_roas: margin != null && margin > 0 ? Math.round((1 / margin) * 100) / 100 : null,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Settings form ⇄ profile. Money fields are typed in major units (60 = $60).
+
+const MONEY_FIELDS = [
+  ["target_cpa", "target_cpa_cents"],
+  ["average_value", "average_value_cents"],
+  ["daily_account_cap", "daily_account_cap_cents"],
+  ["monthly_cap", "monthly_cap_cents"],
+] as const;
+const NUMBER_FIELDS = ["target_roas", "gross_margin_pct", "max_budget_change_pct"] as const;
+const TEXT_FIELDS = ["business_model", "attribution", "special_ad_category", "compliance_notes"] as const;
+const POLICY_FIELDS = [
+  "scale_step_pct",
+  "kill_multiple",
+  "min_days_of_data",
+  "prospecting_frequency_max",
+  "retargeting_frequency_max",
+] as const;
+
+const filled = (v: string | undefined) => (v ?? "").trim();
+
+/**
+ * Settings form values → profile (unvalidated; the API validates it).
+ * Blank fields are left out so the defaults apply.
+ */
+export function goalsProfileFromForm(values: Record<string, string | undefined>): Record<string, unknown> {
+  const profile: Record<string, unknown> = {};
+  for (const [field, key] of MONEY_FIELDS) {
+    if (filled(values[field])) profile[key] = Math.round(Number(filled(values[field])) * 100);
+  }
+  for (const field of NUMBER_FIELDS) {
+    if (filled(values[field])) profile[field] = Number(filled(values[field]));
+  }
+  for (const field of TEXT_FIELDS) {
+    if (filled(values[field])) profile[field] = filled(values[field]);
+  }
+  if (filled(values.optimisation_event)) profile.optimisation_event = filled(values.optimisation_event).toUpperCase();
+  const countries = filled(values.allowed_countries)
+    .split(",")
+    .map((c) => c.trim().toUpperCase())
+    .filter(Boolean);
+  if (countries.length) profile.allowed_countries = countries;
+  const policy: Record<string, number> = {};
+  for (const field of POLICY_FIELDS) {
+    if (filled(values[field])) policy[field] = Number(filled(values[field]));
+  }
+  if (Object.keys(policy).length) profile.policy = policy;
+  return profile;
+}
+
+/** Stored profile → form values (cents shown as major units). */
+export function goalsFormValues(profile: GoalsProfile): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const [field, key] of MONEY_FIELDS) {
+    const cents = profile[key];
+    if (cents != null) values[field] = String(cents / 100);
+  }
+  for (const field of NUMBER_FIELDS) {
+    if (profile[field] != null) values[field] = String(profile[field]);
+  }
+  for (const field of TEXT_FIELDS) {
+    if (profile[field] != null) values[field] = String(profile[field]);
+  }
+  if (profile.optimisation_event) values.optimisation_event = profile.optimisation_event;
+  if (profile.allowed_countries?.length) values.allowed_countries = profile.allowed_countries.join(", ");
+  for (const field of POLICY_FIELDS) {
+    const v = profile.policy?.[field];
+    if (v != null) values[field] = String(v);
+  }
+  return values;
+}

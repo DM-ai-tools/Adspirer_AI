@@ -1,4 +1,3 @@
-import { z } from "zod";
 import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
 import { getCurrentUser } from "@/lib/security/auth";
@@ -8,23 +7,11 @@ import {
   assertClientAccess,
 } from "@/lib/authz/assert";
 import { mapClientRow, toClientDbPatch } from "@/lib/clients/map-client";
+import { clientPatchSchema } from "@/lib/clients/patch";
 import { nowIso } from "@/lib/utils";
 import { jsonOk, parseBody, withApiHandler } from "@/lib/api/response";
 
-const patchSchema = z.object({
-  name: z.string().min(1).optional(),
-  slug: z.string().min(1).optional(),
-  website_url: z.string().url().nullable().optional(),
-  industry: z.string().nullable().optional(),
-  brand_voice: z.string().nullable().optional(),
-  brand_colors: z.array(z.string()).nullable().optional(),
-  brand_guidelines: z.string().nullable().optional(),
-  target_audience: z.string().nullable().optional(),
-  value_proposition: z.string().nullable().optional(),
-  budget_ceiling_cents: z.number().int().nonnegative().nullable().optional(),
-  currency: z.string().min(1).optional(),
-  notes: z.string().nullable().optional(),
-});
+const patchSchema = clientPatchSchema;
 
 type RouteContext = { params: Promise<{ id: string }> };
 

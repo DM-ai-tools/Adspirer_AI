@@ -17,6 +17,7 @@ import { ErrorState } from "@/components/shared/error-state";
 import { StatCard } from "@/components/shared/stat-card";
 import { ClientStatusBadge } from "@/components/clients/client-status-badge";
 import { ApprovalCard } from "@/components/approvals/approval-card";
+import { GoalsProfileForm } from "@/components/clients/goals-profile-form";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -416,7 +417,8 @@ export default function ClientDetailPage() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="settings">
+        <TabsContent value="settings" className="space-y-4">
+          <GoalsProfileForm client={client} onSaved={setClient} />
           <Card>
             <CardContent className="p-6">
               <form className="space-y-4" onSubmit={saveSettings}>

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { GOALS_DEFAULTS, goalsProfileSchema, resolveGoals } from "@/lib/clients/goals";
+import { GOALS_DEFAULTS, goalsFormValues, goalsProfileFromForm, goalsProfileSchema, resolveGoals } from "@/lib/clients/goals";
 import { mapClientRow, toClientDbPatch } from "@/lib/clients/map-client";
+import { clientPatchSchema } from "@/lib/clients/patch";
 import { getDemoStore } from "@/lib/demo/store";
 
 const row = (goals: unknown) => ({
@@ -65,6 +66,58 @@ describe("resolveGoals", () => {
     expect(goals.policy.kill_multiple).toBe(3);
     expect(goals.break_even_cpa_cents).toBe(10000);
     expect(goals.break_even_roas).toBe(4);
+  });
+});
+
+describe("goalsProfileFromForm", () => {
+  it("turns form values into a profile: money in cents, blanks left out", () => {
+    expect(
+      goalsProfileFromForm({
+        business_model: "lead_gen",
+        optimisation_event: " lead ",
+        target_cpa: "60",
+        target_roas: "",
+        average_value: "450.50",
+        gross_margin_pct: "40",
+        daily_account_cap: "300",
+        max_budget_change_pct: "20",
+        allowed_countries: "au, nz ,",
+        special_ad_category: "NONE",
+        scale_step_pct: "15",
+        kill_multiple: "",
+      }),
+    ).toEqual({
+      business_model: "lead_gen",
+      optimisation_event: "LEAD",
+      target_cpa_cents: 6000,
+      average_value_cents: 45050,
+      gross_margin_pct: 40,
+      daily_account_cap_cents: 30000,
+      max_budget_change_pct: 20,
+      allowed_countries: ["AU", "NZ"],
+      special_ad_category: "NONE",
+      policy: { scale_step_pct: 15 },
+    });
+  });
+
+  it("returns an empty profile for an empty form", () => {
+    expect(goalsProfileFromForm({})).toEqual({});
+  });
+
+  it("shows stored cents back as major units for the form", () => {
+    expect(goalsFormValues({ target_cpa_cents: 6000, allowed_countries: ["AU", "NZ"], policy: { kill_multiple: 2.5 } })).toMatchObject({
+      target_cpa: "60",
+      allowed_countries: "AU, NZ",
+      kill_multiple: "2.5",
+    });
+  });
+});
+
+describe("client PATCH body", () => {
+  it("accepts a goals profile and rejects an invalid one", () => {
+    expect(clientPatchSchema.safeParse({ goals_profile: { target_cpa_cents: 6000 } }).success).toBe(true);
+    expect(clientPatchSchema.safeParse({ goals_profile: { target_cpa_cents: -5 } }).success).toBe(false);
+    expect(clientPatchSchema.safeParse({ goals_profile: { surprise: true } }).success).toBe(false);
   });
 });
 
