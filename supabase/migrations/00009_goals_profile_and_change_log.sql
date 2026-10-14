@@ -46,10 +46,12 @@ create policy change_log_select on public.change_log
   for select to authenticated
   using (public.has_client_access(client_id));
 
-drop policy if exists change_log_insert on public.change_log;
-create policy change_log_insert on public.change_log
-  for insert to authenticated
-  with check (public.has_client_access(client_id));
+-- Read-only for signed-in users: only the server (service role) writes it,
+-- so nobody can forge entries or pre-mark a change as rolled back.
+grant select on public.change_log to authenticated;
 
--- No update/delete policies or grants: the log is append-only.
-grant select, insert on public.change_log to authenticated;
+-- Approvals: every write goes through the server (service role). Signed-in
+-- users writing rows directly through the public API could set their own
+-- risk level, status or approver and bypass the admin-only rule for
+-- high-risk changes, so they keep read access only.
+revoke insert, update, delete on public.approvals from authenticated;
