@@ -15,3 +15,41 @@ alter table public.clients
 -- Phase 2: why an approval got its risk level (risk_level already exists).
 alter table public.approvals
   add column if not exists risk_reason text;
+
+-- Phase 2: append-only log of executed Meta changes (before/after, who
+-- approved, who ran it, why). A rollback is a new row pointing at the row
+-- it undoes. Same append-only RLS shape as tool_calls: no update/delete.
+create table if not exists public.change_log (
+  id uuid primary key default gen_random_uuid(),
+  client_id uuid not null references public.clients(id) on delete cascade,
+  approval_id uuid references public.approvals(id) on delete set null,
+  tool_name text not null,
+  account_id text,
+  entity_type text not null check (entity_type in ('campaign', 'adset', 'ad')),
+  entity_id text,
+  before jsonb,
+  after jsonb,
+  approved_by uuid references public.profiles(id) on delete set null,
+  executed_by uuid references public.profiles(id) on delete set null,
+  rationale text,
+  rollback_of uuid references public.change_log(id) on delete set null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_change_log_client
+  on public.change_log(client_id, created_at desc);
+
+alter table public.change_log enable row level security;
+
+drop policy if exists change_log_select on public.change_log;
+create policy change_log_select on public.change_log
+  for select to authenticated
+  using (public.has_client_access(client_id));
+
+drop policy if exists change_log_insert on public.change_log;
+create policy change_log_insert on public.change_log
+  for insert to authenticated
+  with check (public.has_client_access(client_id));
+
+-- No update/delete policies or grants: the log is append-only.
+grant select, insert on public.change_log to authenticated;

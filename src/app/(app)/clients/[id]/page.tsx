@@ -18,6 +18,7 @@ import { StatCard } from "@/components/shared/stat-card";
 import { ClientStatusBadge } from "@/components/clients/client-status-badge";
 import { ApprovalCard } from "@/components/approvals/approval-card";
 import { GoalsProfileForm } from "@/components/clients/goals-profile-form";
+import { ChangeLogCard } from "@/components/clients/change-log-card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -401,7 +402,8 @@ export default function ClientDetailPage() {
           )}
         </TabsContent>
 
-        <TabsContent value="audit">
+        <TabsContent value="audit" className="space-y-4">
+          <ChangeLogCard clientId={client.id} currency={client.currency} />
           <Card>
             <CardContent className="flex items-center justify-between gap-4 p-6">
               <div>

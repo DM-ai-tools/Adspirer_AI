@@ -45,6 +45,8 @@ export interface DemoStore {
   notifications: Notification[];
   oauthPkceStates: OAuthPkceState[];
   workspaceDocuments: WorkspaceDocument[];
+  /** Append-only record of executed Meta changes. */
+  changeLog: import("@/lib/changes/change-log").ChangeLogEntry[];
   creativeDrafts?: import("@/lib/creatives/drafts").CreativeDraft[];
 }
 
@@ -53,7 +55,7 @@ type GlobalDemo = typeof globalThis & {
   __adspirerDemoStoreVersion?: number;
 };
 
-const DEMO_STORE_VERSION = 6;
+const DEMO_STORE_VERSION = 7;
 
 function id(prefix: string): string {
   return `${prefix}_${nanoid(10)}`;
@@ -598,6 +600,7 @@ function seedStore(): DemoStore {
     notifications,
     oauthPkceStates: [],
     workspaceDocuments: [],
+    changeLog: [],
   };
 }
 

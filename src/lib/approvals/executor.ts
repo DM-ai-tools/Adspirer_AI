@@ -257,6 +257,17 @@ export async function executeApprovedAction(input: {
     };
     await persistBestEffort(working);
 
+    // Change log: best effort — Meta already changed, never report a failure.
+    try {
+      const { buildChangeEntry, recordChange } = await import("@/lib/changes/change-log");
+      await recordChange(buildChangeEntry(working, executionResult, input.executedBy));
+    } catch (error) {
+      logger.error("Could not record change log entry", {
+        approvalId: working.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
     // Mark linked task done when all approvals are terminal
     if (working.task_id) {
       try {
