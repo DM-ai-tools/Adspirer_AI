@@ -62,6 +62,9 @@ export type PeriodPerformance = {
   /** Inline link clicks and landing page views, when Meta returned them. */
   linkClicks?: number;
   landingPageViews?: number | null;
+  /** Video: 3-second plays and ThruPlays, when the ad has video. */
+  videoViews3s?: number | null;
+  thruplays?: number | null;
 };
 
 export type AuditCampaign = {
@@ -203,6 +206,10 @@ function performanceFrom(row: Row | undefined): PeriodPerformance | null {
   const roasRows = Array.isArray(row.purchase_roas) ? (row.purchase_roas as Array<{ value?: string }>) : [];
   const actions = Array.isArray(row.actions) ? (row.actions as Array<{ action_type?: string; value?: string }>) : [];
   const lpv = actions.find((a) => a.action_type === "landing_page_view");
+  const videoView = actions.find((a) => a.action_type === "video_view");
+  const thru = Array.isArray(row.video_thruplay_watched_actions)
+    ? (row.video_thruplay_watched_actions as Array<{ value?: string }>)[0]
+    : undefined;
   return {
     spendCents,
     impressions: num(row.impressions),
@@ -216,6 +223,7 @@ function performanceFrom(row: Row | undefined): PeriodPerformance | null {
     roas: roasRows[0]?.value != null ? num(roasRows[0].value) : null,
     ...(row.inline_link_clicks != null ? { linkClicks: num(row.inline_link_clicks) } : {}),
     ...(row.actions !== undefined ? { landingPageViews: lpv ? num(lpv.value) : 0 } : {}),
+    ...(videoView ? { videoViews3s: num(videoView.value), thruplays: thru ? num(thru.value) : 0 } : {}),
   };
 }
 
@@ -343,7 +351,7 @@ export async function fetchMetaAuditSnapshot(
         level: "adset", time_range: timeRange, fields: `adset_id,${insightFields}`, limit: 200,
       }, 3)),
       settle("Ad performance", warnings, paged(graph, `${id}/insights`, {
-        level: "ad", time_range: timeRange, fields: `ad_id,quality_ranking,engagement_rate_ranking,conversion_rate_ranking,${insightFields}`, sort: "spend_descending", limit: 200,
+        level: "ad", time_range: timeRange, fields: `ad_id,quality_ranking,engagement_rate_ranking,conversion_rate_ranking,video_thruplay_watched_actions,${insightFields}`, sort: "spend_descending", limit: 200,
       }, 2)),
       settle("Placement breakdown", warnings, graph.get<{ data?: Row[] }>(`${id}/insights`, {
         level: "account", time_range: timeRange, breakdowns: "publisher_platform", fields: "spend,results",

@@ -4,6 +4,7 @@ import type {
   PeriodPerformance,
 } from "@/lib/audit/meta-audit-data";
 import { resolveGoals, type ResolvedGoals } from "@/lib/clients/goals";
+import { assessFatigue, hookRate, holdRate } from "@/lib/creative/fatigue";
 
 /**
  * Deterministic Meta audit checkpoints. Data extraction and scoring happen
@@ -782,7 +783,16 @@ export function evaluateCheckpoints(
         fix: formats.size >= 2 ? undefined : "Add a different format (short vertical video, carousel or static) — formats reach different people at different costs.",
       });
     }
-    const tired = liveAds.filter((a) => (a.performance?.frequency ?? 0) >= 4 && spendOf(a.performance) > 0);
+    // The shared fatigue rule (frequency over the client's limit with weak or
+    // falling link CTR). Ads carry no earlier period here, so the CTR floor applies.
+    const tired = liveAds.filter(
+      (a) =>
+        spendOf(a.performance) > 0 &&
+        assessFatigue(
+          { impressions: a.performance!.impressions, frequency7d: a.performance!.frequency, ctrNow: a.performance!.linkCtr },
+          { frequencyMax: goals.policy.prospecting_frequency_max },
+        ).fatigued,
+    );
     if (tired.length) {
       cp.push({
         id: "C4",
@@ -790,8 +800,29 @@ export function evaluateCheckpoints(
         title: "No fatigued ads",
         status: "warn",
         severity: "medium",
-        evidence: `Frequency 4+ on ${list(tired.map((a) => `${a.name} (${a.performance!.frequency.toFixed(1)})`))}.`,
-        fix: "Rotate in fresh creative for these audiences or widen them.",
+        evidence: `Frequency over ${goals.policy.prospecting_frequency_max} with link CTR under 0.7% on ${list(tired.map((a) => `${a.name} (${a.performance!.frequency.toFixed(1)}, ${a.performance!.linkCtr.toFixed(2)}%)`))}.`,
+        fix: "Launch new concepts alongside these ads, then let Meta move spend; widen the audience if frequency keeps climbing.",
+      });
+    }
+    const videos = liveAds.filter((a) => a.performance && hookRate(a.performance) != null && a.performance.impressions >= 1000);
+    if (videos.length) {
+      const weakHooks = videos.filter((a) => hookRate(a.performance!)! < 25);
+      const rates = (a: (typeof videos)[number]) => {
+        const hold = holdRate(a.performance!);
+        return `hook ${Math.round(hookRate(a.performance!)!)}%${hold != null ? `, hold ${Math.round(hold)}%` : ""}`;
+      };
+      cp.push({
+        id: "C7",
+        category: "Creative",
+        title: "Video hooks stop the scroll (25%+ hook rate)",
+        status: weakHooks.length ? "warn" : "pass",
+        severity: "medium",
+        evidence: weakHooks.length
+          ? `${list(weakHooks.map((a) => `${a.name} (${rates(a)})`))} — under 25% of impressions watch 3 seconds.`
+          : `All ${videos.length} live video ad${videos.length === 1 ? "" : "s"} hook 25%+ of viewers (${list(videos.map((a) => `${a.name}: ${rates(a)}`))}).`,
+        fix: weakHooks.length
+          ? "Rework the first 3 seconds: open on the result, a face or movement, and put the offer on screen early. If hook is fine but hold is low, fix seconds 3–15."
+          : undefined,
       });
     }
   }

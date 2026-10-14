@@ -7,6 +7,7 @@ import {
   type CheckpointStatus,
 } from "@/lib/audit/checkpoints";
 import { escapeTableCell } from "@/lib/reports/table-row";
+import { hookRate, holdRate } from "@/lib/creative/fatigue";
 import type { AuditAd, AuditAdSet, MetaAuditSnapshot, PeriodPerformance } from "@/lib/audit/meta-audit-data";
 
 const STATUS_LABEL: Record<CheckpointStatus, string> = {
@@ -218,6 +219,8 @@ function periodLine(p: PeriodPerformance | null, money: (cents: number) => strin
     `link CTR ${p.linkCtr.toFixed(2)}%`,
     `CPM ${p.cpmCents != null ? money(p.cpmCents) : "n/a"}`,
     p.roas != null ? `ROAS ${p.roas.toFixed(2)}×` : null,
+    hookRate(p) != null ? `hook rate ${Math.round(hookRate(p)!)}%` : null,
+    holdRate(p) != null ? `hold rate ${Math.round(holdRate(p)!)}%` : null,
   ]
     .filter(Boolean)
     .join(" · ");
