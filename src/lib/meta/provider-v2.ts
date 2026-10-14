@@ -1057,6 +1057,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       cbo: useCbo,
       objective,
       currency,
+      special_ad_categories: input.special_ad_categories,
     });
     const campaignBudgetCents = useCbo
       ? budgetToMinorUnits(daily ?? lifetime ?? undefined)
@@ -1187,7 +1188,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
    */
   private async planAdSet(
     input: CreateAdSetInput,
-    campaign: { cbo: boolean; objective?: string; currency?: string },
+    campaign: { cbo: boolean; objective?: string; currency?: string; special_ad_categories?: string[] },
   ): Promise<{
     body: Record<string, string | number | boolean | null | undefined>;
     optimization_goal: string;
@@ -1213,6 +1214,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       genders: input.genders,
       locations: input.locations,
       publisher_platforms: input.publisher_platforms,
+      special_ad_categories: campaign.special_ad_categories,
       extra_args: extra,
     });
     const promoted = buildPromotedObject({
@@ -1302,8 +1304,9 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       objective?: string;
       daily_budget?: string;
       lifetime_budget?: string;
+      special_ad_categories?: string[];
     }>(input.campaign_id, {
-      fields: "account_id,objective,daily_budget,lifetime_budget,bid_strategy",
+      fields: "account_id,objective,daily_budget,lifetime_budget,bid_strategy,special_ad_categories",
     });
     const campaignAccount =
       campaign.account_id != null && String(campaign.account_id).trim()
@@ -1318,7 +1321,11 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       positiveMinor(campaign.daily_budget) || positiveMinor(campaign.lifetime_budget);
     const plan = await this.planAdSet(
       { ...input, account_id: accountId },
-      { cbo, objective: input.objective ?? campaign.objective },
+      {
+        cbo,
+        objective: input.objective ?? campaign.objective,
+        special_ad_categories: Array.isArray(campaign.special_ad_categories) ? campaign.special_ad_categories : [],
+      },
     );
 
     const res = await this.graph.post<{ id: string }>(`${accountId}/adsets`, plan.body);

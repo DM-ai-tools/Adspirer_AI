@@ -376,6 +376,22 @@ describe("create flows", () => {
     expect(post).not.toHaveBeenCalled();
   });
 
+  it("leaves Advantage+ audience off for a Special Ad Category campaign", async () => {
+    const posts: Array<[string, Record<string, unknown>]> = [];
+    let n = 0;
+    const { provider } = providerWith({
+      get: () => ({ currency: "GBP" }),
+      post: (path, body) => {
+        posts.push([path, body]);
+        n += 1;
+        return { id: String(2000 + n) };
+      },
+    });
+    await provider.createImageCampaign({ ...baseCampaign, special_ad_categories: ["HOUSING"] });
+    const adset = posts.find(([p]) => p === "act_111/adsets")![1];
+    expect(JSON.parse(String(adset.targeting)).targeting_automation).toEqual({ advantage_audience: 0 });
+  });
+
   it("passes lifetime budget + end_time through and builds a valid creative", async () => {
     const posts: Array<[string, Record<string, unknown>]> = [];
     let n = 0;
@@ -406,7 +422,7 @@ describe("create flows", () => {
       page_id: "321",
     });
     expect(JSON.parse(String(adset.targeting)).targeting_automation).toEqual({
-      advantage_audience: 0,
+      advantage_audience: 1,
     });
 
     const creative = posts.find(([p]) => p === "act_111/adcreatives")![1];

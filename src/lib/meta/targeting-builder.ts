@@ -223,6 +223,7 @@ export function buildMetaTargeting(input: {
   genders?: string[];
   locations?: unknown[];
   publisher_platforms?: string[];
+  special_ad_categories?: string[];
   extra_args?: Record<string, unknown>;
 }): Record<string, unknown> {
   const extra = input.extra_args ?? {};
@@ -261,9 +262,17 @@ export function buildMetaTargeting(input: {
   applyPublisherPlatforms(targeting, platforms, extra);
 
   // Meta requires an explicit Advantage+ audience choice on new ad sets.
-  // Off (0) unless the proposal asks for it.
+  // On by default (Meta's recommended setup); off when the proposal says so,
+  // or when its settings are hard controls Advantage+ audience can't keep:
+  // an age range narrower than up-to-25…65, or a Special Ad Category.
+  const conflicts =
+    (typeof input.age_min === "number" && input.age_min > 25) ||
+    (typeof input.age_max === "number" && input.age_max < 65) ||
+    (input.special_ad_categories ?? []).some((c) => c && c !== "NONE");
+  const asked = extra.advantage_audience;
   targeting.targeting_automation = {
-    advantage_audience: isTruthyFlag(extra.advantage_audience) ? 1 : 0,
+    advantage_audience:
+      asked == null || asked === "" ? (conflicts ? 0 : 1) : isTruthyFlag(asked) ? 1 : 0,
   };
 
   return targeting;
