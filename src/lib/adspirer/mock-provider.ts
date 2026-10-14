@@ -706,6 +706,11 @@ export class MockMetaAdsProvider implements MetaAdsProvider {
     };
   }
 
+  /** Demo: no Meta frame — the card draws its own mock-up from the ad's copy and image. */
+  async previewAd(_input: unknown, formats: string[]) {
+    return formats.map((format) => ({ format, iframeSrc: null }));
+  }
+
   async getAdCreatives(accountId: string) {
     const ads = getState().ads.filter((a) => a.account_id === accountId);
     return ads.slice(0, 10).map((a) => ({

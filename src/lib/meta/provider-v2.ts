@@ -13,6 +13,8 @@ import type {
   UpdateAdSetBudgetInput,
   UpdateCampaignBudgetInput,
   TextOptions,
+  AdPreviewInput,
+  AdPreview,
 } from "@/lib/adspirer/provider";
 import { MetaGraphClient } from "@/lib/meta/graph-client";
 import { fetchMetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
@@ -187,6 +189,59 @@ function mergeCampaignExtra(
       ? { pixel_event_name: input.pixel_event_name }
       : {}),
   };
+}
+
+/** object_story_spec for an image or video ad (also what previews render). */
+function buildStorySpec(
+  input: AdPreviewInput,
+  o: { pageId: string; videoId?: string; ctaType: string; leadFormId?: string; isVideo: boolean },
+): Record<string, unknown> {
+  const ctaValue: Record<string, string> = { link: input.landing_page_url };
+  if (o.leadFormId) ctaValue.lead_gen_form_id = o.leadFormId;
+  const callToAction = { type: o.ctaType, value: ctaValue };
+  const storySpec: Record<string, unknown> = {
+    page_id: o.pageId,
+    // v22+: instagram_actor_id was replaced by instagram_user_id.
+    ...(input.instagram_account_id ? { instagram_user_id: input.instagram_account_id } : {}),
+  };
+  if (o.isVideo) {
+    storySpec.video_data = {
+      video_id: o.videoId,
+      message: input.primary_text,
+      ...(input.headline ? { title: input.headline } : {}),
+      ...(input.description ? { link_description: input.description } : {}),
+      ...(input.thumbnail_url ? { image_url: input.thumbnail_url } : {}),
+      call_to_action: callToAction,
+    };
+  } else {
+    storySpec.link_data = {
+      link: input.landing_page_url,
+      message: input.primary_text,
+      ...(input.headline ? { name: input.headline } : {}),
+      ...(input.description ? { description: input.description } : {}),
+      ...(input.display_link ? { caption: input.display_link } : {}),
+      // link_data takes `picture` (a URL) or `image_hash` — never image_url.
+      ...(input.existing_image_hash
+        ? { image_hash: input.existing_image_hash }
+        : input.image_url
+          ? { picture: input.image_url }
+          : {}),
+      call_to_action: callToAction,
+    };
+  }
+  return storySpec;
+}
+
+/** The preview frame's URL, only when it is Meta's own (https facebook.com). */
+function previewFrameSrc(body: string | undefined): string | null {
+  const raw = body ? /src="([^"]+)"/i.exec(body)?.[1] : undefined;
+  if (!raw) return null;
+  try {
+    const url = new URL(raw.replace(/&amp;/g, "&"));
+    return url.protocol === "https:" && /^(www|business|m)\.facebook\.com$/.test(url.hostname) ? url.toString() : null;
+  } catch {
+    return null;
+  }
 }
 
 const strings = (v: unknown): string[] =>
@@ -1550,6 +1605,36 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     return this.createAdSteps(input, { progress, record, step, adSetVerified: false });
   }
 
+  /**
+   * Meta's preview of an ad before anything is created. Video previews need
+   * the video in Meta already (it is uploaded on approval).
+   */
+  async previewAd(input: AdPreviewInput, formats: string[]): Promise<AdPreview[]> {
+    const accountId = normalizeAccountId(input.account_id);
+    const isVideo = Boolean(input.ad_type === "video" || input.video_url || input.existing_video_id);
+    if (isVideo && !input.existing_video_id) {
+      throw new Error("A video ad can be previewed after the video is uploaded to Meta — it uploads when the approval runs, and the ad is created PAUSED.");
+    }
+    const pageId = await this.resolveFacebookPageId(accountId, input.facebook_page_id);
+    const storySpec = buildStorySpec(input, {
+      pageId,
+      videoId: input.existing_video_id,
+      ctaType: normalizeCallToAction(input.call_to_action) ?? "LEARN_MORE",
+      leadFormId: input.lead_form_id?.trim() || undefined,
+      isVideo,
+    });
+    const creative = JSON.stringify({ object_story_spec: storySpec });
+    return Promise.all(
+      formats.map(async (format) => {
+        const res = await this.graph.get<{ data?: Array<{ body?: string }> }>(`${accountId}/generatepreviews`, {
+          creative,
+          ad_format: format,
+        });
+        return { format, iframeSrc: previewFrameSrc(res.data?.[0]?.body) };
+      }),
+    );
+  }
+
   /** Creative + ad, resuming from `progress` (creative_id / ad_id / video_id). */
   private async createAdSteps(
     input: CreateAdInput,
@@ -1596,42 +1681,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
         );
         await record({ video_id: videoId });
       }
-      const ctaValue: Record<string, string> = { link: input.landing_page_url };
-      if (leadFormId) ctaValue.lead_gen_form_id = leadFormId;
-      const callToAction = { type: ctaType, value: ctaValue };
-
-      const storySpec: Record<string, unknown> = {
-        page_id: pageId,
-        // v22+: instagram_actor_id was replaced by instagram_user_id.
-        ...(input.instagram_account_id
-          ? { instagram_user_id: input.instagram_account_id }
-          : {}),
-      };
-      if (isVideo) {
-        storySpec.video_data = {
-          video_id: videoId,
-          message: input.primary_text,
-          ...(input.headline ? { title: input.headline } : {}),
-          ...(input.description ? { link_description: input.description } : {}),
-          ...(input.thumbnail_url ? { image_url: input.thumbnail_url } : {}),
-          call_to_action: callToAction,
-        };
-      } else {
-        storySpec.link_data = {
-          link: input.landing_page_url,
-          message: input.primary_text,
-          ...(input.headline ? { name: input.headline } : {}),
-          ...(input.description ? { description: input.description } : {}),
-          ...(input.display_link ? { caption: input.display_link } : {}),
-          // link_data takes `picture` (a URL) or `image_hash` — never image_url.
-          ...(input.existing_image_hash
-            ? { image_hash: input.existing_image_hash }
-            : input.image_url
-              ? { picture: input.image_url }
-              : {}),
-          call_to_action: callToAction,
-        };
-      }
+      const storySpec = buildStorySpec(input, { pageId, videoId, ctaType, leadFormId, isVideo });
 
       const creativeBody: Record<string, string | number | boolean | null | undefined> = {
         name: input.name ?? "Creative",
