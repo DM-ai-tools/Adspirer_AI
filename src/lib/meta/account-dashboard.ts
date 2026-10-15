@@ -9,11 +9,37 @@ import { metaMinorToCents } from "@/lib/meta/currency";
  * per-currency minor units are converted at the boundary.
  */
 
-export const DASHBOARD_RANGES = ["today", "7d", "30d", "month"] as const;
+export const DASHBOARD_RANGES = ["today", "7d", "30d", "month", "custom"] as const;
 export type DashboardRange = (typeof DASHBOARD_RANGES)[number];
 
+/** A custom range: inclusive dates in the ad account's timezone. */
+export type CustomRange = { since: string; until: string };
+
+const DAY_MS = 86_400_000;
+/** Meta keeps insights for 37 months; one daily chart shows at most a year. */
+const MAX_CUSTOM_DAYS = 366;
+
+/** Validate a custom range; throws an Error that explains what's wrong. */
+export function parseCustomRange(since: unknown, until: unknown, now: Date = new Date()): CustomRange {
+  const iso = /^\d{4}-\d{2}-\d{2}$/;
+  if (typeof since !== "string" || typeof until !== "string" || !iso.test(since) || !iso.test(until)) {
+    throw new Error("Pick a start and end date (YYYY-MM-DD).");
+  }
+  const start = Date.parse(`${since}T00:00:00Z`);
+  const end = Date.parse(`${until}T00:00:00Z`);
+  if (Number.isNaN(start) || Number.isNaN(end)) throw new Error("Pick a start and end date (YYYY-MM-DD).");
+  if (start > end) throw new Error("The start date must be on or before the end date.");
+  // A day of slack: the account's timezone may already be on tomorrow.
+  if (end > now.getTime() + DAY_MS) throw new Error("The end date can't be in the future.");
+  const oldest = new Date(now);
+  oldest.setUTCMonth(oldest.getUTCMonth() - 37);
+  if (start < oldest.getTime()) throw new Error("Meta only keeps the last 37 months of results — pick a later start date.");
+  if ((end - start) / DAY_MS + 1 > MAX_CUSTOM_DAYS) throw new Error("Pick a range of 366 days or less.");
+  return { since, until };
+}
+
 /** Meta date presets resolve in the ad account's own timezone. */
-const RANGE_PRESET: Record<DashboardRange, string> = {
+const RANGE_PRESET: Record<Exclude<DashboardRange, "custom">, string> = {
   today: "today",
   "7d": "last_7d",
   "30d": "last_30d",
@@ -260,9 +286,15 @@ export async function buildAccountDashboard(
   graph: MetaGraphClient,
   accountId: string,
   range: DashboardRange,
+  custom?: CustomRange,
 ): Promise<AccountDashboard> {
   const id = accountId.startsWith("act_") ? accountId : `act_${accountId}`;
-  const preset = RANGE_PRESET[range];
+  if (range === "custom" && !custom) throw new Error("A custom range needs a start and end date.");
+  // Either Meta's preset or the exact dates picked.
+  const period =
+    range === "custom"
+      ? { time_range: JSON.stringify({ since: custom!.since, until: custom!.until }) }
+      : { date_preset: RANGE_PRESET[range] };
   const warnings: string[] = [];
   const delivering = JSON.stringify(["ACTIVE"]);
 
@@ -287,7 +319,7 @@ export async function buildAccountDashboard(
         warnings,
         graph.get<{ data?: Row[] }>(`${id}/insights`, {
           level: "account",
-          date_preset: preset,
+          ...period,
           fields:
             "spend,impressions,reach,frequency,clicks,inline_link_clicks,ctr,inline_link_click_ctr,cpc,cost_per_inline_link_click,cpm,actions,action_values,purchase_roas",
         }),
@@ -297,10 +329,10 @@ export async function buildAccountDashboard(
         warnings,
         graph.get<{ data?: Row[] }>(`${id}/insights`, {
           level: "account",
-          date_preset: preset,
+          ...period,
           time_increment: 1,
           fields: "spend",
-          limit: 100,
+          limit: 400,
         }),
       ),
       settle(
@@ -308,7 +340,7 @@ export async function buildAccountDashboard(
         warnings,
         graph.get<{ data?: Row[] }>(`${id}/insights`, {
           level: "campaign",
-          date_preset: preset,
+          ...period,
           fields:
             "campaign_id,campaign_name,spend,inline_link_click_ctr,action_values,purchase_roas,results,cost_per_result",
           sort: "spend_descending",
@@ -357,8 +389,9 @@ export async function buildAccountDashboard(
     actionValues,
     actions.find((a) => /^(omni_purchase|purchase|offsite_conversion\.fb_pixel_purchase)$/.test(String(a.action_type ?? "")))?.action_type ?? null,
   );
-  const since = typeof t.date_start === "string" ? t.date_start : null;
-  const until = typeof t.date_stop === "string" ? t.date_stop : null;
+  // Meta echoes the dates; with no rows, a custom range still shows its own.
+  const since = typeof t.date_start === "string" ? t.date_start : (custom?.since ?? null);
+  const until = typeof t.date_stop === "string" ? t.date_stop : (custom?.until ?? null);
 
   // ---- Budgets --------------------------------------------------------------
   const campaigns = campaignsRes?.data ?? [];
@@ -539,10 +572,15 @@ export function demoAccountDashboard(
   accountId: string,
   accountName: string,
   range: DashboardRange,
+  custom?: CustomRange,
 ): AccountDashboard {
-  const days = range === "today" ? 1 : range === "7d" ? 7 : range === "30d" ? 30 : 18;
+  const end = range === "custom" && custom ? Date.parse(`${custom.until}T00:00:00Z`) : Date.UTC(2026, 9, 8);
+  const days =
+    range === "custom" && custom
+      ? Math.round((end - Date.parse(`${custom.since}T00:00:00Z`)) / DAY_MS) + 1
+      : range === "today" ? 1 : range === "7d" ? 7 : range === "30d" ? 30 : 18;
   const daily = Array.from({ length: days }, (_, i) => {
-    const date = new Date(Date.UTC(2026, 9, 8 - (days - 1 - i)));
+    const date = new Date(end - (days - 1 - i) * DAY_MS);
     const wave = 0.75 + 0.25 * Math.sin(i / 2.2) + (i % 5 === 0 ? 0.12 : 0);
     return { date: date.toISOString().slice(0, 10), spendCents: Math.round(18_500 * wave) };
   });
