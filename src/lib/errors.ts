@@ -13,6 +13,7 @@ export type ErrorCode =
   | "APPROVAL_VALIDATION_ERROR"
   | "EXECUTION_VERIFICATION_ERROR"
   | "NOT_FOUND"
+  | "VALIDATION_ERROR"
   | "INTERNAL_ERROR";
 
 export class AppError extends Error {
@@ -48,6 +49,13 @@ export class AppError extends Error {
 export class NotFoundError extends AppError {
   constructor(message = "Not found", details?: Record<string, unknown>) {
     super("NOT_FOUND", message, 404, details);
+  }
+}
+
+/** A request value is wrong (e.g. a date range); 400 with a readable reason. */
+export class ValidationError extends AppError {
+  constructor(message = "Invalid request", details?: Record<string, unknown>) {
+    super("VALIDATION_ERROR", message, 400, details);
   }
 }
 

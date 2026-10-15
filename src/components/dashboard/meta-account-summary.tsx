@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MetaConnectButton } from "@/components/meta-connect-button";
+import { CustomRangePicker, type PickedRange } from "@/components/dashboard/custom-range-picker";
 import type {
   AccountDashboard,
   CampaignRow,
@@ -42,7 +43,7 @@ type ApiResult =
       message: string;
     };
 
-const RANGES: Array<{ key: DashboardRange; label: string }> = [
+const RANGES: Array<{ key: Exclude<DashboardRange, "custom">; label: string }> = [
   { key: "today", label: "Today" },
   { key: "7d", label: "Last 7 days" },
   { key: "30d", label: "Last 30 days" },
@@ -367,6 +368,7 @@ export function MetaAccountSummary() {
   const { clients, selectedClientId, setSelectedClientId } = useApp();
   const clientId = selectedClientId ?? clients[0]?.id ?? null;
   const [range, setRange] = useState<DashboardRange>("7d");
+  const [custom, setCustom] = useState<PickedRange | null>(null);
   const [accountId, setAccountId] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
   const [campaignView, setCampaignView] = useState<"active" | "top">("active");
@@ -379,13 +381,17 @@ export function MetaAccountSummary() {
   } | null>(null);
 
   const requestKey = clientId
-    ? `${clientId}|${range}|${accountId ?? ""}|${reloadTick}`
+    ? `${clientId}|${range}|${range === "custom" && custom ? `${custom.since}_${custom.until}` : ""}|${accountId ?? ""}|${reloadTick}`
     : null;
 
   useEffect(() => {
     if (!clientId || !requestKey) return;
     let cancelled = false;
     const params = new URLSearchParams({ clientId, range });
+    if (range === "custom" && custom) {
+      params.set("since", custom.since);
+      params.set("until", custom.until);
+    }
     if (accountId) params.set("accountId", accountId);
     apiFetch<ApiResult>(`/api/dashboard/meta?${params}`)
       .then((data) => {
@@ -402,7 +408,7 @@ export function MetaAccountSummary() {
     return () => {
       cancelled = true;
     };
-  }, [clientId, range, accountId, requestKey]);
+  }, [clientId, range, custom, accountId, requestKey]);
 
   const loading = requestKey != null && loaded?.key !== requestKey;
   const load = () => setReloadTick((n) => n + 1);
@@ -494,6 +500,14 @@ export function MetaAccountSummary() {
                 {r.label}
               </button>
             ))}
+            <CustomRangePicker
+              value={custom}
+              active={range === "custom"}
+              onApply={(picked) => {
+                setCustom(picked);
+                setRange("custom");
+              }}
+            />
           </div>
 
           <Button
@@ -571,7 +585,10 @@ export function MetaAccountSummary() {
             <div className="grid gap-3 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,2fr)]">
               <div className="rounded-lg border border-border-subtle bg-secondary/30 p-4">
                 <p className="text-xs text-muted">
-                  Spent · {RANGES.find((r) => r.key === dash.range.key)?.label.toLowerCase()}
+                  Spent ·{" "}
+                  {dash.range.key === "custom" && dash.range.since
+                    ? `${shortDate(dash.range.since)}${dash.range.until && dash.range.until !== dash.range.since ? ` – ${shortDate(dash.range.until)}` : ""}`
+                    : RANGES.find((r) => r.key === dash.range.key)?.label.toLowerCase()}
                 </p>
                 <p className="mt-1 text-4xl font-semibold tracking-tight text-foreground">
                   {money(dash.totals.spendCents, currency)}

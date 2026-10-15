@@ -11,14 +11,20 @@ import {
   DASHBOARD_RANGES,
   buildAccountDashboard,
   demoAccountDashboard,
+  parseCustomRange,
   type AccountDashboard,
+  type CustomRange,
 } from "@/lib/meta/account-dashboard";
+import { ValidationError } from "@/lib/errors";
 
 const querySchema = z.object({
   clientId: z.string().min(1),
   range: z.enum(DASHBOARD_RANGES).default("7d"),
   /** Optional act_* — must be one of the client's mapped, granted accounts. */
   accountId: z.string().optional(),
+  /** range=custom only: inclusive YYYY-MM-DD dates. */
+  since: z.string().optional(),
+  until: z.string().optional(),
 });
 
 /** Short cache so flipping ranges / revisiting the page doesn't hit Meta again. */
@@ -43,8 +49,18 @@ export async function GET(request: Request) {
       clientId: url.searchParams.get("clientId") ?? undefined,
       range: url.searchParams.get("range") ?? undefined,
       accountId: url.searchParams.get("accountId") ?? undefined,
+      since: url.searchParams.get("since") ?? undefined,
+      until: url.searchParams.get("until") ?? undefined,
     });
     await assertClientAccess(user.id, query.clientId);
+    let custom: CustomRange | undefined;
+    if (query.range === "custom") {
+      try {
+        custom = parseCustomRange(query.since, query.until);
+      } catch (error) {
+        throw new ValidationError(error instanceof Error ? error.message : "Invalid date range");
+      }
+    }
 
     const mapped = (await loadMappedMetaAccounts(query.clientId)).filter(
       (a) => a.access_status === "granted",
@@ -79,11 +95,11 @@ export async function GET(request: Request) {
         state: "ok" as const,
         demo: true,
         accounts,
-        dashboard: demoAccountDashboard(accountId, name, query.range),
+        dashboard: demoAccountDashboard(accountId, name, query.range, custom),
       });
     }
 
-    const key = `${user.id}:${accountId}:${query.range}`;
+    const key = `${user.id}:${accountId}:${query.range}:${custom ? `${custom.since}_${custom.until}` : ""}`;
     const hit = cache.get(key);
     if (hit && Date.now() - hit.at < CACHE_TTL_MS) {
       return jsonOk({ state: "ok" as const, accounts, dashboard: hit.data });
@@ -109,6 +125,7 @@ export async function GET(request: Request) {
       new MetaGraphClient(token),
       accountId,
       query.range,
+      custom,
     );
     cache.set(key, { at: Date.now(), data: dashboard });
     return jsonOk({ state: "ok" as const, accounts, dashboard });
