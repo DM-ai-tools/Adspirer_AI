@@ -50,6 +50,12 @@ export async function POST(request: Request) {
       email: data.user.email,
       user_metadata: data.user.user_metadata,
     });
+    if (sessionUser && !sessionUser.profile.is_active) {
+      await supabase.auth.signOut();
+      throw new AuthorizationError("This account has been deactivated. Ask your administrator to reactivate it.", {
+        statusHint: 403,
+      });
+    }
     if (!sessionUser) {
       throw new AuthorizationError("Signed in but profile could not be loaded", {
         statusHint: 500,

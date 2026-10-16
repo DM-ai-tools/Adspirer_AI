@@ -175,6 +175,12 @@ export default function LoginPageClient() {
             )}
           </div>
 
+          {searchParams.get("error") ? (
+            <p role="alert" className="mb-4 rounded-lg border border-danger/40 bg-danger-muted/40 px-3 py-2 text-xs text-danger">
+              {searchParams.get("error")}
+            </p>
+          ) : null}
+
           {loadingMode ? (
             <p className="text-sm text-muted">Checking configuration…</p>
           ) : demoMode ? (

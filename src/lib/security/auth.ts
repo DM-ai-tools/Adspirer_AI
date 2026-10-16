@@ -40,7 +40,8 @@ export async function getCurrentUser(): Promise<AuthUser | null> {
     }
 
     const profile = await ensureProfileForUser(user.id, user.email, user.user_metadata);
-    if (!profile) return null;
+    // Deactivated members are locked out everywhere, not just hidden.
+    if (!profile || !profile.is_active) return null;
 
     return {
       id: user.id,
