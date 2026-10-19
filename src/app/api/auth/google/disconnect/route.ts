@@ -14,23 +14,25 @@ export async function POST() {
     assertAuthenticated(user);
     assertAdmin(user);
 
+    let token: string | null = null;
     try {
       const connection = await loadGoogleConnection();
       if (connection) {
+        token = decryptToken(connection.refresh_token_encrypted);
         const res = await fetch(REVOKE_URL, {
           method: "POST",
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: new URLSearchParams({
-            token: decryptToken(connection.refresh_token_encrypted),
-          }).toString(),
+          body: new URLSearchParams({ token }).toString(),
           signal: AbortSignal.timeout(10_000),
         });
+        // Status only: Google's response body is never logged.
         if (!res.ok) logger.warn("Google token revoke was refused", { status: res.status });
       }
     } catch (error) {
-      // Never log the token; the message of a fetch/decrypt failure does not contain it.
+      // Never log the token, even if an error message echoes the request.
+      const message = error instanceof Error ? error.message : String(error);
       logger.warn("Google token revoke failed", {
-        message: error instanceof Error ? error.message : String(error),
+        message: token ? message.split(token).join("[redacted]") : message,
       });
     }
 

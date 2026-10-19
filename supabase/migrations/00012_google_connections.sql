@@ -1,5 +1,5 @@
 -- Read-only Google connections (GA4, Google Ads, Search Console).
--- One org-level OAuth connection (admin only) and the Google assets it can see,
+-- One org-level OAuth connection (service role only) and the Google assets it can see,
 -- each optionally mapped to a client. Idempotent.
 
 create table if not exists public.google_oauth_connection (
@@ -16,11 +16,12 @@ create table if not exists public.google_oauth_connection (
 
 alter table public.google_oauth_connection enable row level security;
 
+-- The refresh token is server-side only: no policy for anon or authenticated (not even
+-- admins in the browser) and no grants, so only the service_role (bypasses RLS) reads it.
+-- Same as adspirer_service_account in 00001.
 drop policy if exists google_oauth_connection_admin_all on public.google_oauth_connection;
-create policy google_oauth_connection_admin_all
-  on public.google_oauth_connection for all to authenticated
-  using (public.is_admin())
-  with check (public.is_admin());
+revoke all on public.google_oauth_connection from anon, authenticated;
+grant all on public.google_oauth_connection to service_role;
 
 drop trigger if exists google_oauth_connection_set_updated_at on public.google_oauth_connection;
 create trigger google_oauth_connection_set_updated_at
@@ -69,6 +70,9 @@ create policy connected_google_assets_admin_write
   on public.connected_google_assets for all to authenticated
   using (public.is_admin())
   with check (public.is_admin());
+
+grant select, insert, update, delete on public.connected_google_assets to authenticated;
+grant all on public.connected_google_assets to service_role;
 
 drop trigger if exists connected_google_assets_set_updated_at on public.connected_google_assets;
 create trigger connected_google_assets_set_updated_at

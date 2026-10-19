@@ -40,9 +40,13 @@ function describeError(
   return { message: `Google returned an unexpected response (HTTP ${status}).`, code: null };
 }
 
+/** Google's write endpoints: a mutate method after a colon or slash. This tool never calls them. */
+const WRITE_ENDPOINT = /[:/]mutate/i;
+
 /**
  * Read-only Google call. The token goes in the Authorization header only,
- * never the URL. Retries 429/5xx and network errors up to 3 attempts.
+ * never the URL. Retries 429/5xx and network errors up to 3 attempts. A
+ * write endpoint is refused before anything is sent.
  */
 export async function googleFetch<T>(
   url: string,
@@ -53,6 +57,9 @@ export async function googleFetch<T>(
     headers?: Record<string, string>;
   },
 ): Promise<T> {
+  if (WRITE_ENDPOINT.test(url)) {
+    throw new GoogleApiError("Google is read-only in this tool: write endpoints are never called.", 0, "READ_ONLY");
+  }
   const method = init.method ?? "GET";
   const headers: Record<string, string> = {
     ...init.headers,

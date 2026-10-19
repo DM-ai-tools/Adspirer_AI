@@ -124,6 +124,17 @@ describe("googleFetch", () => {
     expect(init.headers.Authorization).toBe("Bearer SECRET");
   });
 
+  it("refuses any mutate URL before calling Google", async () => {
+    for (const url of [
+      "https://googleads.googleapis.com/v21/customers/123/campaigns:mutate",
+      "https://googleads.googleapis.com/v21/customers/123/googleAds:Mutate",
+      "https://googleads.googleapis.com/v21/customers/123/campaignBudgets/MUTATE",
+    ]) {
+      await expect(googleFetch(url, { method: "POST", accessToken: "t", body: {} }), url).rejects.toThrow(/read-only/);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("does not retry a 400", async () => {
     fetchMock.mockResolvedValueOnce(
       json({ error: { message: "bad", status: "INVALID_ARGUMENT" } }, 400),

@@ -281,6 +281,29 @@ describe("POST /api/auth/google/disconnect", () => {
     expect(await loadGoogleConnection()).toBeNull();
   });
 
+  it("never logs the refresh token when the revoke call fails or is refused", async () => {
+    const { logger } = await import("@/lib/observability/logger");
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    try {
+      as("admin");
+      const { POST } = await import("@/app/api/auth/google/disconnect/route");
+      // A failure whose message echoes the request body.
+      await connect();
+      fetchMock.mockRejectedValueOnce(new Error("socket hang up sending token=rt-to-revoke"));
+      expect((await POST()).status).toBe(200);
+      await connect();
+      fetchMock.mockResolvedValueOnce(new Response("token rt-to-revoke is invalid", { status: 400 }));
+      expect((await POST()).status).toBe(200);
+      expect(warn).toHaveBeenCalledTimes(2);
+      const logged = JSON.stringify(warn.mock.calls);
+      expect(logged).not.toContain("rt-to-revoke");
+      expect(logged).toContain("Google token revoke failed");
+      expect(logged).toContain("Google token revoke was refused");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("status then reports connected: false", async () => {
     as("admin");
     await connect();
