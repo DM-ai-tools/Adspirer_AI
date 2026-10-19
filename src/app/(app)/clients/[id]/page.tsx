@@ -112,6 +112,10 @@ export default function ClientDetailPage() {
             industry: String(form.get("industry") || "") || null,
             website_url: String(form.get("website_url") || "") || null,
             brand_voice: String(form.get("brand_voice") || "") || null,
+            business_description:
+              String(form.get("business_description") || "").trim() || null,
+            standing_instructions:
+              String(form.get("standing_instructions") || "").trim() || null,
             notes: String(form.get("notes") || "") || null,
             budget_ceiling_cents: Math.round(
               Number(form.get("budget") || 0) * 100,
@@ -476,6 +480,29 @@ export default function ClientDetailPage() {
                     name="brand_voice"
                     defaultValue={client.brand_voice ?? ""}
                   />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="business_description">Business description</Label>
+                  <Textarea
+                    id="business_description"
+                    name="business_description"
+                    maxLength={4000}
+                    placeholder="What the business is and sells, e.g. family-run furniture store, ~500 product categories."
+                    defaultValue={client.business_description ?? ""}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="standing_instructions">Standing instructions</Label>
+                  <Textarea
+                    id="standing_instructions"
+                    name="standing_instructions"
+                    maxLength={4000}
+                    placeholder="Rules the assistant follows in every chat, e.g. never pause the brand campaign."
+                    defaultValue={client.standing_instructions ?? ""}
+                  />
+                  <p className="text-xs text-muted">
+                    The workspace assistant follows these on every turn unless you say otherwise in the chat.
+                  </p>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="notes">Notes</Label>

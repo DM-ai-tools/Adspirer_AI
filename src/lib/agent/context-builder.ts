@@ -17,6 +17,8 @@ import {
   loadDocumentsForContext,
 } from "@/lib/documents/service";
 import { humanToolLabel } from "@/lib/tools/display-labels";
+import { describeGoalsForAgent, resolveGoals } from "@/lib/clients/goals";
+import { mapClientRow } from "@/lib/clients/map-client";
 import { buildClientBrandBlock } from "./prompts";
 
 /** Reads the turn already started, shared so they are not repeated. */
@@ -92,6 +94,17 @@ export async function buildClientContext(
       ? `Website: ${client.website_url} (brand reference only — never assume it is this campaign's landing page; ask which URL this campaign points to)`
       : null,
     "",
+    "## Goals & guardrails",
+    describeGoalsForAgent(resolveGoals(client), client.currency).join("\n"),
+    "",
+    ...(client.standing_instructions
+      ? [
+          "## Standing instructions",
+          "Follow these on every turn unless the operator overrides them in this conversation.",
+          client.standing_instructions,
+          "",
+        ]
+      : []),
     "## Services",
     services.length
       ? services
@@ -168,7 +181,8 @@ async function loadClient(clientId: string): Promise<Client | null> {
     .select("*")
     .eq("id", clientId)
     .maybeSingle();
-  return (data as Client | null) ?? null;
+  // Map the row: it stores the budget ceiling in dollars and goals as raw JSON.
+  return data ? mapClientRow(data as Record<string, unknown>) : null;
 }
 
 async function loadServices(clientId: string): Promise<ClientService[]> {

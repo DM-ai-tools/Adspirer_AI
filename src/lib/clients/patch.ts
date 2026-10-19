@@ -15,5 +15,7 @@ export const clientPatchSchema = z.object({
   budget_ceiling_cents: z.number().int().nonnegative().nullable().optional(),
   currency: z.string().min(1).optional(),
   notes: z.string().nullable().optional(),
+  business_description: z.string().max(4000).nullable().optional(),
+  standing_instructions: z.string().max(4000).nullable().optional(),
   goals_profile: goalsProfileSchema.optional(),
 });

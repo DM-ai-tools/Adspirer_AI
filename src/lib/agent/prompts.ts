@@ -238,6 +238,7 @@ export function buildClientBrandBlock(client: Client): string {
   return [
     `Client: ${client.name}`,
     client.industry ? `Industry: ${client.industry}` : null,
+    client.business_description ? `Business: ${client.business_description}` : null,
     client.brand_voice ? `Brand voice: ${client.brand_voice}` : null,
     client.target_audience ? `Audience: ${client.target_audience}` : null,
     client.value_proposition ? `Value prop: ${client.value_proposition}` : null,

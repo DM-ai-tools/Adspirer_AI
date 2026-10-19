@@ -27,6 +27,8 @@ export function mapClientRow(row: Record<string, unknown>): Client {
       : null,
     currency: String(row.currency ?? "USD"),
     notes: (row.notes as string | null) ?? null,
+    business_description: (row.business_description as string | null) ?? null,
+    standing_instructions: (row.standing_instructions as string | null) ?? null,
     goals_profile: parseGoalsProfile(row.goals_profile),
     is_demo: Boolean(row.is_demo),
     created_by: (row.created_by as string | null) ?? null,
@@ -50,6 +52,8 @@ export function toClientDbPatch(
     budget_ceiling_cents: number | null;
     currency: string;
     notes: string | null;
+    business_description: string | null;
+    standing_instructions: string | null;
     goals_profile: GoalsProfile;
   }>,
 ): Record<string, unknown> {
@@ -68,6 +72,10 @@ export function toClientDbPatch(
     patch.value_proposition = body.value_proposition;
   if (body.currency !== undefined) patch.currency = body.currency;
   if (body.notes !== undefined) patch.notes = body.notes;
+  if (body.business_description !== undefined)
+    patch.business_description = body.business_description;
+  if (body.standing_instructions !== undefined)
+    patch.standing_instructions = body.standing_instructions;
   if (body.goals_profile !== undefined) patch.goals_profile = body.goals_profile;
   if (body.budget_ceiling_cents !== undefined) {
     patch.budget_ceiling =

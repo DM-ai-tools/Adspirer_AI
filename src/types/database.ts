@@ -83,6 +83,10 @@ export interface Client {
   budget_ceiling_cents: number | null;
   currency: string;
   notes: string | null;
+  /** What the business is and sells, in the operator's words. */
+  business_description?: string | null;
+  /** Rules the agent follows on every turn unless the operator overrides them. */
+  standing_instructions?: string | null;
   /** Targets and guardrails (see src/lib/clients/goals.ts). */
   goals_profile: GoalsProfile;
   is_demo: boolean;
