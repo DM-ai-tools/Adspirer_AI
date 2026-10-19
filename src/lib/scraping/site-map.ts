@@ -52,6 +52,20 @@ function parseUrl(raw: string, base?: string): URL | null {
   }
 }
 
+/** Hostname for comparison: lowercase, no port, no leading "www.". */
+function siteHost(u: URL): string {
+  return u.hostname.toLowerCase().replace(/^www\./, "");
+}
+
+/** The segment decoded, or as written when it holds a stray "%" ("100%-wool"). */
+function decodeSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
 /** Lowercase path with query and trailing slash removed. */
 function normalizePath(pathname: string): string {
   const path = pathname.toLowerCase().replace(/\/+$/, "");
@@ -81,7 +95,7 @@ export function discoverCategoryCandidates(
   const byPath = new Map<string, CategoryCandidate>();
   for (const raw of urls) {
     const u = parseUrl(raw);
-    if (!u || u.host.toLowerCase() !== site.host.toLowerCase()) continue;
+    if (!u || siteHost(u) !== siteHost(site)) continue;
     const full = normalizePath(u.pathname);
     const marker = CATEGORY_MARKERS.find((m) => full.includes(m));
     if (!marker) continue;
@@ -94,7 +108,7 @@ export function discoverCategoryCandidates(
     // Original casing for the URL; the marker and segment have the same length
     const original = u.pathname.slice(0, at) + u.pathname.slice(at).split("/")[0];
     byPath.set(path, {
-      name: titleCase(decodeURIComponent(segment)),
+      name: titleCase(decodeSegment(segment)),
       landing_page_url: `${u.origin}${original}`,
       alreadyAdded: added.has(path),
     });

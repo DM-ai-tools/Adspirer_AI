@@ -65,9 +65,27 @@ describe("parseCategorySheet", () => {
 
   it("truncates beyond 1000 rows with an error", () => {
     const data = [HEADERS, ...Array.from({ length: 1005 }, (_, i) => [`Cat ${i}`, "", 10, 5, 1])];
-    const { rows, errors } = parseCategorySheet(sheet(data), "c.xlsx");
+    const { rows, errors, truncated } = parseCategorySheet(sheet(data), "c.xlsx");
     expect(rows).toHaveLength(1000);
     expect(errors.some((e) => /1,?000/.test(e))).toBe(true);
+    expect(truncated).toBe(true);
+    expect(parseCategorySheet(sheet([HEADERS, BAR]), "c.xlsx").truncated).toBe(false);
+  });
+
+  it("reads a UTF-8 CSV, with or without a BOM", () => {
+    for (const bom of ["\uFEFF", ""]) {
+      const bytes = new TextEncoder().encode(`${bom}Category,Gross Margin %\nCafé chairs,35%\nCrème Brûlée sets,40\n`);
+      const data = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+      const { rows, errors } = parseCategorySheet(data, "cats.csv");
+      expect(errors).toEqual([]);
+      expect(rows.map((r) => r.name)).toEqual(["Café chairs", "Crème Brûlée sets"]);
+      expect(rows[0].gross_margin_pct).toBe(35);
+    }
+  });
+
+  it("keeps a blank priority cell blank, distinct from 0", () => {
+    const { rows } = parseCategorySheet(sheet([HEADERS, ["A", "", 10, 5, ""], ["B", "", 10, 5, 0]]), "c.xlsx");
+    expect(rows.map((r) => r.priority)).toEqual([null, 0]);
   });
 });
 
@@ -154,6 +172,30 @@ describe("POST services/import", () => {
     // blank cells in existing columns do not overwrite either
     await post([HEADERS, [row.name, "", "", "", ""]]);
     expect(row).toMatchObject({ gross_margin_pct: 35, average_order_value_cents: 18900, landing_page_url: "https://x.example/p", source: "manual" });
+  });
+
+  it("merge leaves the priority alone when its cell is blank, and gives new rows 0", async () => {
+    as("operator");
+    const row = getDemoStore().clientServices.find((s) => s.client_id === CLIENT)!;
+    row.priority = 5;
+    await post([HEADERS, [row.name, "", 30, "", ""], ["Blank Priority New", "", 10, 5, ""]]);
+    expect(row).toMatchObject({ priority: 5, gross_margin_pct: 30 });
+    expect(mine().find((s) => s.name === "Blank Priority New")?.priority).toBe(0);
+    await post([HEADERS, [row.name, "", "", "", 0]]);
+    expect(row.priority).toBe(0);
+  });
+
+  it("refuses replace when the file was cut at the row cap, and changes nothing", async () => {
+    as("operator");
+    const before = JSON.stringify(mine());
+    const data = [HEADERS, ...Array.from({ length: 1001 }, (_, i) => [`Cat ${i}`, "", 10, 5, 1])];
+    const { res, body } = await post(data, "replace");
+    expect(res.status).toBe(400);
+    expect((body as unknown as { error: { message: string } }).error.message).toMatch(/1,?000/);
+    expect((body as unknown as { error: { message: string } }).error.message).toMatch(/replace/i);
+    expect(JSON.stringify(mine())).toBe(before);
+    // merge still imports the first 1000
+    expect((await post(data, "merge")).body.data.created).toBe(1000);
   });
 
   it("merge reactivates a deactivated category listed in the file", async () => {

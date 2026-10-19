@@ -77,6 +77,20 @@ describe("attributeSpendToCategories", () => {
     expect(r.unmatched.adIds).toEqual([]);
   });
 
+  it("matches across www. and a port in either url", () => {
+    const wwwCategory = { ...tables, landingPageUrl: "https://www.shop.example/collections/tables" };
+    const r = attributeSpendToCategories(
+      snap([
+        ad("a1", { linkUrl: "https://www.shop.example/collections/bar-stools" }),
+        ad("a2", { linkUrl: "https://shop.example:443/collections/tables/oak" }),
+      ]),
+      [barStools, wwwCategory],
+    );
+    expect(r.byCategory.find((c) => c.categoryId === "bar")!.adIds).toEqual(["a1"]);
+    expect(r.byCategory.find((c) => c.categoryId === "tbl")!.adIds).toEqual(["a2"]);
+    expect(r.unmatched.adIds).toEqual([]);
+  });
+
   it("longest url path wins", () => {
     const a = cat({ id: "s", name: "Stools", landingPageUrl: "https://shop.example/collections/stools" });
     const b = cat({ id: "sb", name: "Stools Bar", landingPageUrl: "https://shop.example/collections/stools/bar" });

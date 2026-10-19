@@ -9,10 +9,13 @@ export type CategoryImportRow = {
   landing_page_url: string | null;
   gross_margin_pct: number | null;
   average_order_value_cents: number | null;
-  priority: number;
+  /** null when the cell was blank: a merge leaves the stored priority alone. */
+  priority: number | null;
 };
 
 export const MAX_IMPORT_ROWS = 1000;
+/** Rows per Supabase insert / update call. */
+const WRITE_CHUNK = 500;
 
 /** Optional columns that were present in the file's header row. */
 export type ImportColumn = "url" | "margin" | "aov" | "priority";
@@ -47,11 +50,21 @@ function toNumber(raw: unknown): { value: number | null; percent: boolean } {
 export function parseCategorySheet(
   data: ArrayBuffer,
   fileName: string,
-): { rows: CategoryImportRow[]; errors: string[]; columns: ImportColumn[] } {
+): {
+  rows: CategoryImportRow[];
+  errors: string[];
+  columns: ImportColumn[];
+  /** True when rows past MAX_IMPORT_ROWS were dropped. */
+  truncated: boolean;
+} {
   const errors: string[] = [];
+  let truncated = false;
   let aoa: unknown[][];
   try {
-    const workbook = XLSX.read(data, { type: "array" });
+    // CSV is read as UTF-8 text (BOM stripped); as bytes, XLSX would decode it as Latin-1.
+    const workbook = /\.csv$/i.test(fileName)
+      ? XLSX.read(new TextDecoder("utf-8").decode(data).replace(/^\uFEFF/, ""), { type: "string" })
+      : XLSX.read(data, { type: "array" });
     const sheet = workbook.Sheets[workbook.SheetNames[0] ?? ""];
     aoa = sheet
       ? XLSX.utils.sheet_to_json<unknown[]>(sheet, {
@@ -61,7 +74,7 @@ export function parseCategorySheet(
         })
       : [];
   } catch {
-    return { rows: [], errors: [`Could not read ${fileName} as a spreadsheet.`], columns: [] };
+    return { rows: [], errors: [`Could not read ${fileName} as a spreadsheet.`], columns: [], truncated };
   }
 
   const header = aoa[0] ?? [];
@@ -79,6 +92,7 @@ export function parseCategorySheet(
         "No category name column found. Accepted headers: Category, Product line, Collection, Name, Service.",
       ],
       columns: [],
+      truncated,
     };
   }
 
@@ -91,6 +105,7 @@ export function parseCategorySheet(
     const name = String(line[col.name] ?? "").trim();
     if (!name) continue;
     if (rows.length >= MAX_IMPORT_ROWS) {
+      truncated = true;
       errors.push(
         `Only the first ${MAX_IMPORT_ROWS} rows were imported; the rest were ignored.`,
       );
@@ -129,7 +144,7 @@ export function parseCategorySheet(
         }
       }
     }
-    let priority = 0;
+    let priority: number | null = null;
     if (col.priority !== undefined) {
       const { value } = toNumber(line[col.priority]);
       if (value !== null) priority = Math.round(value);
@@ -145,7 +160,7 @@ export function parseCategorySheet(
     });
   }
   const columns = ALL_COLUMNS.filter((c) => col[c] !== undefined);
-  return { rows, errors, columns };
+  return { rows, errors, columns, truncated };
 }
 
 export type CategoryImportMode = "merge" | "replace";
@@ -174,7 +189,7 @@ export async function applyCategoryImport(
     landing_page_url: r.landing_page_url,
     gross_margin_pct: r.gross_margin_pct,
     average_order_value_cents: r.average_order_value_cents,
-    priority: r.priority,
+    priority: r.priority ?? 0,
     is_active: true,
     source: "import" as const,
     updated_at: ts,
@@ -191,7 +206,7 @@ export async function applyCategoryImport(
     ...(columns.includes("aov") && r.average_order_value_cents !== null
       ? { average_order_value_cents: r.average_order_value_cents }
       : {}),
-    ...(columns.includes("priority") ? { priority: r.priority } : {}),
+    ...(columns.includes("priority") && r.priority !== null ? { priority: r.priority } : {}),
     is_active: true,
     updated_at: ts,
   });
@@ -239,21 +254,37 @@ export async function applyCategoryImport(
   if (error) throw new Error(error.message);
   const existing = (data ?? []) as Array<{ id: string; name: string }>;
 
+  // Batched: one insert per WRITE_CHUNK new rows, and one update per distinct
+  // change set (rows getting the same values share a single `.in("id", …)`).
+  const byName = new Map<string, string>();
+  for (const s of existing) if (!byName.has(norm(s.name))) byName.set(norm(s.name), s.id);
+  const inserts: Array<Record<string, unknown>> = [];
+  const updates = new Map<string, { patch: ReturnType<typeof updateFields>; ids: string[] }>();
   for (const r of rows) {
-    const hit = existing.find((s) => norm(s.name) === norm(r.name));
-    if (hit) {
-      const { error: e } = await supabase
-        .from("client_services")
-        .update(updateFields(r))
-        .eq("id", hit.id);
-      if (e) throw new Error(e.message);
+    const id = byName.get(norm(r.name));
+    if (id) {
+      const patch = updateFields(r);
+      const key = JSON.stringify(patch);
+      const group = updates.get(key) ?? { patch, ids: [] };
+      group.ids.push(id);
+      updates.set(key, group);
       updated++;
     } else {
+      inserts.push({ client_id: clientId, name: r.name, created_at: ts, ...insertFields(r) });
+      created++;
+    }
+  }
+  for (let i = 0; i < inserts.length; i += WRITE_CHUNK) {
+    const { error: e } = await supabase.from("client_services").insert(inserts.slice(i, i + WRITE_CHUNK));
+    if (e) throw new Error(e.message);
+  }
+  for (const { patch, ids } of updates.values()) {
+    for (let i = 0; i < ids.length; i += WRITE_CHUNK) {
       const { error: e } = await supabase
         .from("client_services")
-        .insert({ client_id: clientId, name: r.name, created_at: ts, ...insertFields(r) });
+        .update(patch)
+        .in("id", ids.slice(i, i + WRITE_CHUNK));
       if (e) throw new Error(e.message);
-      created++;
     }
   }
   if (mode === "replace") {

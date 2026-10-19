@@ -3,6 +3,7 @@ import { assertAuthenticated, assertClientAccess } from "@/lib/authz/assert";
 import { ValidationError } from "@/lib/errors";
 import {
   applyCategoryImport,
+  MAX_IMPORT_ROWS,
   parseCategorySheet,
 } from "@/lib/clients/category-import";
 import { jsonOk, withApiHandler } from "@/lib/api/response";
@@ -37,13 +38,21 @@ export async function POST(request: Request, context: RouteContext) {
       throw new ValidationError('mode must be "merge" or "replace"');
     }
 
-    const { rows, errors, columns } = parseCategorySheet(
+    const { rows, errors, columns, truncated } = parseCategorySheet(
       await file.arrayBuffer(),
       file.name,
     );
     if (!rows.length) {
       throw new ValidationError(
         errors[0] ?? "No category rows found in the file",
+        { errors },
+      );
+    }
+    // Replace deactivates everything not in the file, so a cut-off file would
+    // deactivate the rows past the cap. Merge is safe; replace is refused.
+    if (truncated && mode === "replace") {
+      throw new ValidationError(
+        `The file has more than ${MAX_IMPORT_ROWS.toLocaleString("en")} rows, so replace would deactivate rows that were never read. Split the file, or import it with merge.`,
         { errors },
       );
     }

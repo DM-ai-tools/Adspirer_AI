@@ -4,6 +4,7 @@ import { getCurrentUser } from "@/lib/security/auth";
 import { assertAuthenticated, assertClientAccess } from "@/lib/authz/assert";
 import type { ClientService } from "@/types";
 import { jsonOk, withApiHandler } from "@/lib/api/response";
+import { logger } from "@/lib/observability/logger";
 import {
   discoverCategoryCandidates,
   mapSiteUrls,
@@ -58,7 +59,11 @@ export async function GET(_request: Request, context: RouteContext) {
         candidates: discoverCategoryCandidates(urls, siteUrl, existing),
         source: "firecrawl" as const,
       });
-    } catch {
+    } catch (error) {
+      logger.warn("Category scan: site map failed", {
+        clientId: id,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return jsonOk(unavailable);
     }
   });

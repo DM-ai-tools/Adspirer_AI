@@ -20,12 +20,12 @@ export type CategoryAttribution = {
   coveragePct: number;
 };
 
-/** Lowercase host + path, with query, hash and trailing slash removed. */
+/** Lowercase host + path, with port, leading "www.", query, hash and trailing slash removed. */
 function normalizeUrl(raw: string): string | null {
   try {
     const u = new URL(/^https?:\/\//i.test(raw.trim()) ? raw.trim() : `https://${raw.trim()}`);
     const path = u.pathname.replace(/\/+$/, "");
-    return `${u.host}${path}`.toLowerCase();
+    return `${u.hostname.replace(/^www\./i, "")}${path}`.toLowerCase();
   } catch {
     return null;
   }

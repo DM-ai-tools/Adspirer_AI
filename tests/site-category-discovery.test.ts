@@ -31,6 +31,27 @@ describe("discoverCategoryCandidates", () => {
     expect(out.every((c) => !c.alreadyAdded)).toBe(true);
   });
 
+  it("treats www. and a port as the same host as the site", () => {
+    const out = discoverCategoryCandidates(
+      ["https://www.shop.example/collections/bar-stools", "https://shop.example:443/collections/sofas"],
+      SITE,
+      [],
+    );
+    expect(out.map((c) => c.landing_page_url)).toEqual([
+      "https://www.shop.example/collections/bar-stools",
+      "https://shop.example/collections/sofas",
+    ]);
+  });
+
+  it("skips past a malformed % URL instead of failing the scan", () => {
+    const out = discoverCategoryCandidates(
+      [`${SITE}/collections/100%-wool`, `${SITE}/collections/bar-stools`, `${SITE}/collections/caf%C3%A9-chairs`],
+      SITE,
+      [],
+    );
+    expect(out.map((c) => c.name)).toEqual(expect.arrayContaining(["Bar Stools", "Café Chairs"]));
+  });
+
   it("collapses nested product and pagination URLs to the category URL", () => {
     const out = discoverCategoryCandidates(
       [
@@ -103,8 +124,12 @@ describe("GET /api/clients/:id/services/discover", () => {
     vi.stubEnv("FIRECRAWL_API_KEY", "fc-test");
     resetConfigCache();
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network")));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { data } = await call();
     expect(data).toEqual({ candidates: [], source: "unavailable" });
+    // The failure is logged, not swallowed.
+    expect(warn.mock.calls.map((c) => String(c[0])).some((line) => line.includes("network"))).toBe(true);
+    warn.mockRestore();
   });
 
   it("returns candidates from the mapped site", async () => {
