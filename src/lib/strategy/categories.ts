@@ -1,4 +1,5 @@
 import type { ClientService } from "@/types/database";
+import { escapeRegExp } from "./category-match";
 
 export type StrategyCategory = {
   id: string;
@@ -29,10 +30,6 @@ export function categoriesFromServices(services: ClientService[]): StrategyCateg
 
 const SPEND_RETURN_WORDS = /\b(?:spend|spent|spending|return|returns|returned|revenue|roas|best|top)\b/i;
 const CATEGORY_WORDS = /\b(?:categor(?:y|ies)|services?)\b/i;
-
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 
 /**
  * A question about spend and return by category: it names one of the client's

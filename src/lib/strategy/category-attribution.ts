@@ -1,5 +1,6 @@
 import type { AuditAd, MetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
 import type { StrategyCategory } from "./categories";
+import { matchCategoryByName, matchCategoryByUrl } from "./category-match";
 
 export type CategoryPerformance = {
   categoryId: string;
@@ -20,51 +21,6 @@ export type CategoryAttribution = {
   coveragePct: number;
 };
 
-/** Lowercase host + path, with port, leading "www.", query, hash and trailing slash removed. */
-function normalizeUrl(raw: string): string | null {
-  try {
-    const u = new URL(/^https?:\/\//i.test(raw.trim()) ? raw.trim() : `https://${raw.trim()}`);
-    const path = u.pathname.replace(/\/+$/, "");
-    return `${u.hostname.replace(/^www\./i, "")}${path}`.toLowerCase();
-  } catch {
-    return null;
-  }
-}
-
-/** Length of the best url match for a category, or 0 for none. */
-function urlScore(adUrl: string, category: StrategyCategory): number {
-  let best = 0;
-  if (category.landingPageUrl) {
-    const target = normalizeUrl(category.landingPageUrl);
-    // A bare host would swallow every ad on the site, so only paths count.
-    if (target && target.includes("/") && (adUrl === target || adUrl.startsWith(`${target}/`))) {
-      best = target.length;
-    }
-  }
-  for (const pattern of category.urlPatterns) {
-    const p = pattern.trim().toLowerCase();
-    if (p && adUrl.includes(p)) best = Math.max(best, p.length);
-  }
-  return best;
-}
-
-function escapeRegExp(s: string): string {
-  const backslash = String.fromCharCode(92);
-  return [...s].map((ch) => (".*+?^${}()|[]".includes(ch) || ch === backslash ? backslash + ch : ch)).join("");
-}
-
-/** Length of the longest whole-word, case-insensitive term found in the text. */
-function nameScore(text: string, category: StrategyCategory): number {
-  let best = 0;
-  for (const raw of [category.name, ...category.keywords]) {
-    const term = raw.trim();
-    if (!term) continue;
-    const re = new RegExp(`(?<![a-z0-9])${escapeRegExp(term)}(?![a-z0-9])`, "i");
-    if (re.test(text)) best = Math.max(best, term.length);
-  }
-  return best;
-}
-
 type Match = { category: StrategyCategory; via: "url" | "name" };
 
 function matchAd(
@@ -73,34 +29,13 @@ function matchAd(
   adSetName: string,
   campaignName: string,
 ): Match | null {
-  const adUrl = ad.linkUrl ? normalizeUrl(ad.linkUrl) : null;
-  if (adUrl) {
-    let best: Match | null = null;
-    let bestScore = 0;
-    for (const category of categories) {
-      const score = urlScore(adUrl, category);
-      if (score > bestScore) {
-        best = { category, via: "url" };
-        bestScore = score;
-      }
-    }
-    if (best) return best;
+  if (ad.linkUrl) {
+    const byUrl = matchCategoryByUrl(ad.linkUrl, categories);
+    if (byUrl) return { category: byUrl, via: "url" };
   }
   // Ad name first, then ad set, then campaign: the first level with a hit decides.
-  for (const text of [ad.name, adSetName, campaignName]) {
-    if (!text) continue;
-    let best: Match | null = null;
-    let bestScore = 0;
-    for (const category of categories) {
-      const score = nameScore(text, category);
-      if (score > bestScore) {
-        best = { category, via: "name" };
-        bestScore = score;
-      }
-    }
-    if (best) return best;
-  }
-  return null;
+  const byName = matchCategoryByName([ad.name, adSetName, campaignName], categories);
+  return byName ? { category: byName, via: "name" } : null;
 }
 
 export function attributeSpendToCategories(
