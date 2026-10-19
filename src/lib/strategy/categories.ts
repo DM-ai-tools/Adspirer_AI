@@ -1,5 +1,5 @@
 import type { ClientService } from "@/types/database";
-import { escapeRegExp } from "./category-match";
+import { escapeRegExp, matchCategoryByName } from "./category-match";
 
 export type StrategyCategory = {
   id: string;
@@ -42,4 +42,17 @@ export function asksAboutCategorySpend(request: string, categories: StrategyCate
     return name !== "" && new RegExp(`(?<![a-z0-9])${escapeRegExp(name)}(?![a-z0-9])`, "i").test(request);
   });
   return named || (CATEGORY_WORDS.test(request) && SPEND_RETURN_WORDS.test(request));
+}
+
+/** Names that mean "everything" rather than one category. */
+const GENERIC_NAMES = new Set(["all", "other", "others", "general", "misc", "miscellaneous", "uncategorized", "uncategorised", "default"]);
+
+/**
+ * The categories a request names (whole-word name or keyword, any case), in
+ * category order. A category called only "All", "Other" or "General" never matches.
+ */
+export function scopeCategoriesFromRequest(request: string, categories: StrategyCategory[]): StrategyCategory[] {
+  return categories.filter(
+    (c) => !GENERIC_NAMES.has(c.name.trim().toLowerCase()) && matchCategoryByName([request], [c]) != null,
+  );
 }

@@ -6,6 +6,7 @@ import type { StrategyBrief } from "@/lib/strategy/plan";
 export const STRATEGY_BRIEF_MARKER = "strategy brief";
 
 type BriefField = "budget" | "target_roas";
+type UsedDefault = BriefField | "period";
 
 const NUM = String.raw`(\d[\d,]*(?:\.\d+)?)`;
 /** "$1,200/day", "1200 per day", "$30k a day", "$36k/month", "$500 daily". */
@@ -22,11 +23,26 @@ const MULTIPLE_RE = new RegExp(String.raw`(?<![\w.])${NUM}\s*[x×](?![a-z0-9])`,
 const ROAS_OF_RE = new RegExp(String.raw`\broas\s*(?:(?:of|at|target)\b|[=:])\s*${NUM}(\s*%)?`, "gi");
 /** The goals schema's cap; anything higher is a typo or a budget, not a target. */
 const MAX_ROAS = 100;
-/** "$4k to get $40k back". */
+const PERIOD = String.raw`(?:over|across|within|in|for)\s+(?:the\s+(?:next|last)\s+)?(\d+)\s*(day|week|month)s?\b`;
+/** "over 2 weeks", "this month": the period a total budget covers. */
+const PERIOD_RE = new RegExp(String.raw`\b(?:${PERIOD}|(this\s+month\b))`, "i");
+const PERIOD_FRAG = String.raw`(?:(?:over|across|within|in)\s+(?:the\s+(?:next|last)\s+)?\d+\s*(?:day|week|month)s?\s+|this\s+month\s+)?`;
+/**
+ * "$4k to get $40k back", "spend $4k and get $40k back", "spend $4k to make $40k",
+ * "$4k over 2 weeks to get $40k": a total A and the money B it should bring in.
+ */
 const A_TO_B_RE = new RegExp(
-  String.raw`\$\s*${NUM}\s*(k)?\s+to\s+(?:get|make|generate|bring\s+in|return)\s+(?:me\s+)?\$\s*${NUM}\s*(k)?\s*back`,
+  String.raw`\$\s*${NUM}\s*(k)?\s+${PERIOD_FRAG}(?:and|to)\s+(?:get|make|generate|bring\s+in|return)\s+(?:me\s+)?\$\s*${NUM}\s*(k)?`,
   "i",
 );
+/** "$4k for $40k in sales". */
+const A_FOR_B_RE = new RegExp(
+  String.raw`\$\s*${NUM}\s*(k)?\s+${PERIOD_FRAG}for\s+\$\s*${NUM}\s*(k)?\s+in\s+(?:sales|revenue)\b`,
+  "i",
+);
+/** "$4k over 2 weeks", "$6k this month": a total with its period. */
+const TOTAL_PERIOD_RE = new RegExp(String.raw`\$\s*${NUM}\s*(k)?\s+(?:${PERIOD}|this\s+month\b)`, "i");
+const DEFAULT_PERIOD_DAYS = 30;
 
 const DAYS_PER_MONTH = 30.4;
 
@@ -60,8 +76,26 @@ function parseRoasValues(text: string): number[] {
   return found.sort((a, b) => a.at - b.at).map((f) => f.value);
 }
 
+/** The total budget in cents, from a money-back form or "$A over N days / this month". */
+function parseTotalCents(text: string): number | null {
+  const m = A_TO_B_RE.exec(text) ?? A_FOR_B_RE.exec(text) ?? TOTAL_PERIOD_RE.exec(text);
+  if (!m) return null;
+  const cents = Math.round(toNumber(m[1], m[2]) * 100);
+  return cents > 0 ? cents : null;
+}
+
+/** "over 2 weeks" is 14, "over 3 months" is 90, "this month" is 30. */
+function parsePeriodDays(text: string): number | null {
+  const m = PERIOD_RE.exec(text);
+  if (!m) return null;
+  if (m[3]) return DEFAULT_PERIOD_DAYS;
+  const n = Number(m[1]);
+  const days = n * (/^day/i.test(m[2]) ? 1 : /^week/i.test(m[2]) ? 7 : DEFAULT_PERIOD_DAYS);
+  return days > 0 ? days : null;
+}
+
 function impliedRoas(text: string): number | null {
-  const m = A_TO_B_RE.exec(text);
+  const m = A_TO_B_RE.exec(text) ?? A_FOR_B_RE.exec(text);
   if (!m) return null;
   const a = toNumber(m[1], m[2]);
   const b = toNumber(m[3], m[4]);
@@ -69,15 +103,23 @@ function impliedRoas(text: string): number | null {
 }
 
 type BriefDefaults = { goals: ResolvedGoals; currentDailySpendCents: number | null };
-type BriefResult = { brief: StrategyBrief | null; missing: BriefField[]; usedDefaults: BriefField[] };
+type BriefResult = { brief: StrategyBrief | null; missing: BriefField[]; usedDefaults: UsedDefault[] };
 /** Values the operator actually wrote, before any default fills a gap. */
-type StatedBrief = { dailyBudgetCents: number | null; targetRoas: number | null; stretch: number[] };
+type StatedBrief = {
+  dailyBudgetCents: number | null;
+  totalBudgetCents: number | null;
+  periodDays: number | null;
+  targetRoas: number | null;
+  stretch: number[];
+};
 
 function statedBrief(text: string): StatedBrief {
   // An explicit "Nx" wins over the "$A to get $B back" form.
   const values = parseRoasValues(text);
   return {
     dailyBudgetCents: parseBudgetCents(text),
+    totalBudgetCents: parseTotalCents(text),
+    periodDays: parsePeriodDays(text),
     targetRoas: values.length ? values[0] : impliedRoas(text),
     stretch: values.slice(1),
   };
@@ -85,10 +127,18 @@ function statedBrief(text: string): StatedBrief {
 
 /** Fills gaps from the client's goals / current spend and reports what is still missing. */
 function completeBrief(stated: StatedBrief, defaults: BriefDefaults): BriefResult {
-  const usedDefaults: BriefField[] = [];
+  const usedDefaults: UsedDefault[] = [];
   const missing: BriefField[] = [];
 
+  const total = stated.totalBudgetCents;
+  const periodDays = total != null ? (stated.periodDays ?? DEFAULT_PERIOD_DAYS) : null;
+  if (total != null && stated.periodDays == null) usedDefaults.push("period");
+
+  // An explicit daily budget wins; otherwise a total spreads evenly over its period.
   let dailyBudgetCents = stated.dailyBudgetCents;
+  if (dailyBudgetCents == null && total != null && periodDays != null) {
+    dailyBudgetCents = Math.round(total / periodDays);
+  }
   if (dailyBudgetCents == null) {
     const fallback = defaults.goals.daily_account_cap_cents ?? defaults.currentDailySpendCents;
     if (fallback != null && fallback > 0) {
@@ -115,7 +165,12 @@ function completeBrief(stated: StatedBrief, defaults: BriefDefaults): BriefResul
   }
   const target = targetRoas;
   const stretchTargets = [...new Set(stated.stretch)].filter((v) => v !== target).sort((a, b) => a - b);
-  return { brief: { dailyBudgetCents, targetRoas: target, stretchTargets }, missing, usedDefaults };
+  const brief: StrategyBrief = { dailyBudgetCents, targetRoas: target, stretchTargets };
+  if (total != null) {
+    brief.totalBudgetCents = total;
+    brief.periodDays = periodDays;
+  }
+  return { brief, missing, usedDefaults };
 }
 
 export function parseStrategyBrief(text: string, defaults: BriefDefaults): BriefResult {
@@ -160,7 +215,10 @@ export function resolveStrategyBrief(
   const before = statedBrief(earlier.content);
   return completeBrief(
     {
-      dailyBudgetCents: now.dailyBudgetCents ?? before.dailyBudgetCents,
+      // A total in the reply sets the daily figure itself, so an earlier daily budget doesn't override it.
+      dailyBudgetCents: now.dailyBudgetCents ?? (now.totalBudgetCents != null ? null : before.dailyBudgetCents),
+      totalBudgetCents: now.totalBudgetCents ?? before.totalBudgetCents,
+      periodDays: now.periodDays ?? before.periodDays,
       targetRoas: now.targetRoas ?? before.targetRoas,
       stretch: [...before.stretch, ...now.stretch],
     },

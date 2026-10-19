@@ -100,6 +100,12 @@ const GOAL_WORD = String.raw`\b(?:hit|reach|achieve|aim|target|plan|strategy|how
 const STRATEGY_EXPLICIT_GOAL =
   /\b(?:hit|reach|achieve|get\s+to|get)\s+(?:an?\s+)?\d+(?:\.\d+)?\s*[x×]\s*(?:roas|return|target)\b/;
 /**
+ * A total budget and the money it should bring in: "spend $4k and get $40k back",
+ * "$4k to get $40k", "$4k over 2 weeks to get $40k", "spend $4k to make $40k",
+ * "$4k for $40k in sales".
+ */
+const MONEY_BACK_GOAL = String.raw`\$\s*[\d,.]+\s*k?\s+(?:(?:over|across|within|in)\s+(?:the\s+(?:next|last)\s+)?\d+\s*(?:days?|weeks?|months?)\s+|this\s+month\s+)?(?:(?:and|to)\s+(?:get|make|generate|bring\s+in|return)\s+(?:me\s+)?\$\s*[\d,.]+\s*k?|for\s+\$\s*[\d,.]+\s*k?\s+in\s+(?:sales|revenue))`;
+/**
  * A return goal stated outright: "get 10x roas", "roas of 8", "reach a 12x target",
  * "$4k to get $40k back". The goal word sits within the same clause as the multiple.
  */
@@ -109,7 +115,7 @@ const STRATEGY_GOAL = new RegExp(
     String.raw`${ROAS_MULTIPLE}[^.?!\n]{0,40}?${GOAL_WORD}`,
     String.raw`\broas\s+of\s+\d`,
     String.raw`\bstretch\s+targets?\b`,
-    String.raw`\$\s*[\d,.]+\s*k?\s+to\s+(?:get|make|generate|bring\s+in|return)\s+(?:me\s+)?\$\s*[\d,.]+\s*k?\s*back`,
+    MONEY_BACK_GOAL,
     String.raw`\b(?:hit|reach|get)\s+(?:a\s+)?\d+(?:\.\d+)?\s*[x×]\s*(?:roas|return|target|back)\b`,
   ].join("|"),
 );
