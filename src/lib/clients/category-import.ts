@@ -15,8 +15,13 @@ export type CategoryImportRow = {
 };
 
 export const MAX_IMPORT_ROWS = 1000;
-/** Rows per Supabase insert / update call. */
+/** Rows per Supabase insert call (sent in the request body). */
 const WRITE_CHUNK = 500;
+/**
+ * Ids per `.in("id", …)` filter. PostgREST puts the filter in the URL, and 100
+ * UUIDs (~4 KB) stays well under common request-line limits; 500 would not.
+ */
+export const ID_FILTER_CHUNK = 100;
 
 /** Optional columns that were present in the file's header row. */
 export type ImportColumn = "url" | "margin" | "aov" | "priority";
@@ -254,7 +259,8 @@ export async function applyCategoryImport(
   const existing = (data ?? []) as Array<{ id: string; name: string }>;
 
   // Batched: one insert per WRITE_CHUNK new rows, and one update per distinct
-  // change set (rows getting the same values share a single `.in("id", …)`).
+  // change set (rows getting the same values share `.in("id", …)` filters of
+  // at most ID_FILTER_CHUNK ids).
   const byName = new Map<string, string>();
   for (const s of existing) if (!byName.has(norm(s.name))) byName.set(norm(s.name), s.id);
   const inserts: Array<Record<string, unknown>> = [];
@@ -278,11 +284,11 @@ export async function applyCategoryImport(
     if (e) throw new Error(e.message);
   }
   for (const { patch, ids } of updates.values()) {
-    for (let i = 0; i < ids.length; i += WRITE_CHUNK) {
+    for (let i = 0; i < ids.length; i += ID_FILTER_CHUNK) {
       const { error: e } = await supabase
         .from("client_services")
         .update(patch)
-        .in("id", ids.slice(i, i + WRITE_CHUNK));
+        .in("id", ids.slice(i, i + ID_FILTER_CHUNK));
       if (e) throw new Error(e.message);
     }
   }
@@ -290,11 +296,11 @@ export async function applyCategoryImport(
     const drop = existing
       .filter((s) => !fileNames.has(norm(s.name)))
       .map((s) => s.id);
-    if (drop.length) {
+    for (let i = 0; i < drop.length; i += ID_FILTER_CHUNK) {
       const { error: e } = await supabase
         .from("client_services")
         .update({ is_active: false, updated_at: ts })
-        .in("id", drop);
+        .in("id", drop.slice(i, i + ID_FILTER_CHUNK));
       if (e) throw new Error(e.message);
     }
   }
