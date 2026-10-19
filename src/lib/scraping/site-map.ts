@@ -82,15 +82,20 @@ export function discoverCategoryCandidates(
   for (const raw of urls) {
     const u = parseUrl(raw);
     if (!u || u.host.toLowerCase() !== site.host.toLowerCase()) continue;
-    const path = normalizePath(u.pathname);
-    if (byPath.has(path)) continue;
-    const marker = CATEGORY_MARKERS.find((m) => path.includes(m));
+    const full = normalizePath(u.pathname);
+    const marker = CATEGORY_MARKERS.find((m) => full.includes(m));
     if (!marker) continue;
-    const segment = path.slice(path.indexOf(marker) + marker.length).split("/")[0];
+    const at = full.indexOf(marker) + marker.length;
+    const segment = full.slice(at).split("/")[0];
     if (!segment) continue;
+    // Canonical category path: drop nested product / pagination segments
+    const path = full.slice(0, at) + segment;
+    if (byPath.has(path)) continue;
+    // Original casing for the URL; the marker and segment have the same length
+    const original = u.pathname.slice(0, at) + u.pathname.slice(at).split("/")[0];
     byPath.set(path, {
       name: titleCase(decodeURIComponent(segment)),
-      landing_page_url: `${u.origin}${u.pathname.replace(/\/+$/, "")}`,
+      landing_page_url: `${u.origin}${original}`,
       alreadyAdded: added.has(path),
     });
   }

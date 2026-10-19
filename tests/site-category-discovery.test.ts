@@ -31,6 +31,21 @@ describe("discoverCategoryCandidates", () => {
     expect(out.every((c) => !c.alreadyAdded)).toBe(true);
   });
 
+  it("collapses nested product and pagination URLs to the category URL", () => {
+    const out = discoverCategoryCandidates(
+      [
+        `${SITE}/collections/bar-stools`,
+        `${SITE}/collections/bar-stools/products/oak-stool`,
+        `${SITE}/collections/bar-stools/page/2`,
+      ],
+      SITE,
+      [svc(`${SITE}/collections/bar-stools`)],
+    );
+    expect(out).toEqual([
+      { name: "Bar Stools", landing_page_url: `${SITE}/collections/bar-stools`, alreadyAdded: true },
+    ]);
+  });
+
   it("flags candidates already added, ignoring host, case, slash and query", () => {
     const out = discoverCategoryCandidates(
       [`${SITE}/collections/bar-stools`, `${SITE}/collections/sofas`],
