@@ -21,6 +21,7 @@ import type {
   UserClientAccess,
   WorkspaceDocument,
 } from "@/types";
+import type { GoogleAsset, GoogleConnection } from "@/lib/google/types";
 import { encryptToken } from "@/lib/security/token-vault";
 import { addDaysIso, addHoursIso, nowIso } from "@/lib/utils";
 
@@ -48,6 +49,9 @@ export interface DemoStore {
   /** Append-only record of executed Meta changes. */
   changeLog: import("@/lib/changes/change-log").ChangeLogEntry[];
   creativeDrafts?: import("@/lib/creatives/drafts").CreativeDraft[];
+  /** The agency read-only Google connection (admin-connected). */
+  googleConnection: GoogleConnection | null;
+  googleAssets: GoogleAsset[];
 }
 
 type GlobalDemo = typeof globalThis & {
@@ -55,7 +59,7 @@ type GlobalDemo = typeof globalThis & {
   __adspirerDemoStoreVersion?: number;
 };
 
-const DEMO_STORE_VERSION = 7;
+const DEMO_STORE_VERSION = 8;
 
 function id(prefix: string): string {
   return `${prefix}_${nanoid(10)}`;
@@ -631,6 +635,8 @@ function seedStore(): DemoStore {
     oauthPkceStates: [],
     workspaceDocuments: [],
     changeLog: [],
+    googleConnection: null,
+    googleAssets: [],
   };
 }
 
