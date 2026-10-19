@@ -67,7 +67,13 @@ describe("cross-channel strategy for ClickTrends in DEMO_MODE", () => {
     expect(evidence).toContain("### Level 2");
     expect(evidence).toContain("### Level 3");
     expect(evidence).toContain("### Level 3: channel split");
-    expect(evidence).toContain("30 days");
+    // "$4k and get $40k back" names no period: 30 days, said once, with the plan over that period.
+    const inputs = section(evidence, "### Strategy inputs");
+    expect(inputs).toContain("Total budget: $4,000.00 over 30 days ($133.33/day) (period not stated: 30 days assumed)");
+    expect(evidence.match(/period not stated/gi)).toHaveLength(1);
+    expect(section(evidence, "### Level 3: allocation")).toMatch(
+      /- Plan over the period: \$[\d,.]+ spend → \$[\d,.]+ projected revenue \([\d.]+×\) over 30 days; target \$40,000\.00/,
+    );
     expect(evidence).toContain(LABEL);
     expect(section(evidence, "### Scope")).toContain("Bar stools");
 

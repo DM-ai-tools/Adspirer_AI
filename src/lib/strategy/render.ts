@@ -64,6 +64,15 @@ function projectionLine(p: PlanProjection, money: Money): string {
     : `${money(p.dailySpendCents)}/day spend → ${money(p.dailyRevenueCents)}/day projected revenue, blended ROAS ${p.blendedRoas}×`;
 }
 
+/** The daily projection over a total budget's period, against the revenue the total should bring in. */
+function periodLine(p: PlanProjection, total: { cents: number; days: number }, targetRoas: number, money: Money): string {
+  const spend = money(p.dailySpendCents * total.days);
+  const target = `target ${money(Math.round(total.cents * targetRoas))} (${money(total.cents)} × the ${targetRoas}× target ROAS)`;
+  return p.blendedRoas === null
+    ? `- Plan over the period: ${spend} spend, no projected return over ${total.days} days; ${target}.`
+    : `- Plan over the period: ${spend} spend → ${money(p.dailyRevenueCents * total.days)} projected revenue (${p.blendedRoas}×) over ${total.days} days; ${target}.`;
+}
+
 /**
  * How much of the account's spend the loaded ads account for, the snapshot's
  * load warnings, and whether the per-category figures are therefore partial.
@@ -343,6 +352,8 @@ export function renderStrategyEvidence(
     currency: string;
     categoryWord: CategoryWord;
     defaultsUsed?: string[];
+    /** The brief gave a total budget but no period, so its period is the default. */
+    periodAssumed?: boolean;
     /** The snapshot's load warnings; an "Ads" failure makes the per-category figures partial. */
     warnings?: string[];
     /** The channel data the plan was built with; without it the evidence is Meta only. */
@@ -363,12 +374,22 @@ export function renderStrategyEvidence(
   const channelWarnings = opts.channelWarnings ?? [];
   // Currencies that differ are never combined: Level 1 stays Meta's own.
   const combined = channels && !channels.currencyMismatch ? channels : null;
+  // A brief given as a total over a period; the engine plans its daily share.
+  const total =
+    brief.totalBudgetCents != null && brief.totalBudgetCents > 0 && brief.periodDays != null && brief.periodDays > 0
+      ? { cents: brief.totalBudgetCents, days: brief.periodDays }
+      : null;
   const out: string[] = [];
 
   out.push(
     [
       "### Strategy inputs",
       `- Daily budget: ${money(brief.dailyBudgetCents)}/day`,
+      ...(total
+        ? [
+            `- Total budget: ${money(total.cents)} over ${total.days} days (${money(Math.round(total.cents / total.days))}/day)${opts.periodAssumed ? ` (period not stated: ${total.days} days assumed)` : ""}`,
+          ]
+        : []),
       `- Target ROAS: ${brief.targetRoas}×`,
       `- Stretch targets: ${brief.stretchTargets.length ? brief.stretchTargets.map((t) => `${t}×`).join(", ") : "none"}`,
       `- Period analysed: last ${days} days`,
@@ -553,6 +574,7 @@ export function renderStrategyEvidence(
         : []),
       "",
       `- Plan total: ${projectionLine(plan.projection, money)} (${plan.projection.meetsTarget ? "meets" : "misses"} the ${brief.targetRoas}× target).`,
+      ...(total ? [periodLine(plan.projection, total, brief.targetRoas, money)] : []),
       "",
       "Structure per tier:",
     );

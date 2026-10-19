@@ -2440,9 +2440,6 @@ export async function gatherDiagnoseEvidence(input: {
               : `Daily budget not stated: used the current daily spend, averaged over the last ${snapshot.period.days} days (${cents(brief.dailyBudgetCents)}/day).`,
           );
         }
-        if (parsed.usedDefaults.includes("period")) {
-          defaultsUsed.push("Period not stated: assumed the total budget runs over 30 days.");
-        }
         if (parsed.usedDefaults.includes("target_roas")) {
           defaultsUsed.push(`Target ROAS not stated: used the client's target ROAS (${brief.targetRoas}×) from their goals.`);
         }
@@ -2451,6 +2448,8 @@ export async function gatherDiagnoseEvidence(input: {
             currency: snapshot.account.currency,
             categoryWord,
             defaultsUsed,
+            // The "Total budget" line says the period was assumed, so no separate default line.
+            periodAssumed: parsed.usedDefaults.includes("period"),
             warnings: snapshot.warnings,
             channels,
             channelWarnings,

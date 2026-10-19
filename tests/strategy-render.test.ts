@@ -66,6 +66,7 @@ function render(input: {
   goals?: GoalsProfile;
   categoryWord?: "category" | "service";
   defaultsUsed?: string[];
+  periodAssumed?: boolean;
 }) {
   const plan = buildStrategyPlan({
     snapshot: input.snapshot,
@@ -80,6 +81,7 @@ function render(input: {
     currency: "USD",
     categoryWord: input.categoryWord ?? "category",
     defaultsUsed: input.defaultsUsed,
+    periodAssumed: input.periodAssumed,
     warnings: input.snapshot.warnings,
   });
   return { plan, text };
@@ -191,6 +193,34 @@ describe("renderStrategyEvidence", () => {
     expect(inputs).toMatch(/Target ROAS: 4×/);
     expect(inputs).toContain("Daily budget not stated: used the client's daily account cap.");
     expect(inputs).toMatch(/Word for offerings: service/);
+  });
+
+  it("prints a total budget with its period, and the plan over that period against the target", () => {
+    const brief = { dailyBudgetCents: 13_333, targetRoas: 10, totalBudgetCents: 400_000, periodDays: 30 };
+    const { text, plan } = render({ snapshot: snap(fiveAds), categories: fiveCategories, brief });
+    const inputs = section(text, "### Strategy inputs");
+    expect(inputs).toContain("- Daily budget: $133.33/day\n- Total budget: $4,000.00 over 30 days ($133.33/day)\n");
+    expect(inputs).not.toContain("period not stated");
+    const money = (c: number) => `$${(c / 100).toLocaleString("en", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const p = plan.projection;
+    expect(p.dailySpendCents).toBe(13_333);
+    expect(section(text, "### Level 3: allocation")).toContain(
+      `- Plan over the period: ${money(p.dailySpendCents * 30)} spend → ${money(p.dailyRevenueCents * 30)} projected revenue (${p.blendedRoas}×) over 30 days; target $40,000.00 ($4,000.00 × the 10× target ROAS).`,
+    );
+  });
+
+  it("says once when the period was assumed", () => {
+    const brief = { dailyBudgetCents: 13_333, targetRoas: 10, totalBudgetCents: 400_000, periodDays: 30 };
+    const { text } = render({ snapshot: snap(fiveAds), categories: fiveCategories, brief, periodAssumed: true });
+    expect(section(text, "### Strategy inputs")).toContain(
+      "- Total budget: $4,000.00 over 30 days ($133.33/day) (period not stated: 30 days assumed)",
+    );
+    expect(text.match(/period not stated/gi)).toHaveLength(1);
+  });
+
+  it("prints no total budget or period plan without a total budget", () => {
+    const { text } = render({ snapshot: snap(fiveAds), categories: fiveCategories });
+    expect(text).not.toMatch(/Total budget|Plan over the period/);
   });
 
   it("uses the service word for non-ecommerce clients", () => {
