@@ -21,9 +21,9 @@ This is a recommendation only. Do not queue or execute anything, propose no tool
    - The allocation table: category, tier, daily budget, target ROAS, projected daily revenue.
    - Campaign structure per tier, from "Structure per tier".
    - A creative plan: at least 3 new concepts a month for each funded category, built from the competitor patterns.
-   - What to track weekly: spend, ROAS against each category's target, and frequency.
+   - What to track weekly: spend, revenue and ROAS for each category against its target ROAS, the metrics the Level 1 table already reports.
    - If the evidence says "No budget allocated", say that plainly with its reason and what has to change. Do not invent an allocation.
 5. **Stretch scenarios**: one line per scenario, labelled with its target. Some may sit below the main target; say so.
 6. **What would make this plan better**: the missing data, for example margins not set, categories not loaded, low coverage, no GA4 or catalogue connected yet. Take these from the inputs and assumptions.
-7. **One next step**: a single category to test, with a daily budget and a duration, taken from the plan.
+7. **One next step**: the category, daily budget and duration from "Next test". If it says there is no test to run, say what has to change first.
 `.trim();

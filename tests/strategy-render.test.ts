@@ -103,6 +103,7 @@ const HEADINGS = [
   "### Level 2: reality check",
   "### Level 3: allocation",
   "### Stretch scenarios",
+  "### Next test",
   "### Assumptions",
 ];
 
@@ -263,6 +264,16 @@ describe("renderStrategyEvidence", () => {
     expect(section(text, "### Untouched categories")).toMatch(/not seen in the loaded ads/);
   });
 
+  it("prints the next test from the plan, or says there is none", () => {
+    const { text, plan } = render({ snapshot: snap(fiveAds), categories: fiveCategories });
+    const next = section(text, "### Next test");
+    expect(plan.nextTest).not.toBeNull();
+    expect(next).toContain(`${plan.nextTest!.name}`);
+    expect(next).toMatch(/\$10(\.00)?\/day for 14 days/);
+    const held = render({ snapshot: snap([ad("Hats", 20_000, 1)]), categories: [cat("Hats")] });
+    expect(section(held.text, "### Next test")).toMatch(/No category is funded/);
+  });
+
   it("says plainly when every category is held and nothing is allocated", () => {
     const held = [cat("Hats"), cat("Caps")];
     const { text } = render({ snapshot: snap([ad("Hats", 20_000, 1), ad("Caps", 20_000, 0.5)]), categories: held });
@@ -294,5 +305,11 @@ describe("STRATEGY_FRAMEWORK", () => {
     expect(STRATEGY_FRAMEWORK).toMatch(/No budget allocated/);
     expect(STRATEGY_FRAMEWORK).toMatch(/Word for offerings/);
     expect(STRATEGY_FRAMEWORK).toMatch(/do not queue or execute/i);
+  });
+
+  it("points the next step at the plan's next test and asks only for tracked metrics the evidence has", () => {
+    expect(STRATEGY_FRAMEWORK).toMatch(/One next step[^\n]*Next test/);
+    expect(STRATEGY_FRAMEWORK).not.toMatch(/frequency/i);
+    expect(STRATEGY_FRAMEWORK).toMatch(/spend, revenue and ROAS/);
   });
 });

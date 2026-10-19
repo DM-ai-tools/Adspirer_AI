@@ -1,12 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { gatherDiagnoseEvidence, runAdspirerAgent } from "@/lib/agent/adspirer-agent";
 import { createTask, runTask } from "@/lib/agent/task-runner";
 import { detectRequestIntent } from "@/lib/agent/task-plan";
 import { STRATEGY_BRIEF_MARKER } from "@/lib/agent/strategy-brief";
-import { getDemoStore } from "@/lib/demo/store";
+import { getDemoStore, resetDemoStore } from "@/lib/demo/store";
 import { classify, listClassifiedTools } from "@/lib/tools/policy";
 
 const EXECUTE_TOOLS = new Set(listClassifiedTools().filter((t) => t.safety === "execute").map((t) => t.name));
+
+// Several tests edit seeded clients (business_model, account access); put the seed back after each.
+afterEach(() => {
+  resetDemoStore();
+});
 
 async function strategyTurn(clientId: string, request: string) {
   const task = await createTask({ clientId, createdBy: "profile_operator_demo", title: request, goal: request });

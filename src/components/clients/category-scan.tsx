@@ -16,9 +16,10 @@ export function CategoryScan({
   onAdded,
 }: {
   clientId: string;
-  word: string;
+  word: "category" | "service";
   onAdded: () => void;
 }) {
+  const words = word === "category" ? "categories" : "services";
   const [busy, setBusy] = useState(false);
   const [candidates, setCandidates] = useState<Candidate[] | null>(null);
   const [unavailable, setUnavailable] = useState(false);
@@ -71,7 +72,7 @@ export function CategoryScan({
         <div className="space-y-2 rounded-lg border border-border-subtle p-3">
           {unavailable ? (
             <p className="text-sm text-muted">
-              Website scan is unavailable (no crawler configured). Add {word}s by hand or import a sheet.
+              Website scan is unavailable (no crawler configured). Add {words} by hand or import a sheet.
             </p>
           ) : candidates.length === 0 ? (
             <p className="text-sm text-muted">No {word} candidates found on the site.</p>

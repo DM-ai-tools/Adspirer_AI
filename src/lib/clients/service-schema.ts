@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 export const serviceCreateSchema = z.object({
-  name: z.string().min(1),
+  name: z.string().trim().min(1),
   description: z.string().nullable().optional(),
   keywords: z.array(z.string()).nullable().optional(),
   landing_page_url: z.string().url().nullable().optional(),

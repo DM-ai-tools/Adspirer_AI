@@ -1,10 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { categoryPatchFromEdit, importOutcome } from "@/lib/clients/category-form";
+import * as XLSX from "xlsx";
+import { categoryPatchFromEdit, importOutcome, marginPctFromNumber } from "@/lib/clients/category-form";
+import { parseCategorySheet } from "@/lib/clients/category-import";
 
 describe("categoryPatchFromEdit", () => {
   it("parses a margin percent", () => {
     expect(categoryPatchFromEdit("gross_margin_pct", "55")).toEqual({ ok: true, patch: { gross_margin_pct: 55 } });
     expect(categoryPatchFromEdit("gross_margin_pct", "35%")).toEqual({ ok: true, patch: { gross_margin_pct: 35 } });
+  });
+  it("reads a margin of 1 or less as a fraction, the same rule the import uses", () => {
+    expect(categoryPatchFromEdit("gross_margin_pct", "0.35")).toEqual({ ok: true, patch: { gross_margin_pct: 35 } });
+    expect(categoryPatchFromEdit("gross_margin_pct", "0.5%")).toEqual({ ok: true, patch: { gross_margin_pct: 0.5 } });
+    expect(marginPctFromNumber(0.35, false)).toBe(35);
+    expect(marginPctFromNumber(35, false)).toBe(35);
+    expect(marginPctFromNumber(0.35, true)).toBe(0.35);
+    const sheet = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(sheet, XLSX.utils.aoa_to_sheet([["Category", "Margin"], ["A", 0.35], ["B", "0.35"]]), "S");
+    const bytes = XLSX.write(sheet, { type: "array", bookType: "xlsx" }) as ArrayBuffer;
+    expect(parseCategorySheet(bytes, "c.xlsx").rows.map((r) => r.gross_margin_pct)).toEqual([35, 35]);
   });
   it("rejects a margin outside 0-100", () => {
     const r = categoryPatchFromEdit("gross_margin_pct", "140");

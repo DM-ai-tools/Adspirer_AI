@@ -2,6 +2,7 @@ import * as XLSX from "xlsx";
 import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
 import { nowIso } from "@/lib/utils";
+import { marginPctFromNumber } from "@/lib/clients/category-form";
 import type { ClientService } from "@/types";
 
 export type CategoryImportRow = {
@@ -123,9 +124,7 @@ export function parseCategorySheet(
     if (col.margin !== undefined) {
       const { value, percent } = toNumber(line[col.margin]);
       if (value !== null) {
-        // 1 or less is a fraction (0.35 -> 35), unless written with a % sign
-        const pct = !percent && value <= 1 ? value * 100 : value;
-        const rounded = Math.round(pct * 100) / 100;
+        const rounded = marginPctFromNumber(value, percent);
         if (rounded < 0 || rounded > 100) {
           errors.push(`Row ${rowNo}: margin for "${name}" must be between 0 and 100, ignored.`);
         } else {

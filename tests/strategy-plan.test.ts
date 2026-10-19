@@ -90,7 +90,33 @@ describe("PLAN_CONSTANTS", () => {
       scaleDecay: 0.85,
       testDiscount: 0.7,
       minSpendForVerdictCents: 5000,
+      testDurationDays: 14,
     });
+  });
+});
+
+describe("buildStrategyPlan next test", () => {
+  it("picks the highest-priority funded test category, for 14 days, and says so", () => {
+    const categories = [cat("Hats", { priority: 1 }), cat("Cups", { priority: 3 }), cat("Bags", { priority: 2 })];
+    const p = plan({ snapshot: snap([]), categories, brief: { dailyBudgetCents: 10_000 } });
+    const cups = byId(p).cups;
+    expect(p.nextTest).toEqual({ categoryId: "cups", name: "Cups", dailyBudgetCents: cups.dailyBudgetCents, durationDays: 14 });
+    expect(cups.dailyBudgetCents).toBeGreaterThan(0);
+    expect(p.assumptions.some((a) => /14 days/.test(a))).toBe(true);
+  });
+
+  it("falls back to the top promising category when no test category is funded", () => {
+    const categories = [cat("Bags"), cat("Hats")];
+    const p = plan({ snapshot: snap([ad("Bags", 20_000, 3), ad("Hats", 40_000, 3.5)]), categories, brief: {} });
+    expect(p.allocations.every((a) => a.tier === "promising")).toBe(true);
+    expect(p.nextTest).toMatchObject({ categoryId: "hats", name: "Hats", durationDays: 14 });
+    expect(p.nextTest?.dailyBudgetCents).toBe(byId(p).hats.dailyBudgetCents);
+  });
+
+  it("is null when nothing is funded", () => {
+    expect(plan({ snapshot: snap([]), categories: [], brief: {} }).nextTest).toBeNull();
+    const held = plan({ snapshot: snap([ad("Hats", 20_000, 1)]), categories: [cat("Hats")], brief: {} });
+    expect(held.nextTest).toBeNull();
   });
 });
 

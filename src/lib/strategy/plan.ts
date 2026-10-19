@@ -41,6 +41,8 @@ export type StrategyPlan = {
   gaps: { capabilities: CapabilityStatus[]; untouchedCategoryIds: string[] };
   projection: PlanProjection;
   scenarios: Array<{ targetRoas: number; projection: PlanProjection; tierCounts: Record<AllocationTier, number> }>;
+  /** The one category to test next: the top funded test, else the top funded promising one. */
+  nextTest: { categoryId: string; name: string; dailyBudgetCents: number; durationDays: number } | null;
   assumptions: string[];
 };
 
@@ -50,6 +52,7 @@ export const PLAN_CONSTANTS = {
   scaleDecay: 0.85,
   testDiscount: 0.7,
   minSpendForVerdictCents: 5000,
+  testDurationDays: 14,
 } as const;
 
 /** Target ÷ reference ROAS at or below these is "within" / "stretch"; above is "unrealistic". */
@@ -244,6 +247,7 @@ export function buildStrategyPlan(input: {
     `${Words} below break-even ROAS, or below half their target when the margin is unknown, are held at no budget.`,
     `The target is compared with the higher of the ${BENCHMARKS.retargetingRoas}× retargeting benchmark and the account ROAS: up to ${REALITY.within}× that is within reach, up to ${REALITY.stretch}× a stretch, beyond that unrealistic.`,
     `Benchmarks (${BENCHMARKS.prospectingRoas}× prospecting, ${BENCHMARKS.retargetingRoas}× retargeting ROAS) come from the internal paid-social playbook (generic, not industry-specific).`,
+    `The next test is the highest-priority funded test ${word} (else the funded promising ${word} with the biggest budget), run for ${C.testDurationDays} days at its planned daily budget.`,
   ];
   for (const category of categories) {
     const perf = perfById.get(category.id) as CategoryPerformance;
@@ -251,6 +255,16 @@ export function buildStrategyPlan(input: {
       assumptions.push(`ROAS was unavailable for ${category.name}, so it is treated as a test.`);
     }
   }
+
+  const funded = (tier: AllocationTier) => main.allocations.filter((a) => a.tier === tier && a.dailyBudgetCents > 0);
+  const priorityOf = new Map(categories.map((c) => [c.id, c.priority]));
+  const pick =
+    funded("test").sort(
+      (a, b) => (priorityOf.get(b.categoryId) ?? 0) - (priorityOf.get(a.categoryId) ?? 0) || a.name.localeCompare(b.name),
+    )[0] ?? funded("promising").sort((a, b) => b.dailyBudgetCents - a.dailyBudgetCents || a.name.localeCompare(b.name))[0];
+  const nextTest = pick
+    ? { categoryId: pick.categoryId, name: pick.name, dailyBudgetCents: pick.dailyBudgetCents, durationDays: C.testDurationDays }
+    : null;
 
   return {
     brief,
@@ -283,6 +297,7 @@ export function buildStrategyPlan(input: {
       const scenario = run(targetRoas);
       return { targetRoas, projection: scenario.projection, tierCounts: scenario.tierCounts };
     }),
+    nextTest,
     assumptions,
   };
 }

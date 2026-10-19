@@ -29,6 +29,6 @@ export async function assertUniqueServiceName(
   }
 
   if (names.some((s) => s.id !== exceptId && norm(s.name) === norm(name))) {
-    throw new ConflictError("A service with this name already exists", { name });
+    throw new ConflictError("A category or service with this name already exists", { name });
   }
 }

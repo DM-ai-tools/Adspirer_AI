@@ -10,6 +10,16 @@ type EditResult = { ok: true; patch: Record<string, unknown> } | { ok: false; er
 const fail = (error: string): EditResult => ({ ok: false, error });
 
 /**
+ * A typed or imported margin as a percent, rounded to 2 decimals: a value of 1
+ * or less is a fraction (0.35 -> 35) unless it was written with a % sign.
+ * Shared by the inline edit and the sheet import so both read "0.35" the same.
+ */
+export function marginPctFromNumber(value: number, percentSign: boolean): number {
+  const pct = !percentSign && value <= 1 ? value * 100 : value;
+  return Math.round(pct * 100) / 100;
+}
+
+/**
  * Turns one inline-edited cell into the PATCH body for a client service.
  * Blank margin, AOV and landing page clear the value; AOV is entered in major
  * units and stored as integer cents.
@@ -34,8 +44,10 @@ export function categoryPatchFromEdit(field: CategoryFormField, raw: string): Ed
     case "gross_margin_pct": {
       if (!text) return { ok: true, patch: { gross_margin_pct: null } };
       const num = Number(text.replace(/%$/, "").trim());
-      if (!Number.isFinite(num) || num < 0 || num > 100) return fail("Margin must be a number from 0–100");
-      return { ok: true, patch: { gross_margin_pct: num } };
+      if (!Number.isFinite(num) || num < 0) return fail("Margin must be a number from 0–100");
+      const pct = marginPctFromNumber(num, text.endsWith("%"));
+      if (pct > 100) return fail("Margin must be a number from 0–100");
+      return { ok: true, patch: { gross_margin_pct: pct } };
     }
     case "average_order_value": {
       if (!text) return { ok: true, patch: { average_order_value_cents: null } };

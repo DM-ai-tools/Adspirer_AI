@@ -302,6 +302,16 @@ export function renderStrategyEvidence(
     ].join("\n"),
   );
 
+  const next = plan.nextTest;
+  out.push(
+    [
+      "### Next test",
+      next
+        ? `- ${next.name}: ${money(next.dailyBudgetCents)}/day for ${next.durationDays} days (from the Level 3 allocation).`
+        : `- No ${word} is funded in this plan, so there is no test to run yet.`,
+    ].join("\n"),
+  );
+
   out.push(["### Assumptions", ...plan.assumptions.map((a) => `- ${a}`)].join("\n"));
 
   return out.join("\n\n");

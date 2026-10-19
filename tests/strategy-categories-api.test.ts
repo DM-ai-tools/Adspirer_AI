@@ -85,6 +85,25 @@ describe("strategy categories API", () => {
     expect((await PATCH(req("PATCH", { name: "RUGS" }), itemCtx(service.id))).status).toBe(200);
   });
 
+  it("trims the name on create and rejects a whitespace-only name", async () => {
+    as("operator");
+    expect((await create({ name: "   " })).status).toBe(400);
+    const res = await create({ name: "  Rugs  " });
+    expect(res.status).toBe(201);
+    expect(((await res.json()) as { data: { service: Svc } }).data.service.name).toBe("Rugs");
+    const { PATCH } = await import("@/app/api/clients/[id]/services/[serviceId]/route");
+    expect((await PATCH(req("PATCH", { name: " \t " }), itemCtx("svc_mdc_implants"))).status).toBe(400);
+  });
+
+  it("words the duplicate-name conflict for both categories and services", async () => {
+    as("operator");
+    const res = await create({ name: "dental implants" });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: { message: string } }).error.message).toBe(
+      "A category or service with this name already exists",
+    );
+  });
+
   it("GET with seed=0 lists active and inactive rows and never seeds a default", async () => {
     as("operator");
     const { GET } = await import("@/app/api/clients/[id]/services/route");
