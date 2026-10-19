@@ -633,10 +633,14 @@ export function scopeAuditSnapshot(snap: MetaAuditSnapshot, campaignIds: string[
   };
 }
 
+/** The ClickTrends demo Meta account: it gets the ecommerce sample below. */
+export const DEMO_CLICKTRENDS_META_ACCOUNT_ID = "act_700800900";
+
 /** Deterministic sample for DEMO_MODE — exercises most checkpoints. */
 export function demoMetaAuditSnapshot(accountId: string, accountName: string, days = 30): MetaAuditSnapshot {
   const until = dayString(new Date(Date.now() - 86_400_000));
   const since = dayString(new Date(Date.parse(`${until}T00:00:00Z`) - (days - 1) * 86_400_000));
+  const resultLabel = accountId === DEMO_CLICKTRENDS_META_ACCOUNT_ID ? "Purchases" : "Leads";
   const perf = (spend: number, results: number | null, frequency: number, ctr: number, roas: number | null = null): PeriodPerformance => ({
     spendCents: spend,
     impressions: Math.round(spend * 1.6),
@@ -645,7 +649,7 @@ export function demoMetaAuditSnapshot(accountId: string, accountName: string, da
     linkCtr: ctr,
     cpmCents: 1_150,
     results,
-    resultLabel: "Leads",
+    resultLabel,
     costPerResultCents: results ? Math.round(spend / results) : null,
     roas,
   });
@@ -680,6 +684,63 @@ export function demoMetaAuditSnapshot(accountId: string, accountName: string, da
     performance: null,
     ...over,
   });
+
+  if (accountId === DEMO_CLICKTRENDS_META_ACCOUNT_ID) {
+    // Ecommerce (bar stools and sofas): one Advantage+ sales campaign, one
+    // retargeting campaign, ads linking to the category collections.
+    const purchase = { customEventType: "PURCHASE", countries: ["US"] };
+    return {
+      account: {
+        id: accountId,
+        name: accountName,
+        currency: "USD",
+        timezone: "America/Los_Angeles",
+        statusCode: 1,
+        disableReason: null,
+        amountSpentCents: 4_120_000,
+        spendCapCents: null,
+      },
+      period: { days, since, until },
+      totals: perf(330_000, 40, 2.4, 1.05, 2.55),
+      previousPeriod: previousPeriodOf(since, until),
+      previousTotals: perf(300_000, 35, 2.3, 1.1, 2.4),
+      pixels: [
+        {
+          id: "demo_ct_pixel",
+          name: "ClickTrends store pixel",
+          lastFiredTime: new Date().toISOString(),
+          automaticMatching: true,
+          stats7d: { events: { PageView: 9_800, AddToCart: 410, Purchase: 11 }, serverShare: 0.62, piiShare: { Purchase: 0.88 } },
+          stats28d: { events: { PageView: 39_500, AddToCart: 1_640, Purchase: 42 }, serverShare: 0.6, piiShare: { Purchase: 0.86 } },
+        },
+      ],
+      customConversions: [],
+      audiences: [
+        { id: "aud_ct_customers", name: "Purchasers 180d", subtype: "CUSTOM", sizeLower: 3_100, ready: true, problem: null },
+        { id: "aud_ct_web30", name: "Website visitors 30d", subtype: "WEBSITE", sizeLower: 24_000, ready: true, problem: null },
+      ],
+      campaigns: [
+        { id: "ct_campaign_asc", name: "Bar Stools | Advantage+ | Sales", objective: "OUTCOME_SALES", status: "ACTIVE", bidStrategy: null, dailyBudgetCents: 7_000, lifetimeBudgetCents: null, advantagePlus: true, specialAdCategories: [], createdTime: old, performance: perf(210_000, 31, 2.1, 1.12, 3.1), previousPerformance: perf(190_000, 27, 2.0, 1.15, 2.9) },
+        { id: "ct_campaign_rt", name: "Sofas | Retargeting | Sales", objective: "OUTCOME_SALES", status: "ACTIVE", bidStrategy: null, dailyBudgetCents: null, lifetimeBudgetCents: null, advantagePlus: false, specialAdCategories: [], createdTime: old, performance: perf(120_000, 9, 4.6, 0.94, 1.6), previousPerformance: perf(110_000, 8, 4.1, 1.0, 1.7) },
+      ],
+      adSets: [
+        adSet("ct_as_asc", "Bar Stools – Advantage+ audience", "ct_campaign_asc", { ...purchase, pixelId: "demo_ct_pixel", dailyBudgetCents: null, frequency7d: 1.6, performance: perf(210_000, 31, 2.1, 1.12, 3.1) }),
+        adSet("ct_as_rt", "Sofas – Retargeting – Website visitors 30d", "ct_campaign_rt", { ...purchase, pixelId: "demo_ct_pixel", dailyBudgetCents: 4_000, advantageAudience: false, includedAudienceIds: ["aud_ct_web30"], excludedAudienceIds: ["aud_ct_customers"], frequency7d: 3.8, performance: perf(120_000, 9, 4.6, 0.94, 1.6) }),
+      ],
+      ads: [
+        { id: "ct_ad_asc", name: "Bar Stools | Advantage+ | Sales", adSetId: "ct_as_asc", campaignId: "ct_campaign_asc", status: "ACTIVE", createdTime: recent, format: "VIDEO", issue: null, linkUrl: "https://clicktrends.example/collections/bar-stools", performance: perf(210_000, 31, 2.1, 1.12, 3.1) },
+        { id: "ct_ad_rt", name: "Sofas | Retargeting | Sales", adSetId: "ct_as_rt", campaignId: "ct_campaign_rt", status: "ACTIVE", createdTime: old, format: "IMAGE", issue: null, linkUrl: "https://clicktrends.example/collections/sofas", performance: perf(120_000, 9, 4.6, 0.94, 1.6) },
+      ],
+      placements: [
+        { platform: "facebook", spendCents: 196_000, results: 23 },
+        { platform: "instagram", spendCents: 134_000, results: 17 },
+      ],
+      warnings: [],
+      fetchedAt: new Date().toISOString(),
+      demo: true,
+    };
+  }
+
   return {
     account: {
       id: accountId,

@@ -1,4 +1,4 @@
-import { demoMetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
+import { DEMO_CLICKTRENDS_META_ACCOUNT_ID, demoMetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
 import type {
   CreateAdInput,
   CreateAdSetInput,
@@ -17,7 +17,7 @@ import type {
 
 const MDC_ACCOUNT = "act_100200300";
 const TR_ACCOUNT = "act_400500600";
-const CT_ACCOUNT = "act_700800900";
+const CT_ACCOUNT = DEMO_CLICKTRENDS_META_ACCOUNT_ID;
 
 type MutableState = {
   campaigns: MetaCampaign[];
