@@ -1,0 +1,52 @@
+export type CategoryFormField =
+  | "name"
+  | "landing_page_url"
+  | "gross_margin_pct"
+  | "average_order_value"
+  | "priority";
+
+type EditResult = { ok: true; patch: Record<string, unknown> } | { ok: false; error: string };
+
+const fail = (error: string): EditResult => ({ ok: false, error });
+
+/**
+ * Turns one inline-edited cell into the PATCH body for a client service.
+ * Blank margin, AOV and landing page clear the value; AOV is entered in major
+ * units and stored as integer cents.
+ */
+export function categoryPatchFromEdit(field: CategoryFormField, raw: string): EditResult {
+  const text = raw.trim();
+  switch (field) {
+    case "name":
+      return text ? { ok: true, patch: { name: text } } : fail("Name is required");
+    case "landing_page_url": {
+      if (!text) return { ok: true, patch: { landing_page_url: null } };
+      try {
+        const url = new URL(text);
+        if (url.protocol === "http:" || url.protocol === "https:") {
+          return { ok: true, patch: { landing_page_url: text } };
+        }
+      } catch {
+        // falls through to the error below
+      }
+      return fail("Enter a full http(s) URL");
+    }
+    case "gross_margin_pct": {
+      if (!text) return { ok: true, patch: { gross_margin_pct: null } };
+      const num = Number(text.replace(/%$/, "").trim());
+      if (!Number.isFinite(num) || num < 0 || num > 100) return fail("Margin must be a number from 0–100");
+      return { ok: true, patch: { gross_margin_pct: num } };
+    }
+    case "average_order_value": {
+      if (!text) return { ok: true, patch: { average_order_value_cents: null } };
+      const num = Number(text.replace(/[$,\s]/g, ""));
+      if (!Number.isFinite(num) || num < 0) return fail("Order value must be a positive amount, e.g. 189.50");
+      return { ok: true, patch: { average_order_value_cents: Math.round(num * 100) } };
+    }
+    case "priority": {
+      const num = Number(text);
+      if (!text || !Number.isInteger(num) || num < 0) return fail("Priority must be a whole number, 0 or more");
+      return { ok: true, patch: { priority: num } };
+    }
+  }
+}

@@ -1,0 +1,40 @@
+import { describe, expect, it } from "vitest";
+import { categoryPatchFromEdit } from "@/lib/clients/category-form";
+
+describe("categoryPatchFromEdit", () => {
+  it("parses a margin percent", () => {
+    expect(categoryPatchFromEdit("gross_margin_pct", "55")).toEqual({ ok: true, patch: { gross_margin_pct: 55 } });
+    expect(categoryPatchFromEdit("gross_margin_pct", "35%")).toEqual({ ok: true, patch: { gross_margin_pct: 35 } });
+  });
+  it("rejects a margin outside 0-100", () => {
+    const r = categoryPatchFromEdit("gross_margin_pct", "140");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/0.100/);
+  });
+  it("turns a blank margin into null", () => {
+    expect(categoryPatchFromEdit("gross_margin_pct", "")).toEqual({ ok: true, patch: { gross_margin_pct: null } });
+  });
+  it("converts AOV to integer cents", () => {
+    expect(categoryPatchFromEdit("average_order_value", "189.50")).toEqual({ ok: true, patch: { average_order_value_cents: 18950 } });
+    expect(categoryPatchFromEdit("average_order_value", "$1,200")).toEqual({ ok: true, patch: { average_order_value_cents: 120000 } });
+    expect(categoryPatchFromEdit("average_order_value", " ")).toEqual({ ok: true, patch: { average_order_value_cents: null } });
+    expect(categoryPatchFromEdit("average_order_value", "abc").ok).toBe(false);
+    expect(categoryPatchFromEdit("average_order_value", "-5").ok).toBe(false);
+  });
+  it("validates landing page urls", () => {
+    expect(categoryPatchFromEdit("landing_page_url", "not a url").ok).toBe(false);
+    expect(categoryPatchFromEdit("landing_page_url", "ftp://x.com").ok).toBe(false);
+    expect(categoryPatchFromEdit("landing_page_url", "https://x.com/a")).toEqual({ ok: true, patch: { landing_page_url: "https://x.com/a" } });
+    expect(categoryPatchFromEdit("landing_page_url", "")).toEqual({ ok: true, patch: { landing_page_url: null } });
+  });
+  it("requires a name", () => {
+    expect(categoryPatchFromEdit("name", "  ").ok).toBe(false);
+    expect(categoryPatchFromEdit("name", " Sofas ")).toEqual({ ok: true, patch: { name: "Sofas" } });
+  });
+  it("accepts integer priority >= 0 only", () => {
+    expect(categoryPatchFromEdit("priority", "3")).toEqual({ ok: true, patch: { priority: 3 } });
+    expect(categoryPatchFromEdit("priority", "-1").ok).toBe(false);
+    expect(categoryPatchFromEdit("priority", "1.5").ok).toBe(false);
+    expect(categoryPatchFromEdit("priority", "").ok).toBe(false);
+  });
+});
