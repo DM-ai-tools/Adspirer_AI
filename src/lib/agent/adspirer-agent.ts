@@ -34,8 +34,9 @@ async function activeClientServices(clientId: string): Promise<ClientService[]> 
 
 /**
  * The client's Google figures per category for the snapshot's period, read-only.
- * Nothing when no Google asset is mapped, so those clients keep the Meta-only
- * evidence; a load that fails outright becomes a warning, never an error.
+ * Nothing when no Google asset is mapped (or the mapping can't be read), so those
+ * clients keep the Meta-only evidence; a Google load that fails outright becomes a
+ * warning, never an error.
  */
 async function loadChannelPerformance(
   clientId: string,
@@ -44,11 +45,20 @@ async function loadChannelPerformance(
   metaAttribution: CategoryAttribution,
 ): Promise<{ channels?: ChannelPerformance; channelWarnings: string[] }> {
   try {
+    const assets = await clientGoogleAssets(clientId);
+    if (!assets.ga4 && !assets.ads && !assets.gsc) return { channelWarnings: [] };
+  } catch (error) {
+    logger.warn("agent.google_assets_unreadable", {
+      clientId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return { channelWarnings: [] };
+  }
+  try {
     const google = await loadChannelSnapshot(clientId, {
       since: snapshot.period.since,
       until: snapshot.period.until,
     });
-    if (!google.mapped.ga4 && !google.mapped.ads && !google.mapped.gsc) return { channelWarnings: [] };
     const channels = buildChannelPerformance({
       categories,
       metaAttribution,
@@ -65,6 +75,7 @@ async function loadChannelPerformance(
   }
 }
 import { scopeAuditSnapshot, type MetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
+import { clientGoogleAssets } from "@/lib/google/assets";
 import { loadChannelSnapshot } from "@/lib/google/snapshot";
 import {
   asksAboutCategorySpend,

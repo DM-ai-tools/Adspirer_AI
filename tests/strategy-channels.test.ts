@@ -152,6 +152,7 @@ describe("buildChannelPerformance — Google spend", () => {
     expect(byId(perf, "sofas").google.spendCents).toBe(10_000);
     expect(perf.googleUnmatchedSpendCents).toBe(20_000);
     expect(perf.googleAdsMapped).toBe(true);
+    expect(perf.googleAdsLoaded).toBe(true);
   });
 
   it("scales overlapping figures to the campaign total, exactly, and warns", async () => {
@@ -267,6 +268,7 @@ describe("buildChannelPerformance — Google spend", () => {
   it("reports nothing for Google Ads when it isn't mapped", () => {
     const perf = build(snapshot());
     expect(perf.googleAdsMapped).toBe(false);
+    expect(perf.googleAdsLoaded).toBe(false);
     expect(perf.ads).toBeNull();
     expect(perf.googleUnmatchedSpendCents).toBe(0);
     expect(byId(perf, "bar").google).toEqual({
@@ -369,6 +371,31 @@ describe("buildChannelPerformance — GA4", () => {
       meta({ bar: [20_000, 70_000], sofas: [5_000, 15_000] }),
     );
     expect(perf.metaVsGa4).toEqual({ metaReportedCents: 85_000, ga4PaidSocialCents: 50_000 + 10_000 });
+  });
+
+  it("compares Meta with GA4 only over the categories GA4 has a paid-social estimate for", () => {
+    const perf = build(
+      snapshot({
+        ga4: ga4({
+          rows: [
+            { key: "Bar Stools", revenueCents: 100_000, purchases: 10 },
+            { key: "Sofas", revenueCents: 40_000, purchases: 2 },
+          ],
+          // GA4 has channel data for bar stools' pages only.
+          byChannel: [{ landingPage: "/collections/bar-stools", channel: "paid_social", revenueCents: 50_000 }],
+        }),
+      }),
+      meta({ bar: [20_000, 70_000], sofas: [5_000, 15_000] }),
+    );
+    // Sofas' 15,000 Meta revenue has no GA4 counterpart, so it is left out of both sides.
+    expect(byId(perf, "sofas").meta.ga4RevenueCents).toBeNull();
+    expect(perf.metaVsGa4).toEqual({ metaReportedCents: 70_000, ga4PaidSocialCents: 100_000 });
+  });
+
+  it("marks Google Ads as mapped but not loaded when its part failed", () => {
+    const perf = build({ ...snapshot(), mapped: { ga4: false, ads: true, gsc: false }, warnings: ["Google Ads: quota exceeded"] });
+    expect(perf.googleAdsMapped).toBe(true);
+    expect(perf.googleAdsLoaded).toBe(false);
   });
 });
 

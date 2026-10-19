@@ -25,12 +25,15 @@ export type ChannelPerformance = {
   ga4Method: "item" | "landing_page" | "none";
   ga4Available: boolean;
   googleAdsMapped: boolean;
+  /** The Google Ads data loaded this time; false when it is unmapped or its load failed. */
+  googleAdsLoaded: boolean;
   /** Set when currencies differ: no combined figures may be used. */
   currencyMismatch: string | null;
   googleUnmatchedSpendCents: number;
   /**
-   * Paid-social check: what Meta reports vs what GA4 credits to paid social. ga4PaidSocialCents is
-   * the sum of the per-category GA4 paid-social estimates on matched pages, not GA4's raw paid-social total.
+   * Paid-social check: what Meta reports vs what GA4 credits to paid social, over the categories
+   * GA4 has a paid-social estimate for. ga4PaidSocialCents is the sum of those per-category
+   * estimates on matched pages, not GA4's raw paid-social total.
    */
   metaVsGa4: { metaReportedCents: number; ga4PaidSocialCents: number } | null;
   /** The snapshot's Google Ads data, passed through for campaign-type detection (Task 11). */
@@ -51,6 +54,51 @@ function isShoppingType(type: string): boolean {
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const sum = (values: number[]) => values.reduce((a, b) => a + b, 0);
+
+/** What a category is judged on: Meta + Google spend and revenue, on one basis. */
+export type ObservedFigures = {
+  spendCents: number;
+  /** The GA4 revenue used; null when GA4 isn't used or has no figure for the category. */
+  ga4RevenueCents: number | null;
+  /** What Meta and Google Ads report; null when Meta spend has no Meta ROAS. */
+  platformRevenueCents: number | null;
+  /** The revenue the ROAS is on: GA4's when there is a figure, else Meta + Google Ads reported. */
+  revenueCents: number;
+  roas: number | null;
+  basis: "ga4" | "platform" | "none";
+  /** Google Ads is left out (its data didn't load), so these are Meta's figures alone. */
+  metaOnly: boolean;
+};
+
+/**
+ * One category's observed figures, shared by the plan and the evidence. With GA4, revenue is
+ * the category's GA4 total; when Google Ads is left out it is Meta's GA4 paid-social share, so
+ * Meta spend is never set against revenue Google also earned.
+ */
+export function observedCategoryFigures(
+  ch: CategoryChannels,
+  metaRoas: number | null,
+  opts: { ga4Available: boolean; googleLoaded: boolean },
+): ObservedFigures {
+  const metaOnly = !opts.googleLoaded;
+  const google = metaOnly ? null : ch.google;
+  const spendCents = ch.meta.spendCents + (google?.spendCents ?? 0);
+  const ga4 = !opts.ga4Available ? null : metaOnly ? ch.meta.ga4RevenueCents : ch.ga4TotalRevenueCents;
+  // Meta spend without a Meta ROAS leaves platform revenue unknown, whatever Google reports.
+  const platformKnown = !(ch.meta.spendCents > 0 && metaRoas === null);
+  const platformSum = ch.meta.platformRevenueCents + (google?.platformRevenueCents ?? 0);
+  const known = ga4 !== null || (spendCents > 0 && platformKnown);
+  const revenueCents = ga4 ?? platformSum;
+  return {
+    spendCents,
+    ga4RevenueCents: ga4,
+    platformRevenueCents: platformKnown ? platformSum : null,
+    revenueCents,
+    roas: spendCents > 0 && known ? round2(revenueCents / spendCents) : null,
+    basis: ga4 !== null ? "ga4" : spendCents > 0 && platformKnown ? "platform" : "none",
+    metaOnly,
+  };
+}
 
 /**
  * Splits an integer total by weight; largest remainders take the leftover units, so parts
@@ -310,11 +358,13 @@ export function buildChannelPerformance(input: {
     };
   });
 
+  // Only the categories GA4 has a paid-social estimate for, on both sides.
+  const compared = byCategory.filter((c) => c.meta.ga4RevenueCents !== null);
   const metaVsGa4 =
-    splitGa4 && ga4!.byChannel.length > 0
+    splitGa4 && compared.length > 0
       ? {
-          metaReportedCents: sum(byCategory.map((c) => c.meta.platformRevenueCents)),
-          ga4PaidSocialCents: sum(byCategory.map((c) => c.meta.ga4RevenueCents ?? 0)),
+          metaReportedCents: sum(compared.map((c) => c.meta.platformRevenueCents)),
+          ga4PaidSocialCents: sum(compared.map((c) => c.meta.ga4RevenueCents!)),
         }
       : null;
 
@@ -323,6 +373,7 @@ export function buildChannelPerformance(input: {
     ga4Method: ga4?.method ?? "none",
     ga4Available,
     googleAdsMapped: snapshot.mapped.ads,
+    googleAdsLoaded: ads != null,
     currencyMismatch,
     googleUnmatchedSpendCents: googleLeft,
     metaVsGa4,

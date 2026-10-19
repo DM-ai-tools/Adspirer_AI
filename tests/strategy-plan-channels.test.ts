@@ -122,6 +122,7 @@ function channelPerf(byCategory: CategoryChannels[], over: Partial<ChannelPerfor
     ga4Method: "none",
     ga4Available: false,
     googleAdsMapped: true,
+    googleAdsLoaded: true,
     currencyMismatch: null,
     googleUnmatchedSpendCents: 0,
     metaVsGa4: null,
@@ -243,6 +244,9 @@ describe("buildStrategyPlan with ClickTrends channels", () => {
     expect(p.projection.dailySpendCents).toBe(13_300);
     expect(p.scope).toEqual({ categoryIds: ["svc_ct_bar_stools"], names: ["Bar stools"] });
     expect(p.assumptions).toContain("Bar stools is below break-even; funded because the plan was asked for it.");
+    // The next test is the scoped category, though it is held.
+    expect(p.nextTest).toEqual({ categoryId: "svc_ct_bar_stools", name: "Bar stools", dailyBudgetCents: 13_300, durationDays: 14 });
+    expect(p.assumptions).toContain("The next test is the named category with the biggest budget, run for 14 days at its planned daily budget.");
   });
 });
 
@@ -421,6 +425,32 @@ describe("buildStrategyPlan channel split", () => {
     expect(p.channelNote).toBe(NO_ADS_NOTE);
     expect(p.assumptions).toContain(NO_ADS_NOTE);
     expect(p.googleCapabilities).toBeNull();
+  });
+
+  it("leaves Google out, with a note, when Google Ads is mapped but didn't load", () => {
+    const note = "Google Ads is mapped but its data didn't load this time; Google wasn't considered.";
+    const channels = channelPerf([shoesRow(500)], { googleAdsLoaded: false, ads: null });
+    const p = plan({ snapshot, categories: [cat("Shoes")], channels });
+    // Search impressions alone would give Google 20% if it had loaded; not now.
+    expect(p.allocations[0].channelSplit).toMatchObject({ metaCents: 10_000, googleCents: 0 });
+    expect(p.allocations[0].googleCampaignTypes).toEqual([]);
+    expect(p.channelNote).toBe(note);
+    expect(p.assumptions).toContain(note);
+    expect(p.assumptions.some((a) => a.startsWith("Within each funded"))).toBe(false);
+    // Its campaign types are still listed, as unknown.
+    expect(p.googleCapabilities?.every((c) => c.state === "unknown")).toBe(true);
+  });
+
+  it("judges a category on Meta's own figures when Google Ads didn't load, not GA4's all-channel total", () => {
+    const channels = channelPerf(
+      [row("shoes", { meta: { spend: 20_000, revenue: 100_000, ga4: 60_000 }, ga4Total: 200_000 })],
+      { googleAdsLoaded: false, ads: null, ga4Available: true, ga4Method: "item" },
+    );
+    const p = plan({ snapshot, categories: [cat("Shoes")], channels });
+    // GA4's paid-social 60,000 over Meta's 20,000, not the 200,000 total.
+    expect(p.allocations[0].observedRoas).toBe(3);
+    expect(p.revenueBasis).toBe("ga4");
+    expect(p.assumptions.some((a) => /GA4's paid-social revenue/.test(a))).toBe(true);
   });
 
   it("leaves held and unfunded categories without a split", () => {

@@ -212,6 +212,7 @@ describe("renderStrategyEvidence with channels", () => {
       ga4Method: "none",
       ga4Available: false,
       googleAdsMapped: false,
+      googleAdsLoaded: false,
       currencyMismatch: null,
       googleUnmatchedSpendCents: 0,
       metaVsGa4: null,
@@ -291,15 +292,46 @@ describe("renderStrategyEvidence with channels", () => {
   });
 
   it("prints a part failure and keeps the parts that loaded (Review Focus #5)", async () => {
-    const { text } = await clickTrends({
+    const { text, plan, channels } = await clickTrends({
+      scopeCategoryIds: ["svc_ct_bar_stools"],
       google: (s) => ({ ...s, ads: null, warnings: ["Google Ads: quota exceeded"] }),
     });
-    expect(section(text, "### Channel data")).toContain("- Warning: Google Ads: quota exceeded");
-    // GA4 still loaded, so revenue is still GA4's.
+    expect(channels.googleAdsLoaded).toBe(false);
+    const data = section(text, "### Channel data");
+    expect(data).toContain("- Warning: Google Ads: quota exceeded");
+    expect(data).toContain("- Note: Google Ads is mapped but its data didn't load this time; Google wasn't considered.");
+    // GA4 still loaded; with Google left out the ROAS is Meta's spend against GA4's paid-social share.
     const level1 = section(text, "### Level 1");
     expect(level1).toContain("- GA4 method: GA4 product categories");
-    expect(level1).toMatch(/\| Bar stools \| \$2,100\.00 \| \$0\.00 \| \$7,000\.00 \|/);
+    expect(level1).toContain("| GA4 paid-social revenue | Meta-reported revenue | ROAS (Meta only) |");
+    expect(level1).not.toContain("Combined ROAS");
+    const bar = plan.allocations[0];
+    const ga4Social = channels.byCategory.find((c) => c.categoryId === "svc_ct_bar_stools")!.meta.ga4RevenueCents!;
+    expect(bar.observedRoas).toBe(Math.round((ga4Social / 210_000) * 100) / 100);
+    expect(level1).toMatch(new RegExp(`\\| Bar stools \\| \\$2,100\\.00 \\| not loaded \\| [^|]+ \\| \\$6,510\\.00 \\| ${bar.observedRoas}× \\| GA4 \\|`));
+    // No Google share.
+    expect(bar.channelSplit).toMatchObject({ googleCents: 0, metaCents: bar.dailyBudgetCents });
     expect(section(text, "### Google campaign types")).toMatch(/Unknown \(Google Ads data didn't load\): Search campaigns/);
+  });
+
+  it("takes Level 1's ROAS from the plan's observed ROAS", async () => {
+    const { text, plan } = await clickTrends({ channels: (c) => c });
+    const level1 = section(text, "### Level 1");
+    for (const a of plan.allocations) {
+      expect(level1).toMatch(new RegExp(`\\| ${a.name} \\|(?: [^|]+ \\|){4} ${a.observedRoas}× \\|`));
+    }
+    expect(section(text, "### Strategy inputs")).toContain("- Meta spend in period: $3,300.00 · Meta account ROAS");
+  });
+
+  it("says a funded scoped hold was funded on request and makes it the next test", async () => {
+    const { text, plan } = await clickTrends({ scopeCategoryIds: ["svc_ct_bar_stools"] });
+    expect(plan.allocations[0].tier).toBe("hold");
+    const level3 = section(text, "### Level 3: allocation");
+    expect(level3).toContain(
+      "- Hold, funded on request (Bar stools): below break-even, funded because the plan was asked for it; set up like a test: ",
+    );
+    expect(level3).not.toContain("no budget until it returns at least break-even");
+    expect(section(text, "### Next test")).toContain("- Bar stools: $200.00/day for 14 days");
   });
 
   it("prints the currency mismatch reason, no combined figures and no split table", async () => {
@@ -360,6 +392,16 @@ describe("renderCategorySpendEvidence with channels", () => {
     expect(spend).toContain("- Ranked by: Meta-reported revenue");
     expect(spend).toContain("| Category | Spend (30d) | Revenue | ROAS | Match |");
     expect(spend).not.toMatch(/Combined ROAS|combined platform revenue/);
+  });
+
+  it("shows Google spend as not loaded, Meta-only ROAS, when Google Ads didn't load", async () => {
+    const { spend } = await clickTrends({ google: (s) => ({ ...s, ads: null, warnings: ["Google Ads: quota exceeded"] }) });
+    expect(spend).toContain("- Ranked by: GA4 paid-social revenue");
+    expect(spend).toContain("- Note: Google Ads is mapped but its data didn't load this time; Google spend isn't included.");
+    expect(spend).toContain("- Warning: Google Ads: quota exceeded");
+    expect(spend).toContain("ROAS (Meta only)");
+    expect(spend).not.toContain("Combined ROAS");
+    expect(spend).toMatch(/\| Bar stools \| \$2,100\.00 \| not loaded \|/);
   });
 
   it("prints the reconnect warning near the top", async () => {
@@ -519,6 +561,23 @@ describe("evidence without channels", () => {
       expect(text).toBe(BASELINE_STRATEGY);
       for (const h of NEW_HEADINGS) expect(text).not.toContain(h);
     }
+  });
+
+  it("still names the categories of a scoped plan, and funds a held one on request", () => {
+    const plan = buildStrategyPlan({
+      snapshot: snap(fiveAds),
+      scorecard: { score: 62, grade: "C" },
+      categories: fiveCategories,
+      goals: resolveGoals({ goals_profile: { business_model: "ecommerce" } }),
+      brief: { dailyBudgetCents: 10_000, targetRoas: 4, stretchTargets: [] },
+      categoryWord: "category",
+      scopeCategoryIds: ["hats"],
+    });
+    const text = renderStrategyEvidence(plan, baselineAttribution(), strategyOpts);
+    expect(section(text, "### Scope")).toContain("- Planned only for: Hats");
+    expect(text).not.toContain("### Channel data");
+    expect(section(text, "### Level 3: allocation")).toContain("- Hold, funded on request (Hats): ");
+    expect(section(text, "### Next test")).toContain("- Hats: $100.00/day for 14 days");
   });
 
   it("renders the category spend evidence byte-identical to before", () => {

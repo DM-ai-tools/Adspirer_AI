@@ -1,5 +1,10 @@
 import type { CategoryAttribution, CategoryPerformance } from "./category-attribution";
-import type { CategoryChannels, ChannelPerformance } from "./channels";
+import {
+  observedCategoryFigures,
+  type CategoryChannels,
+  type ChannelPerformance,
+  type ObservedFigures,
+} from "./channels";
 import { detectGoogleCapabilities } from "./google-capabilities";
 import type { AllocationTier, CategoryAllocation, PlanProjection, StrategyPlan } from "./plan";
 
@@ -128,75 +133,73 @@ function unmatchedLines(attribution: CategoryAttribution, word: CategoryWord, mo
   ];
 }
 
-/** One category's Meta + Google figures, on the revenue basis the plan uses. */
-type Combined = {
-  metaSpendCents: number;
-  googleSpendCents: number;
-  ga4RevenueCents: number | null;
-  /** What Meta and Google Ads report; null when Meta spend has no ROAS. */
-  platformRevenueCents: number | null;
-  roas: number | null;
-  basis: "GA4" | "platform" | "—";
-};
+/** Google Ads is mapped but its data didn't load, so the figures leave Google out. */
+function googleMissing(channels: ChannelPerformance): boolean {
+  return channels.googleAdsMapped && !channels.googleAdsLoaded;
+}
 
-function combinedFigures(
-  ch: CategoryChannels | undefined,
-  perf: CategoryPerformance | undefined,
-  channels: ChannelPerformance,
-): Combined {
-  const metaSpend = ch ? ch.meta.spendCents : (perf?.spendCents ?? 0);
-  const metaRevenue = ch ? ch.meta.platformRevenueCents : (perf?.purchaseValueCents ?? 0);
-  const googleSpend = ch?.google.spendCents ?? 0;
-  const ga4 = channels.ga4Available ? (ch?.ga4TotalRevenueCents ?? null) : null;
-  const spend = metaSpend + googleSpend;
-  // As in the plan: Meta spend without a Meta ROAS leaves platform revenue unknown.
-  const platformKnown = !(metaSpend > 0 && (perf?.roas ?? null) === null);
-  const platform = platformKnown ? metaRevenue + (ch?.google.platformRevenueCents ?? 0) : null;
-  const revenue = ga4 ?? platform;
+/** Channel figures for a category the channel data left out: its Meta attribution, no Google. */
+function metaOnlyRow(categoryId: string, perf: CategoryPerformance | undefined): CategoryChannels {
+  const none = { spendCents: 0, platformRevenueCents: 0, ga4RevenueCents: null, roas: null, basis: "none" as const };
   return {
-    metaSpendCents: metaSpend,
-    googleSpendCents: googleSpend,
-    ga4RevenueCents: ga4,
-    platformRevenueCents: platform,
-    roas: spend > 0 && revenue !== null ? Math.round((revenue / spend) * 100) / 100 : null,
-    basis: ga4 !== null ? "GA4" : spend > 0 && platformKnown ? "platform" : "—",
+    categoryId,
+    meta: { ...none, spendCents: perf?.spendCents ?? 0, platformRevenueCents: perf?.purchaseValueCents ?? 0 },
+    google: none,
+    ga4TotalRevenueCents: null,
+    searchImpressions: 0,
+    searchClicks: 0,
+    topQueries: [],
   };
 }
 
 /**
- * The Level 1 table with channels: Meta and Google spend, GA4 and platform revenue, combined
- * ROAS and its basis. `ranked` puts the best revenue first (GA4's when there is GA4).
+ * The Level 1 table with channels: Meta and Google spend, GA4 and platform revenue, the ROAS
+ * and its basis. A row's `roas` (the plan's observed ROAS) wins over the one derived here.
+ * `ranked` puts the best revenue first (GA4's when there is GA4).
  */
 function channelTable(
-  rows: Array<{ categoryId: string; name: string; tier?: AllocationTier }>,
+  rows: Array<{ categoryId: string; name: string; tier?: AllocationTier; roas?: number | null }>,
   perfById: Map<string, CategoryPerformance>,
   channels: ChannelPerformance,
   ctx: { word: CategoryWord; days: number; money: Money; ranked: boolean },
 ): string[] {
   const { word, days, money, ranked } = ctx;
+  const missing = googleMissing(channels);
   const withTier = rows.some((r) => r.tier !== undefined);
   const chById = new Map(channels.byCategory.map((c) => [c.categoryId, c]));
-  const all = rows.map((r) => ({ ...r, c: combinedFigures(chById.get(r.categoryId), perfById.get(r.categoryId), channels) }));
-  const revenueOf = (c: Combined) => c.ga4RevenueCents ?? c.platformRevenueCents ?? -1;
-  const ordered = ranked ? [...all].sort((a, b) => revenueOf(b.c) - revenueOf(a.c)) : all;
-  const big = ordered.length > MAX_FULL_ROWS;
-  const shown = !big
-    ? ordered
-    : ranked
-      ? ordered.slice(0, TRUNCATED_ROWS)
-      : [...ordered]
-          .sort((a, b) => b.c.metaSpendCents + b.c.googleSpendCents - (a.c.metaSpendCents + a.c.googleSpendCents))
-          .slice(0, TRUNCATED_ROWS);
-  const body = shown.map(({ categoryId, name, tier, c }) => {
-    const p = perfById.get(categoryId);
+  const all = rows.map((r) => {
+    const perf = perfById.get(r.categoryId);
+    const ch = chById.get(r.categoryId) ?? metaOnlyRow(r.categoryId, perf);
+    const f = observedCategoryFigures(ch, perf?.roas ?? null, {
+      ga4Available: channels.ga4Available,
+      googleLoaded: !missing,
+    });
+    return { ...r, ch, f };
+  });
+  const revenueOf = (f: ObservedFigures) => f.ga4RevenueCents ?? f.platformRevenueCents ?? -1;
+  const ordered = ranked ? [...all].sort((a, b) => revenueOf(b.f) - revenueOf(a.f)) : all;
+  const shown =
+    ordered.length <= MAX_FULL_ROWS
+      ? ordered
+      : ranked
+        ? ordered.slice(0, TRUNCATED_ROWS)
+        : [...ordered].sort((a, b) => b.f.spendCents - a.f.spendCents).slice(0, TRUNCATED_ROWS);
+  const basis = { ga4: "GA4", platform: "platform", none: "—" } as const;
+  const body = shown.map((r) => {
+    const p = perfById.get(r.categoryId);
     const match = p && p.adIds.length > 0 ? p.matchedBy : "none";
-    const ga4 = c.ga4RevenueCents === null ? "—" : money(c.ga4RevenueCents);
-    const platform = c.platformRevenueCents === null ? "unknown" : money(c.platformRevenueCents);
-    return `| ${name} | ${money(c.metaSpendCents)} | ${money(c.googleSpendCents)} | ${ga4} | ${platform} | ${roas(c.roas)} | ${c.basis} |${withTier ? ` ${tier} |` : ""} ${match} |`;
+    const google = missing ? "not loaded" : money(r.ch.google.spendCents);
+    const ga4 = r.f.ga4RevenueCents === null ? "—" : money(r.f.ga4RevenueCents);
+    const platform = r.f.platformRevenueCents === null ? "unknown" : money(r.f.platformRevenueCents);
+    const value = r.roas !== undefined ? r.roas : r.f.roas;
+    return `| ${r.name} | ${money(r.ch.meta.spendCents)} | ${google} | ${ga4} | ${platform} | ${roas(value)} | ${basis[r.f.basis]} |${withTier ? ` ${r.tier} |` : ""} ${match} |`;
   });
   const hidden = rows.length - shown.length;
+  const headings = missing
+    ? "GA4 paid-social revenue | Meta-reported revenue | ROAS (Meta only)"
+    : "GA4 revenue | Platform revenue | Combined ROAS";
   return [
-    `| ${capitalize(word)} | Meta spend (${days}d) | Google spend (${days}d) | GA4 revenue | Platform revenue | Combined ROAS | Basis |${withTier ? " Tier |" : ""} Match |`,
+    `| ${capitalize(word)} | Meta spend (${days}d) | Google spend (${days}d) | ${headings} | Basis |${withTier ? " Tier |" : ""} Match |`,
     `| --- | --- | --- | --- | --- | --- | --- |${withTier ? " --- |" : ""} --- |`,
     ...body,
     ...(hidden > 0
@@ -259,14 +262,28 @@ export function renderCategorySpendEvidence(
   const top: string[] = [];
   if (channels) {
     top.push(
-      `- Ranked by: ${combined ? (combined.ga4Available ? "GA4 revenue" : "combined platform revenue") : "Meta-reported revenue"}`,
+      `- Ranked by: ${
+        !combined
+          ? "Meta-reported revenue"
+          : googleMissing(combined)
+            ? combined.ga4Available
+              ? "GA4 paid-social revenue"
+              : "Meta-reported revenue"
+            : combined.ga4Available
+              ? "GA4 revenue"
+              : "combined platform revenue"
+      }`,
     );
   }
   if (channels || extra.length) {
     const note = !channels
       ? "Google data wasn't loaded: the figures are Meta only."
       : (channels.currencyMismatch ??
-        (channels.googleAdsMapped ? null : "No Google Ads account mapped: Google spend isn't included."));
+        (!channels.googleAdsMapped
+          ? "No Google Ads account mapped: Google spend isn't included."
+          : googleMissing(channels)
+            ? "Google Ads is mapped but its data didn't load this time; Google spend isn't included."
+            : null));
     top.push(...channelDataLines(note, channels, extra));
   }
 
@@ -334,7 +351,7 @@ export function renderStrategyEvidence(
       `- Stretch targets: ${brief.stretchTargets.length ? brief.stretchTargets.map((t) => `${t}×`).join(", ") : "none"}`,
       `- Period analysed: last ${days} days`,
       `- Account audit score: ${baseline.score}/100 (grade ${baseline.grade})`,
-      `- Spend in period: ${money(baseline.spendCents)} · account ROAS ${roas(baseline.roas)}`,
+      `- ${channels ? "Meta spend" : "Spend"} in period: ${money(baseline.spendCents)} · ${channels ? "Meta " : ""}account ROAS ${roas(baseline.roas)}`,
       `- ${capitalize(words)} loaded: ${baseline.categoriesTotal} (${baseline.categoriesWithSpend} with spend)`,
       `- Word for offerings: ${word}`,
       `- Currency: ${opts.currency}`,
@@ -342,7 +359,7 @@ export function renderStrategyEvidence(
     ].join("\n"),
   );
 
-  if (channels && plan.scope) {
+  if (plan.scope) {
     out.push(["### Scope", `- Planned only for: ${plan.scope.names.join(", ")}`].join("\n"));
   }
   if (channels || channelWarnings.length) {
@@ -362,7 +379,15 @@ export function renderStrategyEvidence(
       ...(none
         ? [`- No ${words} loaded yet. Add them (name, landing page URL, keywords) to see spend and return by ${word}.`]
         : combined
-          ? [...channelTable(allocations, perfById, combined, { word, days, money, ranked: false }), ""]
+          ? [
+              ...channelTable(
+                allocations.map((a) => ({ categoryId: a.categoryId, name: a.name, tier: a.tier, roas: a.observedRoas })),
+                perfById,
+                combined,
+                { word, days, money, ranked: false },
+              ),
+              "",
+            ]
           : [...spendTable(allocations, perfById, { word, days, money }), ""]),
       ...(combined ? channelLevel1Lines(combined, word, money) : []),
       ...unmatchedLines(attribution, word, money, !!combined),
@@ -509,16 +534,27 @@ export function renderStrategyEvidence(
       "Structure per tier:",
     );
     const label = new Map(plan.gaps.capabilities.map((c) => [c.id, c.label]));
+    const list = (members: CategoryAllocation[]) => {
+      const names = members.map((a) => a.name);
+      return names.length > 10 ? `${names.slice(0, 10).join(", ")} and ${names.length - 10} more` : names.join(", ");
+    };
+    const setupOf = (a: CategoryAllocation) => a.structure.map((id) => label.get(id) ?? id).join(", ") || "no specific Meta setup";
     for (const tier of TIER_ORDER) {
       const members = allocations.filter((a) => a.tier === tier);
       if (!members.length) continue;
-      const names = members.map((a) => a.name);
-      const listed = names.length > 10 ? `${names.slice(0, 10).join(", ")} and ${names.length - 10} more` : names.join(", ");
-      const setup =
-        tier === "hold"
-          ? "no budget until it returns at least break-even"
-          : members[0].structure.map((id) => label.get(id) ?? id).join(", ") || "no specific Meta setup";
-      level3.push(`- ${capitalize(tier)} (${listed}): ${setup}`);
+      if (tier !== "hold") {
+        level3.push(`- ${capitalize(tier)} (${list(members)}): ${setupOf(members[0])}`);
+        continue;
+      }
+      // Only a scoped plan funds a held category: it was asked for, though below break-even.
+      const unfunded = members.filter((a) => a.dailyBudgetCents === 0);
+      const funded = members.filter((a) => a.dailyBudgetCents > 0);
+      if (unfunded.length) level3.push(`- Hold (${list(unfunded)}): no budget until it returns at least break-even`);
+      if (funded.length) {
+        level3.push(
+          `- Hold, funded on request (${list(funded)}): below break-even, funded because the plan was asked for it; set up like a test: ${setupOf(funded[0])}`,
+        );
+      }
     }
   }
   out.push(level3.join("\n"));

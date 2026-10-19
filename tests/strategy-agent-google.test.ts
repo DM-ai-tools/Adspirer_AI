@@ -3,6 +3,7 @@ import { gatherDiagnoseEvidence, runAdspirerAgent } from "@/lib/agent/adspirer-a
 import { createTask, runTask } from "@/lib/agent/task-runner";
 import { detectRequestIntent } from "@/lib/agent/task-plan";
 import { getDemoStore, resetDemoStore } from "@/lib/demo/store";
+import { clientGoogleAssets } from "@/lib/google/assets";
 import { GoogleReconnectRequired } from "@/lib/google/oauth";
 import { getGoogleDataProvider } from "@/lib/google/provider";
 import { getMockGoogleDataProvider } from "@/lib/google/mock-provider";
@@ -12,6 +13,10 @@ import { listClassifiedTools } from "@/lib/tools/policy";
 vi.mock("@/lib/google/snapshot", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/google/snapshot")>();
   return { ...actual, loadChannelSnapshot: vi.fn(actual.loadChannelSnapshot) };
+});
+vi.mock("@/lib/google/assets", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/google/assets")>();
+  return { ...actual, clientGoogleAssets: vi.fn(actual.clientGoogleAssets) };
 });
 vi.mock("@/lib/google/provider", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/google/provider")>();
@@ -28,6 +33,8 @@ const CT = "client_clicktrends";
 afterEach(() => {
   resetDemoStore();
   vi.mocked(loadChannelSnapshot).mockClear();
+  vi.mocked(getGoogleDataProvider).mockReset();
+  vi.mocked(clientGoogleAssets).mockClear();
 });
 
 /** Text of one evidence section, from its heading to the next `### `. */
@@ -120,7 +127,6 @@ describe("cross-channel strategy for ClickTrends in DEMO_MODE", () => {
       "Google needs reconnecting — an admin can reconnect under Connections",
     );
     expect(gathered.strategyPlanBuilt).toBe(true);
-    vi.mocked(getGoogleDataProvider).mockReset();
   });
 
   it("keeps going on Meta, with a warning, when the Google load fails unexpectedly", async () => {
@@ -142,6 +148,17 @@ describe("cross-channel strategy for ClickTrends in DEMO_MODE", () => {
 });
 
 describe("clients with no Google asset mapped", () => {
+  it("treats unreadable Google mappings as no Google data, with no Google warning", async () => {
+    vi.mocked(clientGoogleAssets).mockRejectedValueOnce(new Error('relation "connected_google_assets" does not exist'));
+    const { gathered, toolNames } = await strategyTurn(CT, STRATEGY_ASK);
+    const start = gathered.evidence.indexOf("### Strategy inputs");
+    const evidence = gathered.evidence.slice(start, gathered.evidence.indexOf("### Strategy framework", start));
+    expect(evidence).not.toMatch(/### Channel data|Warning|connected_google_assets|channel split/);
+    expect(evidence).toContain("| Category | Spend (30d) | Revenue | ROAS | Tier | Match |");
+    expect(vi.mocked(loadChannelSnapshot)).not.toHaveBeenCalled();
+    expect(toolNames).toContain("strategy_plan");
+  });
+
   it("gets today's Meta-only strategy evidence, with no Google data loaded", async () => {
     const { gathered } = await strategyTurn("client_modern_dental", "Plan to hit 10x ROAS on $500/day");
     // The engine's evidence, up to the framework text (which mentions GA4 generically).

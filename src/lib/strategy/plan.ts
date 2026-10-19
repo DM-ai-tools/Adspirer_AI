@@ -3,7 +3,7 @@ import type { MetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
 import type { ResolvedGoals } from "@/lib/clients/goals";
 import type { StrategyCategory } from "./categories";
 import { attributeSpendToCategories, type CategoryPerformance } from "./category-attribution";
-import type { CategoryChannels, ChannelFigures, ChannelPerformance } from "./channels";
+import { observedCategoryFigures, type CategoryChannels, type ChannelFigures, type ChannelPerformance } from "./channels";
 import {
   detectGoogleCapabilities,
   recommendGoogleCampaignTypes,
@@ -189,7 +189,9 @@ export function buildStrategyPlan(input: {
   // A currency mismatch rules out every combined figure, so it is checked before any is read.
   const channels = input.channels && !input.channels.currencyMismatch ? input.channels : null;
   const revenueBasis: StrategyPlan["revenueBasis"] = channels?.ga4Available ? "ga4" : "platform";
-  const googleMapped = channels?.googleAdsMapped ?? false;
+  // Google Ads mapped but not loaded this time: Google is left out rather than read as no spend.
+  const googleMissing = !!channels && channels.googleAdsMapped && !channels.googleAdsLoaded;
+  const googleMapped = (channels?.googleAdsMapped ?? false) && !googleMissing;
   const channelById = new Map((channels?.byCategory ?? []).map((c) => [c.categoryId, c]));
 
   const observedById = new Map(
@@ -200,20 +202,18 @@ export function buildStrategyPlan(input: {
         return [category.id, { ...meta, channel: null, ga4Fallback: false }];
       }
       const ch = channelById.get(category.id) ?? metaOnlyChannels(perf);
-      const spendCents = ch.meta.spendCents + ch.google.spendCents;
-      const ga4Total = revenueBasis === "ga4" ? ch.ga4TotalRevenueCents : null;
-      // Meta spend without a Meta ROAS leaves platform revenue unknown, whatever Google reports.
-      const platformKnown = spendCents > 0 && !(ch.meta.spendCents > 0 && perf.roas === null);
-      const revenueCents = ga4Total ?? ch.meta.platformRevenueCents + ch.google.platformRevenueCents;
-      const known = ga4Total !== null || platformKnown;
+      const figures = observedCategoryFigures(ch, perf.roas, {
+        ga4Available: revenueBasis === "ga4",
+        googleLoaded: !googleMissing,
+      });
       return [
         category.id,
         {
-          spendCents,
-          revenueCents,
-          roas: spendCents > 0 && known ? round2(revenueCents / spendCents) : null,
+          spendCents: figures.spendCents,
+          revenueCents: figures.revenueCents,
+          roas: figures.roas,
           channel: ch,
-          ga4Fallback: revenueBasis === "ga4" && ga4Total === null,
+          ga4Fallback: revenueBasis === "ga4" && figures.ga4RevenueCents === null,
         },
       ];
     }),
@@ -426,11 +426,16 @@ export function buildStrategyPlan(input: {
     { metric: "Retargeting ROAS", value: `${BENCHMARKS.retargetingRoas}×`, source: PLAYBOOK_SOURCE },
   ];
   if (accountRoas !== null) {
-    const covers = revenueBasis === "ga4" ? "GA4 revenue on matched categories" : "platform-reported revenue";
+    const covers =
+      revenueBasis !== "ga4"
+        ? "platform-reported revenue"
+        : googleMissing
+          ? "GA4 paid-social revenue on matched categories"
+          : "GA4 revenue on matched categories";
     const source = !channels
       ? `This account, last ${days} days`
       : combinedAccountRoas
-        ? `Meta + Google spend, ${covers}, last ${days} days`
+        ? `${googleMissing ? "Meta" : "Meta + Google"} spend, ${covers}, last ${days} days`
         : `Meta only, last ${days} days`;
     references.push({ metric: "Account ROAS", value: `${round2(accountRoas)}×`, source });
   }
@@ -441,7 +446,9 @@ export function buildStrategyPlan(input: {
       ? `${input.channels.currencyMismatch} The plan uses Meta figures only, with no Meta and Google split.`
       : !input.channels.googleAdsMapped
         ? "No Google Ads account mapped: Google wasn't considered."
-        : null;
+        : googleMissing
+          ? "Google Ads is mapped but its data didn't load this time; Google wasn't considered."
+          : null;
   const scope = scoped.length > 0 ? { categoryIds: scoped.map((c) => c.id), names: scoped.map((c) => c.name) } : null;
 
   const assumptions: string[] = [];
@@ -481,7 +488,9 @@ export function buildStrategyPlan(input: {
   assumptions.push(
     `The target is compared with the higher of the ${BENCHMARKS.retargetingRoas}× retargeting benchmark and the account ROAS: up to ${REALITY.within}× that is within reach, up to ${REALITY.stretch}× a stretch, beyond that unrealistic.`,
     `Benchmarks (${BENCHMARKS.prospectingRoas}× prospecting, ${BENCHMARKS.retargetingRoas}× retargeting ROAS) come from the internal paid-social playbook (generic, not industry-specific).`,
-    `The next test is the highest-priority funded test ${word} (else the funded promising ${word} with the biggest budget), run for ${C.testDurationDays} days at its planned daily budget.`,
+    scope
+      ? `The next test is the named ${word} with the biggest budget, run for ${C.testDurationDays} days at its planned daily budget.`
+      : `The next test is the highest-priority funded test ${word} (else the funded promising ${word} with the biggest budget), run for ${C.testDurationDays} days at its planned daily budget.`,
   );
   for (const category of planned) {
     const observed = observedById.get(category.id) as Observed;
@@ -497,6 +506,14 @@ export function buildStrategyPlan(input: {
   // A plan built without channel data keeps exactly the Meta-only assumptions.
   if (input.channels && !channels) {
     assumptions.push(`Revenue is what Meta reports for each ${word}.`);
+  } else if (channels && revenueBasis === "ga4" && googleMissing) {
+    assumptions.push(`Revenue is GA4's paid-social revenue for each ${word} (matched by landing page), against its Meta spend.`);
+    const fallbacks = planned.filter((c) => observedById.get(c.id)?.ga4Fallback).length;
+    if (fallbacks > 0) {
+      assumptions.push(
+        `${fallbacks} ${fallbacks === 1 ? `${word} has` : `${words} have`} no GA4 paid-social figure, so ${fallbacks === 1 ? "it uses" : "they use"} the revenue Meta reports.`,
+      );
+    }
   } else if (channels && revenueBasis === "ga4") {
     const matchedBy = channels.ga4Method === "item" ? "item category" : "landing page";
     assumptions.push(`Revenue is GA4's for each ${word} (matched by ${matchedBy}), against its Meta + Google spend.`);
@@ -506,6 +523,8 @@ export function buildStrategyPlan(input: {
         `${fallbacks} ${fallbacks === 1 ? `${word} has` : `${words} have`} no GA4 revenue figure, so ${fallbacks === 1 ? "it uses" : "they use"} the revenue Meta and Google Ads report.`,
       );
     }
+  } else if (channels && googleMissing) {
+    assumptions.push(`Revenue is what Meta reports for each ${word}, since GA4 isn't available; spend is Meta's.`);
   } else if (channels) {
     assumptions.push(`Revenue is what Meta and Google Ads report for each ${word}, since GA4 isn't available; spend is Meta + Google.`);
   }
@@ -518,7 +537,14 @@ export function buildStrategyPlan(input: {
 
   const funded = (tier: AllocationTier) => main.allocations.filter((a) => a.tier === tier && a.dailyBudgetCents > 0);
   const priorityOf = new Map(categories.map((c) => [c.id, c.priority]));
+  // A scoped plan was asked for its categories: the next test is the best-funded of them.
+  const scopedPick = scope
+    ? main.allocations
+        .filter((a) => a.dailyBudgetCents > 0)
+        .sort((a, b) => b.dailyBudgetCents - a.dailyBudgetCents || a.name.localeCompare(b.name))[0]
+    : undefined;
   const pick =
+    scopedPick ??
     funded("test").sort(
       (a, b) => (priorityOf.get(b.categoryId) ?? 0) - (priorityOf.get(a.categoryId) ?? 0) || a.name.localeCompare(b.name),
     )[0] ?? funded("promising").sort((a, b) => b.dailyBudgetCents - a.dailyBudgetCents || a.name.localeCompare(b.name))[0];
@@ -568,6 +594,6 @@ export function buildStrategyPlan(input: {
       : null,
     channelNote,
     scope,
-    googleCapabilities: channels && googleMapped ? detectGoogleCapabilities(channels.ads) : null,
+    googleCapabilities: channels && channels.googleAdsMapped ? detectGoogleCapabilities(channels.ads) : null,
   };
 }
