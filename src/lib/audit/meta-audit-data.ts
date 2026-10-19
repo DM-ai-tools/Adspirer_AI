@@ -344,8 +344,9 @@ export async function fetchMetaAuditSnapshot(
       settle("Ads", warnings, paged(graph, `${id}/ads`, {
         fields: "id,name,adset_id,campaign_id,effective_status,created_time,issues_info,creative{object_type,video_id,image_hash,asset_feed_spec,url_tags,link_url,object_story_spec}",
         effective_status: notDeleted,
-        limit: 200,
-      }, 3)),
+        // Smaller pages: creatives now carry object_story_spec, and big pages can trip Graph's "reduce the amount of data".
+        limit: 100,
+      }, 6)),
       settle("Account performance", warnings, graph.get<{ data?: Row[] }>(`${id}/insights`, {
         level: "account", time_range: timeRange, fields: insightFields,
       })),
