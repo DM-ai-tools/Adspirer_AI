@@ -17,6 +17,8 @@ import {
   loadDocumentsForContext,
 } from "@/lib/documents/service";
 import { humanToolLabel } from "@/lib/tools/display-labels";
+import { describeGoalsForAgent } from "@/lib/clients/goals";
+import { mapClientRow } from "@/lib/clients/map-client";
 import { buildClientBrandBlock } from "./prompts";
 
 /** Reads the turn already started, shared so they are not repeated. */
@@ -92,6 +94,17 @@ export async function buildClientContext(
       ? `Website: ${client.website_url} (brand reference only — never assume it is this campaign's landing page; ask which URL this campaign points to)`
       : null,
     "",
+    "## Goals & guardrails",
+    describeGoalsForAgent(client.goals_profile ?? {}, client.currency).join("\n"),
+    "",
+    ...(client.standing_instructions
+      ? [
+          "## Standing instructions",
+          "Follow these on every turn unless the operator overrides them in this conversation.",
+          client.standing_instructions,
+          "",
+        ]
+      : []),
     "## Services",
     services.length
       ? services
@@ -168,7 +181,8 @@ async function loadClient(clientId: string): Promise<Client | null> {
     .select("*")
     .eq("id", clientId)
     .maybeSingle();
-  return (data as Client | null) ?? null;
+  // Map the row: it stores the budget ceiling in dollars and goals as raw JSON.
+  return data ? mapClientRow(data as Record<string, unknown>) : null;
 }
 
 async function loadServices(clientId: string): Promise<ClientService[]> {
@@ -185,12 +199,16 @@ async function loadServices(clientId: string): Promise<ClientService[]> {
   return (data as ClientService[]) ?? [];
 }
 
+/** Every research run adds a brief; the chat context carries only the newest few. */
+const CONTEXT_BRIEF_LIMIT = 5;
+
 async function loadBriefs(clientId: string): Promise<CompetitorBrief[]> {
   const config = getConfig();
   if (config.isDemoMode || !config.hasSupabase) {
-    return getDemoStore().competitorBriefs.filter(
-      (b) => b.client_id === clientId && b.status === "ready",
-    );
+    return getDemoStore()
+      .competitorBriefs.filter((b) => b.client_id === clientId && b.status === "ready")
+      .sort((a, b) => (b.generated_at ?? b.created_at).localeCompare(a.generated_at ?? a.created_at))
+      .slice(0, CONTEXT_BRIEF_LIMIT);
   }
   const { createAdminClient } = await import("@/lib/supabase/admin");
   const supabase = createAdminClient();
@@ -198,8 +216,11 @@ async function loadBriefs(clientId: string): Promise<CompetitorBrief[]> {
     .from("competitor_briefs")
     .select("*")
     .eq("client_id", clientId)
-    .eq("status", "ready");
-  return (data as CompetitorBrief[]) ?? [];
+    .eq("status", "ready")
+    .order("researched_at", { ascending: false, nullsFirst: false })
+    .limit(CONTEXT_BRIEF_LIMIT);
+  const { competitorBriefFromRow } = await import("@/lib/competitors/brief-row");
+  return ((data ?? []) as Array<Record<string, unknown>>).map(competitorBriefFromRow);
 }
 
 import { loadMappedMetaAccounts } from "@/lib/adspirer/resolve-meta-account";

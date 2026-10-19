@@ -5,6 +5,7 @@ import { getDemoStore } from "@/lib/demo/store";
 import { createCompetitorProviders } from "./providers/index";
 import { fetchMetaCompetitorIntel } from "./providers/sociavault";
 import { generateCompetitorBrief } from "./brief-generator";
+import { competitorBriefFromRow, competitorBriefToRow } from "./brief-row";
 import { nowIso } from "@/lib/utils";
 import { logger } from "@/lib/observability/logger";
 
@@ -176,7 +177,8 @@ export async function researchClientService(input: {
   const brief: CompetitorBrief & { meta_intel?: MetaCompetitorIntel[] } = {
     id: `brief_${nanoid(10)}`,
     client_id: input.clientId,
-    client_service_id: input.serviceId,
+    // The resolved service, not the raw request id (which may be blank or spelled differently).
+    client_service_id: service.id,
     ...generated,
     raw_research: {
       ...(generated.raw_research ?? {}),
@@ -191,20 +193,21 @@ export async function researchClientService(input: {
   if (config.isDemoMode || !config.hasSupabase) {
     getDemoStore().competitorBriefs.push(brief);
   } else {
-    const { meta_intel: _meta, ...briefRow } = brief;
+    const { meta_intel: _meta, ...briefOnly } = brief;
     const { createAdminClient } = await import("@/lib/supabase/admin");
     const supabase = createAdminClient();
     const { data, error } = await supabase
       .from("competitor_briefs")
-      .insert(briefRow)
+      .insert(competitorBriefToRow(briefOnly))
       .select("*")
       .single();
     if (error) throw new Error(error.message);
+    const saved = competitorBriefFromRow(data as Record<string, unknown>);
     logger.info("Persisted competitor brief", {
-      briefId: (data as CompetitorBrief).id,
+      briefId: saved.id,
       clientId: input.clientId,
     });
-    return { ...(data as CompetitorBrief), meta_intel: metaIntel };
+    return { ...saved, meta_intel: metaIntel };
   }
 
   logger.info("Generated competitor brief", {
@@ -314,6 +317,7 @@ async function loadResearchScope(input: {
             .from("client_services")
             .select("*")
             .eq("id", input.serviceId)
+            .eq("client_id", input.clientId)
             .single()
         : Promise.resolve({ data: null }),
       supabase.from("competitors").select("*").eq("client_id", input.clientId),

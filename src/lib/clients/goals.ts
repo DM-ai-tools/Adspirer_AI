@@ -128,6 +128,42 @@ export function resolveGoals(client: { goals_profile?: GoalsProfile | null }): R
   };
 }
 
+/**
+ * The client's targets as context lines for the agent, so any turn can answer
+ * "what's our target ROAS?" without guessing. Only fields the client set are
+ * listed (plus the break-even figures derived from them), never the defaults.
+ */
+export function describeGoalsForAgent(profile: GoalsProfile, currency: string): string[] {
+  const goals = resolveGoals({ goals_profile: profile });
+  const money = (cents: number) => `${(cents / 100).toFixed(2)} ${currency}`;
+  const policy = Object.entries(profile.policy ?? {}).map(([key, value]) => `${key.replace(/_/g, " ")} ${value}`);
+  const lines = [
+    goals.business_model ? `- Business model: ${goals.business_model}` : null,
+    goals.optimisation_event ? `- Optimises for: ${goals.optimisation_event}` : null,
+    goals.target_roas != null ? `- Target ROAS: ${goals.target_roas}×` : null,
+    goals.target_cpa_cents != null ? `- Target CPA: ${money(goals.target_cpa_cents)}` : null,
+    goals.gross_margin_pct != null ? `- Gross margin: ${goals.gross_margin_pct}%` : null,
+    goals.break_even_roas != null ? `- Break-even ROAS: ${goals.break_even_roas}×` : null,
+    goals.average_value_cents != null ? `- Average order / lead value: ${money(goals.average_value_cents)}` : null,
+    goals.break_even_cpa_cents != null ? `- Break-even CPA: ${money(goals.break_even_cpa_cents)}` : null,
+    goals.daily_account_cap_cents != null ? `- Daily account cap: ${money(goals.daily_account_cap_cents)}` : null,
+    goals.monthly_cap_cents != null ? `- Monthly cap: ${money(goals.monthly_cap_cents)}` : null,
+    goals.allowed_countries?.length ? `- Allowed countries: ${goals.allowed_countries.join(", ")}` : null,
+    goals.special_ad_category && goals.special_ad_category !== "NONE"
+      ? `- Special ad category: ${goals.special_ad_category}`
+      : null,
+    goals.compliance_notes ? `- Compliance notes: ${goals.compliance_notes}` : null,
+    profile.attribution ? `- Attribution: ${profile.attribution}` : null,
+    profile.max_budget_change_pct != null
+      ? `- Budget increases above ${profile.max_budget_change_pct}% need admin approval`
+      : null,
+    policy.length ? `- Decision rules: ${policy.join(", ")}` : null,
+  ].filter((line): line is string => line !== null);
+  return lines.length
+    ? lines
+    : ["- No goals set yet — targets and caps can be added under the client's Settings. Ask before assuming a target."];
+}
+
 // ---------------------------------------------------------------------------
 // Settings form ⇄ profile. Money fields are typed in major units (60 = $60).
 
