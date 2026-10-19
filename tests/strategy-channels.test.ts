@@ -8,7 +8,7 @@ import { attributeSpendToCategories, type CategoryAttribution } from "@/lib/stra
 import { buildChannelPerformance } from "@/lib/strategy/channels";
 
 const SITE = "https://clicktrends.example";
-const SCALED = "Google landing-page / Shopping figures overlap; category split of Google spend is approximate.";
+const SCALED = "Google figures from different sources overlap; the category split of Google spend is approximate.";
 
 function cat(over: Partial<StrategyCategory> & { id: string; name: string }): StrategyCategory {
   return {
@@ -169,13 +169,99 @@ describe("buildChannelPerformance — Google spend", () => {
     const google = perf.byCategory.map((c) => c.google.spendCents);
     const campaignTotal = snap.ads!.campaigns.reduce((sum, c) => sum + c.costCents, 0);
     expect(google.reduce((a, b) => a + b, 0) + perf.googleUnmatchedSpendCents).toBe(campaignTotal);
-    // Shopping 60,000 + asset group 90,000 scaled to the 80,000 PMax remainder,
-    // + Search 85,000 split 2:1 by landing page.
-    expect(byId(perf, "svc_ct_bar_stools").google.spendCents).toBe(60_000 + 80_000 + 56_667);
+    // Shopping 60,000 + Search 85,000 split 2:1 by landing page. The "Bar Stools" asset group
+    // isn't credited on top of the product type, so the 80,000 PMax remainder stays unmatched.
+    expect(byId(perf, "svc_ct_bar_stools").google.spendCents).toBe(60_000 + 56_667);
     expect(byId(perf, "svc_ct_sofas").google.spendCents).toBe(28_333);
+    expect(perf.googleUnmatchedSpendCents).toBe(80_000);
     expect(perf.warnings).toContain(SCALED);
     expect(perf.ads).toBe(snap.ads);
     expect(byId(perf, "svc_ct_bar_stools").meta.spendCents).toBeGreaterThan(0);
+  });
+
+  it("doesn't credit a Search campaign's name on top of its category's landing page", () => {
+    const perf = build(
+      snapshot({
+        ads: ads({
+          campaigns: [
+            campaign("1", "Search | Bar stools", "SEARCH", 20_000),
+            campaign("2", "Brand", "SEARCH", 30_000),
+            campaign("3", "Search | Sofas", "SEARCH", 10_000),
+          ],
+          landingPages: [
+            { url: `${SITE}/collections/bar-stools`, costCents: 15_000, conversionValueCents: 0 },
+            { url: `${SITE}/`, costCents: 35_000, conversionValueCents: 0 },
+          ],
+        }),
+      }),
+    );
+    expect(byId(perf, "bar").google.spendCents).toBe(15_000);
+    // Sofas has no landing-page credit, so its campaign name still counts.
+    expect(byId(perf, "sofas").google.spendCents).toBe(10_000);
+    expect(perf.googleUnmatchedSpendCents).toBe(35_000);
+    expect(15_000 + 10_000 + perf.googleUnmatchedSpendCents).toBe(60_000);
+    expect(perf.warnings).toEqual([]);
+  });
+
+  it("doesn't credit a Shopping campaign's name on top of its category's product type", () => {
+    const perf = build(
+      snapshot({
+        ads: ads({
+          campaigns: [
+            campaign("1", "Shopping | Bar stools", "SHOPPING", 40_000),
+            campaign("2", "Shopping | All", "SHOPPING", 50_000),
+          ],
+          shoppingCategories: [
+            { productType: "Bar Stools", costCents: 30_000, conversionValueCents: 0 },
+            { productType: "Misc", costCents: 60_000, conversionValueCents: 0 },
+          ],
+        }),
+      }),
+    );
+    expect(byId(perf, "bar").google.spendCents).toBe(30_000);
+    expect(byId(perf, "sofas").google.spendCents).toBe(0);
+    expect(perf.googleUnmatchedSpendCents).toBe(60_000);
+  });
+
+  it("rounds a scaled split by largest remainder so the parts sum exactly to the cap", () => {
+    const perf = build(
+      snapshot({
+        ads: ads({
+          campaigns: [campaign("1", "Generic", "SEARCH", 10_000, 10_001)],
+          landingPages: [
+            { url: `${SITE}/collections/bar-stools`, costCents: 7_001, conversionValueCents: 7_003 },
+            { url: `${SITE}/collections/bar-stools/oak`, costCents: 5_003, conversionValueCents: 5_001 },
+            { url: `${SITE}/collections/bar-stools/teak`, costCents: 3_007, conversionValueCents: 3_011 },
+            { url: `${SITE}/collections/sofas`, costCents: 2_999, conversionValueCents: 2_997 },
+          ],
+        }),
+      }),
+    );
+    // Exact shares 3887.28 / 2777.90 / 1669.63 / 1665.19: the two largest remainders take the 2 leftover cents.
+    expect(byId(perf, "bar").google.spendCents).toBe(3_887 + 2_778 + 1_670);
+    expect(byId(perf, "sofas").google.spendCents).toBe(1_665);
+    expect(byId(perf, "bar").google.spendCents + byId(perf, "sofas").google.spendCents).toBe(10_000);
+    expect(perf.googleUnmatchedSpendCents).toBe(0);
+    expect(perf.warnings).toEqual([SCALED]);
+  });
+
+  it("stays exact for amounts too large for floating-point products", () => {
+    const cap = 6_000_000_000_000_001;
+    const perf = build(
+      snapshot({
+        ads: ads({
+          campaigns: [campaign("1", "Generic", "SEARCH", cap)],
+          landingPages: [
+            { url: `${SITE}/collections/bar-stools`, costCents: 4_000_000_000_000_003, conversionValueCents: 0 },
+            { url: `${SITE}/collections/sofas`, costCents: 5_000_000_000_000_007, conversionValueCents: 0 },
+          ],
+        }),
+      }),
+    );
+    const parts = perf.byCategory.map((c) => c.google.spendCents);
+    expect(parts.every(Number.isSafeInteger)).toBe(true);
+    expect(parts[0] + parts[1] + perf.googleUnmatchedSpendCents).toBe(cap);
+    expect(perf.googleUnmatchedSpendCents).toBe(0);
   });
 
   it("reports nothing for Google Ads when it isn't mapped", () => {

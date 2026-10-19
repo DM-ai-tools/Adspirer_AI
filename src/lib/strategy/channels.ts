@@ -28,7 +28,10 @@ export type ChannelPerformance = {
   /** Set when currencies differ: no combined figures may be used. */
   currencyMismatch: string | null;
   googleUnmatchedSpendCents: number;
-  /** Paid-social check: what Meta reports vs what GA4 credits to paid social. */
+  /**
+   * Paid-social check: what Meta reports vs what GA4 credits to paid social. ga4PaidSocialCents is
+   * the sum of the per-category GA4 paid-social estimates on matched pages, not GA4's raw paid-social total.
+   */
   metaVsGa4: { metaReportedCents: number; ga4PaidSocialCents: number } | null;
   /** The snapshot's Google Ads data, passed through for campaign-type detection (Task 11). */
   ads: AdsPerformance | null;
@@ -36,7 +39,7 @@ export type ChannelPerformance = {
 };
 
 const OVERLAP_WARNING =
-  "Google landing-page / Shopping figures overlap; category split of Google spend is approximate.";
+  "Google figures from different sources overlap; the category split of Google spend is approximate.";
 const MAX_TOP_QUERIES = 5;
 /** Host for GA4 paths when no category landing page or Search Console site gives one. */
 const FALLBACK_HOST = "site.invalid";
@@ -49,18 +52,26 @@ function isShoppingType(type: string): boolean {
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const sum = (values: number[]) => values.reduce((a, b) => a + b, 0);
 
-/** Splits an integer total by weight; largest remainders take the leftover units, so parts sum exactly. */
+/**
+ * Splits an integer total by weight; largest remainders take the leftover units, so parts
+ * sum exactly. BigInt keeps w × total exact however large the amounts are.
+ */
 function apportion(weights: number[], total: number): number[] {
-  const whole = sum(weights);
-  if (whole <= 0 || total <= 0) return weights.map(() => 0);
-  const exact = weights.map((w) => (w * total) / whole);
-  const parts = exact.map(Math.floor);
-  let left = total - sum(parts);
-  const order = exact
-    .map((e, i) => ({ i, frac: e - parts[i] }))
-    .sort((a, b) => b.frac - a.frac || a.i - b.i);
-  for (let k = 0; left > 0 && k < order.length; k++, left--) parts[order[k].i]++;
-  return parts;
+  const ws = weights.map((w) => BigInt(Math.max(0, Math.round(w))));
+  const whole = ws.reduce((a, b) => a + b, BigInt(0));
+  const t = BigInt(Math.max(0, Math.round(total)));
+  if (whole === BigInt(0) || t === BigInt(0)) return weights.map(() => 0);
+  const shares = ws.map((w, i) => ({ i, part: (w * t) / whole, rem: (w * t) % whole }));
+  let left = t - shares.reduce((a, s) => a + s.part, BigInt(0));
+  const order = [...shares].sort((a, b) => (a.rem === b.rem ? a.i - b.i : a.rem > b.rem ? -1 : 1));
+  for (let k = 0; left > BigInt(0) && k < order.length; k++, left--) order[k].part++;
+  return shares.map((s) => Number(s.part));
+}
+
+/** round(a × b ÷ c) for non-negative integers, exact. */
+function mulDivRound(a: number, b: number, c: number): number {
+  const [x, y, z] = [a, b, c].map((n) => BigInt(Math.max(0, Math.round(n))));
+  return z === BigInt(0) ? 0 : Number((BigInt(2) * x * y + z) / (BigInt(2) * z));
 }
 
 function hostOf(raw: string | null | undefined): string | null {
@@ -106,22 +117,27 @@ export function buildChannelPerformance(input: {
   // --- Google spend ---------------------------------------------------------
   // Each layer's matched rows are capped at the spend still unassigned in its pool, so a
   // campaign's cost can't land in two categories and the total never exceeds campaign cost.
+  // Landing-page and product-type rows carry no campaign id, so a pool's remainder is mostly
+  // other spend: a name tier never credits a category an earlier tier of the same pool did.
   const google = new Map<string, Slot>(categories.map((c) => [c.id, { cost: 0, value: 0 }]));
   let scaled = false;
-  const take = (rows: Row[], cap: number): number => {
-    const matched = rows.filter((r) => r.category && r.costCents > 0);
+  const take = (rows: Row[], cap: number, credited: Set<string>, byName: boolean): number => {
+    const matched = rows.filter(
+      (r) => r.category && r.costCents > 0 && !(byName && credited.has(r.category.id)),
+    );
     const cost = sum(matched.map((r) => r.costCents));
     let costs = matched.map((r) => r.costCents);
     let values = matched.map((r) => Math.max(0, r.valueCents));
     if (cost > cap) {
       scaled = true;
+      values = apportion(values, mulDivRound(sum(values), cap, cost));
       costs = apportion(costs, cap);
-      values = apportion(values, Math.round((sum(values) * cap) / cost));
     }
     matched.forEach((r, i) => {
       const slot = google.get(r.category!.id)!;
       slot.cost += costs[i];
       slot.value += values[i];
+      if (costs[i] > 0) credited.add(r.category!.id);
     });
     return sum(costs);
   };
@@ -136,6 +152,7 @@ export function buildChannelPerformance(input: {
 
     // 1. Shopping and Performance Max: product types, then asset groups, then campaign names.
     let shoppingLeft = shoppingTotal;
+    const shoppingCredited = new Set<string>();
     shoppingLeft -= take(
       ads.shoppingCategories.map((r) => ({
         category: matchCategoryByLabel(r.productType, categories),
@@ -143,6 +160,8 @@ export function buildChannelPerformance(input: {
         valueCents: r.conversionValueCents,
       })),
       shoppingLeft,
+      shoppingCredited,
+      false,
     );
     shoppingLeft -= take(
       ads.assetGroups.map((g) => ({
@@ -151,6 +170,8 @@ export function buildChannelPerformance(input: {
         valueCents: g.conversionValueCents,
       })),
       shoppingLeft,
+      shoppingCredited,
+      true,
     );
     // A Performance Max campaign's asset groups stand in for it; only cost they don't cover is left.
     const groupCost = new Map<string, Slot>();
@@ -167,10 +188,13 @@ export function buildChannelPerformance(input: {
         valueCents: Math.max(0, c.conversionValueCents - (groupCost.get(c.id)?.value ?? 0)),
       })),
       shoppingLeft,
+      shoppingCredited,
+      true,
     );
 
     // 2. Every other campaign type: landing pages, then campaign names.
     let otherLeft = otherTotal;
+    const otherCredited = new Set<string>();
     otherLeft -= take(
       ads.landingPages.map((p) => ({
         category: matchCategoryByUrl(p.url, categories),
@@ -178,6 +202,8 @@ export function buildChannelPerformance(input: {
         valueCents: p.conversionValueCents,
       })),
       otherLeft,
+      otherCredited,
+      false,
     );
     otherLeft -= take(
       otherCampaigns.map((c) => ({
@@ -186,6 +212,8 @@ export function buildChannelPerformance(input: {
         valueCents: c.conversionValueCents,
       })),
       otherLeft,
+      otherCredited,
+      true,
     );
     googleLeft = shoppingLeft + otherLeft;
   }
