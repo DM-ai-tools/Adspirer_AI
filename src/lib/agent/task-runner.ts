@@ -440,6 +440,13 @@ export async function runTask(
         steps = completeStepsThrough(steps, "apply_framework");
       }
     }
+    if (intent === "strategy" && !gathered.strategyBriefIncomplete) {
+      // No mapped account, or the snapshot / plan failed: the fetch and plan
+      // steps did not happen, so they must not read as done.
+      steps = gathered.strategyPlanBuilt
+        ? completeStepsThrough(steps, "build_plan")
+        : ["fetch_overview", "pull_insights", "build_plan"].reduce((acc, id) => failStep(acc, id), steps);
+    }
 
     const wantsInlineCreatives =
       intent === "generate_creatives" ||
@@ -583,7 +590,10 @@ export async function runTask(
       agentResult.ui,
     );
 
-    steps = completeStepsThrough(steps, "write_report");
+    // The strategy brief question parks on clarify_brief: no plan was built.
+    steps = gathered.strategyBriefIncomplete
+      ? activateStep(setStepState(steps, "write_report", "pending"), "clarify_brief")
+      : completeStepsThrough(steps, "write_report");
     if (intent === "ad_copy") {
       if (gathered.copyPicker?.copies?.length) {
         steps = completeStepsThrough(steps, "generate_copy");
@@ -1049,7 +1059,9 @@ export async function runTask(
       return task;
     }
 
-    const waiting = !agentResult.report && awaitsOperator(agentResult);
+    const waiting =
+      !agentResult.report &&
+      (awaitsOperator(agentResult) || Boolean(gathered.strategyBriefIncomplete));
     // Only a stage still in progress gets parked; a finished audit that ends on
     // "want me to pause it?" has genuinely completed its checklist.
     const holdPlan = waiting && steps.some((s) => s.state === "active");

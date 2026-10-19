@@ -139,3 +139,16 @@ describe("audit brief", () => {
     ]);
   });
 });
+
+describe("audit vs strategy routing", () => {
+  it("does not hijack an audit brief reply with a strategy brief", () => {
+    const history = [
+      { role: "user" as const, content: "audit my account" },
+      {
+        role: "assistant" as const,
+        content: "Which date range should I cover for the best-practice audit?",
+      },
+    ];
+    expect(detectRequestIntentWithHistory("last 30 days", history)).toBe("audit");
+  });
+});

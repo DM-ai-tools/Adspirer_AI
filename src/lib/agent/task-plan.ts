@@ -1,5 +1,6 @@
 import type { AgentHistoryMessage } from "@/lib/agent/history";
 import { looksLikeAuditBriefReply, parseDateRangeFromText } from "@/lib/agent/audit-brief";
+import { looksLikeStrategyBriefReply, STRATEGY_BRIEF_MARKER } from "@/lib/agent/strategy-brief";
 
 export type TaskStepState =
   | "pending"
@@ -27,6 +28,7 @@ export type RequestIntent =
   | "ad_copy"
   | "copy_approved"
   | "optimize"
+  | "strategy"
   | "general"
   /** Greetings, thanks, definitions, "why is that" — answered without fresh account data. */
   | "chat"
@@ -45,6 +47,7 @@ export const CONVERSATIONAL_INTENTS: ReadonlySet<RequestIntent> = new Set([
 export const REPORT_INTENTS: ReadonlySet<RequestIntent> = new Set([
   "audit",
   "export",
+  "strategy",
 ]);
 
 const GREETING_ONLY =
@@ -82,6 +85,37 @@ export function isConversationalTurn(request: string): boolean {
 const EXPLICIT_AUDIT =
   /\b(?:audit\w*|diagnos\w*|health\s*-?\s*check|account\s+health|full\s+(?:account\s+)?review|review\s+(?:of\s+)?(?:the\s+|my\s+|our\s+|this\s+)?(?:whole\s+|entire\s+|full\s+)?(?:ad\s+)?account)\b/;
 
+/** "10x roas", "12x target", "8x return". */
+const ROAS_MULTIPLE = String.raw`\d+(?:\.\d+)?\s*[x×]\s*(?:roas|target|return)\b`;
+/** A goal verb or plan word; a bare "5x roas" is often a reporting filter, not a goal. */
+const GOAL_WORD = String.raw`\b(?:hit|reach|get|achieve|aim|target|plan|strategy|how\s+do\s+i)\b`;
+/**
+ * A return goal stated outright: "get 10x roas", "roas of 8", "reach a 12x target",
+ * "$4k to get $40k back". The goal word sits within the same clause as the multiple.
+ */
+const STRATEGY_GOAL = new RegExp(
+  [
+    String.raw`${GOAL_WORD}[^.?!\n]{0,40}?${ROAS_MULTIPLE}`,
+    String.raw`${ROAS_MULTIPLE}[^.?!\n]{0,40}?${GOAL_WORD}`,
+    String.raw`\broas\s+of\s+\d`,
+    String.raw`\bstretch\s+targets?\b`,
+    String.raw`\$\s*[\d,.]+\s*k?\s+to\s+(?:get|make|generate|bring\s+in|return)\s+(?:me\s+)?\$\s*[\d,.]+\s*k?\s*back`,
+    String.raw`\b(?:hit|reach|get)\s+(?:a\s+)?\d+(?:\.\d+)?\s*[x×]\s*(?:roas|return|target|back)\b`,
+  ].join("|"),
+);
+/** "under 2x roas", "above a roas of 3", "5x roas or better": a filter on results, not a goal. */
+const ROAS_COMPARISON =
+  /\b(?:above|below|under|over|more\s+than|less\s+than|at\s+least)\s+(?:an?\s+)?(?:roas\s+(?:of\s+)?\d|\d+(?:\.\d+)?\s*[x×])|(?:\d\s*[x×]\s*(?:roas\s+)?|\broas\s+of\s+\d+(?:\.\d+)?\s*)or\s+(?:better|worse)\b/;
+/** Words that ask for a plan; on their own they don't skip the chat check. */
+const STRATEGY_PLAN_WORDS = /\bstrategy\b|\bgame\s*plan\b|\bplan\s+to\s+(?:hit|reach|get)\b/;
+/** "target roas" counts only next to a plan / how-to signal. */
+const STRATEGY_TARGET_ROAS =
+  /\btarget\s+roas\b[\s\S]*\b(?:plan|how\s+(?:do|can|to))\b|\b(?:plan|how\s+(?:do|can|to))\b[\s\S]*\btarget\s+roas\b/;
+/** Other flows that mention a ROAS number but are not asking for a plan. */
+const NOT_STRATEGY_ACTION =
+  /\b(?:optimi[sz]\w*|create|launch|pause|resume|queue|apply|implement|execute|set\s*up)\b/;
+const DEFINITION_WORDS = /\b(?:mean|means|define|definition)\b/;
+
 export function detectRequestIntent(request: string): RequestIntent {
   const text = request.toLowerCase();
   if (
@@ -94,8 +128,20 @@ export function detectRequestIntent(request: string): RequestIntent {
   ) {
     return "out_of_scope";
   }
-  if (isConversationalTurn(request)) {
+  // "what's the plan to reach a 12x target" opens like a definitional question
+  // but is a strategy ask; "what does 10x roas mean" stays a definition.
+  const planWords = STRATEGY_PLAN_WORDS.test(text);
+  const goalAsk = STRATEGY_GOAL.test(text) && !DEFINITION_WORDS.test(text) && !ROAS_COMPARISON.test(text);
+  if (!goalAsk && isConversationalTurn(request)) {
     return "chat";
+  }
+  // Strategy before optimize/audit. Optimize / create / pause / queue wording
+  // wins unless the operator also says "strategy", "game plan" or "plan to".
+  if (
+    (goalAsk || planWords || STRATEGY_TARGET_ROAS.test(text)) &&
+    (planWords || !NOT_STRATEGY_ACTION.test(text))
+  ) {
+    return "strategy";
   }
   // Queue / apply optimized changes → Approvals path (before export "send report")
   if (
@@ -116,7 +162,8 @@ export function detectRequestIntent(request: string): RequestIntent {
       text,
     ) ||
     /\bselected ad\b.*\boptim/.test(text) ||
-    /\boptimize\b.*\b(ad|campaign|budget|placement)/.test(text)
+    /\boptimize\b.*\b(ad|campaign|budget|placement)/.test(text) ||
+    /\boptimi[sz]\w*\b[\s\S]*\broas\b|\broas\b[\s\S]*\boptimi[sz]\w*/.test(text)
   ) {
     return "optimize";
   }
@@ -211,9 +258,22 @@ export function detectRequestIntentWithHistory(
   history: AgentHistoryMessage[] = [],
 ): RequestIntent {
   const primary = detectRequestIntent(request);
+  const recent = history.slice(-10);
+  // A short answer ("$1,200/day, 10x") to the strategy brief's own question.
+  // Checked before the early return: "my budget is $900 a day" reads as "budget".
+  if (primary === "general" || primary === "budget" || primary === "chat") {
+    const last = [...recent].reverse().find((m) => m.role === "assistant");
+    if (
+      last &&
+      last.content.length < 2000 &&
+      last.content.toLowerCase().includes(STRATEGY_BRIEF_MARKER) &&
+      looksLikeStrategyBriefReply(request)
+    ) {
+      return "strategy";
+    }
+  }
   if (primary !== "general") return primary;
 
-  const recent = history.slice(-10);
   // Only a brief that is still open counts. Once a full audit has been
   // delivered (a long reply), a follow-up like "which campaigns are wasting
   // spend?" must not re-run the whole audit.
@@ -343,6 +403,16 @@ export function planTaskSteps(
           state: "pending",
         },
         { id: "write_report", label: "Write audit report", state: "pending" },
+        { id: "complete", label: "Complete", state: "pending" },
+      ];
+    case "strategy":
+      return [
+        ...base,
+        { id: "clarify_brief", label: "Confirm budget & target ROAS", state: "pending" },
+        { id: "fetch_overview", label: "Fetch account overview", state: "pending" },
+        { id: "pull_insights", label: "Pull spend & return by category", state: "pending" },
+        { id: "build_plan", label: "Build the plan", state: "pending" },
+        { id: "write_report", label: "Write strategy", state: "pending" },
         { id: "complete", label: "Complete", state: "pending" },
       ];
     case "list_campaigns":

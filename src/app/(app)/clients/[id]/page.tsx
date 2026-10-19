@@ -18,6 +18,7 @@ import { StatCard } from "@/components/shared/stat-card";
 import { ClientStatusBadge } from "@/components/clients/client-status-badge";
 import { ApprovalCard } from "@/components/approvals/approval-card";
 import { GoalsProfileForm } from "@/components/clients/goals-profile-form";
+import { CategoriesPanel } from "@/components/clients/categories-panel";
 import { ChangeLogCard } from "@/components/clients/change-log-card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -132,6 +133,8 @@ export default function ClientDetailPage() {
     return <ErrorState description={error ?? undefined} onRetry={() => void load()} />;
 
   const pending = approvals.filter((a) => a.status === "pending");
+  const categoryWord =
+    client.goals_profile?.business_model === "ecommerce" ? "category" : "service";
   const connected = tasks.length > 0 || pending.length >= 0;
 
   return (
@@ -169,6 +172,9 @@ export default function ClientDetailPage() {
       <Tabs defaultValue={initialTab}>
         <TabsList className="h-auto flex-wrap">
           <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="categories">
+            {categoryWord === "category" ? "Categories" : "Services"}
+          </TabsTrigger>
           <TabsTrigger value="workspace">Workspace</TabsTrigger>
           <TabsTrigger value="campaigns">Campaigns</TabsTrigger>
           <TabsTrigger value="monitoring">Monitoring</TabsTrigger>
@@ -222,6 +228,10 @@ export default function ClientDetailPage() {
               ) : null}
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="categories">
+          <CategoriesPanel clientId={client.id} categoryWord={categoryWord} />
         </TabsContent>
 
         <TabsContent value="workspace">

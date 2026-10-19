@@ -14,6 +14,7 @@ export type ErrorCode =
   | "EXECUTION_VERIFICATION_ERROR"
   | "NOT_FOUND"
   | "VALIDATION_ERROR"
+  | "CONFLICT"
   | "INTERNAL_ERROR";
 
 export class AppError extends Error {
@@ -56,6 +57,13 @@ export class NotFoundError extends AppError {
 export class ValidationError extends AppError {
   constructor(message = "Invalid request", details?: Record<string, unknown>) {
     super("VALIDATION_ERROR", message, 400, details);
+  }
+}
+
+/** The request clashes with existing data (e.g. a duplicate name); 409. */
+export class ConflictError extends AppError {
+  constructor(message = "Conflict", details?: Record<string, unknown>) {
+    super("CONFLICT", message, 409, details);
   }
 }
 

@@ -23,6 +23,8 @@ const TOOL_POLICY: Record<string, ToolSafetyClass> = {
   optimize_meta_placements: "diagnose",
   detect_meta_creative_fatigue: "diagnose",
   list_competitor_ads_v2: "diagnose",
+  // Strategy plan engine: reads the snapshot, recommends only.
+  strategy_plan: "diagnose",
 
   // Execute
   update_adset_budget: "execute",

@@ -1,36 +1,32 @@
-import { z } from "zod";
 import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
 import { getCurrentUser } from "@/lib/security/auth";
 import { assertAuthenticated, assertClientAccess } from "@/lib/authz/assert";
 import { nowIso } from "@/lib/utils";
 import type { ClientService } from "@/types";
+import { serviceCreateSchema } from "@/lib/clients/service-schema";
+import { assertUniqueServiceName } from "@/lib/clients/service-name";
 import { jsonOk, parseBody, withApiHandler } from "@/lib/api/response";
-
-const createSchema = z.object({
-  name: z.string().min(1),
-  description: z.string().nullable().optional(),
-  keywords: z.array(z.string()).nullable().optional(),
-  landing_page_url: z.string().url().nullable().optional(),
-  /** @deprecated alias — prefer landing_page_url */
-  landing_url: z.string().url().nullable().optional(),
-  priority: z.number().int().optional(),
-  is_active: z.boolean().optional(),
-});
 
 type RouteContext = { params: Promise<{ id: string }> };
 
-export async function GET(_request: Request, context: RouteContext) {
+/**
+ * GET /api/clients/:id/services
+ * Seeds a default service when the client has none, unless `?seed=0`: then it
+ * lists the stored rows (active and inactive) as they are.
+ */
+export async function GET(request: Request, context: RouteContext) {
   return withApiHandler(async () => {
     const { id } = await context.params;
     const user = await getCurrentUser();
     assertAuthenticated(user);
     await assertClientAccess(user.id, id);
 
-    const { ensureClientServices } = await import(
+    const { ensureClientServices, listClientServices } = await import(
       "@/lib/clients/ensure-services"
     );
-    const services = await ensureClientServices(id);
+    const seed = new URL(request.url).searchParams.get("seed") !== "0";
+    const services = seed ? await ensureClientServices(id) : await listClientServices(id);
     return jsonOk({ services });
   });
 }
@@ -42,7 +38,8 @@ export async function POST(request: Request, context: RouteContext) {
     assertAuthenticated(user);
     await assertClientAccess(user.id, id);
 
-    const body = await parseBody(request, createSchema);
+    const body = await parseBody(request, serviceCreateSchema);
+    await assertUniqueServiceName(id, body.name);
     const ts = nowIso();
     const landing =
       body.landing_page_url ?? body.landing_url ?? null;
@@ -55,6 +52,10 @@ export async function POST(request: Request, context: RouteContext) {
       landing_page_url: landing,
       priority: body.priority ?? 0,
       is_active: body.is_active ?? true,
+      gross_margin_pct: body.gross_margin_pct ?? null,
+      average_order_value_cents: body.average_order_value_cents ?? null,
+      url_patterns: body.url_patterns ?? null,
+      source: body.source ?? "manual",
       created_at: ts,
       updated_at: ts,
     };
