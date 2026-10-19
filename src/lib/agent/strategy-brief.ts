@@ -15,8 +15,13 @@ const BUDGET_RE = new RegExp(
 );
 /** "10x", "12 ×". */
 const MULTIPLE_RE = new RegExp(String.raw`(?<![\w.])${NUM}\s*[x×](?![a-z0-9])`, "gi");
-/** "roas of 8", "roas 8", "roas: 8". */
-const ROAS_OF_RE = new RegExp(String.raw`\broas\s*(?:of|at|to|=|:)?\s*${NUM}`, "gi");
+/**
+ * "roas of 8", "roas at 8", "roas target 8", "roas: 8", "roas of 400%". The
+ * connector is required: in "10x roas 500 per day" the 500 is a budget.
+ */
+const ROAS_OF_RE = new RegExp(String.raw`\broas\s*(?:(?:of|at|target)\b|[=:])\s*${NUM}(\s*%)?`, "gi");
+/** The goals schema's cap; anything higher is a typo or a budget, not a target. */
+const MAX_ROAS = 100;
 /** "$4k to get $40k back". */
 const A_TO_B_RE = new RegExp(
   String.raw`\$\s*${NUM}\s*(k)?\s+to\s+(?:get|make|generate|bring\s+in|return)\s+(?:me\s+)?\$\s*${NUM}\s*(k)?\s*back`,
@@ -42,13 +47,14 @@ function parseBudgetCents(text: string): number | null {
   return daily > 0 ? daily : null;
 }
 
-/** Every "Nx" / "roas of N" value in the order it appears. */
+/** Every "Nx" / "roas of N" value in the order it appears; "400%" is 4×, and values over the cap are dropped. */
 function parseRoasValues(text: string): number[] {
   const found: Array<{ at: number; value: number }> = [];
   for (const re of [MULTIPLE_RE, ROAS_OF_RE]) {
     for (const m of text.matchAll(re)) {
-      const value = Number(m[1].replace(/,/g, ""));
-      if (value > 0) found.push({ at: m.index ?? 0, value: round2(value) });
+      const raw = Number(m[1].replace(/,/g, ""));
+      const value = m[2] ? raw / 100 : raw;
+      if (value > 0 && value <= MAX_ROAS) found.push({ at: m.index ?? 0, value: round2(value) });
     }
   }
   return found.sort((a, b) => a.at - b.at).map((f) => f.value);
@@ -59,7 +65,7 @@ function impliedRoas(text: string): number | null {
   if (!m) return null;
   const a = toNumber(m[1], m[2]);
   const b = toNumber(m[3], m[4]);
-  return a > 0 && b > 0 ? round2(b / a) : null;
+  return a > 0 && b > 0 && b / a <= MAX_ROAS ? round2(b / a) : null;
 }
 
 type BriefDefaults = { goals: ResolvedGoals; currentDailySpendCents: number | null };

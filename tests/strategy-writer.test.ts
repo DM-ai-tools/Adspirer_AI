@@ -3,6 +3,7 @@ import { resetConfigCache } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
 import { gatherDiagnoseEvidence, runAdspirerAgent } from "@/lib/agent/adspirer-agent";
 import { createTask } from "@/lib/agent/task-runner";
+import { buildStrategyClarifyingQuestion } from "@/lib/agent/strategy-brief";
 
 // The writer runs on a stubbed model: these tests see the prompt it gets, or that it is never called.
 const streamText = vi.fn();
@@ -40,6 +41,29 @@ async function writeStrategy(clientId: string, request: string, history: Array<{
 }
 
 describe("strategy writer with an LLM configured", () => {
+  it("replies with exactly the clarifying question, without calling the model, when the brief is incomplete", async () => {
+    const { gathered, result } = await writeStrategy("client_trafficradius", "Build me a strategy");
+    expect(gathered.strategyBriefIncomplete).toBe(true);
+    expect(streamText).not.toHaveBeenCalled();
+    // The demo account's current spend fills the budget, so only the target is asked for.
+    expect(result.summary).toBe(buildStrategyClarifyingQuestion(["target_roas"]));
+    expect(result.toolCalls).toEqual([]);
+  });
+
+  it("asks for exactly the fields the evidence lists as missing", async () => {
+    const task = await createTask({ clientId: "client_trafficradius", createdBy: "profile_operator_demo", title: "x", goal: "x" });
+    for (const missing of [["budget"], ["budget", "target_roas"]] as const) {
+      const result = await runAdspirerAgent({
+        task,
+        clientContext: "",
+        intent: "strategy",
+        toolEvidence: `### Strategy brief incomplete\n- Missing: ${missing.join(", ")}\nAsk ONLY for the missing values below.`,
+      });
+      expect(result.summary).toBe(buildStrategyClarifyingQuestion([...missing]));
+    }
+    expect(streamText).not.toHaveBeenCalled();
+  });
+
   it("tells the writer the plan can't be built when no Meta account is mapped", async () => {
     const store = getDemoStore();
     store.connectedMetaAccounts = store.connectedMetaAccounts.filter((a) => a.client_id !== "client_modern_dental");

@@ -272,6 +272,25 @@ export async function runAdspirerAgent(input: {
     });
   }
 
+  // An incomplete strategy brief gets the clarifying question verbatim, in every
+  // mode: the next turn's routing keys on its wording, so no writer rephrases it.
+  const briefQuestion = strategyBriefQuestion(input);
+  if (briefQuestion) {
+    await input.onProgress?.({
+      phase: "write_report",
+      label: "Asking for budget & target ROAS…",
+      stepId: "write_report",
+      summary: briefQuestion,
+      delta: briefQuestion,
+    });
+    return {
+      summary: briefQuestion,
+      messages: [{ role: "assistant", content: briefQuestion }],
+      toolCalls: [],
+      mode: config.hasAnthropic ? "anthropic" : config.hasOpenAI ? "openai" : "mock",
+    };
+  }
+
   if (config.hasAnthropic && config.ANTHROPIC_API_KEY) {
     try {
       return await runAnthropicAgent(input);
@@ -512,6 +531,19 @@ type WriterInput = {
   correlationId?: string;
   onProgress?: (event: AgentProgressEvent) => void | Promise<void>;
 };
+
+const BRIEF_FIELDS = ["budget", "target_roas"] as const;
+
+/** The clarifying question for an incomplete strategy brief, rebuilt from the evidence's "Missing" line. */
+function strategyBriefQuestion(input: WriterInput): string | null {
+  if (input.reportDraft || resolveWriterIntent(input) !== "strategy") return null;
+  const evidence = input.toolEvidence ?? "";
+  const at = evidence.indexOf("### Strategy brief incomplete");
+  if (at < 0) return null;
+  const listed = evidence.slice(at).match(/^- Missing: (.*)$/m)?.[1] ?? "";
+  const missing = BRIEF_FIELDS.filter((f) => listed.split(/,\s*/).includes(f));
+  return buildStrategyClarifyingQuestion(missing.length ? missing : [...BRIEF_FIELDS]);
+}
 
 function resolveWriterIntent(input: WriterInput): RequestIntent {
   return (
@@ -1002,18 +1034,12 @@ async function runMockAgent(input: {
   const evidence = input.toolEvidence?.trim();
 
   // Strategy replies come from the real engine evidence, so DEMO shows the
-  // actual plan: the brief question as asked, or the evidence sections verbatim.
+  // actual plan: the evidence sections verbatim. (The brief question never
+  // reaches here; runAdspirerAgent answers it deterministically.)
   if (intent === "strategy" && !input.reportDraft) {
-    const briefAt = evidence?.indexOf("### Strategy brief incomplete") ?? -1;
     const inputsAt = evidence?.indexOf("### Strategy inputs") ?? -1;
     let summary: string;
-    if (evidence && briefAt >= 0) {
-      const nextAt = evidence.indexOf("\n### ", briefAt + 1);
-      const block = evidence.slice(briefAt, nextAt < 0 ? undefined : nextAt);
-      // The first paragraph is writer guidance; the rest is the question itself.
-      const question = block.split("\n\n").slice(1).join("\n\n").trim();
-      summary = question || "I need a daily budget and a target ROAS to build the strategy.";
-    } else if (evidence && inputsAt >= 0) {
+    if (evidence && inputsAt >= 0) {
       const frameworkAt = evidence.indexOf("### Strategy framework", inputsAt);
       const body = evidence.slice(inputsAt, frameworkAt < 0 ? undefined : frameworkAt).trim();
       summary = [

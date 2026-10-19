@@ -76,6 +76,26 @@ describe("parseStrategyBrief", () => {
     const r = parseStrategyBrief("$4k to get $40k back, aim for 12x, $800/day", defaults());
     expect(r.brief?.targetRoas).toBe(12);
   });
+
+  it("needs a connector before a roas number, so a budget is never read as a stretch target", () => {
+    const r = parseStrategyBrief("10x ROAS 500 per day", defaults());
+    expect(r.brief).toEqual({ dailyBudgetCents: 50000, targetRoas: 10, stretchTargets: [] });
+    for (const q of ["roas of 8", "roas at 8", "roas target 8", "roas: 8", "roas = 8"]) {
+      expect(parseStrategyBrief(`${q}, $500/day`, defaults()).brief?.targetRoas).toBe(8);
+    }
+  });
+
+  it("reads 'roas of 400%' as 4x", () => {
+    expect(parseStrategyBrief("roas of 400% on $500/day", defaults()).brief?.targetRoas).toBe(4);
+  });
+
+  it("treats a roas over 100 as missing, not a target", () => {
+    const r = parseStrategyBrief("hit 500x roas on $500/day", defaults());
+    expect(r.brief).toBeNull();
+    expect(r.missing).toEqual(["target_roas"]);
+    expect(parseStrategyBrief("10x roas on $500/day, stretch 250x", defaults()).brief?.stretchTargets).toEqual([]);
+    expect(parseStrategyBrief("$1 to get $500 back, $500/day", defaults()).missing).toEqual(["target_roas"]);
+  });
 });
 
 describe("resolveStrategyBrief (a reply to the brief question)", () => {
@@ -180,6 +200,23 @@ describe("strategy intent", () => {
   ])("routes %s to %s", (q, expected) => {
     expect(detectRequestIntent(q)).toBe(expected);
   });
+
+  it.each([
+    "Which ads have 5x ROAS or better?",
+    "Which campaigns are under 2x ROAS?",
+    "show me ad sets above 3x roas last week",
+    "list ads with at least 4x roas",
+    "which ad sets are below a roas of 2",
+  ])("does not route the reporting question %s to strategy", (q) => {
+    expect(detectRequestIntent(q)).not.toBe("strategy");
+  });
+
+  it.each(["aim for 8x roas on $300/day", "target 6x roas this month", "can you plan for 5x roas"])(
+    "still routes the goal %s to strategy",
+    (q) => {
+      expect(detectRequestIntent(q)).toBe("strategy");
+    },
+  );
 
   it("does not route 'pause campaigns under target roas' to strategy", () => {
     expect(detectRequestIntent("pause campaigns under target roas")).not.toBe("strategy");

@@ -85,9 +85,27 @@ export function isConversationalTurn(request: string): boolean {
 const EXPLICIT_AUDIT =
   /\b(?:audit\w*|diagnos\w*|health\s*-?\s*check|account\s+health|full\s+(?:account\s+)?review|review\s+(?:of\s+)?(?:the\s+|my\s+|our\s+|this\s+)?(?:whole\s+|entire\s+|full\s+)?(?:ad\s+)?account)\b/;
 
-/** A return goal stated outright: "10x roas", "roas of 8", "reach a 12x target", "$4k to get $40k back". */
-const STRATEGY_GOAL =
-  /\d+(?:\.\d+)?\s*[x×]\s*(?:roas|target|return)\b|\broas\s+of\s+\d|\bstretch\s+targets?\b|\$\s*[\d,.]+\s*k?\s+to\s+(?:get|make|generate|bring\s+in|return)\s+(?:me\s+)?\$\s*[\d,.]+\s*k?\s*back|\b(?:hit|reach|get)\s+(?:a\s+)?\d+(?:\.\d+)?\s*[x×]\s*(?:roas|return|target|back)\b/;
+/** "10x roas", "12x target", "8x return". */
+const ROAS_MULTIPLE = String.raw`\d+(?:\.\d+)?\s*[x×]\s*(?:roas|target|return)\b`;
+/** A goal verb or plan word; a bare "5x roas" is often a reporting filter, not a goal. */
+const GOAL_WORD = String.raw`\b(?:hit|reach|get|achieve|aim|target|plan|strategy|how\s+do\s+i)\b`;
+/**
+ * A return goal stated outright: "get 10x roas", "roas of 8", "reach a 12x target",
+ * "$4k to get $40k back". The goal word sits within the same clause as the multiple.
+ */
+const STRATEGY_GOAL = new RegExp(
+  [
+    String.raw`${GOAL_WORD}[^.?!\n]{0,40}?${ROAS_MULTIPLE}`,
+    String.raw`${ROAS_MULTIPLE}[^.?!\n]{0,40}?${GOAL_WORD}`,
+    String.raw`\broas\s+of\s+\d`,
+    String.raw`\bstretch\s+targets?\b`,
+    String.raw`\$\s*[\d,.]+\s*k?\s+to\s+(?:get|make|generate|bring\s+in|return)\s+(?:me\s+)?\$\s*[\d,.]+\s*k?\s*back`,
+    String.raw`\b(?:hit|reach|get)\s+(?:a\s+)?\d+(?:\.\d+)?\s*[x×]\s*(?:roas|return|target|back)\b`,
+  ].join("|"),
+);
+/** "under 2x roas", "above a roas of 3", "5x roas or better": a filter on results, not a goal. */
+const ROAS_COMPARISON =
+  /\b(?:above|below|under|over|more\s+than|less\s+than|at\s+least)\s+(?:an?\s+)?(?:roas\s+(?:of\s+)?\d|\d+(?:\.\d+)?\s*[x×])|(?:\d\s*[x×]\s*(?:roas\s+)?|\broas\s+of\s+\d+(?:\.\d+)?\s*)or\s+(?:better|worse)\b/;
 /** Words that ask for a plan; on their own they don't skip the chat check. */
 const STRATEGY_PLAN_WORDS = /\bstrategy\b|\bgame\s*plan\b|\bplan\s+to\s+(?:hit|reach|get)\b/;
 /** "target roas" counts only next to a plan / how-to signal. */
@@ -113,7 +131,7 @@ export function detectRequestIntent(request: string): RequestIntent {
   // "what's the plan to reach a 12x target" opens like a definitional question
   // but is a strategy ask; "what does 10x roas mean" stays a definition.
   const planWords = STRATEGY_PLAN_WORDS.test(text);
-  const goalAsk = STRATEGY_GOAL.test(text) && !DEFINITION_WORDS.test(text);
+  const goalAsk = STRATEGY_GOAL.test(text) && !DEFINITION_WORDS.test(text) && !ROAS_COMPARISON.test(text);
   if (!goalAsk && isConversationalTurn(request)) {
     return "chat";
   }
