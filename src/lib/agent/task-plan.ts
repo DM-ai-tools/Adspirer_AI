@@ -87,8 +87,18 @@ const EXPLICIT_AUDIT =
 
 /** "10x roas", "12x target", "8x return". */
 const ROAS_MULTIPLE = String.raw`\d+(?:\.\d+)?\s*[x×]\s*(?:roas|target|return)\b`;
-/** A goal verb or plan word; a bare "5x roas" is often a reporting filter, not a goal. */
-const GOAL_WORD = String.raw`\b(?:hit|reach|get|achieve|aim|target|plan|strategy|how\s+do\s+i)\b`;
+/**
+ * A goal verb or plan word; a bare "5x roas" is often a reporting filter, not a goal.
+ * Plain "get" is left out ("get me the ads with 5x roas" is a report); "get to 5x roas"
+ * is caught by STRATEGY_EXPLICIT_GOAL.
+ */
+const GOAL_WORD = String.raw`\b(?:hit|reach|achieve|aim|target|plan|strategy|how\s+do\s+i)\b`;
+/**
+ * A goal verb straight before the multiple: "hit 5x roas", "get to 5x roas".
+ * It stays a goal even next to a comparison ("we're under 2x roas, how do i hit 5x roas").
+ */
+const STRATEGY_EXPLICIT_GOAL =
+  /\b(?:hit|reach|achieve|get\s+to|get)\s+(?:an?\s+)?\d+(?:\.\d+)?\s*[x×]\s*(?:roas|return|target)\b/;
 /**
  * A return goal stated outright: "get 10x roas", "roas of 8", "reach a 12x target",
  * "$4k to get $40k back". The goal word sits within the same clause as the multiple.
@@ -131,7 +141,9 @@ export function detectRequestIntent(request: string): RequestIntent {
   // "what's the plan to reach a 12x target" opens like a definitional question
   // but is a strategy ask; "what does 10x roas mean" stays a definition.
   const planWords = STRATEGY_PLAN_WORDS.test(text);
-  const goalAsk = STRATEGY_GOAL.test(text) && !DEFINITION_WORDS.test(text) && !ROAS_COMPARISON.test(text);
+  const goalAsk =
+    !DEFINITION_WORDS.test(text) &&
+    (STRATEGY_EXPLICIT_GOAL.test(text) || (STRATEGY_GOAL.test(text) && !ROAS_COMPARISON.test(text)));
   if (!goalAsk && isConversationalTurn(request)) {
     return "chat";
   }

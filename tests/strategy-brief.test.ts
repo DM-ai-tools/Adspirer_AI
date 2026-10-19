@@ -207,11 +207,20 @@ describe("strategy intent", () => {
     "show me ad sets above 3x roas last week",
     "list ads with at least 4x roas",
     "which ad sets are below a roas of 2",
+    "get me the ads with 5x roas",
   ])("does not route the reporting question %s to strategy", (q) => {
     expect(detectRequestIntent(q)).not.toBe("strategy");
   });
 
-  it.each(["aim for 8x roas on $300/day", "target 6x roas this month", "can you plan for 5x roas"])(
+  it.each([
+    "aim for 8x roas on $300/day",
+    "target 6x roas this month",
+    "can you plan for 5x roas",
+    // Stating where the account is today next to the goal is still a goal.
+    "we're under 2x roas, how do i hit 5x roas?",
+    "we are below 2x roas right now. how do i get to 5x roas",
+    "can we hit 8x roas or better on $500/day",
+  ])(
     "still routes the goal %s to strategy",
     (q) => {
       expect(detectRequestIntent(q)).toBe("strategy");
