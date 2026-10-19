@@ -37,6 +37,13 @@ const envSchema = z.object({
   META_APP_ID: z.string().optional(),
   META_APP_SECRET: z.string().optional(),
   META_GRAPH_VERSION: z.string().default("v23.0"),
+  // Google is read-only: GA4, Google Ads and Search Console.
+  GOOGLE_OAUTH_CLIENT_ID: z.string().optional(),
+  GOOGLE_OAUTH_CLIENT_SECRET: z.string().optional(),
+  GOOGLE_ADS_DEVELOPER_TOKEN: z.string().optional(),
+  // Digits only; dashes and spaces are stripped when read.
+  GOOGLE_ADS_LOGIN_CUSTOMER_ID: z.string().optional(),
+  GOOGLE_ADS_API_VERSION: z.string().optional(),
   WORKSPACE_V2_ENABLED: boolFromEnv.default(false),
   R2_BUCKET: z.string().optional(),
   R2_ENDPOINT: z.string().optional(),
@@ -63,6 +70,8 @@ export type AppConfig = z.infer<typeof envSchema> & {
   hasOpenAI: boolean;
   hasFirecrawl: boolean;
   hasSociaVault: boolean;
+  hasGoogle: boolean;
+  hasGoogleAds: boolean;
   workspaceV2Enabled: boolean;
   adsExecutionMode: AdsExecutionMode;
 };
@@ -90,6 +99,12 @@ function readRawEnv(): Record<string, string | undefined> {
     META_APP_ID: process.env.META_APP_ID,
     META_APP_SECRET: process.env.META_APP_SECRET,
     META_GRAPH_VERSION: process.env.META_GRAPH_VERSION,
+    GOOGLE_OAUTH_CLIENT_ID: process.env.GOOGLE_OAUTH_CLIENT_ID,
+    GOOGLE_OAUTH_CLIENT_SECRET: process.env.GOOGLE_OAUTH_CLIENT_SECRET,
+    GOOGLE_ADS_DEVELOPER_TOKEN: process.env.GOOGLE_ADS_DEVELOPER_TOKEN,
+    GOOGLE_ADS_LOGIN_CUSTOMER_ID:
+      process.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID?.replace(/\D/g, "") || undefined,
+    GOOGLE_ADS_API_VERSION: process.env.GOOGLE_ADS_API_VERSION,
     WORKSPACE_V2_ENABLED: process.env.WORKSPACE_V2_ENABLED,
     R2_BUCKET: process.env.R2_BUCKET,
     R2_ENDPOINT: process.env.R2_ENDPOINT,
@@ -121,6 +136,10 @@ export function getConfig(): AppConfig {
     parsed.DEMO_MODE ||
     (!hasSupabase && process.env.DEMO_MODE !== "false");
 
+  const hasGoogle = Boolean(
+    parsed.GOOGLE_OAUTH_CLIENT_ID && parsed.GOOGLE_OAUTH_CLIENT_SECRET,
+  );
+
   cachedConfig = {
     ...parsed,
     DEMO_MODE: isDemoMode,
@@ -130,6 +149,8 @@ export function getConfig(): AppConfig {
     hasOpenAI: Boolean(parsed.OPENAI_API_KEY),
     hasFirecrawl: Boolean(parsed.FIRECRAWL_API_KEY),
     hasSociaVault: Boolean(parsed.SOCIAVAULT_API_KEY),
+    hasGoogle,
+    hasGoogleAds: hasGoogle && Boolean(parsed.GOOGLE_ADS_DEVELOPER_TOKEN),
     workspaceV2Enabled: parsed.WORKSPACE_V2_ENABLED,
     adsExecutionMode: parsed.ADS_EXECUTION_MODE,
   };
