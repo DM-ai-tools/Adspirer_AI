@@ -33,9 +33,8 @@ describe("total budgets in the strategy brief", () => {
 
   it("routes it to strategy", () => {
     expect(detectRequestIntent(ask)).toBe("strategy");
-    expect(detectRequestIntent("$4k to get $40k")).not.toBe("chat");
-    expect(detectRequestIntent("spend $4k to make $40k")).toBe("strategy");
-    expect(detectRequestIntent("$4k for $40k in sales")).toBe("strategy");
+        expect(detectRequestIntent("spend $4k to make $40k")).toBe("strategy");
+    expect(detectRequestIntent("spend $4k for $40k in sales")).toBe("strategy");
   });
 
   it("reads the other total forms", () => {
@@ -71,6 +70,29 @@ describe("total budgets in the strategy brief", () => {
 
   it("does not turn a roas comparison into a strategy", () => {
     expect(detectRequestIntent("Which campaigns are under 2x ROAS?")).not.toBe("strategy");
+  });
+
+  it("keeps past-tense spend questions as reports", () => {
+    for (const q of ["which campaigns spent $500 to get $2000 in sales", "show campaigns that spent $500 to make $2000"]) {
+      expect(detectRequestIntent(q)).not.toBe("strategy");
+    }
+    for (const q of [
+      "How do we spend $4k and get $40k back on bar stools using Google Ads and Meta together?",
+      "spend $4k to make $40k",
+      "$4k to get $40k back",
+    ]) {
+      expect(detectRequestIntent(q)).toBe("strategy");
+    }
+  });
+
+  it("takes a period only right after the total or its clause", () => {
+    const r = parseStrategyBrief("$4k to get $40k back over 2 weeks", defaults());
+    expect(r.brief).toMatchObject({ periodDays: 14, dailyBudgetCents: 28571 });
+    expect(r.usedDefaults).not.toContain("period");
+    const last = parseStrategyBrief("spend $4k to get $40k back, best category in the last 90 days", defaults());
+    expect(last.brief).toMatchObject({ periodDays: 30 });
+    expect(last.usedDefaults).toContain("period");
+    expect(parseStrategyBrief("$4k over 30 days to get $40k", defaults()).brief).toMatchObject({ periodDays: 30 });
   });
 
   it("keeps the suppression rules for total-budget wording", () => {

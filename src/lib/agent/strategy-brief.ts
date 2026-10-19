@@ -23,10 +23,10 @@ const MULTIPLE_RE = new RegExp(String.raw`(?<![\w.])${NUM}\s*[x×](?![a-z0-9])`,
 const ROAS_OF_RE = new RegExp(String.raw`\broas\s*(?:(?:of|at|target)\b|[=:])\s*${NUM}(\s*%)?`, "gi");
 /** The goals schema's cap; anything higher is a typo or a budget, not a target. */
 const MAX_ROAS = 100;
-const PERIOD = String.raw`(?:over|across|within|in|for)\s+(?:the\s+(?:next|last)\s+)?(\d+)\s*(day|week|month)s?\b`;
+const PERIOD = String.raw`(?:over|across|within|for)\s+(?:the\s+next\s+)?(\d+)\s*(day|week|month)s?\b`;
 /** "over 2 weeks", "this month": the period a total budget covers. */
 const PERIOD_RE = new RegExp(String.raw`\b(?:${PERIOD}|(this\s+month\b))`, "i");
-const PERIOD_FRAG = String.raw`(?:(?:over|across|within|in)\s+(?:the\s+(?:next|last)\s+)?\d+\s*(?:day|week|month)s?\s+|this\s+month\s+)?`;
+const PERIOD_FRAG = String.raw`(?:(?:over|across|within|for)\s+(?:the\s+next\s+)?\d+\s*(?:day|week|month)s?\s+|this\s+month\s+)?`;
 /**
  * "$4k to get $40k back", "spend $4k and get $40k back", "spend $4k to make $40k",
  * "$4k over 2 weeks to get $40k": a total A and the money B it should bring in.
@@ -76,22 +76,26 @@ function parseRoasValues(text: string): number[] {
   return found.sort((a, b) => a.at - b.at).map((f) => f.value);
 }
 
-/** The total budget in cents, from a money-back form or "$A over N days / this month". */
-function parseTotalCents(text: string): number | null {
+/** A period right after a total or its "to get $B (back)" clause; "in the last 90 days" never counts. */
+const PERIOD_AFTER_RE = new RegExp(String.raw`^\s*(?:back\b)?\s*(?:${PERIOD}|this\s+month\b)`, "i");
+
+/** "over 2 weeks" is 14, "over 3 months" is 90, "this month" is 30. */
+function periodDaysFrom(m: RegExpExecArray | null): number | null {
+  if (!m) return null;
+  if (m[3]) return DEFAULT_PERIOD_DAYS;
+  const days = Number(m[1]) * (/^day/i.test(m[2]) ? 1 : /^week/i.test(m[2]) ? 7 : DEFAULT_PERIOD_DAYS);
+  return days > 0 ? days : null;
+}
+
+/** The total budget in cents and its stated period, from a money-back form or "$A over N days / this month". */
+function parseTotal(text: string): { cents: number; periodDays: number | null } | null {
   const m = A_TO_B_RE.exec(text) ?? A_FOR_B_RE.exec(text) ?? TOTAL_PERIOD_RE.exec(text);
   if (!m) return null;
   const cents = Math.round(toNumber(m[1], m[2]) * 100);
-  return cents > 0 ? cents : null;
-}
-
-/** "over 2 weeks" is 14, "over 3 months" is 90, "this month" is 30. */
-function parsePeriodDays(text: string): number | null {
-  const m = PERIOD_RE.exec(text);
-  if (!m) return null;
-  if (m[3]) return DEFAULT_PERIOD_DAYS;
-  const n = Number(m[1]);
-  const days = n * (/^day/i.test(m[2]) ? 1 : /^week/i.test(m[2]) ? 7 : DEFAULT_PERIOD_DAYS);
-  return days > 0 ? days : null;
+  if (cents <= 0) return null;
+  const end = m.index + m[0].length;
+  const periodDays = periodDaysFrom(PERIOD_RE.exec(m[0])) ?? periodDaysFrom(PERIOD_AFTER_RE.exec(text.slice(end)));
+  return { cents, periodDays };
 }
 
 function impliedRoas(text: string): number | null {
@@ -114,12 +118,13 @@ type StatedBrief = {
 };
 
 function statedBrief(text: string): StatedBrief {
+  const total = parseTotal(text);
   // An explicit "Nx" wins over the "$A to get $B back" form.
   const values = parseRoasValues(text);
   return {
     dailyBudgetCents: parseBudgetCents(text),
-    totalBudgetCents: parseTotalCents(text),
-    periodDays: parsePeriodDays(text),
+    totalBudgetCents: total?.cents ?? null,
+    periodDays: total?.periodDays ?? null,
     targetRoas: values.length ? values[0] : impliedRoas(text),
     stretch: values.slice(1),
   };
