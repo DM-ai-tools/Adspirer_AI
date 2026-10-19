@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { ClientService } from "@/types/database";
 import { apiFetch } from "@/lib/api-client";
-import { categoryPatchFromEdit, type CategoryFormField } from "@/lib/clients/category-form";
+import { categoryPatchFromEdit, importOutcome, type CategoryFormField } from "@/lib/clients/category-form";
 import { CategoryScan } from "@/components/clients/category-scan";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -36,7 +36,8 @@ function EditCell({
   service: ClientService;
   field: CategoryFormField;
   placeholder?: string;
-  onSave: (patch: Record<string, unknown>) => Promise<void>;
+  // Resolves to null on success, or the API error message.
+  onSave: (patch: Record<string, unknown>) => Promise<string | null>;
 }) {
   const shown = display(service, field);
   // null = not being edited, so the cell follows the saved value.
@@ -56,8 +57,9 @@ function EditCell({
       return;
     }
     setError(null);
-    await onSave(result.patch);
-    setDraft(null);
+    const failure = await onSave(result.patch);
+    if (failure) setError(failure);
+    else setDraft(null);
   }
 
   return (
@@ -114,16 +116,17 @@ export function CategoriesPanel({
     void load();
   }, [load]);
 
-  async function patch(service: ClientService, body: Record<string, unknown>) {
+  async function patch(service: ClientService, body: Record<string, unknown>): Promise<string | null> {
     try {
       const data = await apiFetch<{ service: ClientService }>(`${base}/${service.id}`, {
         method: "PATCH",
         body: JSON.stringify(body),
       });
       setRows((prev) => prev?.map((r) => (r.id === service.id ? data.service : r)) ?? null);
+      return null;
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Could not save");
-      void load();
+      // The cell keeps the typed value and shows this inline; no reload over it.
+      return err instanceof Error ? err.message : "Could not save";
     }
   }
 
@@ -145,11 +148,10 @@ export function CategoriesPanel({
       form.set("mode", mode);
       // Not apiFetch: it forces a JSON content type, which would break the multipart boundary.
       const res = await fetch(`${base}/import`, { method: "POST", body: form, credentials: "same-origin" });
-      const payload = await res.json();
-      if (!payload?.ok) throw new Error(payload?.error?.message ?? "Import failed");
-      const { created, updated, errors } = payload.data as { created: number; updated: number; errors: unknown[] };
-      toast[errors.length ? "warning" : "success"](
-        `Import done: ${created} created, ${updated} updated, ${errors.length} errors`,
+      const outcome = importOutcome(res.ok, await res.json().catch(() => null));
+      if (!outcome.ok) throw new Error(outcome.error);
+      toast[outcome.errors ? "warning" : "success"](
+        `Import done: ${outcome.created} created, ${outcome.updated} updated, ${outcome.errors} errors`,
       );
       await load();
     } catch (err) {

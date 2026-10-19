@@ -50,3 +50,25 @@ export function categoryPatchFromEdit(field: CategoryFormField, raw: string): Ed
     }
   }
 }
+
+export type ImportOutcome =
+  | { ok: true; created: number; updated: number; errors: number }
+  | { ok: false; error: string };
+
+/** Reads the import route's reply; a non-JSON or non-ok body becomes an error message, never a throw. */
+export function importOutcome(httpOk: boolean, payload: unknown): ImportOutcome {
+  const body = payload as {
+    ok?: boolean;
+    data?: { created?: number; updated?: number; errors?: unknown[] };
+    error?: { message?: string };
+  } | null;
+  if (!httpOk || !body || body.ok !== true || !body.data) {
+    return { ok: false, error: body?.error?.message ?? "Import failed" };
+  }
+  return {
+    ok: true,
+    created: body.data.created ?? 0,
+    updated: body.data.updated ?? 0,
+    errors: body.data.errors?.length ?? 0,
+  };
+}

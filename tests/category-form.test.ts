@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { categoryPatchFromEdit } from "@/lib/clients/category-form";
+import { categoryPatchFromEdit, importOutcome } from "@/lib/clients/category-form";
 
 describe("categoryPatchFromEdit", () => {
   it("parses a margin percent", () => {
@@ -36,5 +36,21 @@ describe("categoryPatchFromEdit", () => {
     expect(categoryPatchFromEdit("priority", "-1").ok).toBe(false);
     expect(categoryPatchFromEdit("priority", "1.5").ok).toBe(false);
     expect(categoryPatchFromEdit("priority", "").ok).toBe(false);
+  });
+});
+
+describe("importOutcome", () => {
+  it("summarises a good reply", () => {
+    expect(importOutcome(true, { ok: true, data: { created: 2, updated: 1, errors: [{}] } })).toEqual({
+      ok: true,
+      created: 2,
+      updated: 1,
+      errors: 1,
+    });
+  });
+  it("turns an HTML or error body into a message", () => {
+    expect(importOutcome(false, null)).toEqual({ ok: false, error: "Import failed" });
+    expect(importOutcome(false, { ok: false, error: { message: "Too big" } })).toEqual({ ok: false, error: "Too big" });
+    expect(importOutcome(true, { ok: false })).toEqual({ ok: false, error: "Import failed" });
   });
 });
