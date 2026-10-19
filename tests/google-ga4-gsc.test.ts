@@ -101,10 +101,10 @@ afterEach(() => {
 
 describe("ga4ChannelOf", () => {
   it("maps each listed channel group", () => {
-    expect(ga4ChannelOf("Paid Social")).toBe("paid_social");
-    expect(ga4ChannelOf("Paid Search")).toBe("paid_search");
-    expect(ga4ChannelOf("Paid Shopping")).toBe("paid_search");
-    expect(ga4ChannelOf("Cross-network")).toBe("paid_search");
+    expect(ga4ChannelOf("Paid Social", "facebook")).toBe("paid_social");
+    expect(ga4ChannelOf("Paid Search", "google")).toBe("paid_search");
+    expect(ga4ChannelOf("Paid Shopping", "google")).toBe("paid_search");
+    expect(ga4ChannelOf("Cross-network", "google")).toBe("paid_search");
     expect(ga4ChannelOf("Paid Other", "google")).toBe("paid_search");
     expect(ga4ChannelOf("Paid Other", "Google Ads")).toBe("paid_search");
     expect(ga4ChannelOf("Paid Other", "bing")).toBe("other");
@@ -113,6 +113,30 @@ describe("ga4ChannelOf", () => {
     expect(ga4ChannelOf("Direct")).toBe("other");
     expect(ga4ChannelOf("Organic Social")).toBe("other");
     expect(ga4ChannelOf("Unassigned")).toBe("other");
+  });
+
+  it("counts paid social only for Facebook, Instagram and Meta sources", () => {
+    for (const source of ["facebook", "Instagram", "fb", "IG", "meta", "m.facebook.com", "l.facebook.com", "facebook.com"]) {
+      expect(ga4ChannelOf("Paid Social", source), source).toBe("paid_social");
+    }
+    expect(ga4ChannelOf("Paid Other", "instagram")).toBe("paid_social");
+    for (const source of ["tiktok", "pinterest", "linkedin", "reddit", "snapchat", "digital-partner"]) {
+      expect(ga4ChannelOf("Paid Social", source), source).toBe("other");
+    }
+    expect(ga4ChannelOf("Paid Social")).toBe("other");
+    // Organic Facebook traffic is not paid social.
+    expect(ga4ChannelOf("Organic Social", "facebook")).toBe("other");
+  });
+
+  it("counts paid search only when the source is Google", () => {
+    for (const group of ["Paid Search", "Paid Shopping", "Cross-network", "Paid Other"]) {
+      expect(ga4ChannelOf(group, "google"), group).toBe("paid_search");
+      expect(ga4ChannelOf(group, "Google Ads"), group).toBe("paid_search");
+      expect(ga4ChannelOf(group, "bing"), group).toBe("other");
+      expect(ga4ChannelOf(group), group).toBe("other");
+    }
+    expect(ga4ChannelOf("Paid Search", "duckduckgo")).toBe("other");
+    expect(ga4ChannelOf("Organic Search", "google")).toBe("other");
   });
 });
 

@@ -1,5 +1,7 @@
 import type { CategoryAttribution, CategoryPerformance } from "./category-attribution";
 import {
+  ga4MatchedPct,
+  ga4RevenueBasis,
   observedCategoryFigures,
   type CategoryChannels,
   type ChannelPerformance,
@@ -171,10 +173,15 @@ function channelTable(
     const perf = perfById.get(r.categoryId);
     const ch = chById.get(r.categoryId) ?? metaOnlyRow(r.categoryId, perf);
     const f = observedCategoryFigures(ch, perf?.roas ?? null, {
-      ga4Available: channels.ga4Available,
+      ga4Available: ga4RevenueBasis(channels),
       googleLoaded: !missing,
     });
-    return { ...r, ch, f };
+    // GA4's paid revenue is shown even when GA4 isn't the basis (it matched too little).
+    const paid = observedCategoryFigures(ch, perf?.roas ?? null, {
+      ga4Available: channels.ga4Available,
+      googleLoaded: !missing,
+    }).ga4RevenueCents;
+    return { ...r, ch, f, paid };
   });
   const revenueOf = (f: ObservedFigures) => f.ga4RevenueCents ?? f.platformRevenueCents ?? -1;
   const ordered = ranked ? [...all].sort((a, b) => revenueOf(b.f) - revenueOf(a.f)) : all;
@@ -189,18 +196,19 @@ function channelTable(
     const p = perfById.get(r.categoryId);
     const match = p && p.adIds.length > 0 ? p.matchedBy : "none";
     const google = missing ? "not loaded" : money(r.ch.google.spendCents);
-    const ga4 = r.f.ga4RevenueCents === null ? "—" : money(r.f.ga4RevenueCents);
+    const ga4 = r.paid === null ? "—" : money(r.paid);
+    const ga4All = r.ch.ga4TotalRevenueCents === null ? "—" : money(r.ch.ga4TotalRevenueCents);
     const platform = r.f.platformRevenueCents === null ? "unknown" : money(r.f.platformRevenueCents);
     const value = r.roas !== undefined ? r.roas : r.f.roas;
-    return `| ${r.name} | ${money(r.ch.meta.spendCents)} | ${google} | ${ga4} | ${platform} | ${roas(value)} | ${basis[r.f.basis]} |${withTier ? ` ${r.tier} |` : ""} ${match} |`;
+    return `| ${r.name} | ${money(r.ch.meta.spendCents)} | ${google} | ${ga4} | ${ga4All} | ${platform} | ${roas(value)} | ${basis[r.f.basis]} |${withTier ? ` ${r.tier} |` : ""} ${match} |`;
   });
   const hidden = rows.length - shown.length;
   const headings = missing
-    ? "GA4 paid-social revenue | Meta-reported revenue | ROAS (Meta only)"
-    : "GA4 revenue | Platform revenue | Combined ROAS";
+    ? "GA4 paid-social revenue | GA4 revenue (all channels) | Meta-reported revenue | ROAS (Meta only)"
+    : "GA4 paid revenue | GA4 revenue (all channels) | Platform revenue | Combined ROAS";
   return [
     `| ${capitalize(word)} | Meta spend (${days}d) | Google spend (${days}d) | ${headings} | Basis |${withTier ? " Tier |" : ""} Match |`,
-    `| --- | --- | --- | --- | --- | --- | --- |${withTier ? " --- |" : ""} --- |`,
+    `| --- | --- | --- | --- | --- | --- | --- | --- |${withTier ? " --- |" : ""} --- |`,
     ...body,
     ...(hidden > 0
       ? [`…and ${hidden} more ${plural(word)} (top ${TRUNCATED_ROWS} by ${ranked ? "revenue" : "spend"} shown).`]
@@ -208,10 +216,24 @@ function channelTable(
   ];
 }
 
-/** Under the channel table: how GA4 revenue was matched, and Google spend no category took. */
+/**
+ * Under the channel table: how GA4 revenue was matched, GA4 revenue no category took (and
+ * whether that left too little to use), and Google spend no category took.
+ */
 function channelLevel1Lines(channels: ChannelPerformance, word: CategoryWord, money: Money): string[] {
+  const ga4: string[] = [];
+  const matchedPct = ga4MatchedPct(channels);
+  if (matchedPct !== null && channels.ga4UnmatchedRevenueCents > 0) {
+    const total = channels.ga4UnmatchedRevenueCents + channels.byCategory.reduce((s, c) => s + (c.ga4TotalRevenueCents ?? 0), 0);
+    const pct = Math.round((channels.ga4UnmatchedRevenueCents / total) * 1000) / 10;
+    ga4.push(`- GA4 revenue not matched to any ${word}: ${money(channels.ga4UnmatchedRevenueCents)} (${pct}% of GA4 revenue)`);
+  }
+  if (matchedPct !== null && !ga4RevenueBasis(channels)) {
+    ga4.push(`- GA4 matched only ${matchedPct}% of revenue to ${plural(word)}, so the figures use platform-reported revenue.`);
+  }
   return [
     `- GA4 method: ${GA4_METHOD[channels.ga4Method]}`,
+    ...ga4,
     channels.ads
       ? `- Google Ads unmatched spend: ${money(channels.googleUnmatchedSpendCents)} (not attributed to any ${word})`
       : channels.googleAdsMapped
@@ -266,10 +288,10 @@ export function renderCategorySpendEvidence(
         !combined
           ? "Meta-reported revenue"
           : googleMissing(combined)
-            ? combined.ga4Available
+            ? ga4RevenueBasis(combined)
               ? "GA4 paid-social revenue"
               : "Meta-reported revenue"
-            : combined.ga4Available
+            : ga4RevenueBasis(combined)
               ? "GA4 revenue"
               : "combined platform revenue"
       }`,
@@ -464,16 +486,17 @@ export function renderStrategyEvidence(
     else if (!gap) {
       level2.push(
         channels.ga4Available
-          ? `- Not available: GA4 has no paid-social revenue on these ${words}' landing pages.`
+          ? `- Not available: GA4 has no revenue from Facebook/Instagram paid sessions on these ${words}' landing pages.`
           : "- Not available: GA4 revenue isn't available for this client.",
       );
     } else {
       const { metaReportedCents: meta, ga4PaidSocialCents: ga4 } = gap;
       level2.push(
-        `- Meta-reported revenue: ${money(meta)} · GA4 paid-social revenue on the same ${words} (matched by landing page, an estimate): ${money(ga4)}`,
+        `- Meta-reported revenue: ${money(meta)} · GA4 revenue from Facebook/Instagram paid sessions on the same ${words} (matched by landing page, an estimate): ${money(ga4)}`,
       );
-      if (ga4 === 0) level2.push(`- GA4 credits no paid-social revenue to these ${words}, so the gap can't be given as a %.`);
-      else {
+      if (ga4 === 0) {
+        level2.push(`- GA4 credits no revenue from Facebook/Instagram paid sessions to these ${words}, so the gap can't be given as a %.`);
+      } else {
         const pct = Math.round(((meta - ga4) / ga4) * 1000) / 10;
         level2.push(pct === 0 ? "- Meta and GA4 agree." : `- Meta reports ${Math.abs(pct)}% ${pct > 0 ? "more" : "less"} than GA4.`);
       }

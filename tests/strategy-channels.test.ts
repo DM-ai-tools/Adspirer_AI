@@ -303,8 +303,8 @@ describe("buildChannelPerformance — GA4", () => {
     expect(b.meta).toEqual({ spendCents: 20_000, platformRevenueCents: 50_000, ga4RevenueCents: 60_000, roas: 3, basis: "ga4" });
     expect(b.google.ga4RevenueCents).toBe(20_000);
     expect(b.google.roas).toBeNull(); // no Google spend
-    // Sofas: GA4 is there, but no byChannel data for it.
-    expect(byId(perf, "sofas").ga4TotalRevenueCents).toBe(0);
+    // Sofas: GA4 is there, but no row matched it, so it has no GA4 figure (never a real $0).
+    expect(byId(perf, "sofas").ga4TotalRevenueCents).toBeNull();
     expect(byId(perf, "sofas").meta.ga4RevenueCents).toBeNull();
     expect(byId(perf, "sofas").google.ga4RevenueCents).toBeNull();
   });
@@ -332,7 +332,9 @@ describe("buildChannelPerformance — GA4", () => {
     expect(s.meta.ga4RevenueCents).toBe(30_000);
     expect(s.meta.roas).toBe(3);
     expect(s.google.ga4RevenueCents).toBe(30_000);
-    expect(byId(perf, "bar").ga4TotalRevenueCents).toBe(0);
+    expect(byId(perf, "bar").ga4TotalRevenueCents).toBeNull();
+    // "/about" matched no category.
+    expect(perf.ga4UnmatchedRevenueCents).toBe(5_000);
   });
 
   it("method none means GA4 isn't available and ROAS uses platform figures", () => {
@@ -396,6 +398,73 @@ describe("buildChannelPerformance — GA4", () => {
     const perf = build({ ...snapshot(), mapped: { ga4: false, ads: true, gsc: false }, warnings: ["Google Ads: quota exceeded"] });
     expect(perf.googleAdsMapped).toBe(true);
     expect(perf.googleAdsLoaded).toBe(false);
+  });
+});
+
+describe("buildChannelPerformance — GA4 revenue no category matched", () => {
+  it("gives a category with no matched GA4 row null, not $0, and counts the unmatched revenue", () => {
+    const perf = build(
+      snapshot({
+        ga4: ga4({
+          rows: [
+            { key: "Bar Stools", revenueCents: 100_000, purchases: 10 },
+            { key: "Lamps", revenueCents: 50_000, purchases: 4 },
+          ],
+          byChannel: [{ landingPage: "/collections/bar-stools", channel: "paid_social", revenueCents: 40_000 }],
+        }),
+      }),
+      meta({ bar: [20_000, 50_000], sofas: [10_000, 30_000] }),
+    );
+    expect(perf.ga4Method).toBe("item");
+    expect(byId(perf, "bar").ga4TotalRevenueCents).toBe(100_000);
+    const s = byId(perf, "sofas");
+    expect(s.ga4TotalRevenueCents).toBeNull();
+    expect(s.meta.ga4RevenueCents).toBeNull();
+    expect(s.google.ga4RevenueCents).toBeNull();
+    expect(s.meta.basis).toBe("platform");
+    expect(perf.ga4UnmatchedRevenueCents).toBe(50_000);
+  });
+
+  it("matches by landing page instead when no item category matches any category", () => {
+    const perf = build(
+      snapshot({
+        ga4: ga4({
+          rows: [
+            { key: "Furniture", revenueCents: 90_000, purchases: 9 },
+            { key: "Home", revenueCents: 10_000, purchases: 1 },
+          ],
+          byChannel: [
+            { landingPage: "/collections/bar-stools", channel: "paid_social", revenueCents: 30_000 },
+            { landingPage: "/collections/bar-stools", channel: "other", revenueCents: 10_000 },
+            { landingPage: "/collections/sofas/velvet", channel: "paid_search", revenueCents: 20_000 },
+            { landingPage: "/about", channel: "other", revenueCents: 5_000 },
+          ],
+        }),
+      }),
+    );
+    expect(perf.ga4Available).toBe(true);
+    expect(perf.ga4Method).toBe("landing_page");
+    expect(byId(perf, "bar").ga4TotalRevenueCents).toBe(40_000);
+    expect(byId(perf, "sofas").ga4TotalRevenueCents).toBe(20_000);
+    expect(perf.ga4UnmatchedRevenueCents).toBe(5_000);
+    expect(perf.warnings).toContain(
+      "GA4 item categories didn't match any category, so GA4 revenue is matched by landing page instead (an estimate).",
+    );
+  });
+
+  it("treats GA4 as unavailable, with a note, when no item matches and there is no landing-page data", () => {
+    const perf = build(
+      snapshot({ ga4: ga4({ rows: [{ key: "Furniture", revenueCents: 90_000, purchases: 9 }] }) }),
+      meta({ bar: [20_000, 50_000] }),
+    );
+    expect(perf.ga4Available).toBe(false);
+    expect(perf.ga4Method).toBe("none");
+    expect(byId(perf, "bar").ga4TotalRevenueCents).toBeNull();
+    expect(byId(perf, "bar").meta.basis).toBe("platform");
+    expect(perf.ga4UnmatchedRevenueCents).toBe(90_000);
+    expect(perf.warnings).toContain(
+      "GA4 item categories didn't match any category and there is no landing-page data, so GA4 revenue isn't used.",
+    );
   });
 });
 

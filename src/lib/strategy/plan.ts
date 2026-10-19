@@ -3,7 +3,14 @@ import type { MetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
 import type { ResolvedGoals } from "@/lib/clients/goals";
 import type { StrategyCategory } from "./categories";
 import { attributeSpendToCategories, type CategoryPerformance } from "./category-attribution";
-import { observedCategoryFigures, type CategoryChannels, type ChannelFigures, type ChannelPerformance } from "./channels";
+import {
+  ga4MatchedPct,
+  ga4RevenueBasis,
+  observedCategoryFigures,
+  type CategoryChannels,
+  type ChannelFigures,
+  type ChannelPerformance,
+} from "./channels";
 import {
   detectGoogleCapabilities,
   recommendGoogleCampaignTypes,
@@ -188,7 +195,9 @@ export function buildStrategyPlan(input: {
 
   // A currency mismatch rules out every combined figure, so it is checked before any is read.
   const channels = input.channels && !input.channels.currencyMismatch ? input.channels : null;
-  const revenueBasis: StrategyPlan["revenueBasis"] = channels?.ga4Available ? "ga4" : "platform";
+  // GA4 that matched under half its revenue to categories would judge most of the account on nothing.
+  const revenueBasis: StrategyPlan["revenueBasis"] = channels && ga4RevenueBasis(channels) ? "ga4" : "platform";
+  const ga4LowMatchPct = channels?.ga4Available && revenueBasis === "platform" ? ga4MatchedPct(channels) : null;
   // Google Ads mapped but not loaded this time: Google is left out rather than read as no spend.
   const googleMissing = !!channels && channels.googleAdsMapped && !channels.googleAdsLoaded;
   const googleMapped = (channels?.googleAdsMapped ?? false) && !googleMissing;
@@ -220,7 +229,7 @@ export function buildStrategyPlan(input: {
   );
 
   // With channels, the account ROAS is over all Meta + Google spend, matched to a category or not.
-  // GA4 revenue only exists per matched category; platform revenue is each account's whole total.
+  // GA4 paid revenue only exists per matched category; platform revenue is each account's whole total.
   // When no category has a ROAS it stays the Meta account's own.
   const metaAccountRoas = snapshot.totals?.roas ?? null;
   let accountRoas = metaAccountRoas;
@@ -431,7 +440,7 @@ export function buildStrategyPlan(input: {
         ? "platform-reported revenue"
         : googleMissing
           ? "GA4 paid-social revenue on matched categories"
-          : "GA4 revenue on matched categories";
+          : "GA4 paid social + paid search revenue on matched categories";
     const source = !channels
       ? `This account, last ${days} days`
       : combinedAccountRoas
@@ -516,13 +525,22 @@ export function buildStrategyPlan(input: {
     }
   } else if (channels && revenueBasis === "ga4") {
     const matchedBy = channels.ga4Method === "item" ? "item category" : "landing page";
-    assumptions.push(`Revenue is GA4's for each ${word} (matched by ${matchedBy}), against its Meta + Google spend.`);
+    assumptions.push(
+      `Revenue is GA4's revenue from paid social + paid search sessions for each ${word} (matched by ${matchedBy}), against its Meta + Google spend; GA4 revenue from all channels is shown for reference only.`,
+    );
     const fallbacks = planned.filter((c) => observedById.get(c.id)?.ga4Fallback).length;
     if (fallbacks > 0) {
       assumptions.push(
-        `${fallbacks} ${fallbacks === 1 ? `${word} has` : `${words} have`} no GA4 revenue figure, so ${fallbacks === 1 ? "it uses" : "they use"} the revenue Meta and Google Ads report.`,
+        `${fallbacks} ${fallbacks === 1 ? `${word} has` : `${words} have`} no GA4 paid revenue figure, so ${fallbacks === 1 ? "it uses" : "they use"} the revenue Meta and Google Ads report.`,
       );
     }
+  } else if (channels && ga4LowMatchPct !== null) {
+    assumptions.push(
+      `GA4 matched only ${ga4LowMatchPct}% of revenue to ${words}, so the plan uses platform-reported revenue.`,
+      googleMissing
+        ? `Revenue is what Meta reports for each ${word}; spend is Meta's.`
+        : `Revenue is what Meta and Google Ads report for each ${word}; spend is Meta + Google.`,
+    );
   } else if (channels && googleMissing) {
     assumptions.push(`Revenue is what Meta reports for each ${word}, since GA4 isn't available; spend is Meta's.`);
   } else if (channels) {

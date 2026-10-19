@@ -75,23 +75,26 @@ export async function listGa4Properties(): Promise<Ga4Property[]> {
   );
 }
 
+/** Paid default channel groups; any other group (organic, direct, email…) is "other". */
+const PAID_GROUPS = new Set(["Paid Social", "Paid Search", "Paid Shopping", "Cross-network", "Paid Other"]);
+const META_SOURCES = ["facebook", "instagram", "meta"];
+/** Too short to match inside other words ("digital"), so they must be a whole part of the source. */
+const META_SHORT_SOURCES = new Set(["fb", "ig"]);
+
 /**
- * GA4 default channel group to the plan's channel. "Paid Other" counts as
- * search only when the session source is Google.
+ * A paid GA4 session to the plan's channel, by its source: paid social is
+ * Facebook / Instagram / Meta traffic only, paid search is Google traffic
+ * only. Other paid sources (TikTok, Bing, Pinterest, LinkedIn…) are "other",
+ * so neither Meta nor Google is credited with revenue it didn't drive.
  */
 export function ga4ChannelOf(channelGroup: string, source?: string): Ga4Channel {
-  switch (channelGroup.trim()) {
-    case "Paid Social":
-      return "paid_social";
-    case "Paid Search":
-    case "Paid Shopping":
-    case "Cross-network":
-      return "paid_search";
-    case "Paid Other":
-      return source?.toLowerCase().includes("google") ? "paid_search" : "other";
-    default:
-      return "other";
+  if (!PAID_GROUPS.has(channelGroup.trim())) return "other";
+  const s = (source ?? "").trim().toLowerCase();
+  if (!s) return "other";
+  if (META_SOURCES.some((m) => s.includes(m)) || s.split(/[^a-z0-9]+/).some((part) => META_SHORT_SOURCES.has(part))) {
+    return "paid_social";
   }
+  return s.includes("google") ? "paid_search" : "other";
 }
 
 type ReportResponse = {

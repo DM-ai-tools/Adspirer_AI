@@ -125,6 +125,7 @@ function channelPerf(byCategory: CategoryChannels[], over: Partial<ChannelPerfor
     googleAdsLoaded: true,
     currencyMismatch: null,
     googleUnmatchedSpendCents: 0,
+    ga4UnmatchedRevenueCents: 0,
     metaVsGa4: null,
     ads: adsPerf(),
     warnings: [],
@@ -200,8 +201,9 @@ describe("buildStrategyPlan with ClickTrends channels", () => {
     expect(p.channelNote).toBeNull();
 
     const bar = byId(p).svc_ct_bar_stools;
-    // Meta 210,000 + Google 116,667 spend against GA4's 700,000 for the category.
-    expect(bar).toMatchObject({ tier: "promising", observedSpendCents: 326_667, observedRoas: 2.14 });
+    // Meta 210,000 + Google 116,667 spend against GA4's paid social 403,030 + paid search 233,333
+    // (of the category's 700,000 on all channels).
+    expect(bar).toMatchObject({ tier: "promising", observedSpendCents: 326_667, observedRoas: 1.95 });
     const split = bar.channelSplit!;
     expect(split.basis).toBe("ga4");
     expect(split.metaCents).toBeGreaterThan(0);
@@ -233,7 +235,7 @@ describe("buildStrategyPlan with ClickTrends channels", () => {
       scopeCategoryIds: ["svc_ct_bar_stools"],
     });
     expect(p.allocations).toHaveLength(1);
-    // GA4 ROAS 2.14 is under the 2.5 break-even of a 40% margin.
+    // GA4 paid ROAS 1.95 is under the 2.5 break-even of a 40% margin.
     expect(p.allocations[0]).toMatchObject({ categoryId: "svc_ct_bar_stools", tier: "hold", dailyBudgetCents: 13_300 });
     const split = p.allocations[0].channelSplit!;
     expect(split.metaCents + split.googleCents).toBe(13_300);
@@ -266,7 +268,7 @@ describe("buildStrategyPlan revenue basis and tiers", () => {
     expect(p.benchmark.references.find((r) => r.metric === "Account ROAS")).toEqual({
       metric: "Account ROAS",
       value: "3×",
-      source: "Meta + Google spend, GA4 revenue on matched categories, last 30 days",
+      source: "Meta + Google spend, GA4 paid social + paid search revenue on matched categories, last 30 days",
     });
   });
 
@@ -287,6 +289,62 @@ describe("buildStrategyPlan revenue basis and tiers", () => {
     // 10,000 × 2 × 0.7, not 10,000 × 20 × 0.85.
     expect(p.allocations[0].channelSplit).toMatchObject({ metaCents: 10_000, metaProjectedCents: 14_000, googleProjectedCents: 0 });
     expect(p.allocations[0].projectedDailyRevenueCents).toBe(14_000);
+  });
+});
+
+describe("buildStrategyPlan GA4 basis: paid revenue and coverage", () => {
+  const snapshot = snap([ad("Shoes", 20_000, 5)], perf(20_000, 5));
+
+  it("judges a category on its GA4 paid social + paid search revenue, not all-channel revenue", () => {
+    const channels = channelPerf(
+      [
+        row("shoes", {
+          meta: { spend: 20_000, revenue: 100_000, ga4: 30_000 },
+          google: { spend: 10_000, revenue: 20_000, ga4: 15_000 },
+          ga4Total: 200_000,
+        }),
+      ],
+      { ga4Available: true, ga4Method: "item" },
+    );
+    const p = plan({ snapshot, categories: [cat("Shoes")], channels });
+    expect(p.revenueBasis).toBe("ga4");
+    // (30,000 + 15,000) ÷ 30,000, not 200,000 ÷ 30,000.
+    expect(p.allocations[0]).toMatchObject({ observedRoas: 1.5, observedSpendCents: 30_000 });
+    expect(p.benchmark.references.find((r) => r.metric === "Account ROAS")?.value).toBe("1.5×");
+    expect(
+      p.assumptions.some(
+        (a) => a.includes("GA4's revenue from paid social + paid search sessions") && a.includes("all channels is shown for reference"),
+      ),
+    ).toBe(true);
+  });
+
+  it("falls back to platform revenue when GA4 has neither paid share for the category", () => {
+    const channels = channelPerf(
+      [row("shoes", { meta: { spend: 20_000, revenue: 100_000 }, ga4Total: 200_000 })],
+      { ga4Available: true, ga4Method: "item" },
+    );
+    const p = plan({ snapshot, categories: [cat("Shoes")], channels });
+    expect(p.allocations[0].observedRoas).toBe(5);
+    expect(p.assumptions.some((a) => /^1 category has no GA4/.test(a))).toBe(true);
+  });
+
+  it("uses platform revenue when GA4 matched under half its revenue to categories", () => {
+    const channels = channelPerf(
+      [row("shoes", { meta: { spend: 20_000, revenue: 100_000, ga4: 30_000 }, ga4Total: 60_000 })],
+      { ga4Available: true, ga4Method: "item", ga4UnmatchedRevenueCents: 90_000 },
+    );
+    const p = plan({ snapshot, categories: [cat("Shoes")], channels });
+    expect(p.revenueBasis).toBe("platform");
+    expect(p.allocations[0].observedRoas).toBe(5);
+    expect(p.assumptions).toContain(
+      "GA4 matched only 40% of revenue to categories, so the plan uses platform-reported revenue.",
+    );
+    // At exactly half, GA4 is still used.
+    const half = channelPerf(
+      [row("shoes", { meta: { spend: 20_000, revenue: 100_000, ga4: 30_000 }, ga4Total: 60_000 })],
+      { ga4Available: true, ga4Method: "item", ga4UnmatchedRevenueCents: 60_000 },
+    );
+    expect(plan({ snapshot, categories: [cat("Shoes")], channels: half }).revenueBasis).toBe("ga4");
   });
 });
 
@@ -320,17 +378,23 @@ describe("buildStrategyPlan combined account ROAS", () => {
     expect(p.benchmark.realityCheck.referenceRoas).toBe(3.33);
   });
 
-  it("on GA4 revenue: matched categories' GA4 revenue over all spend", () => {
+  it("on GA4 revenue: matched categories' GA4 paid revenue over all spend", () => {
     const channels = channelPerf(
-      [row("shoes", { meta: { spend: 20_000, revenue: 60_000 }, google: { spend: 10_000, revenue: 50_000 }, ga4Total: 90_000 })],
+      [
+        row("shoes", {
+          meta: { spend: 20_000, revenue: 60_000, ga4: 50_000 },
+          google: { spend: 10_000, revenue: 50_000, ga4: 30_000 },
+          ga4Total: 120_000,
+        }),
+      ],
       { googleUnmatchedSpendCents: 10_000, ads, ga4Available: true, ga4Method: "item" },
     );
     const p = plan({ snapshot, categories: [cat("Shoes")], channels });
-    // 90,000 ÷ 60,000.
+    // GA4 paid revenue (50,000 + 30,000) ÷ 60,000; the 120,000 all-channel total isn't a return on ad spend.
     expect(accountRoas(p)).toEqual({
       metric: "Account ROAS",
-      value: "1.5×",
-      source: "Meta + Google spend, GA4 revenue on matched categories, last 30 days",
+      value: "1.33×",
+      source: "Meta + Google spend, GA4 paid social + paid search revenue on matched categories, last 30 days",
     });
   });
 
@@ -362,7 +426,7 @@ describe("buildStrategyPlan combined account ROAS", () => {
   it("falls back to platform revenue for a category GA4 has no figure for, and counts it", () => {
     const channels = channelPerf(
       [
-        row("shoes", { meta: { spend: 20_000, revenue: 100_000 }, ga4Total: 60_000 }),
+        row("shoes", { meta: { spend: 20_000, revenue: 100_000, ga4: 60_000 }, ga4Total: 60_000 }),
         row("bags", { meta: { spend: 20_000, revenue: 100_000 }, ga4Total: null }),
       ],
       { ga4Available: true, ga4Method: "landing_page" },

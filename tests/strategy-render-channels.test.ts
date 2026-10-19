@@ -164,19 +164,50 @@ describe("renderStrategyEvidence with channels", () => {
     expect([...positions].sort((a, b) => a - b)).toEqual(positions);
   });
 
-  it("prints Meta spend, Google spend, GA4 revenue, combined ROAS and basis per category", async () => {
+  it("prints Meta spend, Google spend, GA4 paid and all-channel revenue, combined ROAS and basis per category", async () => {
     const { text, plan } = await clickTrends();
     const level1 = section(text, "### Level 1");
     expect(level1).toContain(
-      "| Category | Meta spend (30d) | Google spend (30d) | GA4 revenue | Platform revenue | Combined ROAS | Basis | Tier | Match |",
+      "| Category | Meta spend (30d) | Google spend (30d) | GA4 paid revenue | GA4 revenue (all channels) | Platform revenue | Combined ROAS | Basis | Tier | Match |",
     );
     const bar = plan.allocations.find((a) => a.categoryId === "svc_ct_bar_stools")!;
-    // Meta $2,100 + Google $1,166.67 against GA4's $7,000: the plan's own observed ROAS.
+    // Meta $2,100 + Google $1,166.67 against GA4's paid social + paid search $6,363.63 (of $7,000 on
+    // all channels): the plan's own observed ROAS.
+    expect(bar.observedRoas).toBe(1.95);
     expect(level1).toMatch(
-      new RegExp(`\\| Bar stools \\| \\$2,100\\.00 \\| \\$1,166\\.67 \\| \\$7,000\\.00 \\| [^|]+ \\| ${bar.observedRoas}× \\| GA4 \\| ${bar.tier} \\|`),
+      new RegExp(`\\| Bar stools \\| \\$2,100\\.00 \\| \\$1,166\\.67 \\| \\$6,363\\.63 \\| \\$7,000\\.00 \\| [^|]+ \\| ${bar.observedRoas}× \\| GA4 \\| ${bar.tier} \\|`),
     );
+    expect(level1).not.toContain("GA4 revenue not matched to any category");
     expect(level1).toContain("- GA4 method: GA4 product categories");
     expect(level1).toMatch(/- Google Ads unmatched spend: \$[\d,.]+ \(not attributed to any category\)/);
+  });
+
+  it("prints GA4 revenue no category matched, with its share of GA4 revenue", async () => {
+    const lamps = (s: ChannelSnapshot): ChannelSnapshot => ({
+      ...s,
+      ga4: { ...s.ga4!, rows: [...s.ga4!.rows, { key: "Lamps", revenueCents: 100_000, purchases: 3 }] },
+    });
+    const { text, spend, plan } = await clickTrends({ google: lamps });
+    // $1,000 of $11,100.
+    const line = "- GA4 revenue not matched to any category: $1,000.00 (9% of GA4 revenue)";
+    expect(section(text, "### Level 1")).toContain(line);
+    expect(spend).toContain(line);
+    expect(plan.revenueBasis).toBe("ga4");
+  });
+
+  it("uses platform revenue, and says why, when GA4 matched under half its revenue", async () => {
+    const lamps = (s: ChannelSnapshot): ChannelSnapshot => ({
+      ...s,
+      ga4: { ...s.ga4!, rows: [...s.ga4!.rows, { key: "Lamps", revenueCents: 2_000_000, purchases: 30 }] },
+    });
+    const { text, spend, plan } = await clickTrends({ google: lamps });
+    expect(plan.revenueBasis).toBe("platform");
+    const note = "GA4 matched only 33.6% of revenue to categories, so the plan uses platform-reported revenue.";
+    expect(plan.assumptions).toContain(note);
+    expect(section(text, "### Assumptions")).toContain(`- ${note}`);
+    expect(section(text, "### Level 1")).toMatch(/\| Bar stools \|(?: [^|]+ \|){6} platform \|/);
+    expect(spend).toContain("- Ranked by: combined platform revenue");
+    expect(spend).toContain("- GA4 matched only 33.6% of revenue to categories, so the figures use platform-reported revenue.");
   });
 
   it("names the landing-page method as an estimate", async () => {
@@ -192,7 +223,7 @@ describe("renderStrategyEvidence with channels", () => {
     const pct = Math.round(((metaReportedCents - ga4PaidSocialCents) / ga4PaidSocialCents) * 1000) / 10;
     const level2 = section(text, "### Level 2: GA4 vs platform-reported");
     expect(level2).toContain("Meta-reported revenue");
-    expect(level2).toContain("GA4 paid-social revenue");
+    expect(level2).toContain("GA4 revenue from Facebook/Instagram paid sessions");
     expect(level2).toContain(`${Math.abs(pct)}% ${pct >= 0 ? "more" : "less"} than GA4`);
   });
 
@@ -215,6 +246,7 @@ describe("renderStrategyEvidence with channels", () => {
       googleAdsLoaded: false,
       currencyMismatch: null,
       googleUnmatchedSpendCents: 0,
+      ga4UnmatchedRevenueCents: 0,
       metaVsGa4: null,
       ads: null,
       warnings: [],
@@ -303,12 +335,14 @@ describe("renderStrategyEvidence with channels", () => {
     // GA4 still loaded; with Google left out the ROAS is Meta's spend against GA4's paid-social share.
     const level1 = section(text, "### Level 1");
     expect(level1).toContain("- GA4 method: GA4 product categories");
-    expect(level1).toContain("| GA4 paid-social revenue | Meta-reported revenue | ROAS (Meta only) |");
+    expect(level1).toContain("| GA4 paid-social revenue | GA4 revenue (all channels) | Meta-reported revenue | ROAS (Meta only) |");
     expect(level1).not.toContain("Combined ROAS");
     const bar = plan.allocations[0];
     const ga4Social = channels.byCategory.find((c) => c.categoryId === "svc_ct_bar_stools")!.meta.ga4RevenueCents!;
     expect(bar.observedRoas).toBe(Math.round((ga4Social / 210_000) * 100) / 100);
-    expect(level1).toMatch(new RegExp(`\\| Bar stools \\| \\$2,100\\.00 \\| not loaded \\| [^|]+ \\| \\$6,510\\.00 \\| ${bar.observedRoas}× \\| GA4 \\|`));
+    expect(level1).toMatch(
+      new RegExp(`\\| Bar stools \\| \\$2,100\\.00 \\| not loaded \\| [^|]+ \\| \\$7,000\\.00 \\| \\$6,510\\.00 \\| ${bar.observedRoas}× \\| GA4 \\|`),
+    );
     // No Google share.
     expect(bar.channelSplit).toMatchObject({ googleCents: 0, metaCents: bar.dailyBudgetCents });
     expect(section(text, "### Google campaign types")).toMatch(/Unknown \(Google Ads data didn't load\): Search campaigns/);
@@ -318,7 +352,7 @@ describe("renderStrategyEvidence with channels", () => {
     const { text, plan } = await clickTrends({ channels: (c) => c });
     const level1 = section(text, "### Level 1");
     for (const a of plan.allocations) {
-      expect(level1).toMatch(new RegExp(`\\| ${a.name} \\|(?: [^|]+ \\|){4} ${a.observedRoas}× \\|`));
+      expect(level1).toMatch(new RegExp(`\\| ${a.name} \\|(?: [^|]+ \\|){5} ${a.observedRoas}× \\|`));
     }
     expect(section(text, "### Strategy inputs")).toContain("- Meta spend in period: $3,300.00 · Meta account ROAS");
   });
@@ -369,11 +403,11 @@ describe("renderCategorySpendEvidence with channels", () => {
     const { spend } = await clickTrends();
     expect(spend).toContain("- Ranked by: GA4 revenue");
     expect(spend).toContain(
-      "| Category | Meta spend (30d) | Google spend (30d) | GA4 revenue | Platform revenue | Combined ROAS | Basis | Match |",
+      "| Category | Meta spend (30d) | Google spend (30d) | GA4 paid revenue | GA4 revenue (all channels) | Platform revenue | Combined ROAS | Basis | Match |",
     );
     const rows = spend.split("\n").filter((l) => /^\| (Bar stools|Sofas) /.test(l));
     expect(rows.map((r) => r.split(" | ")[0])).toEqual(["| Bar stools", "| Sofas"]);
-    expect(rows[0]).toContain("| $7,000.00 |");
+    expect(rows[0]).toContain("| $6,363.63 | $7,000.00 |");
     expect(spend).toContain("- GA4 method: GA4 product categories");
     expect(spend).toMatch(/- Google Ads unmatched spend: /);
     expect(spend).not.toMatch(/### Level|Daily budget|Tier/);

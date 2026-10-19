@@ -14,7 +14,10 @@ export type CategoryChannels = {
   categoryId: string;
   meta: ChannelFigures;
   google: ChannelFigures;
-  /** GA4 revenue for the category across all channels (item or landing-page method), null when GA4 is unavailable. */
+  /**
+   * GA4 revenue for the category across all channels (item or landing-page method), for reference;
+   * null when GA4 is unavailable or no GA4 row matched the category (never a made-up $0).
+   */
   ga4TotalRevenueCents: number | null;
   searchImpressions: number;
   searchClicks: number;
@@ -30,6 +33,8 @@ export type ChannelPerformance = {
   /** Set when currencies differ: no combined figures may be used. */
   currencyMismatch: string | null;
   googleUnmatchedSpendCents: number;
+  /** GA4 revenue (on the method used) that matched no category; 0 without GA4 rows. */
+  ga4UnmatchedRevenueCents: number;
   /**
    * Paid-social check: what Meta reports vs what GA4 credits to paid social, over the categories
    * GA4 has a paid-social estimate for. ga4PaidSocialCents is the sum of those per-category
@@ -43,6 +48,12 @@ export type ChannelPerformance = {
 
 const OVERLAP_WARNING =
   "Google figures from different sources overlap; the category split of Google spend is approximate.";
+const ITEM_TO_LANDING_NOTE =
+  "GA4 item categories didn't match any category, so GA4 revenue is matched by landing page instead (an estimate).";
+const ITEM_UNUSED_NOTE =
+  "GA4 item categories didn't match any category and there is no landing-page data, so GA4 revenue isn't used.";
+/** Below this share of GA4 revenue matched to categories, figures use platform-reported revenue. */
+export const MIN_GA4_MATCHED_PCT = 50;
 const MAX_TOP_QUERIES = 5;
 /** Host for GA4 paths when no category landing page or Search Console site gives one. */
 const FALLBACK_HOST = "site.invalid";
@@ -55,10 +66,32 @@ function isShoppingType(type: string): boolean {
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const sum = (values: number[]) => values.reduce((a, b) => a + b, 0);
 
+/** Share of GA4 revenue matched to a category, in % to one decimal; null without GA4 revenue. */
+export function ga4MatchedPct(perf: ChannelPerformance): number | null {
+  if (!perf.ga4Available) return null;
+  const matched = sum(perf.byCategory.map((c) => c.ga4TotalRevenueCents ?? 0));
+  const total = matched + perf.ga4UnmatchedRevenueCents;
+  return total > 0 ? Math.round((matched / total) * 1000) / 10 : null;
+}
+
+/** GA4 is the revenue basis: it loaded and matched at least half its revenue to categories. */
+export function ga4RevenueBasis(perf: ChannelPerformance): boolean {
+  const pct = ga4MatchedPct(perf);
+  return perf.ga4Available && (pct === null || pct >= MIN_GA4_MATCHED_PCT);
+}
+
+/** GA4 revenue from paid social + paid search sessions; null when GA4 has neither share. */
+function ga4PaidRevenue(ch: CategoryChannels): number | null {
+  const { meta, google } = ch;
+  return meta.ga4RevenueCents === null && google.ga4RevenueCents === null
+    ? null
+    : (meta.ga4RevenueCents ?? 0) + (google.ga4RevenueCents ?? 0);
+}
+
 /** What a category is judged on: Meta + Google spend and revenue, on one basis. */
 export type ObservedFigures = {
   spendCents: number;
-  /** The GA4 revenue used; null when GA4 isn't used or has no figure for the category. */
+  /** The GA4 paid revenue used; null when GA4 isn't used or has no paid figure for the category. */
   ga4RevenueCents: number | null;
   /** What Meta and Google Ads report; null when Meta spend has no Meta ROAS. */
   platformRevenueCents: number | null;
@@ -72,8 +105,9 @@ export type ObservedFigures = {
 
 /**
  * One category's observed figures, shared by the plan and the evidence. With GA4, revenue is
- * the category's GA4 total; when Google Ads is left out it is Meta's GA4 paid-social share, so
- * Meta spend is never set against revenue Google also earned.
+ * the category's GA4 revenue from paid social + paid search sessions: organic, direct and email
+ * revenue is no return on ad spend. When Google Ads is left out it is Meta's paid-social share
+ * alone, so Meta spend is never set against revenue Google also earned.
  */
 export function observedCategoryFigures(
   ch: CategoryChannels,
@@ -83,7 +117,7 @@ export function observedCategoryFigures(
   const metaOnly = !opts.googleLoaded;
   const google = metaOnly ? null : ch.google;
   const spendCents = ch.meta.spendCents + (google?.spendCents ?? 0);
-  const ga4 = !opts.ga4Available ? null : metaOnly ? ch.meta.ga4RevenueCents : ch.ga4TotalRevenueCents;
+  const ga4 = !opts.ga4Available ? null : metaOnly ? ch.meta.ga4RevenueCents : ga4PaidRevenue(ch);
   // Meta spend without a Meta ROAS leaves platform revenue unknown, whatever Google reports.
   const platformKnown = !(ch.meta.spendCents > 0 && metaRoas === null);
   const platformSum = ch.meta.platformRevenueCents + (google?.platformRevenueCents ?? 0);
@@ -145,7 +179,8 @@ export function buildChannelPerformance(input: {
   const warnings = [...snapshot.warnings];
   const ads = snapshot.ads;
   const ga4 = snapshot.ga4;
-  const ga4Available = ga4 != null && ga4.method !== "none";
+  let ga4Available = ga4 != null && ga4.method !== "none";
+  let ga4Method: ChannelPerformance["ga4Method"] = ga4?.method ?? "none";
 
   // Currencies: compare only the ones we know; no conversion is ever done.
   const currencies = (
@@ -287,13 +322,35 @@ export function buildChannelPerformance(input: {
     return null;
   };
 
-  const ga4Totals = new Map<string, number>(categories.map((c) => [c.id, 0]));
+  // A category no GA4 row matched has no GA4 figure (null), never a real $0.
+  const ga4Totals = new Map<string, number | null>(categories.map((c) => [c.id, null]));
   const channels = new Map(categories.map((c) => [c.id, { social: 0, search: 0, all: 0 }]));
+  let ga4UnmatchedRevenueCents = 0;
   if (ga4 && ga4Available) {
-    for (const row of ga4.rows) {
-      const hit = ga4.method === "item" ? matchCategoryByLabel(row.key, categories) : matchPath(row.key);
-      if (hit) ga4Totals.set(hit.id, ga4Totals.get(hit.id)! + row.revenueCents);
+    const matchRows = (rows: Array<{ key: string; revenueCents: number }>, byItem: boolean) =>
+      rows.map((row) => ({ row, hit: byItem ? matchCategoryByLabel(row.key, categories) : matchPath(row.key) }));
+    let matched = matchRows(ga4.rows, ga4.method === "item");
+    if (ga4.method === "item" && matched.length > 0 && matched.every((m) => !m.hit)) {
+      // No item category names any category: the landing pages behind byChannel are the next best match.
+      const byPage = new Map<string, number>();
+      for (const row of ga4.byChannel) byPage.set(row.landingPage, (byPage.get(row.landingPage) ?? 0) + row.revenueCents);
+      const pages = [...byPage].map(([key, revenueCents]) => ({ key, revenueCents })).filter((r) => r.revenueCents > 0);
+      if (pages.length > 0) {
+        matched = matchRows(pages, false);
+        ga4Method = "landing_page";
+        warnings.push(ITEM_TO_LANDING_NOTE);
+      } else {
+        ga4Available = false;
+        ga4Method = "none";
+        warnings.push(ITEM_UNUSED_NOTE);
+      }
     }
+    for (const { row, hit } of matched) {
+      if (hit) ga4Totals.set(hit.id, (ga4Totals.get(hit.id) ?? 0) + row.revenueCents);
+      else ga4UnmatchedRevenueCents += row.revenueCents;
+    }
+  }
+  if (ga4 && ga4Available) {
     for (const row of ga4.byChannel) {
       const hit = matchPath(row.landingPage);
       if (!hit) continue;
@@ -370,12 +427,13 @@ export function buildChannelPerformance(input: {
 
   return {
     byCategory,
-    ga4Method: ga4?.method ?? "none",
+    ga4Method,
     ga4Available,
     googleAdsMapped: snapshot.mapped.ads,
     googleAdsLoaded: ads != null,
     currencyMismatch,
     googleUnmatchedSpendCents: googleLeft,
+    ga4UnmatchedRevenueCents,
     metaVsGa4,
     ads,
     warnings,
