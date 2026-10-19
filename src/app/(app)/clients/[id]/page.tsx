@@ -28,11 +28,18 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
+import { googleAssetsSummary } from "@/lib/google/assets-view";
 import {
   humanApprovalStatus,
   humanRecommendationStatus,
   humanToolLabel,
 } from "@/lib/tools/display-labels";
+
+type GoogleAssetsView = {
+  ga4: { name: string; external_id: string } | null;
+  ads: { name: string; external_id: string } | null;
+  gsc: { name: string; external_id: string } | null;
+};
 
 type AccountUpdate = {
   id: string;
@@ -55,6 +62,7 @@ export default function ClientDetailPage() {
   const [findings, setFindings] = useState<MonitoringFinding[]>([]);
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [accountUpdates, setAccountUpdates] = useState<AccountUpdate[]>([]);
+  const [googleAssets, setGoogleAssets] = useState<GoogleAssetsView | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -85,6 +93,12 @@ export default function ClientDetailPage() {
       setFindings(monitoringRes.findings ?? []);
       setRecommendations(monitoringRes.recommendations ?? []);
       setAccountUpdates(monitoringRes.accountUpdates ?? []);
+      // Secondary info: a failure here shouldn't break the client page.
+      setGoogleAssets(
+        await apiFetch<GoogleAssetsView>(
+          `/api/v2/clients/${clientId}/google-assets`,
+        ).catch(() => null),
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load client");
     } finally {
@@ -206,6 +220,12 @@ export default function ClientDetailPage() {
                 <p className="text-xs text-muted">Value proposition</p>
                 <p>{client.value_proposition ?? "—"}</p>
               </div>
+              {googleAssets ? (
+                <div className="sm:col-span-2">
+                  <p className="text-xs text-muted">Google data</p>
+                  <p>{googleAssetsSummary(googleAssets)}</p>
+                </div>
+              ) : null}
             </CardContent>
           </Card>
           <Card>
