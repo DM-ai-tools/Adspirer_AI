@@ -719,7 +719,7 @@ export function demoMetaAuditSnapshot(accountId: string, accountName: string, da
     ],
     adSets: [
       adSet("as_1", "Implants – Broad AU 30-65", "demo_campaign_1", { performance: perf(118_000, 38, 2.1, 1.1), previousPerformance: perf(150_000, 40, 2.0, 1.05) }),
-      adSet("as_2", "Implants – Interests: dental", "demo_campaign_1", { learningStatus: "FAIL", dailyBudgetCents: 2_000, performance: perf(60_000, 11, 2.4, 0.9), previousPerformance: null }),
+      adSet("as_2", "Implants – Interests: dental", "demo_campaign_1", { includedAudienceIds: ["aud_lal"], learningStatus: "FAIL", dailyBudgetCents: 2_000, performance: perf(60_000, 11, 2.4, 0.9), previousPerformance: null }),
       adSet("as_3", "Veneers – Advantage+ audience", "demo_campaign_2", { dailyBudgetCents: null, bidStrategy: "COST_CAP", attributionWindows: ["7d_click"], publisherPlatforms: ["instagram"], frequency7d: 3.9, performance: perf(134_000, 29, 4.4, 0.61) }),
       adSet("as_4", "Retargeting – Website visitors 30d", "demo_campaign_3", { includedAudienceIds: ["aud_web30"], frequency7d: 4.2, performance: perf(76_000, 14, 5.1, 0.88) }),
     ],
