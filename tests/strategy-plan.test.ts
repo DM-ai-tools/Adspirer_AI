@@ -1,6 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { buildStrategyPlan, PLAN_CONSTANTS, type StrategyBrief } from "@/lib/strategy/plan";
-import type { CategoryAttribution } from "@/lib/strategy/category-attribution";
 import type { StrategyCategory } from "@/lib/strategy/categories";
 import { detectCapabilityGaps } from "@/lib/strategy/meta-capabilities";
 import { resolveGoals, type GoalsProfile } from "@/lib/clients/goals";
@@ -10,19 +9,6 @@ import {
   type MetaAuditSnapshot,
   type PeriodPerformance,
 } from "@/lib/audit/meta-audit-data";
-
-// Lets one test rewrite the attribution result (null ROAS with spend cannot come from real ads).
-const attributionHook = vi.hoisted(() => ({ edit: null as null | ((a: CategoryAttribution) => CategoryAttribution) }));
-vi.mock("@/lib/strategy/category-attribution", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/strategy/category-attribution")>();
-  return {
-    ...actual,
-    attributeSpendToCategories: (...args: Parameters<typeof actual.attributeSpendToCategories>) => {
-      const result = actual.attributeSpendToCategories(...args);
-      return attributionHook.edit ? attributionHook.edit(result) : result;
-    },
-  };
-});
 
 const PLAYBOOK = "Internal paid-social playbook (generic, not industry-specific)";
 
@@ -149,17 +135,31 @@ describe("buildStrategyPlan tiering", () => {
   });
 
   it("treats a category with enough spend but no observed ROAS as a test, and says so", () => {
-    attributionHook.edit = (attr) => ({
-      ...attr,
-      byCategory: attr.byCategory.map((c) => (c.categoryId === "shoes" ? { ...c, roas: null } : c)),
+    // Lead-gen style ads: spend but no ROAS reported.
+    const p = plan({
+      snapshot: snap([ad("Shoes", 20_000, null), ad("Bags", 20_000, 5)]),
+      categories: [cat("Shoes"), cat("Bags")],
+      brief: {},
     });
-    try {
-      const p = plan({ snapshot: snap(fiveAds), categories: fiveCategories, brief: {} });
-      expect(byId(p).shoes).toMatchObject({ tier: "test", observedRoas: null, observedSpendCents: 20_000 });
-      expect(p.assumptions.some((line) => line.includes("Shoes") && /ROAS was unavailable/.test(line))).toBe(true);
-    } finally {
-      attributionHook.edit = null;
-    }
+    expect(byId(p).shoes).toMatchObject({ tier: "test", observedRoas: null, observedSpendCents: 20_000 });
+    expect(byId(p).bags.tier).toBe("proven");
+    expect(p.assumptions.some((line) => line.includes("Shoes") && /ROAS was unavailable/.test(line))).toBe(true);
+    expect(p.assumptions.some((line) => line.includes("Bags") && /ROAS was unavailable/.test(line))).toBe(false);
+  });
+
+  it("does not hold the demo lead-gen account's spending categories for lack of ROAS", () => {
+    const p = buildStrategyPlan({
+      snapshot: demoMetaAuditSnapshot("act_1", "Demo", 30),
+      scorecard: { score: 62, grade: "C" },
+      categories: [cat("Implants"), cat("Veneers")],
+      goals: resolveGoals({ goals_profile: { business_model: "local_service" } }),
+      brief: { dailyBudgetCents: 10_000, targetRoas: 4, stretchTargets: [] },
+    });
+    expect(p.allocations.map((a) => [a.categoryId, a.tier, a.observedRoas])).toEqual([
+      ["implants", "test", null],
+      ["veneers", "test", null],
+    ]);
+    expect(p.projection.dailySpendCents).toBe(10_000);
   });
 });
 
@@ -247,6 +247,9 @@ describe("buildStrategyPlan budget split", () => {
     // Test bucket is $10, under the $20 minimum; Belts beats Socks on name at equal priority.
     expect(a.belts.dailyBudgetCents).toBe(1_000);
     expect(a.socks.dailyBudgetCents).toBe(0);
+    expect(p.assumptions).toContain(
+      "Test categories are funded at $20.00/day each, highest priority first, as far as the test budget allows; a test budget under $20.00 goes entirely to the top test category.",
+    );
   });
 
   it("funds every test category equally when the budget covers more than there are", () => {

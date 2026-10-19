@@ -5,6 +5,7 @@ export type CategoryPerformance = {
   categoryId: string;
   spendCents: number;
   purchaseValueCents: number;
+  /** null when nothing spent, or no matched ad with spend reported ROAS. */
   roas: number | null;
   results: number;
   adIds: string[];
@@ -112,7 +113,7 @@ export function attributeSpendToCategories(
   const acc = new Map(
     categories.map((c) => [
       c.id,
-      { spend: 0, value: 0, results: 0, adIds: [] as string[], url: false, name: false },
+      { spend: 0, value: 0, results: 0, adIds: [] as string[], url: false, name: false, roasReported: false },
     ]),
   );
   const unmatched = { spendCents: 0, adIds: [] as string[] };
@@ -136,6 +137,7 @@ export function attributeSpendToCategories(
     const slot = acc.get(match.category.id)!;
     slot.spend += spend;
     slot.value += Math.round((ad.performance?.roas ?? 0) * spend);
+    if (spend > 0 && ad.performance?.roas != null) slot.roasReported = true;
     slot.results += ad.performance?.results ?? 0;
     slot.adIds.push(ad.id);
     slot[match.via] = true;
@@ -149,7 +151,8 @@ export function attributeSpendToCategories(
         categoryId: c.id,
         spendCents: s.spend,
         purchaseValueCents: s.value,
-        roas: s.spend > 0 ? Math.round((s.value / s.spend) * 100) / 100 : null,
+        // Unknown, not 0, when no spending ad reported ROAS (e.g. lead-gen accounts).
+        roas: s.spend > 0 && s.roasReported ? Math.round((s.value / s.spend) * 100) / 100 : null,
         results: s.results,
         adIds: s.adIds,
         matchedBy: s.url && s.name ? "mixed" : s.name ? "name" : "url",

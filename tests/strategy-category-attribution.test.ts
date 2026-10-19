@@ -149,6 +149,23 @@ describe("attributeSpendToCategories", () => {
     expect(bar.results).toBe(4);
   });
 
+  it("keeps roas null when no spending ad reported ROAS, but keeps a reported 0", () => {
+    const pendants = cat({ id: "p", name: "Pendants", urlPatterns: ["/lighting/pendant"] });
+    const r = attributeSpendToCategories(
+      snap([
+        ad("a1", { linkUrl: "https://shop.example/collections/bar-stools", performance: perf(10_000, null) }),
+        ad("a2", { linkUrl: "https://shop.example/collections/bar-stools", performance: perf(5_000, null) }),
+        // A reported ROAS on an ad without spend does not count as evidence.
+        ad("a3", { linkUrl: "https://shop.example/collections/bar-stools", performance: perf(0, 4) }),
+        ad("a4", { linkUrl: "https://shop.example/lighting/pendant-lamps", performance: perf(10_000, 0) }),
+      ]),
+      [barStools, pendants],
+    );
+    const bar = r.byCategory.find((c) => c.categoryId === "bar")!;
+    expect(bar).toMatchObject({ spendCents: 15_000, purchaseValueCents: 0, roas: null });
+    expect(r.byCategory.find((c) => c.categoryId === "p")).toMatchObject({ spendCents: 10_000, roas: 0 });
+  });
+
   it("lists zero-spend categories with null roas, and coverage 0 with no spend", () => {
     const r = attributeSpendToCategories(snap([]), [barStools, tables]);
     expect(r.byCategory).toHaveLength(2);

@@ -226,7 +226,7 @@ export function buildStrategyPlan(input: {
   const assumptions = [
     `Budget split ${pct(C.split.proven)} proven, ${pct(C.split.promising)} promising, ${pct(C.split.test)} test; an empty tier's share moves to the next tier.`,
     "Within the proven and promising tiers, budget follows each category's purchase value.",
-    `Each test category gets at least ${money(C.minTestDailyCents)}/day; the test budget funds as many as that allows, highest priority first.`,
+    `Test categories are funded at ${money(C.minTestDailyCents)}/day each, highest priority first, as far as the test budget allows; a test budget under ${money(C.minTestDailyCents)} goes entirely to the top test category.`,
     `A category needs ${money(C.minSpendForVerdictCents)} of spend in the last ${days} days before it is judged; below that it is a test.`,
     `Scaled budgets assumed to return ${pct(C.scaleDecay)} of current ROAS.`,
     accountRoas !== null
