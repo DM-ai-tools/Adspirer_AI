@@ -93,6 +93,7 @@ describe("POST services/import", () => {
     const store = getDemoStore();
     const existing = mine()[0];
     const before = mine().length;
+    const sourceBefore = existing.source;
     const { res, body } = await post([
       HEADERS,
       ["  " + existing.name.toUpperCase() + " ", "", 50, 20, 3],
@@ -102,7 +103,8 @@ describe("POST services/import", () => {
     expect(body.data).toMatchObject({ created: 1, updated: 1 });
     expect(mine().length).toBe(before + 1);
     const upd = store.clientServices.find((s) => s.id === existing.id)!;
-    expect(upd).toMatchObject({ gross_margin_pct: 50, average_order_value_cents: 2000, priority: 3, source: "import" });
+    expect(upd).toMatchObject({ gross_margin_pct: 50, average_order_value_cents: 2000, priority: 3 });
+    expect(upd.source).toBe(sourceBefore);
     expect(store.clientServices.find((s) => s.name === "Import Brand New")?.source).toBe("import");
   });
 
@@ -125,5 +127,40 @@ describe("POST services/import", () => {
     const p = store.profiles.find((x) => x.role === "operator")!;
     store.userClientAccess = store.userClientAccess.filter((a) => !(a.user_id === p.id && a.client_id === CLIENT));
     expect((await post([HEADERS, BAR])).res.status).toBe(403);
+  });
+
+  it("merge with a name-only sheet keeps existing values and source", async () => {
+    as("operator");
+    const store = getDemoStore();
+    const row = store.clientServices.find((s) => s.client_id === CLIENT)!;
+    Object.assign(row, {
+      gross_margin_pct: 35,
+      average_order_value_cents: 18900,
+      url_patterns: ["/collections/x"],
+      landing_page_url: "https://x.example/p",
+      priority: 7,
+      source: "manual",
+    });
+    const { body } = await post([["Category"], [row.name.toUpperCase()]]);
+    expect(body.data).toMatchObject({ created: 0, updated: 1 });
+    expect(row).toMatchObject({
+      gross_margin_pct: 35,
+      average_order_value_cents: 18900,
+      url_patterns: ["/collections/x"],
+      landing_page_url: "https://x.example/p",
+      priority: 7,
+      source: "manual",
+    });
+    // blank cells in existing columns do not overwrite either
+    await post([HEADERS, [row.name, "", "", "", ""]]);
+    expect(row).toMatchObject({ gross_margin_pct: 35, average_order_value_cents: 18900, landing_page_url: "https://x.example/p", source: "manual" });
+  });
+
+  it("merge reactivates a deactivated category listed in the file", async () => {
+    as("operator");
+    const row = getDemoStore().clientServices.find((s) => s.client_id === CLIENT)!;
+    row.is_active = false;
+    await post([["Category"], [row.name]]);
+    expect(row.is_active).toBe(true);
   });
 });

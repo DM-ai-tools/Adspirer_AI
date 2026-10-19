@@ -14,6 +14,10 @@ export type CategoryImportRow = {
 
 export const MAX_IMPORT_ROWS = 1000;
 
+/** Optional columns that were present in the file's header row. */
+export type ImportColumn = "url" | "margin" | "aov" | "priority";
+const ALL_COLUMNS: ImportColumn[] = ["url", "margin", "aov", "priority"];
+
 type Field = "name" | "url" | "margin" | "aov" | "priority";
 
 const ALIASES: Record<Field, string[]> = {
@@ -43,7 +47,7 @@ function toNumber(raw: unknown): { value: number | null; percent: boolean } {
 export function parseCategorySheet(
   data: ArrayBuffer,
   fileName: string,
-): { rows: CategoryImportRow[]; errors: string[] } {
+): { rows: CategoryImportRow[]; errors: string[]; columns: ImportColumn[] } {
   const errors: string[] = [];
   let aoa: unknown[][];
   try {
@@ -57,7 +61,7 @@ export function parseCategorySheet(
         })
       : [];
   } catch {
-    return { rows: [], errors: [`Could not read ${fileName} as a spreadsheet.`] };
+    return { rows: [], errors: [`Could not read ${fileName} as a spreadsheet.`], columns: [] };
   }
 
   const header = aoa[0] ?? [];
@@ -74,6 +78,7 @@ export function parseCategorySheet(
       errors: [
         "No category name column found. Accepted headers: Category, Product line, Collection, Name, Service.",
       ],
+      columns: [],
     };
   }
 
@@ -139,7 +144,8 @@ export function parseCategorySheet(
       priority,
     });
   }
-  return { rows, errors };
+  const columns = ALL_COLUMNS.filter((c) => col[c] !== undefined);
+  return { rows, errors, columns };
 }
 
 export type CategoryImportMode = "merge" | "replace";
@@ -153,6 +159,7 @@ export async function applyCategoryImport(
   clientId: string,
   rows: CategoryImportRow[],
   mode: CategoryImportMode,
+  columns: ImportColumn[] = ALL_COLUMNS,
 ): Promise<{ created: number; updated: number }> {
   const config = getConfig();
   const demo = config.isDemoMode || !config.hasSupabase;
@@ -162,13 +169,30 @@ export async function applyCategoryImport(
   let created = 0;
   let updated = 0;
 
-  const fields = (r: CategoryImportRow) => ({
+  // New rows get every field.
+  const insertFields = (r: CategoryImportRow) => ({
     landing_page_url: r.landing_page_url,
     gross_margin_pct: r.gross_margin_pct,
     average_order_value_cents: r.average_order_value_cents,
     priority: r.priority,
     is_active: true,
     source: "import" as const,
+    updated_at: ts,
+  });
+  // Existing rows only change where the file has a column and a non-blank cell,
+  // and keep their source. Listing a category in the file reactivates it.
+  const updateFields = (r: CategoryImportRow) => ({
+    ...(columns.includes("url") && r.landing_page_url !== null
+      ? { landing_page_url: r.landing_page_url }
+      : {}),
+    ...(columns.includes("margin") && r.gross_margin_pct !== null
+      ? { gross_margin_pct: r.gross_margin_pct }
+      : {}),
+    ...(columns.includes("aov") && r.average_order_value_cents !== null
+      ? { average_order_value_cents: r.average_order_value_cents }
+      : {}),
+    ...(columns.includes("priority") ? { priority: r.priority } : {}),
+    is_active: true,
     updated_at: ts,
   });
 
@@ -178,7 +202,7 @@ export async function applyCategoryImport(
     for (const r of rows) {
       const hit = existing.find((s) => norm(s.name) === norm(r.name));
       if (hit) {
-        Object.assign(hit, fields(r));
+        Object.assign(hit, updateFields(r));
         updated++;
       } else {
         const svc: ClientService = {
@@ -189,7 +213,7 @@ export async function applyCategoryImport(
           keywords: null,
           url_patterns: null,
           created_at: ts,
-          ...fields(r),
+          ...insertFields(r),
         };
         store.clientServices.push(svc);
         created++;
@@ -220,14 +244,14 @@ export async function applyCategoryImport(
     if (hit) {
       const { error: e } = await supabase
         .from("client_services")
-        .update(fields(r))
+        .update(updateFields(r))
         .eq("id", hit.id);
       if (e) throw new Error(e.message);
       updated++;
     } else {
       const { error: e } = await supabase
         .from("client_services")
-        .insert({ client_id: clientId, name: r.name, created_at: ts, ...fields(r) });
+        .insert({ client_id: clientId, name: r.name, created_at: ts, ...insertFields(r) });
       if (e) throw new Error(e.message);
       created++;
     }

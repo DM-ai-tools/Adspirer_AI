@@ -37,7 +37,7 @@ export async function POST(request: Request, context: RouteContext) {
       throw new ValidationError('mode must be "merge" or "replace"');
     }
 
-    const { rows, errors } = parseCategorySheet(
+    const { rows, errors, columns } = parseCategorySheet(
       await file.arrayBuffer(),
       file.name,
     );
@@ -47,7 +47,7 @@ export async function POST(request: Request, context: RouteContext) {
         { errors },
       );
     }
-    const { created, updated } = await applyCategoryImport(id, rows, mode);
+    const { created, updated } = await applyCategoryImport(id, rows, mode, columns);
     return jsonOk({ created, updated, errors });
   });
 }
