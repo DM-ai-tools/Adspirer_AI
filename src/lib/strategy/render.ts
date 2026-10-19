@@ -1,4 +1,6 @@
 import type { CategoryAttribution, CategoryPerformance } from "./category-attribution";
+import type { CategoryChannels, ChannelPerformance } from "./channels";
+import { detectGoogleCapabilities } from "./google-capabilities";
 import type { AllocationTier, CategoryAllocation, PlanProjection, StrategyPlan } from "./plan";
 
 type CategoryWord = "category" | "service";
@@ -9,6 +11,16 @@ const MAX_FULL_ROWS = 40;
 const TRUNCATED_ROWS = 25;
 /** Below this share of account spend in the loaded ads, per-category figures are partial. */
 const MIN_AD_COVERAGE_PCT = 80;
+/** Search demand lists only the categories with the most impressions. */
+const MAX_SEARCH_ROWS = 10;
+
+const GOOGLE_LABEL = "Google budget is a recommendation for the Google Ads account — this tool doesn't change Google.";
+const GA4_METHOD: Record<ChannelPerformance["ga4Method"], string> = {
+  item: "GA4 product categories",
+  landing_page: "GA4 landing pages — an estimate, not exact product sales",
+  none: "none — GA4 revenue isn't available, so revenue is what Meta and Google Ads report",
+};
+const GOOGLE_TYPE_LABEL = new Map(detectGoogleCapabilities(null).map((c) => [c.id, c.label]));
 
 const TIER_ORDER: AllocationTier[] = ["proven", "promising", "test", "hold"];
 
@@ -108,11 +120,110 @@ function spendTable(
   ];
 }
 
-function unmatchedLines(attribution: CategoryAttribution, word: CategoryWord, money: Money): string[] {
+/** `meta` names the lines as Meta's, for evidence that has Google figures too. */
+function unmatchedLines(attribution: CategoryAttribution, word: CategoryWord, money: Money, meta = false): string[] {
   return [
-    `- Unmatched spend: ${money(attribution.unmatched.spendCents)} across ${attribution.unmatched.adIds.length} ads (not attributed to any ${word})`,
-    `- Coverage: ${attribution.coveragePct}% of ad spend matched to a ${word}`,
+    `- ${meta ? "Meta unmatched" : "Unmatched"} spend: ${money(attribution.unmatched.spendCents)} across ${attribution.unmatched.adIds.length} ads (not attributed to any ${word})`,
+    `- Coverage: ${attribution.coveragePct}% of ${meta ? "Meta " : ""}ad spend matched to a ${word}`,
   ];
+}
+
+/** One category's Meta + Google figures, on the revenue basis the plan uses. */
+type Combined = {
+  metaSpendCents: number;
+  googleSpendCents: number;
+  ga4RevenueCents: number | null;
+  /** What Meta and Google Ads report; null when Meta spend has no ROAS. */
+  platformRevenueCents: number | null;
+  roas: number | null;
+  basis: "GA4" | "platform" | "—";
+};
+
+function combinedFigures(
+  ch: CategoryChannels | undefined,
+  perf: CategoryPerformance | undefined,
+  channels: ChannelPerformance,
+): Combined {
+  const metaSpend = ch ? ch.meta.spendCents : (perf?.spendCents ?? 0);
+  const metaRevenue = ch ? ch.meta.platformRevenueCents : (perf?.purchaseValueCents ?? 0);
+  const googleSpend = ch?.google.spendCents ?? 0;
+  const ga4 = channels.ga4Available ? (ch?.ga4TotalRevenueCents ?? null) : null;
+  const spend = metaSpend + googleSpend;
+  // As in the plan: Meta spend without a Meta ROAS leaves platform revenue unknown.
+  const platformKnown = !(metaSpend > 0 && (perf?.roas ?? null) === null);
+  const platform = platformKnown ? metaRevenue + (ch?.google.platformRevenueCents ?? 0) : null;
+  const revenue = ga4 ?? platform;
+  return {
+    metaSpendCents: metaSpend,
+    googleSpendCents: googleSpend,
+    ga4RevenueCents: ga4,
+    platformRevenueCents: platform,
+    roas: spend > 0 && revenue !== null ? Math.round((revenue / spend) * 100) / 100 : null,
+    basis: ga4 !== null ? "GA4" : spend > 0 && platformKnown ? "platform" : "—",
+  };
+}
+
+/**
+ * The Level 1 table with channels: Meta and Google spend, GA4 and platform revenue, combined
+ * ROAS and its basis. `ranked` puts the best revenue first (GA4's when there is GA4).
+ */
+function channelTable(
+  rows: Array<{ categoryId: string; name: string; tier?: AllocationTier }>,
+  perfById: Map<string, CategoryPerformance>,
+  channels: ChannelPerformance,
+  ctx: { word: CategoryWord; days: number; money: Money; ranked: boolean },
+): string[] {
+  const { word, days, money, ranked } = ctx;
+  const withTier = rows.some((r) => r.tier !== undefined);
+  const chById = new Map(channels.byCategory.map((c) => [c.categoryId, c]));
+  const all = rows.map((r) => ({ ...r, c: combinedFigures(chById.get(r.categoryId), perfById.get(r.categoryId), channels) }));
+  const revenueOf = (c: Combined) => c.ga4RevenueCents ?? c.platformRevenueCents ?? -1;
+  const ordered = ranked ? [...all].sort((a, b) => revenueOf(b.c) - revenueOf(a.c)) : all;
+  const big = ordered.length > MAX_FULL_ROWS;
+  const shown = !big
+    ? ordered
+    : ranked
+      ? ordered.slice(0, TRUNCATED_ROWS)
+      : [...ordered]
+          .sort((a, b) => b.c.metaSpendCents + b.c.googleSpendCents - (a.c.metaSpendCents + a.c.googleSpendCents))
+          .slice(0, TRUNCATED_ROWS);
+  const body = shown.map(({ categoryId, name, tier, c }) => {
+    const p = perfById.get(categoryId);
+    const match = p && p.adIds.length > 0 ? p.matchedBy : "none";
+    const ga4 = c.ga4RevenueCents === null ? "—" : money(c.ga4RevenueCents);
+    const platform = c.platformRevenueCents === null ? "unknown" : money(c.platformRevenueCents);
+    return `| ${name} | ${money(c.metaSpendCents)} | ${money(c.googleSpendCents)} | ${ga4} | ${platform} | ${roas(c.roas)} | ${c.basis} |${withTier ? ` ${tier} |` : ""} ${match} |`;
+  });
+  const hidden = rows.length - shown.length;
+  return [
+    `| ${capitalize(word)} | Meta spend (${days}d) | Google spend (${days}d) | GA4 revenue | Platform revenue | Combined ROAS | Basis |${withTier ? " Tier |" : ""} Match |`,
+    `| --- | --- | --- | --- | --- | --- | --- |${withTier ? " --- |" : ""} --- |`,
+    ...body,
+    ...(hidden > 0
+      ? [`…and ${hidden} more ${plural(word)} (top ${TRUNCATED_ROWS} by ${ranked ? "revenue" : "spend"} shown).`]
+      : []),
+  ];
+}
+
+/** Under the channel table: how GA4 revenue was matched, and Google spend no category took. */
+function channelLevel1Lines(channels: ChannelPerformance, word: CategoryWord, money: Money): string[] {
+  return [
+    `- GA4 method: ${GA4_METHOD[channels.ga4Method]}`,
+    channels.ads
+      ? `- Google Ads unmatched spend: ${money(channels.googleUnmatchedSpendCents)} (not attributed to any ${word})`
+      : channels.googleAdsMapped
+        ? "- Google Ads spend didn't load (see Channel data), so it isn't included."
+        : "- Google Ads: no account mapped, so Google spend isn't included.",
+  ];
+}
+
+/** Channel notes, then every Google load warning. */
+function channelDataLines(note: string | null, channels: ChannelPerformance | undefined, extra: string[]): string[] {
+  const lines = [
+    ...(note ? [`- Note: ${note}`] : []),
+    ...[...(channels?.warnings ?? []), ...extra].map((w) => `- Warning: ${w}`),
+  ];
+  return lines.length ? lines : ["- Meta and Google figures loaded with no warnings."];
 }
 
 /**
@@ -128,22 +239,56 @@ export function renderCategorySpendEvidence(
     periodDays: number;
     accountSpendCents: number | null;
     warnings?: string[];
+    /** Meta and Google figures per category; without them the evidence is Meta only. */
+    channels?: ChannelPerformance;
+    /** Google load warnings from outside the channel data, e.g. a load that failed outright. */
+    channelWarnings?: string[];
   },
 ): string {
   const word = opts.categoryWord;
   const money = moneyIn(opts.currency);
   const perfById = new Map(attribution.byCategory.map((p) => [p.categoryId, p]));
   const coverage = adCoverage(attribution, opts.accountSpendCents, opts.warnings ?? [], word, money);
+  const { channels } = opts;
+  const extra = opts.channelWarnings ?? [];
+  // Currencies that differ are never combined: the table stays Meta's own.
+  const combined = channels && !channels.currencyMismatch ? channels : null;
+  const rows = categories.map((c) => ({ categoryId: c.id, name: c.name }));
+  const days = opts.periodDays;
+
+  const top: string[] = [];
+  if (channels) {
+    top.push(
+      `- Ranked by: ${combined ? (combined.ga4Available ? "GA4 revenue" : "combined platform revenue") : "Meta-reported revenue"}`,
+    );
+  }
+  if (channels || extra.length) {
+    const note = !channels
+      ? "Google data wasn't loaded: the figures are Meta only."
+      : (channels.currencyMismatch ??
+        (channels.googleAdsMapped ? null : "No Google Ads account mapped: Google spend isn't included."));
+    top.push(...channelDataLines(note, channels, extra));
+  }
+
+  let table: string[];
+  if (combined) table = channelTable(rows, perfById, combined, { word, days, money, ranked: true });
+  else if (channels) {
+    const revenue = (id: string) => {
+      const p = perfById.get(id);
+      return p && !(p.spendCents > 0 && p.roas === null) ? p.purchaseValueCents : -1;
+    };
+    const ranked = [...rows].sort((a, b) => revenue(b.categoryId) - revenue(a.categoryId));
+    table = spendTable(ranked, perfById, { word, days, money });
+  } else table = spendTable(rows, perfById, { word, days, money });
+
   return [
     `### Spend & return by ${word}`,
-    `- Period: last ${opts.periodDays} days. Figures only: no plan, no budget allocation.`,
-    ...spendTable(
-      categories.map((c) => ({ categoryId: c.id, name: c.name })),
-      perfById,
-      { word, days: opts.periodDays, money },
-    ),
+    `- Period: last ${days} days. Figures only: no plan, no budget allocation.`,
+    ...top,
+    ...table,
     "",
-    ...unmatchedLines(attribution, word, money),
+    ...(combined ? channelLevel1Lines(combined, word, money) : []),
+    ...unmatchedLines(attribution, word, money, !!combined),
     ...coverage.lines,
   ].join("\n");
 }
@@ -161,6 +306,10 @@ export function renderStrategyEvidence(
     defaultsUsed?: string[];
     /** The snapshot's load warnings; an "Ads" failure makes the per-category figures partial. */
     warnings?: string[];
+    /** The channel data the plan was built with; without it the evidence is Meta only. */
+    channels?: ChannelPerformance;
+    /** Google load warnings from outside the channel data, e.g. a load that failed outright. */
+    channelWarnings?: string[];
   },
 ): string {
   const word = opts.categoryWord;
@@ -171,6 +320,10 @@ export function renderStrategyEvidence(
   const { baseline, brief, allocations } = plan;
   const days = baseline.periodDays;
   const none = allocations.length === 0;
+  const { channels } = opts;
+  const channelWarnings = opts.channelWarnings ?? [];
+  // Currencies that differ are never combined: Level 1 stays Meta's own.
+  const combined = channels && !channels.currencyMismatch ? channels : null;
   const out: string[] = [];
 
   out.push(
@@ -189,6 +342,13 @@ export function renderStrategyEvidence(
     ].join("\n"),
   );
 
+  if (channels && plan.scope) {
+    out.push(["### Scope", `- Planned only for: ${plan.scope.names.join(", ")}`].join("\n"));
+  }
+  if (channels || channelWarnings.length) {
+    out.push(["### Channel data", ...channelDataLines(plan.channelNote, channels, channelWarnings)].join("\n"));
+  }
+
   const coverage = adCoverage(
     attribution,
     baseline.spendCents > 0 ? baseline.spendCents : null,
@@ -201,13 +361,20 @@ export function renderStrategyEvidence(
       `### Level 1: spend & return by ${word}`,
       ...(none
         ? [`- No ${words} loaded yet. Add them (name, landing page URL, keywords) to see spend and return by ${word}.`]
-        : [...spendTable(allocations, perfById, { word, days, money }), ""]),
-      ...unmatchedLines(attribution, word, money),
+        : combined
+          ? [...channelTable(allocations, perfById, combined, { word, days, money, ranked: false }), ""]
+          : [...spendTable(allocations, perfById, { word, days, money }), ""]),
+      ...(combined ? channelLevel1Lines(combined, word, money) : []),
+      ...unmatchedLines(attribution, word, money, !!combined),
       ...coverage.lines,
     ].join("\n"),
   );
 
-  const untouched = allocations.filter((a) => plan.gaps.untouchedCategoryIds.includes(a.categoryId));
+  // With Google figures, a category Google spent on is not untouched.
+  const googleSpend = new Map((combined?.byCategory ?? []).map((c) => [c.categoryId, c.google.spendCents]));
+  const untouched = allocations.filter(
+    (a) => plan.gaps.untouchedCategoryIds.includes(a.categoryId) && !((googleSpend.get(a.categoryId) ?? 0) > 0),
+  );
   out.push(
     [
       `### Untouched ${words}`,
@@ -235,6 +402,24 @@ export function renderStrategyEvidence(
     ].join("\n"),
   );
 
+  if (plan.googleCapabilities) {
+    const google = plan.googleCapabilities;
+    const labels = (state: (typeof google)[number]["state"]) =>
+      google.filter((c) => c.state === state).map((c) => c.label).join(", ") || "none";
+    const gNotUsed = google.filter((c) => c.state === "not_used");
+    const gUnknown = google.filter((c) => c.state === "unknown");
+    out.push(
+      [
+        "### Google campaign types: in use / not used / needs a product feed",
+        `- In use: ${labels("in_use")}`,
+        `- Not used:${gNotUsed.length ? "" : " none"}`,
+        ...gNotUsed.map((c) => `  - ${c.label}: ${c.why}`),
+        `- Needs a product feed (link Merchant Center to run them): ${labels("needs_feed")}`,
+        ...(gUnknown.length ? [`- Unknown (Google Ads data didn't load): ${labels("unknown")}`] : []),
+      ].join("\n"),
+    );
+  }
+
   const reality = plan.benchmark.realityCheck;
   out.push(
     [
@@ -246,6 +431,55 @@ export function renderStrategyEvidence(
       ...plan.benchmark.references.map((r) => `| ${r.metric} | ${r.value} | ${r.source} |`),
     ].join("\n"),
   );
+
+  if (channels) {
+    const gap = channels.metaVsGa4;
+    const level2 = ["### Level 2: GA4 vs platform-reported"];
+    if (channels.currencyMismatch) level2.push(`- Not compared: ${channels.currencyMismatch}`);
+    else if (!gap) {
+      level2.push(
+        channels.ga4Available
+          ? `- Not available: GA4 has no paid-social revenue on these ${words}' landing pages.`
+          : "- Not available: GA4 revenue isn't available for this client.",
+      );
+    } else {
+      const { metaReportedCents: meta, ga4PaidSocialCents: ga4 } = gap;
+      level2.push(
+        `- Meta-reported revenue: ${money(meta)} · GA4 paid-social revenue on the same ${words} (matched by landing page, an estimate): ${money(ga4)}`,
+      );
+      if (ga4 === 0) level2.push(`- GA4 credits no paid-social revenue to these ${words}, so the gap can't be given as a %.`);
+      else {
+        const pct = Math.round(((meta - ga4) / ga4) * 1000) / 10;
+        level2.push(pct === 0 ? "- Meta and GA4 agree." : `- Meta reports ${Math.abs(pct)}% ${pct > 0 ? "more" : "less"} than GA4.`);
+      }
+    }
+    out.push(level2.join("\n"));
+
+    const nameById = new Map(allocations.map((a) => [a.categoryId, a.name]));
+    const demand = channels.byCategory
+      .filter((c) => c.searchImpressions > 0 && nameById.has(c.categoryId))
+      .sort((a, b) => b.searchImpressions - a.searchImpressions);
+    const shown = demand.slice(0, MAX_SEARCH_ROWS);
+    const count = (n: number) => n.toLocaleString("en");
+    out.push(
+      [
+        "### Search demand",
+        ...(shown.length
+          ? [
+              `| ${Word} | Search impressions | Search clicks | Top queries |`,
+              "| --- | --- | --- | --- |",
+              ...shown.map(
+                (c) =>
+                  `| ${nameById.get(c.categoryId)} | ${count(c.searchImpressions)} | ${count(c.searchClicks)} | ${c.topQueries.join(", ") || "—"} |`,
+              ),
+              ...(demand.length > shown.length
+                ? [`…and ${demand.length - shown.length} more ${words} with search demand (top ${MAX_SEARCH_ROWS} by impressions shown).`]
+                : []),
+            ]
+          : [`- No Search Console demand matched to any ${word}.`]),
+      ].join("\n"),
+    );
+  }
 
   const level3 = ["### Level 3: allocation"];
   const allocated = plan.projection.dailySpendCents;
@@ -288,6 +522,31 @@ export function renderStrategyEvidence(
     }
   }
   out.push(level3.join("\n"));
+
+  if (channels) {
+    const split = ["### Level 3: channel split"];
+    const funded = allocations.filter((a) => a.channelSplit);
+    if (!plan.channelTotals) split.push(`- ${plan.channelNote ?? "No Meta and Google split."}`);
+    else if (!funded.length) split.push(`- No ${word} is funded, so there is no Meta and Google split.`);
+    else {
+      const totals = plan.channelTotals;
+      const projected = (side: "metaProjectedCents" | "googleProjectedCents") =>
+        funded.reduce((s, a) => s + a.channelSplit![side], 0);
+      split.push(
+        `| ${Word} | Daily budget | Meta budget | Google budget | Meta projected | Google projected | Basis | Google campaign types |`,
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        ...funded.map((a) => {
+          const s = a.channelSplit!;
+          const types = a.googleCampaignTypes.map((id) => GOOGLE_TYPE_LABEL.get(id) ?? id).join(", ") || "—";
+          return `| ${a.name} | ${money(a.dailyBudgetCents)} | ${money(s.metaCents)} | ${money(s.googleCents)} | ${money(s.metaProjectedCents)} | ${money(s.googleProjectedCents)} | ${s.basis === "ga4" ? "GA4" : "platform"} | ${types} |`;
+        }),
+        "",
+        `- Totals: Meta ${money(totals.metaCents)}/day, Google ${money(totals.googleCents)}/day; projected revenue Meta ${money(projected("metaProjectedCents"))}/day, Google ${money(projected("googleProjectedCents"))}/day.`,
+        `- ${GOOGLE_LABEL}`,
+      );
+    }
+    out.push(split.join("\n"));
+  }
 
   out.push(
     [
