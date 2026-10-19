@@ -39,8 +39,7 @@ import { renderStrategyEvidence } from "@/lib/strategy/render";
 import { STRATEGY_FRAMEWORK } from "@/lib/agent/strategy-framework";
 import {
   buildStrategyClarifyingQuestion,
-  parseStrategyBrief,
-  strategyBriefText,
+  resolveStrategyBrief,
 } from "@/lib/agent/strategy-brief";
 import {
   renderAdSetEvidence,
@@ -612,7 +611,7 @@ function buildWriterMessages(input: WriterInput): {
               ? [
                   "- Write the strategy report using the headings in “Strategy framework”, in order.",
                   "- Use only numbers from the strategy evidence; say a number is not available rather than estimate it.",
-                  "- Use the Category word from “Strategy inputs” for categories / services.",
+                  "- Use the Word for offerings from “Strategy inputs” (category or service) everywhere.",
                   "- If Level 3 says “No budget allocated”, explain why and what has to change; never invent an allocation.",
                 ]
               : ["- The strategy plan could not be built: say what failed from the evidence. Do NOT invent a plan."]),
@@ -2268,7 +2267,7 @@ export async function gatherDiagnoseEvidence(input: {
       const currentDailySpendCents = snapshot.totals
         ? Math.round(snapshot.totals.spendCents / snapshot.period.days)
         : null;
-      const parsed = parseStrategyBrief(strategyBriefText(input.request, input.history), {
+      const parsed = resolveStrategyBrief(input.request, input.history, {
         goals,
         currentDailySpendCents,
       });
@@ -2307,7 +2306,7 @@ export async function gatherDiagnoseEvidence(input: {
           label: "Building the plan…",
           stepId: "build_plan",
         });
-        const plan = buildStrategyPlan({ snapshot, scorecard, categories, goals, brief });
+        const plan = buildStrategyPlan({ snapshot, scorecard, categories, goals, brief, categoryWord });
         const cents = (value: number) => formatMoneyMajor(value / 100, snapshot.account.currency);
         const defaultsUsed: string[] = [];
         if (parsed.usedDefaults.includes("budget")) {
@@ -2336,7 +2335,7 @@ export async function gatherDiagnoseEvidence(input: {
             target_roas: brief.targetRoas,
             stretch_targets: brief.stretchTargets,
           },
-          rationale: `Strategy plan: target ${brief.targetRoas}x, ${categories.length} categories, verdict ${plan.benchmark.realityCheck.verdict}`,
+          rationale: `Strategy plan: target ${brief.targetRoas}x, ${categories.length} ${categoryWord === "category" ? "categories" : "services"}, verdict ${plan.benchmark.realityCheck.verdict}`,
         });
       }
     } catch (error) {

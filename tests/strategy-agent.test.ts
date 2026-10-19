@@ -41,10 +41,38 @@ describe("strategy turn in DEMO_MODE", () => {
     expect(gathered.strategyBriefIncomplete).toBeFalsy();
 
     const plan = gathered.toolCalls.find((c) => c.name === "strategy_plan")!;
-    expect(plan.rationale).toMatch(/^Strategy plan: target 10x, 2 categories, verdict (within|stretch|unrealistic)$/);
+    expect(plan.rationale).toMatch(/^Strategy plan: target 10x, 2 services, verdict (within|stretch|unrealistic)$/);
+    expect(result.summary).not.toMatch(/categor/i);
     expect(gathered.evidence).toContain("### Strategy framework");
     // Lead-gen client: user-facing copy says "service".
     expect(gathered.evidence).toContain("### Level 1: spend & return by service");
+  });
+
+  it("says category for an ecommerce client", async () => {
+    const client = getDemoStore().clients.find((c) => c.id === "client_modern_dental")!;
+    client.goals_profile = { ...client.goals_profile, business_model: "ecommerce" };
+    const { gathered, result } = await strategyTurn("client_modern_dental", "Plan to hit 10x ROAS on $500/day");
+    expect(gathered.evidence).toContain("### Level 1: spend & return by category");
+    expect(gathered.evidence).toContain("Word for offerings: category");
+    expect(result.summary).toContain("| Category |");
+    expect(gathered.toolCalls.find((c) => c.name === "strategy_plan")?.rationale).toMatch(/, 2 categories, /);
+  });
+
+  it("lets the operator's correction win over the earlier ask", async () => {
+    const gathered = await gatherDiagnoseEvidence({
+      clientId: "client_trafficradius",
+      request: "$500/day, actually make it 12x",
+      intent: "strategy",
+      history: [
+        { role: "user", content: "Plan to hit 10x" },
+        { role: "assistant", content: "Reply with the missing piece and your strategy brief is done: daily budget?" },
+      ],
+    });
+    expect(gathered.toolCalls.find((c) => c.name === "strategy_plan")?.args).toMatchObject({
+      daily_budget_cents: 50_000,
+      target_roas: 12,
+      stretch_targets: [],
+    });
   });
 
   it("asks for the missing brief values and builds no plan", async () => {

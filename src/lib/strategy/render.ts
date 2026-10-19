@@ -67,7 +67,7 @@ export function renderStrategyEvidence(
       `- Account audit score: ${baseline.score}/100 (grade ${baseline.grade})`,
       `- Spend in period: ${money(baseline.spendCents)} · account ROAS ${roas(baseline.roas)}`,
       `- ${capitalize(words)} loaded: ${baseline.categoriesTotal} (${baseline.categoriesWithSpend} with spend)`,
-      `- Category word: ${word}`,
+      `- Word for offerings: ${word}`,
       `- Currency: ${opts.currency}`,
       ...(opts.defaultsUsed ?? []).map((d) => `- Default used: ${d}`),
     ].join("\n"),

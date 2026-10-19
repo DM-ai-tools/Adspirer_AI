@@ -73,6 +73,7 @@ function render(input: {
     categories: input.categories,
     goals: resolveGoals({ goals_profile: { business_model: "ecommerce", ...input.goals } }),
     brief: { dailyBudgetCents: 10_000, targetRoas: 4, stretchTargets: [], ...input.brief },
+    categoryWord: input.categoryWord ?? "category",
   });
   const attribution = attributeSpendToCategories(input.snapshot, input.categories);
   const text = renderStrategyEvidence(plan, attribution, {
@@ -187,7 +188,7 @@ describe("renderStrategyEvidence", () => {
     expect(inputs).toMatch(/Daily budget: \$100(\.00)?\/day/);
     expect(inputs).toMatch(/Target ROAS: 4×/);
     expect(inputs).toContain("Daily budget not stated: used the client's daily account cap.");
-    expect(inputs).toMatch(/Category word: service/);
+    expect(inputs).toMatch(/Word for offerings: service/);
   });
 
   it("uses the service word for non-ecommerce clients", () => {
@@ -195,6 +196,22 @@ describe("renderStrategyEvidence", () => {
     expect(text).toContain("### Level 1: spend & return by service");
     expect(text).toContain("### Untouched services");
     expect(text).toContain("| Service |");
+  });
+
+  it("never says category anywhere in the evidence when the word is service", () => {
+    const margins = fiveCategories.map((c, i) => ({ ...c, grossMarginPct: i === 0 ? 60 : null }));
+    const unknownRoas = [...fiveAds, { ...ad("Socks", 9_000, null), id: "ad_socks_2" }];
+    for (const categories of [fiveCategories, margins, []]) {
+      const { text, plan } = render({
+        snapshot: snap(unknownRoas),
+        categories,
+        brief: { stretchTargets: [3, 6] },
+        goals: { business_model: "lead_gen", gross_margin_pct: 40 },
+        categoryWord: "service",
+      });
+      expect(plan.assumptions.some((a) => /service/.test(a))).toBe(true);
+      expect(text).not.toMatch(/categor/i);
+    }
   });
 
   it("truncates 60 categories to the top 25 by spend plus a count line", () => {
@@ -246,7 +263,7 @@ describe("STRATEGY_FRAMEWORK", () => {
     expect(STRATEGY_FRAMEWORK).toMatch(/Internal/);
     expect(STRATEGY_FRAMEWORK).toMatch(/3 new concepts a month/);
     expect(STRATEGY_FRAMEWORK).toMatch(/No budget allocated/);
-    expect(STRATEGY_FRAMEWORK).toMatch(/Category word/);
+    expect(STRATEGY_FRAMEWORK).toMatch(/Word for offerings/);
     expect(STRATEGY_FRAMEWORK).toMatch(/do not queue or execute/i);
   });
 });

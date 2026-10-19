@@ -4,6 +4,7 @@ import {
   buildStrategyClarifyingQuestion,
   looksLikeStrategyBriefReply,
   parseStrategyBrief,
+  resolveStrategyBrief,
 } from "@/lib/agent/strategy-brief";
 import {
   detectRequestIntent,
@@ -74,6 +75,55 @@ describe("parseStrategyBrief", () => {
   it("lets an explicit Nx win over the A-to-B form", () => {
     const r = parseStrategyBrief("$4k to get $40k back, aim for 12x, $800/day", defaults());
     expect(r.brief?.targetRoas).toBe(12);
+  });
+});
+
+describe("resolveStrategyBrief (a reply to the brief question)", () => {
+  const asked = (earlier: string) => [
+    { role: "user" as const, content: earlier },
+    { role: "assistant" as const, content: buildStrategyClarifyingQuestion(["budget"]) },
+  ];
+
+  it("lets the reply's target win over the earlier ask, without making it a stretch target", () => {
+    const r = resolveStrategyBrief("$500/day, actually make it 12x", asked("Plan to hit 10x"), defaults());
+    expect(r.brief).toEqual({ dailyBudgetCents: 50000, targetRoas: 12, stretchTargets: [] });
+    expect(r.missing).toEqual([]);
+    expect(r.usedDefaults).toEqual([]);
+  });
+
+  it("lets a restated budget win and keeps the earlier target", () => {
+    const r = resolveStrategyBrief("make it $500/day", asked("Plan to hit 10x ROAS on $300/day"), defaults());
+    expect(r.brief).toEqual({ dailyBudgetCents: 50000, targetRoas: 10, stretchTargets: [] });
+  });
+
+  it("fills only missing fields from the earlier ask and unions the stretch targets", () => {
+    const r = resolveStrategyBrief(
+      "$500/day, 12x, stretch 20x",
+      asked("Plan to hit 10x, stretch 12x and 15x"),
+      defaults(),
+    );
+    expect(r.brief).toEqual({ dailyBudgetCents: 50000, targetRoas: 12, stretchTargets: [15, 20] });
+  });
+
+  it("reports defaults and missing values for the merged brief", () => {
+    const viaCap = resolveStrategyBrief("8x", asked("Build me a strategy"), defaults({ daily_account_cap_cents: 30000 }));
+    expect(viaCap.brief).toEqual({ dailyBudgetCents: 30000, targetRoas: 8, stretchTargets: [] });
+    expect(viaCap.usedDefaults).toEqual(["budget"]);
+    const stillMissing = resolveStrategyBrief("$500/day", asked("Build me a strategy"), defaults());
+    expect(stillMissing.brief).toBeNull();
+    expect(stillMissing.missing).toEqual(["target_roas"]);
+  });
+
+  it("reads the request alone when the last reply was not the brief question", () => {
+    const r = resolveStrategyBrief(
+      "$500/day",
+      [
+        { role: "user", content: "Plan to hit 10x" },
+        { role: "assistant", content: "Here is your audit." },
+      ],
+      defaults(),
+    );
+    expect(r.missing).toEqual(["target_roas"]);
   });
 });
 

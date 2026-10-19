@@ -97,9 +97,15 @@ export function buildStrategyPlan(input: {
   categories: StrategyCategory[];
   goals: ResolvedGoals;
   brief: StrategyBrief;
+  /** Word the assumptions use: "service" for non-ecommerce clients. */
+  categoryWord?: "category" | "service";
 }): StrategyPlan {
   const { snapshot, scorecard, categories, goals, brief } = input;
   const C = PLAN_CONSTANTS;
+  const word = input.categoryWord ?? "category";
+  const words = word === "category" ? "categories" : "services";
+  const Word = word === "category" ? "Category" : "Service";
+  const Words = word === "category" ? "Categories" : "Services";
   const days = snapshot.period.days;
   const accountRoas = snapshot.totals?.roas ?? null;
   const accountMarginPct = referenceMarginPct(goals.gross_margin_pct, categories);
@@ -225,17 +231,17 @@ export function buildStrategyPlan(input: {
 
   const assumptions = [
     `Budget split ${pct(C.split.proven)} proven, ${pct(C.split.promising)} promising, ${pct(C.split.test)} test; an empty tier's share moves to the next tier.`,
-    "Within the proven and promising tiers, budget follows each category's purchase value.",
-    `Test categories are funded at ${money(C.minTestDailyCents)}/day each, highest priority first, as far as the test budget allows; a test budget under ${money(C.minTestDailyCents)} goes entirely to the top test category.`,
-    `A category needs ${money(C.minSpendForVerdictCents)} of spend in the last ${days} days before it is judged; below that it is a test.`,
+    `Within the proven and promising tiers, budget follows each ${word}'s purchase value.`,
+    `Test ${words} are funded at ${money(C.minTestDailyCents)}/day each, highest priority first, as far as the test budget allows; a test budget under ${money(C.minTestDailyCents)} goes entirely to the top test ${word}.`,
+    `A ${word} needs ${money(C.minSpendForVerdictCents)} of spend in the last ${days} days before it is judged; below that it is a test.`,
     `Scaled budgets assumed to return ${pct(C.scaleDecay)} of current ROAS.`,
     accountRoas !== null
       ? `Test budgets assumed to return ${pct(C.testDiscount)} of the account ROAS (${round2(accountRoas)}×).`
       : `Test budgets assumed to return ${pct(C.testDiscount)} of the ${BENCHMARKS.prospectingRoas}× prospecting benchmark, since the account has no ROAS.`,
     accountMarginPct !== null
-      ? `Category targets keep the account's profit per ad dollar: target × ${accountMarginPct}% account margin ÷ category margin; categories without a margin use the account target.`
-      : "No margin is known, so every category uses the account target ROAS.",
-    "Categories below break-even ROAS, or below half their target when the margin is unknown, are held at no budget.",
+      ? `${Word} targets keep the account's profit per ad dollar: target × ${accountMarginPct}% account margin ÷ ${word} margin; ${words} without a margin use the account target.`
+      : `No margin is known, so every ${word} uses the account target ROAS.`,
+    `${Words} below break-even ROAS, or below half their target when the margin is unknown, are held at no budget.`,
     `The target is compared with the higher of the ${BENCHMARKS.retargetingRoas}× retargeting benchmark and the account ROAS: up to ${REALITY.within}× that is within reach, up to ${REALITY.stretch}× a stretch, beyond that unrealistic.`,
     `Benchmarks (${BENCHMARKS.prospectingRoas}× prospecting, ${BENCHMARKS.retargetingRoas}× retargeting ROAS) come from the internal paid-social playbook (generic, not industry-specific).`,
   ];

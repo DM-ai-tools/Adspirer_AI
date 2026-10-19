@@ -62,14 +62,27 @@ function impliedRoas(text: string): number | null {
   return a > 0 && b > 0 ? round2(b / a) : null;
 }
 
-export function parseStrategyBrief(
-  text: string,
-  defaults: { goals: ResolvedGoals; currentDailySpendCents: number | null },
-): { brief: StrategyBrief | null; missing: BriefField[]; usedDefaults: BriefField[] } {
+type BriefDefaults = { goals: ResolvedGoals; currentDailySpendCents: number | null };
+type BriefResult = { brief: StrategyBrief | null; missing: BriefField[]; usedDefaults: BriefField[] };
+/** Values the operator actually wrote, before any default fills a gap. */
+type StatedBrief = { dailyBudgetCents: number | null; targetRoas: number | null; stretch: number[] };
+
+function statedBrief(text: string): StatedBrief {
+  // An explicit "Nx" wins over the "$A to get $B back" form.
+  const values = parseRoasValues(text);
+  return {
+    dailyBudgetCents: parseBudgetCents(text),
+    targetRoas: values.length ? values[0] : impliedRoas(text),
+    stretch: values.slice(1),
+  };
+}
+
+/** Fills gaps from the client's goals / current spend and reports what is still missing. */
+function completeBrief(stated: StatedBrief, defaults: BriefDefaults): BriefResult {
   const usedDefaults: BriefField[] = [];
   const missing: BriefField[] = [];
 
-  let dailyBudgetCents = parseBudgetCents(text);
+  let dailyBudgetCents = stated.dailyBudgetCents;
   if (dailyBudgetCents == null) {
     const fallback = defaults.goals.daily_account_cap_cents ?? defaults.currentDailySpendCents;
     if (fallback != null && fallback > 0) {
@@ -80,16 +93,7 @@ export function parseStrategyBrief(
     }
   }
 
-  // An explicit "Nx" wins over the "$A to get $B back" form.
-  const values = parseRoasValues(text);
-  let targetRoas: number | null = null;
-  let stretch: number[] = [];
-  if (values.length) {
-    targetRoas = values[0];
-    stretch = values.slice(1);
-  } else {
-    targetRoas = impliedRoas(text);
-  }
+  let targetRoas = stated.targetRoas;
   if (targetRoas == null) {
     const fallback = defaults.goals.target_roas;
     if (fallback != null && fallback > 0) {
@@ -104,8 +108,12 @@ export function parseStrategyBrief(
     return { brief: null, missing, usedDefaults };
   }
   const target = targetRoas;
-  const stretchTargets = [...new Set(stretch)].filter((v) => v !== target).sort((a, b) => a - b);
+  const stretchTargets = [...new Set(stated.stretch)].filter((v) => v !== target).sort((a, b) => a - b);
   return { brief: { dailyBudgetCents, targetRoas: target, stretchTargets }, missing, usedDefaults };
+}
+
+export function parseStrategyBrief(text: string, defaults: BriefDefaults): BriefResult {
+  return completeBrief(statedBrief(text), defaults);
 }
 
 export function buildStrategyClarifyingQuestion(missing: BriefField[]): string {
@@ -128,14 +136,30 @@ export function buildStrategyClarifyingQuestion(missing: BriefField[]): string {
 }
 
 /**
- * The text to read the brief from. When this turn answers the brief question,
- * the operator's earlier ask comes first so values given there still count.
+ * The brief for this turn. When it answers the brief question, the reply and
+ * the operator's earlier ask are read separately: the reply's budget and target
+ * win, the earlier ask fills only what the reply leaves out, and stretch
+ * targets come from both.
  */
-export function strategyBriefText(request: string, history: AgentHistoryMessage[] = []): string {
+export function resolveStrategyBrief(
+  request: string,
+  history: AgentHistoryMessage[] = [],
+  defaults: BriefDefaults,
+): BriefResult {
   const at = history.findLastIndex((m) => m.role === "assistant");
-  if (at < 0 || !history[at].content.toLowerCase().includes(STRATEGY_BRIEF_MARKER)) return request;
-  const earlier = history.slice(0, at).findLast((m) => m.role === "user");
-  return earlier ? `${earlier.content}\n${request}` : request;
+  const answersQuestion = at >= 0 && history[at].content.toLowerCase().includes(STRATEGY_BRIEF_MARKER);
+  const earlier = answersQuestion ? history.slice(0, at).findLast((m) => m.role === "user") : undefined;
+  if (!earlier) return parseStrategyBrief(request, defaults);
+  const now = statedBrief(request);
+  const before = statedBrief(earlier.content);
+  return completeBrief(
+    {
+      dailyBudgetCents: now.dailyBudgetCents ?? before.dailyBudgetCents,
+      targetRoas: now.targetRoas ?? before.targetRoas,
+      stretch: [...before.stretch, ...now.stretch],
+    },
+    defaults,
+  );
 }
 
 /** A short reply with a money amount and/or an Nx / ROAS value. */

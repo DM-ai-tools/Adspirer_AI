@@ -8,7 +8,7 @@ export const STRATEGY_FRAMEWORK = `
 # Strategy report method
 
 Use only numbers from the evidence: budgets, spend, revenue, ROAS, coverage, scores and benchmarks. If a number is not in the evidence, say it is not available. Never estimate one.
-Use the **Category word** from "Strategy inputs" ("category" or "service") everywhere you would say category or service.
+Use the **Word for offerings** from "Strategy inputs" ("category" or "service") everywhere you would say category or service, including in headings.
 This is a recommendation only. Do not queue or execute anything, propose no tool JSON, and do not say anything in Meta was changed.
 
 ## Required report format (these headings, in this order)
