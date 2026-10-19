@@ -15,7 +15,33 @@ async function clientGoals(clientId: string): Promise<ResolvedGoals> {
     return resolveGoals({ goals_profile: {} });
   }
 }
+
+/** Active services / categories as stored. Unlike ensureClientServices, never seeds a default. */
+async function activeClientServices(clientId: string): Promise<ClientService[]> {
+  const config = getConfig();
+  if (config.isDemoMode || !config.hasSupabase) {
+    return getDemoStore().clientServices.filter((s) => s.client_id === clientId && s.is_active);
+  }
+  const { createAdminClient } = await import("@/lib/supabase/admin");
+  const { data, error } = await createAdminClient()
+    .from("client_services")
+    .select("*")
+    .eq("client_id", clientId)
+    .eq("is_active", true);
+  if (error) throw new Error(error.message);
+  return (data ?? []) as ClientService[];
+}
 import { scopeAuditSnapshot } from "@/lib/audit/meta-audit-data";
+import { categoriesFromServices } from "@/lib/strategy/categories";
+import { attributeSpendToCategories } from "@/lib/strategy/category-attribution";
+import { buildStrategyPlan } from "@/lib/strategy/plan";
+import { renderStrategyEvidence } from "@/lib/strategy/render";
+import { STRATEGY_FRAMEWORK } from "@/lib/agent/strategy-framework";
+import {
+  buildStrategyClarifyingQuestion,
+  parseStrategyBrief,
+  strategyBriefText,
+} from "@/lib/agent/strategy-brief";
 import {
   renderAdSetEvidence,
   renderOptimisationSignals,
@@ -78,7 +104,7 @@ import {
 } from "@/lib/landing/verified-destinations";
 import { logger } from "@/lib/observability/logger";
 import { resolvePrimaryAccountId } from "@/lib/adspirer/resolve-meta-account";
-import type { ConnectedMetaAccount, WorkspaceDocument } from "@/types";
+import type { ClientService, ConnectedMetaAccount, WorkspaceDocument } from "@/types";
 import type { CreativeDraft } from "@/lib/creatives/drafts";
 
 function activeSystemPrompt(clientContext: string): string {
@@ -503,6 +529,11 @@ function writingLabel(input: WriterInput): string {
   if (input.reportDraft) return "Formatting report…";
   const intent = resolveWriterIntent(input);
   if (intent === "chat") return "Answering…";
+  if (intent === "strategy") {
+    return input.toolEvidence?.includes("### Strategy brief incomplete")
+      ? "Asking for budget & target ROAS…"
+      : "Writing strategy…";
+  }
   return REPORT_INTENTS.has(intent) ? "Writing report…" : "Writing reply…";
 }
 
@@ -566,6 +597,28 @@ function buildWriterMessages(input: WriterInput): {
             "- Recommendations only — wait for an explicit optimize ask before mutations.",
           ]
         : [];
+
+  const strategyBriefIncomplete = evidence.includes("### Strategy brief incomplete");
+  const strategyReady = evidence.includes("### Strategy inputs");
+  const strategyRules =
+    intent === "strategy"
+      ? [
+          ...(strategyBriefIncomplete
+            ? [
+                "- Strategy brief is incomplete: ask ONLY for the missing values, using the question in the evidence.",
+                "- Do NOT build a plan, allocation or projection yet, and do NOT invent spend or ROAS.",
+              ]
+            : strategyReady
+              ? [
+                  "- Write the strategy report using the headings in “Strategy framework”, in order.",
+                  "- Use only numbers from the strategy evidence; say a number is not available rather than estimate it.",
+                  "- Use the Category word from “Strategy inputs” for categories / services.",
+                  "- If Level 3 says “No budget allocated”, explain why and what has to change; never invent an allocation.",
+                ]
+              : ["- The strategy plan could not be built: say what failed from the evidence. Do NOT invent a plan."]),
+          "- Strategy is recommend-only: do NOT append tool JSON, do NOT queue Approvals, do NOT say Meta was changed.",
+        ]
+      : [];
 
   const optimizeRules =
     intent === "optimize"
@@ -646,6 +699,7 @@ function buildWriterMessages(input: WriterInput): {
         "- When you queue Approvals, say in one sentence what is waiting in Approvals and that nothing changes in Meta until it is approved. Never claim Meta mutations applied yet.",
         "- If they asked for Word/PDF export, deliver a complete markdown report and tell them to use Export Word / Export PDF under the message.",
         ...auditRules,
+        ...strategyRules,
         ...optimizeRules,
       ]
         .filter(Boolean)
@@ -851,7 +905,11 @@ async function finalizeWriterResult(args: {
   return {
     summary: display,
     messages: [{ role: "assistant", content: display }],
-    toolCalls: input.reportDraft ? [] : humanized.toolCalls,
+    // A strategy is recommend-only: tool JSON in its reply is never queued.
+    toolCalls:
+      input.reportDraft || resolveWriterIntent(input) === "strategy"
+        ? []
+        : humanized.toolCalls,
     mode,
     ui: input.reportDraft
       ? undefined
@@ -925,11 +983,59 @@ async function runMockAgent(input: {
       ? "Formatting report…"
       : intent === "chat"
         ? "Answering…"
-        : "Preparing summary…",
+        : intent === "strategy"
+          ? "Writing strategy…"
+          : "Preparing summary…",
     stepId: "write_report",
   });
 
   const evidence = input.toolEvidence?.trim();
+
+  // Strategy replies come from the real engine evidence, so DEMO shows the
+  // actual plan: the brief question as asked, or the evidence sections verbatim.
+  if (intent === "strategy" && !input.reportDraft) {
+    const briefAt = evidence?.indexOf("### Strategy brief incomplete") ?? -1;
+    const inputsAt = evidence?.indexOf("### Strategy inputs") ?? -1;
+    let summary: string;
+    if (evidence && briefAt >= 0) {
+      const nextAt = evidence.indexOf("\n### ", briefAt + 1);
+      const block = evidence.slice(briefAt, nextAt < 0 ? undefined : nextAt);
+      // The first paragraph is writer guidance; the rest is the question itself.
+      const question = block.split("\n\n").slice(1).join("\n\n").trim();
+      summary = question || "I need a daily budget and a target ROAS to build the strategy.";
+    } else if (evidence && inputsAt >= 0) {
+      const frameworkAt = evidence.indexOf("### Strategy framework", inputsAt);
+      const body = evidence.slice(inputsAt, frameworkAt < 0 ? undefined : frameworkAt).trim();
+      summary = [
+        "## Strategy plan (demo)",
+        "",
+        body,
+        "",
+        "This is a recommendation only — nothing in Meta has changed.",
+      ].join("\n");
+    } else {
+      summary = [
+        "### Strategy",
+        "I couldn't build the strategy plan for this client yet.",
+        evidence ?? "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+    }
+    await input.onProgress?.({
+      phase: "write_report",
+      label: "Writing strategy…",
+      stepId: "write_report",
+      summary,
+      delta: summary,
+    });
+    return {
+      summary,
+      messages: [{ role: "assistant", content: summary }],
+      toolCalls: [],
+      mode: "mock",
+    };
+  }
 
   if (intent === "chat" && !input.reportDraft) {
     const summary =
@@ -1390,6 +1496,8 @@ export async function gatherDiagnoseEvidence(input: {
   auditBriefingIncomplete?: boolean;
   /** Deterministic checklist table appended to the audit reply (and exports). */
   auditAppendix?: string;
+  /** True when a strategy needs a daily budget or target ROAS before planning. */
+  strategyBriefIncomplete?: boolean;
 }> {
   const intent = input.intent ?? detectRequestIntent(input.request);
   const preloadedAccounts = input.preloaded?.metaAccounts
@@ -1419,6 +1527,7 @@ export async function gatherDiagnoseEvidence(input: {
   let targetingPicker: TargetingPickerUi | undefined;
   let auditBriefingIncomplete = false;
   let auditAppendix: string | undefined;
+  let strategyBriefIncomplete = false;
 
   const targetingSubmitted =
     /\badvanced targeting selections\b/i.test(input.request) ||
@@ -2131,6 +2240,110 @@ export async function gatherDiagnoseEvidence(input: {
         `### Campaigns\n- Failed: ${
           error instanceof Error ? error.message : String(error)
         }`,
+      );
+    }
+  }
+
+  // Goal-driven strategy: snapshot first (it supplies the current daily spend
+  // the brief can fall back on), then the brief, then the plan engine. The
+  // writer gets the engine's numbers and the three-level report method.
+  // Recommend only — nothing here proposes or queues an execute tool.
+  if (accountId && intent === "strategy") {
+    await input.onProgress?.({
+      phase: "fetch_overview",
+      label: "Loading the account snapshot…",
+      stepId: "fetch_overview",
+    });
+    try {
+      if (!provider.getAuditSnapshot) {
+        throw new Error("this Meta connection can't load an account snapshot");
+      }
+      const range = parseDateRangeFromText("last 30 days")!;
+      const snapshot = await provider.getAuditSnapshot(accountId, {
+        since: range.dateStart,
+        until: range.dateStop,
+        days: 30,
+      });
+      const goals = await clientGoals(input.clientId);
+      const currentDailySpendCents = snapshot.totals
+        ? Math.round(snapshot.totals.spendCents / snapshot.period.days)
+        : null;
+      const parsed = parseStrategyBrief(strategyBriefText(input.request, input.history), {
+        goals,
+        currentDailySpendCents,
+      });
+
+      if (!parsed.brief) {
+        strategyBriefIncomplete = true;
+        sections.push(
+          [
+            "### Strategy brief incomplete",
+            `- Missing: ${parsed.missing.join(", ")}`,
+            "Ask ONLY for the missing values below. Do NOT build a plan or invent numbers.",
+            "Do NOT queue optimize or execute tools.",
+            "",
+            buildStrategyClarifyingQuestion(parsed.missing),
+          ].join("\n"),
+        );
+      } else {
+        const brief = parsed.brief;
+        const categoryWord = goals.business_model === "ecommerce" ? "category" : "service";
+        await input.onProgress?.({
+          phase: "pull_insights",
+          label: `Matching spend & return to each ${categoryWord}…`,
+          stepId: "pull_insights",
+        });
+        const categories = categoriesFromServices(await activeClientServices(input.clientId));
+        const attribution = attributeSpendToCategories(snapshot, categories);
+        const scorecard = evaluateCheckpoints(snapshot, { goals });
+        toolCalls.push({
+          name: "audit_checkpoints",
+          args: { account_id: accountId, date_start: range.dateStart, date_stop: range.dateStop },
+          rationale: `Audit checkpoints: ${scorecard.score}/100`,
+        });
+
+        await input.onProgress?.({
+          phase: "build_plan",
+          label: "Building the plan…",
+          stepId: "build_plan",
+        });
+        const plan = buildStrategyPlan({ snapshot, scorecard, categories, goals, brief });
+        const cents = (value: number) => formatMoneyMajor(value / 100, snapshot.account.currency);
+        const defaultsUsed: string[] = [];
+        if (parsed.usedDefaults.includes("budget")) {
+          defaultsUsed.push(
+            goals.daily_account_cap_cents
+              ? `Daily budget not stated: used the client's daily account cap (${cents(brief.dailyBudgetCents)}/day).`
+              : `Daily budget not stated: used the current daily spend, averaged over the last ${snapshot.period.days} days (${cents(brief.dailyBudgetCents)}/day).`,
+          );
+        }
+        if (parsed.usedDefaults.includes("target_roas")) {
+          defaultsUsed.push(`Target ROAS not stated: used the client's target ROAS (${brief.targetRoas}×) from their goals.`);
+        }
+        sections.push(
+          renderStrategyEvidence(plan, attribution, {
+            currency: snapshot.account.currency,
+            categoryWord,
+            defaultsUsed,
+          }),
+        );
+        sections.push(["### Strategy framework (write the report with these headings)", STRATEGY_FRAMEWORK].join("\n"));
+        toolCalls.push({
+          name: "strategy_plan",
+          args: {
+            account_id: accountId,
+            daily_budget_cents: brief.dailyBudgetCents,
+            target_roas: brief.targetRoas,
+            stretch_targets: brief.stretchTargets,
+          },
+          rationale: `Strategy plan: target ${brief.targetRoas}x, ${categories.length} categories, verdict ${plan.benchmark.realityCheck.verdict}`,
+        });
+      }
+    } catch (error) {
+      sections.push(
+        `### Strategy plan\n- Could not build the plan: ${
+          error instanceof Error ? error.message : String(error)
+        }. Say the strategy could not be built and why; never invent spend, ROAS or an allocation.`,
       );
     }
   }
@@ -2921,6 +3134,7 @@ export async function gatherDiagnoseEvidence(input: {
     targetingPicker,
     auditBriefingIncomplete,
     auditAppendix,
+    strategyBriefIncomplete,
   };
 }
 

@@ -1,3 +1,4 @@
+import type { AgentHistoryMessage } from "@/lib/agent/history";
 import type { ResolvedGoals } from "@/lib/clients/goals";
 import type { StrategyBrief } from "@/lib/strategy/plan";
 
@@ -124,6 +125,17 @@ export function buildStrategyClarifyingQuestion(missing: BriefField[]): string {
     "",
     "Reply with the missing piece(s) and I’ll build the plan. It’s a recommendation only — I won’t change any campaigns.",
   ].join("\n");
+}
+
+/**
+ * The text to read the brief from. When this turn answers the brief question,
+ * the operator's earlier ask comes first so values given there still count.
+ */
+export function strategyBriefText(request: string, history: AgentHistoryMessage[] = []): string {
+  const at = history.findLastIndex((m) => m.role === "assistant");
+  if (at < 0 || !history[at].content.toLowerCase().includes(STRATEGY_BRIEF_MARKER)) return request;
+  const earlier = history.slice(0, at).findLast((m) => m.role === "user");
+  return earlier ? `${earlier.content}\n${request}` : request;
 }
 
 /** A short reply with a money amount and/or an Nx / ROAS value. */
