@@ -1,6 +1,9 @@
 import type { ResolvedGoals } from "@/lib/clients/goals";
 import type { StrategyBrief } from "@/lib/strategy/plan";
 
+/** Only the strategy clarifying question says this; history routing keys on it. */
+export const STRATEGY_BRIEF_MARKER = "strategy brief";
+
 type BriefField = "budget" | "target_roas";
 
 const NUM = String.raw`(\d[\d,]*(?:\.\d+)?)`;
@@ -115,7 +118,7 @@ export function buildStrategyClarifyingQuestion(missing: BriefField[]): string {
     );
   }
   return [
-    `I can build a **strategy** that shows how to reach your return goal — I just need ${asks.length > 1 ? "two details" : "one detail"} first:`,
+    `I can build a **strategy** that shows how to reach your return goal — I just need ${asks.length > 1 ? "two details" : "one detail"} to finish your strategy brief:`,
     "",
     ...asks.map((a, i) => `${i + 1}. ${a}`),
     "",

@@ -1,6 +1,6 @@
 import type { AgentHistoryMessage } from "@/lib/agent/history";
 import { looksLikeAuditBriefReply, parseDateRangeFromText } from "@/lib/agent/audit-brief";
-import { looksLikeStrategyBriefReply } from "@/lib/agent/strategy-brief";
+import { looksLikeStrategyBriefReply, STRATEGY_BRIEF_MARKER } from "@/lib/agent/strategy-brief";
 
 export type TaskStepState =
   | "pending"
@@ -85,10 +85,17 @@ export function isConversationalTurn(request: string): boolean {
 const EXPLICIT_AUDIT =
   /\b(?:audit\w*|diagnos\w*|health\s*-?\s*check|account\s+health|full\s+(?:account\s+)?review|review\s+(?:of\s+)?(?:the\s+|my\s+|our\s+|this\s+)?(?:whole\s+|entire\s+|full\s+)?(?:ad\s+)?account)\b/;
 
-/** Asking for a plan toward a return goal. A bare "target roas" is weaker: see below. */
-const STRATEGY_STRONG =
-  /\bstrategy\b|\bgame\s*plan\b|\bplan\s+to\s+(?:hit|reach|get)\b|\d+(?:\.\d+)?\s*[x×]\s*roas\b|\broas\s+of\s+\d|\bstretch\s+targets?\b|\$\s*[\d,.]+\s*k?\s+to\s+(?:get|make|generate|bring\s+in|return)\s+(?:me\s+)?\$\s*[\d,.]+\s*k?\s*back|\b(?:hit|reach|get)\s+(?:a\s+)?\d+(?:\.\d+)?\s*[x×]\b/;
-const STRATEGY_WEAK = /\btarget\s+roas\b/;
+/** A return goal stated outright: "10x roas", "roas of 8", "reach a 12x target", "$4k to get $40k back". */
+const STRATEGY_GOAL =
+  /\d+(?:\.\d+)?\s*[x×]\s*(?:roas|target|return)\b|\broas\s+of\s+\d|\bstretch\s+targets?\b|\$\s*[\d,.]+\s*k?\s+to\s+(?:get|make|generate|bring\s+in|return)\s+(?:me\s+)?\$\s*[\d,.]+\s*k?\s*back|\b(?:hit|reach|get)\s+(?:a\s+)?\d+(?:\.\d+)?\s*[x×]\s*(?:roas|return|target|back)\b/;
+/** Words that ask for a plan; on their own they don't skip the chat check. */
+const STRATEGY_PLAN_WORDS = /\bstrategy\b|\bgame\s*plan\b|\bplan\s+to\s+(?:hit|reach|get)\b/;
+/** "target roas" counts only next to a plan / how-to signal. */
+const STRATEGY_TARGET_ROAS =
+  /\btarget\s+roas\b[\s\S]*\b(?:plan|how\s+(?:do|can|to))\b|\b(?:plan|how\s+(?:do|can|to))\b[\s\S]*\btarget\s+roas\b/;
+/** Other flows that mention a ROAS number but are not asking for a plan. */
+const NOT_STRATEGY_ACTION =
+  /\b(?:optimi[sz]\w*|create|launch|pause|resume|queue|apply|implement|execute|set\s*up)\b/;
 const DEFINITION_WORDS = /\b(?:mean|means|define|definition)\b/;
 
 export function detectRequestIntent(request: string): RequestIntent {
@@ -105,14 +112,16 @@ export function detectRequestIntent(request: string): RequestIntent {
   }
   // "what's the plan to reach a 12x target" opens like a definitional question
   // but is a strategy ask; "what does 10x roas mean" stays a definition.
-  const strategyAsk = STRATEGY_STRONG.test(text) && !DEFINITION_WORDS.test(text);
-  if (!strategyAsk && isConversationalTurn(request)) {
+  const planWords = STRATEGY_PLAN_WORDS.test(text);
+  const goalAsk = STRATEGY_GOAL.test(text) && !DEFINITION_WORDS.test(text);
+  if (!goalAsk && isConversationalTurn(request)) {
     return "chat";
   }
-  // Strategy before optimize/audit, unless the operator is queueing changes.
+  // Strategy before optimize/audit. Optimize / create / pause / queue wording
+  // wins unless the operator also says "strategy", "game plan" or "plan to".
   if (
-    (strategyAsk || STRATEGY_WEAK.test(text)) &&
-    !/\b(?:queue|apply|implement|execute)\b/.test(text)
+    (goalAsk || planWords || STRATEGY_TARGET_ROAS.test(text)) &&
+    (planWords || !NOT_STRATEGY_ACTION.test(text))
   ) {
     return "strategy";
   }
@@ -135,7 +144,8 @@ export function detectRequestIntent(request: string): RequestIntent {
       text,
     ) ||
     /\bselected ad\b.*\boptim/.test(text) ||
-    /\boptimize\b.*\b(ad|campaign|budget|placement)/.test(text)
+    /\boptimize\b.*\b(ad|campaign|budget|placement)/.test(text) ||
+    /\boptimi[sz]\w*\b[\s\S]*\broas\b|\broas\b[\s\S]*\boptimi[sz]\w*/.test(text)
   ) {
     return "optimize";
   }
@@ -238,7 +248,7 @@ export function detectRequestIntentWithHistory(
     if (
       last &&
       last.content.length < 2000 &&
-      /\b(?:daily budget|target roas)\b/i.test(last.content) &&
+      last.content.toLowerCase().includes(STRATEGY_BRIEF_MARKER) &&
       looksLikeStrategyBriefReply(request)
     ) {
       return "strategy";

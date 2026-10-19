@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  STRATEGY_BRIEF_MARKER,
   buildStrategyClarifyingQuestion,
   looksLikeStrategyBriefReply,
   parseStrategyBrief,
@@ -115,6 +116,32 @@ describe("strategy intent", () => {
     expect(detectRequestIntent("what does 10x roas mean")).toBe("chat");
   });
 
+  it.each([
+    ["optimize for 5x roas", "optimize"],
+    ["hit 10x roas by optimizing budgets", "optimize"],
+    ["create a campaign targeting 4x roas at $50/day", "create_campaign"],
+    ["set my target roas to 4", "general"],
+    ["get 3x more leads", "general"],
+    ["reach 5x more customers", "general"],
+    ["what is the strategy behind advantage+", "chat"],
+    ["increase the budget to $50/day", "budget"],
+    ["create a campaign with $30/day budget", "create_campaign"],
+    ["what does roas mean", "chat"],
+  ])("routes %s to %s", (q, expected) => {
+    expect(detectRequestIntent(q)).toBe(expected);
+  });
+
+  it("does not route 'pause campaigns under target roas' to strategy", () => {
+    expect(detectRequestIntent("pause campaigns under target roas")).not.toBe("strategy");
+  });
+
+  it("does not hijack a campaign-budget reply", () => {
+    const history = [
+      { role: "assistant" as const, content: "What daily budget do you want for the new campaign?" },
+    ];
+    expect(detectRequestIntentWithHistory("$50/day", history)).not.toBe("strategy");
+  });
+
   it("continues an open strategy brief", () => {
     const history = [
       { role: "user" as const, content: "build a strategy" },
@@ -127,7 +154,7 @@ describe("strategy intent", () => {
 
   it("does not continue after a long delivered report", () => {
     const history = [
-      { role: "assistant" as const, content: "daily budget target ROAS ".repeat(200) },
+      { role: "assistant" as const, content: `${STRATEGY_BRIEF_MARKER} `.repeat(200) },
     ];
     expect(detectRequestIntentWithHistory("$900 a day", history)).not.toBe("strategy");
   });
