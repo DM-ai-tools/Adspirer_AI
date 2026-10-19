@@ -1,6 +1,7 @@
 import type { MetaGraphClient } from "@/lib/meta/graph-client";
 import { metaMinorToCents } from "@/lib/meta/currency";
 import { resultLabelFor } from "@/lib/meta/account-dashboard";
+import { extractCreativeDestination } from "@/lib/meta/extract-creative-destination";
 
 /**
  * Everything the audit checkpoints need, pulled from Meta in one pass:
@@ -341,7 +342,7 @@ export async function fetchMetaAuditSnapshot(
         limit: 200,
       })),
       settle("Ads", warnings, paged(graph, `${id}/ads`, {
-        fields: "id,name,adset_id,campaign_id,effective_status,created_time,issues_info,creative{object_type,video_id,image_hash,asset_feed_spec,url_tags,link_url}",
+        fields: "id,name,adset_id,campaign_id,effective_status,created_time,issues_info,creative{object_type,video_id,image_hash,asset_feed_spec,url_tags,link_url,object_story_spec}",
         effective_status: notDeleted,
         limit: 200,
       }, 3)),
@@ -543,7 +544,7 @@ export async function fetchMetaAuditSnapshot(
         issue: str(issues[0]?.error_summary),
         performance: performanceFrom(adPerf.get(String(a.id))),
         urlTags: str(creative.url_tags),
-        linkUrl: str(creative.link_url),
+        linkUrl: str(creative.link_url) ?? extractCreativeDestination(creative).landing_page_url,
         frequency7d: adWeekFrequency.has(String(a.id)) ? num(adWeekFrequency.get(String(a.id))!.frequency) : null,
         rankings: (() => {
           const row = adPerf.get(String(a.id));
