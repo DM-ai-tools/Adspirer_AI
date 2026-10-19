@@ -13,7 +13,7 @@ This is a recommendation only. Do not queue or execute anything, propose no tool
 
 ## Required report format (these headings, in this order)
 1. **Bottom line**: can this budget hit this target, and what's the honest gap. Give the daily budget, the target ROAS, the plan's blended ROAS from "Plan total", and the Level 2 verdict in two or three sentences.
-2. **Level 1: where you are**: spend, revenue and ROAS by category from the Level 1 table, the account audit score, unmatched spend and coverage %. Name the untouched categories.
+2. **Level 1: where you are**: spend, revenue and ROAS by category from the Level 1 table, the account audit score, unmatched spend, coverage % and the ad-level spend covered. Name the untouched categories. If Level 1 says the figures are partial, say so first and call those categories "not seen in the loaded ads", never "no spend".
 3. **Level 2: how it compares**: name the reference and its source from the Level 2 table, and say what the verdict means. Then show two routes side by side (a two-column table works):
    - **External:** what competitors run, taken from the competitor brief highlights in the client context. If there are none, say so.
    - **Internal:** the client's own categories with no spend ("Untouched") and the Meta capabilities marked "Not used", each with its reason.

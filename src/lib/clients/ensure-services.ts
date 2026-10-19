@@ -3,6 +3,21 @@ import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
 import { nowIso } from "@/lib/utils";
 
+/** Every service row for a client, active and inactive, as stored. Never seeds a default. */
+export async function listClientServices(clientId: string): Promise<ClientService[]> {
+  const config = getConfig();
+  if (config.isDemoMode || !config.hasSupabase) {
+    return getDemoStore().clientServices.filter((s) => s.client_id === clientId);
+  }
+  const { createAdminClient } = await import("@/lib/supabase/admin");
+  const { data, error } = await createAdminClient()
+    .from("client_services")
+    .select("*")
+    .eq("client_id", clientId);
+  if (error) throw new Error(error.message);
+  return (data ?? []) as ClientService[];
+}
+
 /**
  * Ensure a client has at least one service row so Competitors / Creatives
  * can run without a separate setup step.

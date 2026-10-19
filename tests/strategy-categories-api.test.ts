@@ -85,6 +85,21 @@ describe("strategy categories API", () => {
     expect((await PATCH(req("PATCH", { name: "RUGS" }), itemCtx(service.id))).status).toBe(200);
   });
 
+  it("GET with seed=0 lists active and inactive rows and never seeds a default", async () => {
+    as("operator");
+    const { GET } = await import("@/app/api/clients/[id]/services/route");
+    const get = (id: string) =>
+      GET(new Request(`http://app.test/api/clients/${id}/services?seed=0`, { headers: { host: "app.test" } }), listCtx(id));
+    const empty = await get("client_trafficradius");
+    expect(empty.status).toBe(200);
+    expect(((await empty.json()) as { data: { services: Svc[] } }).data.services).toEqual([]);
+    expect(getDemoStore().clientServices.filter((s) => s.client_id === "client_trafficradius")).toEqual([]);
+
+    getDemoStore().clientServices.find((s) => s.id === "svc_mdc_veneers")!.is_active = false;
+    const listed = ((await (await get(CLIENT)).json()) as { data: { services: Svc[] } }).data.services;
+    expect(listed.map((s) => s.id).sort()).toEqual(["svc_mdc_implants", "svc_mdc_veneers"]);
+  });
+
   it("403s a user without client access", async () => {
     const store = getDemoStore();
     const op = as("operator");

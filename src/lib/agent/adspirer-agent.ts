@@ -32,10 +32,10 @@ async function activeClientServices(clientId: string): Promise<ClientService[]> 
   return (data ?? []) as ClientService[];
 }
 import { scopeAuditSnapshot } from "@/lib/audit/meta-audit-data";
-import { categoriesFromServices } from "@/lib/strategy/categories";
+import { asksAboutCategorySpend, categoriesFromServices } from "@/lib/strategy/categories";
 import { attributeSpendToCategories } from "@/lib/strategy/category-attribution";
 import { buildStrategyPlan } from "@/lib/strategy/plan";
-import { renderStrategyEvidence } from "@/lib/strategy/render";
+import { renderCategorySpendEvidence, renderStrategyEvidence } from "@/lib/strategy/render";
 import { STRATEGY_FRAMEWORK } from "@/lib/agent/strategy-framework";
 import {
   buildStrategyClarifyingQuestion,
@@ -598,11 +598,17 @@ function buildWriterMessages(input: WriterInput): {
         : [];
 
   const strategyBriefIncomplete = evidence.includes("### Strategy brief incomplete");
+  const strategyUnavailable = evidence.includes("### Strategy unavailable");
   const strategyReady = evidence.includes("### Strategy inputs");
   const strategyRules =
     intent === "strategy"
       ? [
-          ...(strategyBriefIncomplete
+          ...(strategyUnavailable
+            ? [
+                "- The strategy plan can't be built: no Meta ad account is mapped to this client. Say that plainly, give the loaded count from “Strategy unavailable”, and say what to do (map the account under Connections).",
+                "- Give NO tiers, allocations, budgets, projections, benchmarks or other numbers, and no generic plan.",
+              ]
+            : strategyBriefIncomplete
             ? [
                 "- Strategy brief is incomplete: ask ONLY for the missing values, using the question in the evidence.",
                 "- Do NOT build a plan, allocation or projection yet, and do NOT invent spend or ROAS.",
@@ -617,7 +623,12 @@ function buildWriterMessages(input: WriterInput): {
               : ["- The strategy plan could not be built: say what failed from the evidence. Do NOT invent a plan."]),
           "- Strategy is recommend-only: do NOT append tool JSON, do NOT queue Approvals, do NOT say Meta was changed.",
         ]
-      : [];
+      : evidence.includes("### Spend & return by")
+        ? [
+            "- For spend or return by category / service, quote only the “Spend & return by” table and its coverage lines; if they say the figures are partial, say so.",
+            "- Do NOT build a plan or suggest budget allocations for this question.",
+          ]
+        : [];
 
   const optimizeRules =
     intent === "optimize"
@@ -1497,6 +1508,8 @@ export async function gatherDiagnoseEvidence(input: {
   auditAppendix?: string;
   /** True when a strategy needs a daily budget or target ROAS before planning. */
   strategyBriefIncomplete?: boolean;
+  /** True only once the strategy plan engine has produced a plan this turn. */
+  strategyPlanBuilt?: boolean;
 }> {
   const intent = input.intent ?? detectRequestIntent(input.request);
   const preloadedAccounts = input.preloaded?.metaAccounts
@@ -1527,6 +1540,7 @@ export async function gatherDiagnoseEvidence(input: {
   let auditBriefingIncomplete = false;
   let auditAppendix: string | undefined;
   let strategyBriefIncomplete = false;
+  let strategyPlanBuilt = false;
 
   const targetingSubmitted =
     /\badvanced targeting selections\b/i.test(input.request) ||
@@ -1558,6 +1572,22 @@ export async function gatherDiagnoseEvidence(input: {
     intent !== "optimize" &&
     intent !== "copy_approved"
   ) {
+    if (intent === "strategy") {
+      // No account, no snapshot: say so instead of letting a generic plan through.
+      const goals = await clientGoals(input.clientId);
+      const word = goals.business_model === "ecommerce" ? "category" : "service";
+      const loaded = categoriesFromServices(await activeClientServices(input.clientId)).length;
+      sections.push(
+        noMappedAccountMessage(),
+        [
+          "### Strategy unavailable",
+          "- No Meta ad account is mapped to this client, so there is no spend or return to plan from.",
+          `- ${loaded} ${loaded === 1 ? word : word === "category" ? "categories" : "services"} loaded for this client.`,
+          "- To fix: map the client's Meta ad account under Connections (connect Facebook, sync accounts, then Add as client / Map), then ask again.",
+        ].join("\n"),
+      );
+      return { accountId: null, evidence: sections.join("\n\n"), toolCalls };
+    }
     return {
       accountId: null,
       evidence: noMappedAccountMessage(),
@@ -2307,6 +2337,7 @@ export async function gatherDiagnoseEvidence(input: {
           stepId: "build_plan",
         });
         const plan = buildStrategyPlan({ snapshot, scorecard, categories, goals, brief, categoryWord });
+        strategyPlanBuilt = true;
         const cents = (value: number) => formatMoneyMajor(value / 100, snapshot.account.currency);
         const defaultsUsed: string[] = [];
         if (parsed.usedDefaults.includes("budget")) {
@@ -2324,6 +2355,7 @@ export async function gatherDiagnoseEvidence(input: {
             currency: snapshot.account.currency,
             categoryWord,
             defaultsUsed,
+            warnings: snapshot.warnings,
           }),
         );
         sections.push(["### Strategy framework (write the report with these headings)", STRATEGY_FRAMEWORK].join("\n"));
@@ -2344,6 +2376,47 @@ export async function gatherDiagnoseEvidence(input: {
           error instanceof Error ? error.message : String(error)
         }. Say the strategy could not be built and why; never invent spend, ROAS or an allocation.`,
       );
+    }
+  }
+
+  // "How much went into bar stools, and what did it return?": spend and return
+  // per category from the snapshot. Figures only, no plan or allocation.
+  if (accountId && (intent === "general" || intent === "budget")) {
+    const categories = categoriesFromServices(await activeClientServices(input.clientId).catch(() => []));
+    if (categories.length && asksAboutCategorySpend(input.request, categories)) {
+      const goals = await clientGoals(input.clientId);
+      const categoryWord = goals.business_model === "ecommerce" ? "category" : "service";
+      await input.onProgress?.({
+        phase: "pull_insights",
+        label: `Matching spend & return to each ${categoryWord}…`,
+        stepId: "pull_insights",
+      });
+      try {
+        if (!provider.getAuditSnapshot) {
+          throw new Error("this Meta connection can't load an account snapshot");
+        }
+        const range = parseDateRangeFromText("last 30 days")!;
+        const snapshot = await provider.getAuditSnapshot(accountId, {
+          since: range.dateStart,
+          until: range.dateStop,
+          days: 30,
+        });
+        sections.push(
+          renderCategorySpendEvidence(attributeSpendToCategories(snapshot, categories), categories, {
+            currency: snapshot.account.currency,
+            categoryWord,
+            periodDays: snapshot.period.days,
+            accountSpendCents: snapshot.totals?.spendCents ?? null,
+            warnings: snapshot.warnings,
+          }),
+        );
+      } catch (error) {
+        sections.push(
+          `### Spend & return by ${categoryWord}\n- Could not load: ${
+            error instanceof Error ? error.message : String(error)
+          }. Say the figures are not available; never estimate them.`,
+        );
+      }
     }
   }
 
@@ -3134,6 +3207,7 @@ export async function gatherDiagnoseEvidence(input: {
     auditBriefingIncomplete,
     auditAppendix,
     strategyBriefIncomplete,
+    strategyPlanBuilt,
   };
 }
 

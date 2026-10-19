@@ -26,3 +26,23 @@ export function categoriesFromServices(services: ClientService[]): StrategyCateg
       priority: s.priority ?? 0,
     }));
 }
+
+const SPEND_RETURN_WORDS = /\b(?:spend|spent|spending|return|returns|returned|revenue|roas|best|top)\b/i;
+const CATEGORY_WORDS = /\b(?:categor(?:y|ies)|services?)\b/i;
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * A question about spend and return by category: it names one of the client's
+ * categories (whole word, any case), or says "category" / "service" next to a
+ * spend, return, best or top word.
+ */
+export function asksAboutCategorySpend(request: string, categories: StrategyCategory[]): boolean {
+  const named = categories.some((c) => {
+    const name = c.name.trim();
+    return name !== "" && new RegExp(`(?<![a-z0-9])${escapeRegExp(name)}(?![a-z0-9])`, "i").test(request);
+  });
+  return named || (CATEGORY_WORDS.test(request) && SPEND_RETURN_WORDS.test(request));
+}

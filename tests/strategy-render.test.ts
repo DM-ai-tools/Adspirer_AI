@@ -80,6 +80,7 @@ function render(input: {
     currency: "USD",
     categoryWord: input.categoryWord ?? "category",
     defaultsUsed: input.defaultsUsed,
+    warnings: input.snapshot.warnings,
   });
   return { plan, text };
 }
@@ -232,6 +233,34 @@ describe("renderStrategyEvidence", () => {
     expect(text).toContain("No categories loaded yet");
     expect(text).not.toMatch(/\| Category \|/);
     expect(section(text, "### Level 3")).toMatch(/No budget allocated: .*no categories/i);
+  });
+
+  it("prints ad-level coverage of account spend and keeps the untouched claim when it is full", () => {
+    const { text } = render({ snapshot: snap(fiveAds, perf(70_000, 2)), categories: fiveCategories });
+    const level1 = section(text, "### Level 1");
+    expect(level1).toMatch(/Ad-level spend covered: \$700(\.00)? of account spend \$700(\.00)? \(100%\)/);
+    expect(level1).not.toMatch(/partial/i);
+    expect(section(text, "### Untouched categories")).toMatch(/1 with no ad spend in the last 30 days: Socks/);
+  });
+
+  it("says per-category figures are partial when the loaded ads cover under 80% of account spend", () => {
+    // 70,000 of 100,000 cents of account spend is in the loaded ads.
+    const { text } = render({ snapshot: snap(fiveAds), categories: fiveCategories });
+    const level1 = section(text, "### Level 1");
+    expect(level1).toMatch(/Ad-level spend covered: \$700(\.00)? of account spend \$1,000(\.00)? \(70%\)/);
+    expect(level1).toMatch(/Per-category figures are partial/);
+    const untouched = section(text, "### Untouched categories");
+    expect(untouched).toMatch(/not seen in the loaded ads: Socks/);
+    expect(untouched).not.toMatch(/no ad spend/);
+  });
+
+  it("prints the snapshot warnings and says figures are partial when the Ads load failed", () => {
+    const failed = { ...snap(fiveAds, perf(70_000, 2)), warnings: ["Ads: (#17) User request limit reached"] };
+    const { text } = render({ snapshot: failed, categories: fiveCategories });
+    const level1 = section(text, "### Level 1");
+    expect(level1).toContain("Snapshot warning: Ads: (#17) User request limit reached");
+    expect(level1).toMatch(/Per-category figures are partial/);
+    expect(section(text, "### Untouched categories")).toMatch(/not seen in the loaded ads/);
   });
 
   it("says plainly when every category is held and nothing is allocated", () => {

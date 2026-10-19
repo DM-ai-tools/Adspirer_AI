@@ -103,7 +103,7 @@ export function CategoriesPanel({
 
   const load = useCallback(async () => {
     try {
-      const data = await apiFetch<{ services: ClientService[] }>(base);
+      const data = await apiFetch<{ services: ClientService[] }>(`${base}?seed=0`);
       setRows(data.services);
       setLoadError(null);
     } catch (err) {

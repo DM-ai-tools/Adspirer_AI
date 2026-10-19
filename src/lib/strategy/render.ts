@@ -2,10 +2,13 @@ import type { CategoryAttribution, CategoryPerformance } from "./category-attrib
 import type { AllocationTier, CategoryAllocation, PlanProjection, StrategyPlan } from "./plan";
 
 type CategoryWord = "category" | "service";
+type Money = (cents: number) => string;
 
 /** Above this many categories the tables collapse to the biggest ones plus a count. */
 const MAX_FULL_ROWS = 40;
 const TRUNCATED_ROWS = 25;
+/** Below this share of account spend in the loaded ads, per-category figures are partial. */
+const MIN_AD_COVERAGE_PCT = 80;
 
 const TIER_ORDER: AllocationTier[] = ["proven", "promising", "test", "hold"];
 
@@ -21,10 +24,128 @@ function roas(value: number | null): string {
   return value === null ? "unknown" : `${value}×`;
 }
 
-function projectionLine(p: PlanProjection, money: (cents: number) => string): string {
+function moneyIn(currency: string): Money {
+  return (cents: number) => {
+    try {
+      return new Intl.NumberFormat("en", {
+        style: "currency",
+        currency,
+        currencyDisplay: "narrowSymbol",
+        maximumFractionDigits: 2,
+      }).format(cents / 100);
+    } catch {
+      return `${(cents / 100).toFixed(2)} ${currency}`;
+    }
+  };
+}
+
+function projectionLine(p: PlanProjection, money: Money): string {
   return p.blendedRoas === null
     ? `${money(p.dailySpendCents)}/day spend, no projected return`
     : `${money(p.dailySpendCents)}/day spend → ${money(p.dailyRevenueCents)}/day projected revenue, blended ROAS ${p.blendedRoas}×`;
+}
+
+/**
+ * How much of the account's spend the loaded ads account for, the snapshot's
+ * load warnings, and whether the per-category figures are therefore partial.
+ */
+function adCoverage(
+  attribution: CategoryAttribution,
+  accountSpendCents: number | null,
+  warnings: string[],
+  word: CategoryWord,
+  money: Money,
+): { lines: string[]; partial: boolean } {
+  const adSpend =
+    attribution.byCategory.reduce((sum, p) => sum + p.spendCents, 0) + attribution.unmatched.spendCents;
+  const pct =
+    accountSpendCents !== null && accountSpendCents > 0
+      ? Math.round((adSpend / accountSpendCents) * 1000) / 10
+      : null;
+  const adsFailed = warnings.some((w) => /^Ads\b/.test(w));
+  const partial = adsFailed || (pct !== null && pct < MIN_AD_COVERAGE_PCT);
+  const lines = [
+    pct === null
+      ? `- Ad-level spend covered: ${money(adSpend)} of account spend (account spend not available)`
+      : `- Ad-level spend covered: ${money(adSpend)} of account spend ${money(accountSpendCents ?? 0)} (${pct}%)`,
+    ...warnings.map((w) => `- Snapshot warning: ${w}`),
+  ];
+  if (partial) {
+    const reason = adsFailed ? "the ads did not load in full" : `the loaded ads cover only ${pct}% of account spend`;
+    lines.push(
+      `- Per-${word} figures are partial: ${reason}. A ${word} with no spend here was not seen in the loaded ads; that does not mean it had no spend.`,
+    );
+  }
+  return { lines, partial };
+}
+
+/** The Level 1 table: spend, revenue, ROAS and match per category, plus the tier when there is a plan. */
+function spendTable(
+  rows: Array<{ categoryId: string; name: string; tier?: AllocationTier }>,
+  perfById: Map<string, CategoryPerformance>,
+  ctx: { word: CategoryWord; days: number; money: Money },
+): string[] {
+  const { word, days, money } = ctx;
+  const withTier = rows.some((r) => r.tier !== undefined);
+  const spendOf = (id: string) => perfById.get(id)?.spendCents ?? 0;
+  const shown =
+    rows.length > MAX_FULL_ROWS
+      ? [...rows].sort((a, b) => spendOf(b.categoryId) - spendOf(a.categoryId)).slice(0, TRUNCATED_ROWS)
+      : rows;
+  const body = shown.map((r) => {
+    const p = perfById.get(r.categoryId);
+    const spend = p?.spendCents ?? 0;
+    const revenue = spend > 0 && p?.roas === null ? "unknown" : money(p?.purchaseValueCents ?? 0);
+    const match = p && p.adIds.length > 0 ? p.matchedBy : "none";
+    return `| ${r.name} | ${money(spend)} | ${revenue} | ${roas(p?.roas ?? null)} |${withTier ? ` ${r.tier} |` : ""} ${match} |`;
+  });
+  const hidden = rows.length - shown.length;
+  return [
+    `| ${capitalize(word)} | Spend (${days}d) | Revenue | ROAS |${withTier ? " Tier |" : ""} Match |`,
+    `| --- | --- | --- | --- |${withTier ? " --- |" : ""} --- |`,
+    ...body,
+    ...(hidden > 0 ? [`…and ${hidden} more ${plural(word)} (top ${TRUNCATED_ROWS} by spend shown).`] : []),
+  ];
+}
+
+function unmatchedLines(attribution: CategoryAttribution, word: CategoryWord, money: Money): string[] {
+  return [
+    `- Unmatched spend: ${money(attribution.unmatched.spendCents)} across ${attribution.unmatched.adIds.length} ads (not attributed to any ${word})`,
+    `- Coverage: ${attribution.coveragePct}% of ad spend matched to a ${word}`,
+  ];
+}
+
+/**
+ * Spend and return per category for a question about them, with no plan: the
+ * Level 1 table, unmatched spend and how much of the account the ads cover.
+ */
+export function renderCategorySpendEvidence(
+  attribution: CategoryAttribution,
+  categories: Array<{ id: string; name: string }>,
+  opts: {
+    currency: string;
+    categoryWord: CategoryWord;
+    periodDays: number;
+    accountSpendCents: number | null;
+    warnings?: string[];
+  },
+): string {
+  const word = opts.categoryWord;
+  const money = moneyIn(opts.currency);
+  const perfById = new Map(attribution.byCategory.map((p) => [p.categoryId, p]));
+  const coverage = adCoverage(attribution, opts.accountSpendCents, opts.warnings ?? [], word, money);
+  return [
+    `### Spend & return by ${word}`,
+    `- Period: last ${opts.periodDays} days. Figures only: no plan, no budget allocation.`,
+    ...spendTable(
+      categories.map((c) => ({ categoryId: c.id, name: c.name })),
+      perfById,
+      { word, days: opts.periodDays, money },
+    ),
+    "",
+    ...unmatchedLines(attribution, word, money),
+    ...coverage.lines,
+  ].join("\n");
 }
 
 /**
@@ -34,23 +155,18 @@ function projectionLine(p: PlanProjection, money: (cents: number) => string): st
 export function renderStrategyEvidence(
   plan: StrategyPlan,
   attribution: CategoryAttribution,
-  opts: { currency: string; categoryWord: CategoryWord; defaultsUsed?: string[] },
+  opts: {
+    currency: string;
+    categoryWord: CategoryWord;
+    defaultsUsed?: string[];
+    /** The snapshot's load warnings; an "Ads" failure makes the per-category figures partial. */
+    warnings?: string[];
+  },
 ): string {
   const word = opts.categoryWord;
   const words = plural(word);
   const Word = capitalize(word);
-  const money = (cents: number) => {
-    try {
-      return new Intl.NumberFormat("en", {
-        style: "currency",
-        currency: opts.currency,
-        currencyDisplay: "narrowSymbol",
-        maximumFractionDigits: 2,
-      }).format(cents / 100);
-    } catch {
-      return `${(cents / 100).toFixed(2)} ${opts.currency}`;
-    }
-  };
+  const money = moneyIn(opts.currency);
   const perfById = new Map<string, CategoryPerformance>(attribution.byCategory.map((p) => [p.categoryId, p]));
   const { baseline, brief, allocations } = plan;
   const days = baseline.periodDays;
@@ -73,41 +189,23 @@ export function renderStrategyEvidence(
     ].join("\n"),
   );
 
-  const unmatchedLines = [
-    `- Unmatched spend: ${money(attribution.unmatched.spendCents)} across ${attribution.unmatched.adIds.length} ads (not attributed to any ${word})`,
-    `- Coverage: ${attribution.coveragePct}% of ad spend matched to a ${word}`,
-  ];
-  if (none) {
-    out.push(
-      [
-        `### Level 1: spend & return by ${word}`,
-        `- No ${words} loaded yet. Add them (name, landing page URL, keywords) to see spend and return by ${word}.`,
-        ...unmatchedLines,
-      ].join("\n"),
-    );
-  } else {
-    const bySpend = [...allocations].sort((a, b) => b.observedSpendCents - a.observedSpendCents);
-    const shown = allocations.length > MAX_FULL_ROWS ? bySpend.slice(0, TRUNCATED_ROWS) : allocations;
-    const rows = shown.map((a) => {
-      const p = perfById.get(a.categoryId);
-      const spend = p?.spendCents ?? 0;
-      const revenue = spend > 0 && p?.roas === null ? "unknown" : money(p?.purchaseValueCents ?? 0);
-      const match = p && p.adIds.length > 0 ? p.matchedBy : "none";
-      return `| ${a.name} | ${money(spend)} | ${revenue} | ${roas(p?.roas ?? null)} | ${a.tier} | ${match} |`;
-    });
-    const hidden = allocations.length - shown.length;
-    out.push(
-      [
-        `### Level 1: spend & return by ${word}`,
-        `| ${Word} | Spend (${days}d) | Revenue | ROAS | Tier | Match |`,
-        "| --- | --- | --- | --- | --- | --- |",
-        ...rows,
-        ...(hidden > 0 ? [`…and ${hidden} more ${words} (top ${TRUNCATED_ROWS} by spend shown).`] : []),
-        "",
-        ...unmatchedLines,
-      ].join("\n"),
-    );
-  }
+  const coverage = adCoverage(
+    attribution,
+    baseline.spendCents > 0 ? baseline.spendCents : null,
+    opts.warnings ?? [],
+    word,
+    money,
+  );
+  out.push(
+    [
+      `### Level 1: spend & return by ${word}`,
+      ...(none
+        ? [`- No ${words} loaded yet. Add them (name, landing page URL, keywords) to see spend and return by ${word}.`]
+        : [...spendTable(allocations, perfById, { word, days, money }), ""]),
+      ...unmatchedLines(attribution, word, money),
+      ...coverage.lines,
+    ].join("\n"),
+  );
 
   const untouched = allocations.filter((a) => plan.gaps.untouchedCategoryIds.includes(a.categoryId));
   out.push(
@@ -116,7 +214,9 @@ export function renderStrategyEvidence(
       none
         ? `- No ${words} loaded yet.`
         : untouched.length
-          ? `- ${untouched.length} with no ad spend in the last ${days} days: ${untouched.map((a) => a.name).join(", ")}`
+          ? coverage.partial
+            ? `- ${untouched.length} not seen in the loaded ads: ${untouched.map((a) => a.name).join(", ")}`
+            : `- ${untouched.length} with no ad spend in the last ${days} days: ${untouched.map((a) => a.name).join(", ")}`
           : `- None: every ${word} had spend in the last ${days} days.`,
     ].join("\n"),
   );

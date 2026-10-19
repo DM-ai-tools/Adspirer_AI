@@ -10,17 +10,23 @@ import { jsonOk, parseBody, withApiHandler } from "@/lib/api/response";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
-export async function GET(_request: Request, context: RouteContext) {
+/**
+ * GET /api/clients/:id/services
+ * Seeds a default service when the client has none, unless `?seed=0`: then it
+ * lists the stored rows (active and inactive) as they are.
+ */
+export async function GET(request: Request, context: RouteContext) {
   return withApiHandler(async () => {
     const { id } = await context.params;
     const user = await getCurrentUser();
     assertAuthenticated(user);
     await assertClientAccess(user.id, id);
 
-    const { ensureClientServices } = await import(
+    const { ensureClientServices, listClientServices } = await import(
       "@/lib/clients/ensure-services"
     );
-    const services = await ensureClientServices(id);
+    const seed = new URL(request.url).searchParams.get("seed") !== "0";
+    const services = seed ? await ensureClientServices(id) : await listClientServices(id);
     return jsonOk({ services });
   });
 }

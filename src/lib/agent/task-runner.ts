@@ -441,7 +441,11 @@ export async function runTask(
       }
     }
     if (intent === "strategy" && !gathered.strategyBriefIncomplete) {
-      steps = completeStepsThrough(steps, "build_plan");
+      // No mapped account, or the snapshot / plan failed: the fetch and plan
+      // steps did not happen, so they must not read as done.
+      steps = gathered.strategyPlanBuilt
+        ? completeStepsThrough(steps, "build_plan")
+        : ["fetch_overview", "pull_insights", "build_plan"].reduce((acc, id) => failStep(acc, id), steps);
     }
 
     const wantsInlineCreatives =
