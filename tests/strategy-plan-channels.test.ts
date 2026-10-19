@@ -180,7 +180,9 @@ describe("buildStrategyPlan without channels", () => {
     expect(p.scope).toBeNull();
     expect(p.googleCapabilities).toBeNull();
     expect(p.channelNote).toMatch(/Google/);
-    expect(p.assumptions).toContain(p.channelNote);
+    // The assumptions are exactly the Meta-only ones: no basis, split or Google lines.
+    expect(p.assumptions.filter((a) => /Google|GA4|Revenue is/.test(a))).toEqual([]);
+    expect(p.assumptions).toHaveLength(11);
     for (const a of p.allocations) {
       expect(a.channelSplit).toBeNull();
       expect(a.googleCampaignTypes).toEqual([]);
@@ -234,6 +236,10 @@ describe("buildStrategyPlan with ClickTrends channels", () => {
     expect(p.allocations[0]).toMatchObject({ categoryId: "svc_ct_bar_stools", tier: "hold", dailyBudgetCents: 13_300 });
     const split = p.allocations[0].channelSplit!;
     expect(split.metaCents + split.googleCents).toBe(13_300);
+    expect(split.googleCents).toBeGreaterThan(0);
+    // Funded though held, so it is set up like a test on both channels.
+    expect(p.allocations[0].structure).toEqual(["broad_advantage_audience", "automatic_placements", "dynamic_creative"]);
+    expect(p.allocations[0].googleCampaignTypes).toEqual(["google_shopping", "google_search"]);
     expect(p.projection.dailySpendCents).toBe(13_300);
     expect(p.scope).toEqual({ categoryIds: ["svc_ct_bar_stools"], names: ["Bar stools"] });
     expect(p.assumptions).toContain("Bar stools is below break-even; funded because the plan was asked for it.");
@@ -242,7 +248,7 @@ describe("buildStrategyPlan with ClickTrends channels", () => {
 
 describe("buildStrategyPlan revenue basis and tiers", () => {
   it("tiers on GA4 revenue: Meta says 5×, GA4 says 3×, so promising not proven", () => {
-    const snapshot = snap([ad("Shoes", 20_000, 5)]);
+    const snapshot = snap([ad("Shoes", 20_000, 5)], perf(20_000, 5));
     const categories = [cat("Shoes")];
     const channels = channelPerf(
       [row("shoes", { meta: { spend: 20_000, revenue: 100_000, ga4: 60_000 }, ga4Total: 60_000 })],
@@ -253,7 +259,81 @@ describe("buildStrategyPlan revenue basis and tiers", () => {
     expect(p.revenueBasis).toBe("ga4");
     expect(p.allocations[0]).toMatchObject({ tier: "promising", observedRoas: 3, observedSpendCents: 20_000 });
     // The account ROAS in the reality check is the combined one too.
-    expect(p.benchmark.references.find((r) => r.metric === "Account ROAS")?.value).toBe("3×");
+    expect(p.benchmark.references.find((r) => r.metric === "Account ROAS")).toEqual({
+      metric: "Account ROAS",
+      value: "3×",
+      source: "Meta + Google spend, GA4 revenue on matched categories, last 30 days",
+    });
+  });
+
+  it("treats Meta spend without a Meta ROAS as unknown revenue, whatever Google reports", () => {
+    const channels = channelPerf([
+      row("shoes", { meta: { spend: 20_000, revenue: 0 }, google: { spend: 20_000, revenue: 200_000 } }),
+    ]);
+    const p = plan({ snapshot: snap([ad("Shoes", 20_000, null)]), categories: [cat("Shoes")], channels });
+    expect(p.allocations[0]).toMatchObject({ tier: "test", observedRoas: null, observedSpendCents: 40_000 });
+    expect(p.assumptions).toContain("ROAS was unavailable for Shoes, so it is treated as a test.");
+  });
+
+  it("projects a test category at the test rate on every channel, however high its own ROAS", () => {
+    // $10 of Meta spend at 20×; the account (all $1,000 of Meta spend) returns 2×.
+    const channels = channelPerf([row("belts", { meta: { spend: 1_000, revenue: 20_000 } })]);
+    const p = plan({ snapshot: snap([ad("Belts", 1_000, 20)], perf(100_000, 2)), categories: [cat("Belts")], channels });
+    expect(p.allocations[0]).toMatchObject({ tier: "test", observedRoas: 20, dailyBudgetCents: 10_000 });
+    // 10,000 × 2 × 0.7, not 10,000 × 20 × 0.85.
+    expect(p.allocations[0].channelSplit).toMatchObject({ metaCents: 10_000, metaProjectedCents: 14_000, googleProjectedCents: 0 });
+    expect(p.allocations[0].projectedDailyRevenueCents).toBe(14_000);
+  });
+});
+
+describe("buildStrategyPlan combined account ROAS", () => {
+  const campaign = (id: string, costCents: number, conversionValueCents: number) => ({
+    id,
+    name: `Campaign ${id}`,
+    type: "SEARCH",
+    status: "ENABLED",
+    costCents,
+    conversions: 1,
+    conversionValueCents,
+  });
+  // Meta $400 at 3× ($200 matched to Shoes); Google $200 costing 80,000 value ($100 matched, $100 not).
+  const snapshot = snap([ad("Shoes", 20_000, 3)], perf(40_000, 3));
+  const ads = adsPerf({ campaigns: [campaign("1", 10_000, 50_000), campaign("2", 10_000, 30_000)] });
+  const accountRoas = (p: StrategyPlan) => p.benchmark.references.find((r) => r.metric === "Account ROAS");
+
+  it("on platform revenue: all platform revenue over all spend, matched or not", () => {
+    const channels = channelPerf(
+      [row("shoes", { meta: { spend: 20_000, revenue: 60_000 }, google: { spend: 10_000, revenue: 50_000 } })],
+      { googleUnmatchedSpendCents: 10_000, ads },
+    );
+    const p = plan({ snapshot, categories: [cat("Shoes")], channels });
+    // (120,000 Meta + 80,000 Google) ÷ (30,000 matched + 10,000 Google + 20,000 Meta unmatched).
+    expect(accountRoas(p)).toEqual({
+      metric: "Account ROAS",
+      value: "3.33×",
+      source: "Meta + Google spend, platform-reported revenue, last 30 days",
+    });
+    expect(p.benchmark.realityCheck.referenceRoas).toBe(3.33);
+  });
+
+  it("on GA4 revenue: matched categories' GA4 revenue over all spend", () => {
+    const channels = channelPerf(
+      [row("shoes", { meta: { spend: 20_000, revenue: 60_000 }, google: { spend: 10_000, revenue: 50_000 }, ga4Total: 90_000 })],
+      { googleUnmatchedSpendCents: 10_000, ads, ga4Available: true, ga4Method: "item" },
+    );
+    const p = plan({ snapshot, categories: [cat("Shoes")], channels });
+    // 90,000 ÷ 60,000.
+    expect(accountRoas(p)).toEqual({
+      metric: "Account ROAS",
+      value: "1.5×",
+      source: "Meta + Google spend, GA4 revenue on matched categories, last 30 days",
+    });
+  });
+
+  it("falls back to the Meta account ROAS, labelled Meta only, when no category has a ROAS", () => {
+    const channels = channelPerf([row("socks", { impressions: 300 })]);
+    const p = plan({ snapshot: snap([], perf(100_000, 2)), categories: [cat("Socks")], channels });
+    expect(accountRoas(p)).toEqual({ metric: "Account ROAS", value: "2×", source: "Meta only, last 30 days" });
   });
 
   it("calls a category with only Google spend and strong ROAS proven", () => {
@@ -292,7 +372,7 @@ describe("buildStrategyPlan revenue basis and tiers", () => {
 
 describe("buildStrategyPlan channel split", () => {
   // One proven category with Meta 5× and no Google spend gets the whole $100.
-  const snapshot = snap([ad("Shoes", 20_000, 5)]);
+  const snapshot = snap([ad("Shoes", 20_000, 5)], perf(20_000, 5));
   const shoesRow = (impressions: number) =>
     row("shoes", { meta: { spend: 20_000, revenue: 100_000 }, impressions });
 
@@ -317,6 +397,14 @@ describe("buildStrategyPlan channel split", () => {
     expect(p.channelTotals).toEqual({ metaCents: 8_000, googleCents: 2_000 });
     // At 4.5 Shoes is still proven, so the scenario's projection is the same per-channel one.
     expect(p.scenarios[0].projection.dailyRevenueCents).toBe(41_000);
+  });
+
+  it("gives Google its 20% from search impressions alone when neither channel has spend", () => {
+    const channels = channelPerf([row("socks", { impressions: 300 })]);
+    const p = plan({ snapshot: snap([]), categories: [cat("Socks")], channels });
+    expect(p.allocations[0]).toMatchObject({ tier: "test", dailyBudgetCents: 10_000 });
+    expect(p.allocations[0].channelSplit).toMatchObject({ metaCents: 8_000, googleCents: 2_000 });
+    expect(p.allocations[0].googleCampaignTypes).toEqual(["google_shopping", "google_search"]);
   });
 
   it("keeps Meta at 100% when Google has neither spend nor demand", () => {
@@ -401,6 +489,62 @@ describe("buildStrategyPlan scoped plans", () => {
     const p = plan({ snapshot, categories, scopeCategoryIds: ["hats"], brief: { dailyBudgetCents: 13_300 } });
     expect(p.allocations).toHaveLength(1);
     expect(p.allocations[0]).toMatchObject({ categoryId: "hats", tier: "test", dailyBudgetCents: 13_300 });
+  });
+
+  it("splits two zero-revenue named categories equally", () => {
+    const p = plan({
+      snapshot,
+      categories: [...categories, cat("Caps")],
+      scopeCategoryIds: ["hats", "caps"],
+      brief: { dailyBudgetCents: 10_001 },
+    });
+    expect(p.allocations.map((a) => [a.categoryId, a.dailyBudgetCents])).toEqual([
+      ["hats", 5_001],
+      ["caps", 5_000],
+    ]);
+  });
+
+  it("says how many named categories weren't found when some were", () => {
+    const p = plan({ snapshot, categories, scopeCategoryIds: ["shoes", "nope", "gone"] });
+    expect(p.scope).toEqual({ categoryIds: ["shoes"], names: ["Shoes"] });
+    expect(p.assumptions).toContain("2 named categories weren't found; the plan covers only the ones that were.");
+  });
+
+  it("only says a held category was funded when it got budget", () => {
+    const p = plan({
+      snapshot: snap([ad("Shoes", 20_000, 5), ad("Hats", 20_000, 0)]),
+      categories,
+      scopeCategoryIds: ["shoes", "hats"],
+    });
+    expect(byId(p).hats).toMatchObject({ tier: "hold", dailyBudgetCents: 0, structure: [] });
+    expect(p.assumptions.some((a) => /funded because the plan was asked for it/.test(a))).toBe(false);
+  });
+
+  it("splits a scoped plan with channels by revenue, then each category by channel", () => {
+    const channels = channelPerf([
+      row("shoes", { meta: { spend: 20_000, revenue: 100_000 }, google: { spend: 10_000, revenue: 50_000 }, impressions: 100 }),
+      row("bags", { google: { spend: 20_000, revenue: 40_000 } }),
+      row("socks", { meta: { spend: 20_000, revenue: 100_000 } }),
+    ]);
+    const p = plan({
+      snapshot: snap([ad("Shoes", 20_000, 5), ad("Socks", 20_000, 5)], perf(40_000, 5)),
+      categories: [cat("Shoes"), cat("Bags", { landingPageUrl: "https://shop.example/bags" }), cat("Socks")],
+      channels,
+      scopeCategoryIds: ["shoes", "bags"],
+      brief: { dailyBudgetCents: 19_000 },
+    });
+    // Revenue 150,000 : 40,000.
+    expect(p.allocations.map((a) => [a.categoryId, a.tier, a.dailyBudgetCents])).toEqual([
+      ["shoes", "proven", 15_000],
+      ["bags", "promising", 4_000],
+    ]);
+    // Shoes by ROAS 5 : 5; Bags has only Google spend and a landing page, so Meta gets 20%.
+    expect(byId(p).shoes.channelSplit).toMatchObject({ metaCents: 7_500, googleCents: 7_500 });
+    expect(byId(p).bags.channelSplit).toMatchObject({ metaCents: 800, googleCents: 3_200 });
+    expect(byId(p).shoes.googleCampaignTypes).toEqual(["google_pmax", "google_search"]);
+    expect(byId(p).bags.googleCampaignTypes).toEqual(["google_shopping"]);
+    expect(p.channelTotals).toEqual({ metaCents: 8_300, googleCents: 10_700 });
+    expect(p.scope).toEqual({ categoryIds: ["shoes", "bags"], names: ["Shoes", "Bags"] });
   });
 
   it("plans the whole account when none of the named categories is loaded", () => {

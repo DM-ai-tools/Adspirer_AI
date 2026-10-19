@@ -79,23 +79,16 @@ export type StrategyPlan = {
   googleCapabilities: GoogleCapabilityStatus[] | null;
 };
 
-const BASE_CONSTANTS = {
+export const PLAN_CONSTANTS = {
   split: { proven: 0.7, promising: 0.2, test: 0.1 },
   minTestDailyCents: 2000,
   scaleDecay: 0.85,
   testDiscount: 0.7,
   minSpendForVerdictCents: 5000,
   testDurationDays: 14,
+  /** Share of a funded category's budget a channel with no spend gets when it shows demand. */
+  minChannelTestShare: 0.2,
 } as const;
-
-/**
- * minChannelTestShare is the share a channel with no spend gets when it shows demand. It is
- * non-enumerable so the Phase 1 constants check, which compares the enumerable keys, still holds.
- */
-export const PLAN_CONSTANTS = Object.defineProperty({ ...BASE_CONSTANTS }, "minChannelTestShare", {
-  value: 0.2,
-  enumerable: false,
-}) as typeof BASE_CONSTANTS & { readonly minChannelTestShare: 0.2 };
 
 /** Target ÷ reference ROAS at or below these is "within" / "stretch"; above is "unrealistic". */
 const REALITY = { within: 1.2, stretch: 2.5 } as const;
@@ -209,7 +202,8 @@ export function buildStrategyPlan(input: {
       const ch = channelById.get(category.id) ?? metaOnlyChannels(perf);
       const spendCents = ch.meta.spendCents + ch.google.spendCents;
       const ga4Total = revenueBasis === "ga4" ? ch.ga4TotalRevenueCents : null;
-      const platformKnown = (ch.meta.spendCents > 0 && perf.roas !== null) || ch.google.spendCents > 0;
+      // Meta spend without a Meta ROAS leaves platform revenue unknown, whatever Google reports.
+      const platformKnown = spendCents > 0 && !(ch.meta.spendCents > 0 && perf.roas === null);
       const revenueCents = ga4Total ?? ch.meta.platformRevenueCents + ch.google.platformRevenueCents;
       const known = ga4Total !== null || platformKnown;
       return [
@@ -225,13 +219,33 @@ export function buildStrategyPlan(input: {
     }),
   );
 
-  // With channels, the account ROAS is the categories' combined one, on the same revenue basis.
+  // With channels, the account ROAS is over all Meta + Google spend, matched to a category or not.
+  // GA4 revenue only exists per matched category; platform revenue is each account's whole total.
+  // When no category has a ROAS it stays the Meta account's own.
   const metaAccountRoas = snapshot.totals?.roas ?? null;
   let accountRoas = metaAccountRoas;
-  if (channels) {
-    const judged = [...observedById.values()].filter((o) => o.roas !== null);
-    const judgedSpend = judged.reduce((s, o) => s + o.spendCents, 0);
-    if (judgedSpend > 0) accountRoas = round2(judged.reduce((s, o) => s + o.revenueCents, 0) / judgedSpend);
+  let combinedAccountRoas = false;
+  const allObserved = [...observedById.values()];
+  if (channels && allObserved.some((o) => o.roas !== null)) {
+    const attributedMeta = attribution.byCategory.reduce((s, p) => s + p.spendCents, 0);
+    const spend =
+      allObserved.reduce((s, o) => s + o.spendCents, 0) +
+      channels.googleUnmatchedSpendCents +
+      Math.max(0, (snapshot.totals?.spendCents ?? 0) - attributedMeta);
+    let revenue: number;
+    if (revenueBasis === "ga4") revenue = allObserved.reduce((s, o) => s + o.revenueCents, 0);
+    else {
+      const metaRevenue =
+        snapshot.totals && snapshot.totals.roas !== null
+          ? snapshot.totals.spendCents * snapshot.totals.roas
+          : allObserved.reduce((s, o) => s + (o.channel?.meta.platformRevenueCents ?? 0), 0);
+      const googleRevenue = (channels.ads?.campaigns ?? []).reduce((s, c) => s + Math.max(0, c.conversionValueCents), 0);
+      revenue = metaRevenue + googleRevenue;
+    }
+    if (spend > 0) {
+      accountRoas = round2(revenue / spend);
+      combinedAccountRoas = true;
+    }
   }
   const testRoas = accountRoas ?? BENCHMARKS.prospectingRoas;
 
@@ -253,16 +267,24 @@ export function buildStrategyPlan(input: {
   };
   const pct = (share: number) => `${Math.round(share * 100)}%`;
 
-  /** Projected revenue per budget cent on one channel: its ROAS scaled, else a discounted test return. */
-  const channelRate = (f: ChannelFigures) =>
-    f.spendCents > 0 && f.roas !== null ? f.roas * C.scaleDecay : testRoas * C.testDiscount;
+  /**
+   * Projected revenue per budget cent on one channel: its ROAS scaled, else a discounted test
+   * return. A test category's channels are all unproven, so they all take the test return.
+   */
+  const channelRate = (f: ChannelFigures, tier: AllocationTier) =>
+    tier !== "test" && f.spendCents > 0 && f.roas !== null ? f.roas * C.scaleDecay : testRoas * C.testDiscount;
 
   /**
    * Splits a funded category's budget by each channel's ROAS. A channel with no spend gets the
    * test share when it shows demand (Google: search impressions; Meta: a landing page); with no
    * Google Ads account mapped, or no data on either channel, it all stays on Meta.
    */
-  function splitChannels(category: StrategyCategory, budget: number, ch: CategoryChannels): CategoryAllocation["channelSplit"] {
+  function splitChannels(
+    category: StrategyCategory,
+    tier: AllocationTier,
+    budget: number,
+    ch: CategoryChannels,
+  ): CategoryAllocation["channelSplit"] {
     const { meta, google } = ch;
     const share = C.minChannelTestShare;
     const metaSpends = meta.spendCents > 0;
@@ -280,8 +302,8 @@ export function buildStrategyPlan(input: {
     return {
       metaCents,
       googleCents,
-      metaProjectedCents: Math.round(metaCents * channelRate(meta)),
-      googleProjectedCents: Math.round(googleCents * channelRate(google)),
+      metaProjectedCents: Math.round(metaCents * channelRate(meta, tier)),
+      googleProjectedCents: Math.round(googleCents * channelRate(google, tier)),
       basis,
     };
   }
@@ -343,7 +365,9 @@ export function buildStrategyPlan(input: {
     }
 
     const allocations = rows.map(({ category, observed, target, tier, budget }): CategoryAllocation => {
-      const channelSplit = observed.channel && budget > 0 ? splitChannels(category, budget, observed.channel) : null;
+      const channelSplit = observed.channel && budget > 0 ? splitChannels(category, tier, budget, observed.channel) : null;
+      // A hold funded by a scoped plan gets a test's setup, so its budget has somewhere to go.
+      const setupTier: AllocationTier = tier === "hold" && budget > 0 ? "test" : tier;
       // Holds only have budget in a scoped plan; they then project like a scaled category.
       let revenue: number;
       if (channelSplit) revenue = channelSplit.metaProjectedCents + channelSplit.googleProjectedCents;
@@ -359,12 +383,12 @@ export function buildStrategyPlan(input: {
         observedSpendCents: observed.spendCents,
         dailyBudgetCents: budget,
         projectedDailyRevenueCents: Math.round(revenue),
-        structure: STRUCTURE[tier].filter((id) => relevant.has(id)),
+        structure: STRUCTURE[setupTier].filter((id) => relevant.has(id)),
         channelSplit,
         googleCampaignTypes:
           channelSplit && channelSplit.googleCents > 0
             ? recommendGoogleCampaignTypes({
-                tier,
+                tier: setupTier,
                 merchantCenterLinked: channels?.ads?.merchantCenterLinked ?? false,
                 searchImpressions: observed.channel?.searchImpressions ?? 0,
               })
@@ -402,9 +426,12 @@ export function buildStrategyPlan(input: {
     { metric: "Retargeting ROAS", value: `${BENCHMARKS.retargetingRoas}×`, source: PLAYBOOK_SOURCE },
   ];
   if (accountRoas !== null) {
-    const source = channels
-      ? `Meta + Google spend, ${revenueBasis === "ga4" ? "GA4" : "platform-reported"} revenue, last ${days} days`
-      : `This account, last ${days} days`;
+    const covers = revenueBasis === "ga4" ? "GA4 revenue on matched categories" : "platform-reported revenue";
+    const source = !channels
+      ? `This account, last ${days} days`
+      : combinedAccountRoas
+        ? `Meta + Google spend, ${covers}, last ${days} days`
+        : `Meta only, last ${days} days`;
     references.push({ metric: "Account ROAS", value: `${round2(accountRoas)}×`, source });
   }
 
@@ -424,6 +451,12 @@ export function buildStrategyPlan(input: {
         ? `Planned only for ${scope.names[0]}: the whole budget goes to it; its tier is shown but doesn't split the budget.`
         : `Planned only for ${scope.names.join(", ")}: the whole budget is split across them by revenue (equally when none has any); tiers are shown but don't split the budget.`,
     );
+    const missing = scopeIds.size - scoped.length;
+    if (missing > 0) {
+      assumptions.push(
+        `${missing} named ${missing === 1 ? `${word} wasn't` : `${words} weren't`} found; the plan covers only the ones that were.`,
+      );
+    }
   } else {
     if (scopeIds.size > 0) assumptions.push(`None of the named ${words} are loaded; planned the whole account.`);
     assumptions.push(
@@ -457,13 +490,14 @@ export function buildStrategyPlan(input: {
     }
   }
   if (scope) {
-    for (const a of main.allocations.filter((x) => x.tier === "hold")) {
+    for (const a of main.allocations.filter((x) => x.tier === "hold" && x.dailyBudgetCents > 0)) {
       assumptions.push(`${a.name} is below break-even; funded because the plan was asked for it.`);
     }
   }
-  if (!channels) {
+  // A plan built without channel data keeps exactly the Meta-only assumptions.
+  if (input.channels && !channels) {
     assumptions.push(`Revenue is what Meta reports for each ${word}.`);
-  } else if (revenueBasis === "ga4") {
+  } else if (channels && revenueBasis === "ga4") {
     const matchedBy = channels.ga4Method === "item" ? "item category" : "landing page";
     assumptions.push(`Revenue is GA4's for each ${word} (matched by ${matchedBy}), against its Meta + Google spend.`);
     const fallbacks = planned.filter((c) => observedById.get(c.id)?.ga4Fallback).length;
@@ -472,7 +506,7 @@ export function buildStrategyPlan(input: {
         `${fallbacks} ${fallbacks === 1 ? `${word} has` : `${words} have`} no GA4 revenue figure, so ${fallbacks === 1 ? "it uses" : "they use"} the revenue Meta and Google Ads report.`,
       );
     }
-  } else {
+  } else if (channels) {
     assumptions.push(`Revenue is what Meta and Google Ads report for each ${word}, since GA4 isn't available; spend is Meta + Google.`);
   }
   if (channels && googleMapped) {
@@ -480,7 +514,7 @@ export function buildStrategyPlan(input: {
       `Within each funded ${word}, budget splits between Meta and Google by each channel's ROAS; a channel with no spend gets a ${pct(C.minChannelTestShare)} test share when it shows demand (Google: search impressions; Meta: a landing page) and is assumed to return ${pct(C.testDiscount)} of the account ROAS. The Google share is a recommendation for the Google Ads account — this tool doesn't change Google.`,
     );
   }
-  if (channelNote) assumptions.push(channelNote);
+  if (input.channels && channelNote) assumptions.push(channelNote);
 
   const funded = (tier: AllocationTier) => main.allocations.filter((a) => a.tier === tier && a.dailyBudgetCents > 0);
   const priorityOf = new Map(categories.map((c) => [c.id, c.priority]));
