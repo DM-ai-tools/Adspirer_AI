@@ -96,9 +96,11 @@ export function ga4ChannelOf(channelGroup: string, source?: string): Ga4Channel 
 
 type ReportResponse = {
   rows?: Array<{ dimensionValues?: Array<{ value?: string }>; metricValues?: Array<{ value?: string }> }>;
-  metadata?: { currencyCode?: string };
+  rowCount?: number | string;
+  metadata?: { currencyCode?: string; dataLossFromOtherRow?: boolean };
 };
 type ReportRow = { dims: string[]; values: number[] };
+type Report = { rows: ReportRow[]; currency: string; dataLoss: boolean };
 
 /** GA4 metric values arrive as strings; anything unparseable counts as 0. */
 function num(value: string | undefined): number {
@@ -113,12 +115,13 @@ function unitsToCents(value: number): number {
 
 /** GA4's placeholder buckets carry no usable key. */
 function isPlaceholder(value: string): boolean {
-  return value === "" || value === "(not set)" || value === "(other)";
+  const trimmed = value.trim();
+  return trimmed === "" || trimmed === "(not set)" || trimmed === "(other)";
 }
 
-/** The path of a landing page: query string and hash removed. */
+/** The path of a landing page; a guard in case a query string or hash slips through. */
 function landingPath(value: string): string {
-  return value.split(/[?#]/)[0] ?? "";
+  return (value.split(/[?#]/)[0] ?? "").trim();
 }
 
 async function runReport(
@@ -126,7 +129,7 @@ async function runReport(
   range: DateRange,
   dimensions: string[],
   metrics: string[],
-): Promise<{ rows: ReportRow[]; currency: string }> {
+): Promise<Report> {
   const res = await googleFetch<ReportResponse>(`${DATA_BASE}/properties/${propertyId}:runReport`, {
     method: "POST",
     accessToken: await getGoogleAccessToken(),
@@ -140,6 +143,8 @@ async function runReport(
   });
   return {
     currency: res.metadata?.currencyCode ?? "",
+    // Rows past the limit, or grouped into "(other)", are missing from the report.
+    dataLoss: res.metadata?.dataLossFromOtherRow === true || num(String(res.rowCount ?? 0)) > REPORT_LIMIT,
     rows: (res.rows ?? []).map((row) => ({
       dims: (row.dimensionValues ?? []).map((d) => d.value ?? ""),
       values: (row.metricValues ?? []).map((m) => num(m.value)),
@@ -172,22 +177,24 @@ function revenueRows(rows: ReportRow[], keyOf: (dim: string) => string): Ga4Cate
  * item-scoped itemRevenue and itemsPurchased. The landing page and channel
  * reports use session-scoped dimensions with the event-scoped purchaseRevenue
  * and ecommercePurchases (purchases only, not ad or subscription revenue).
+ * They group by landingPage (the path alone): with the query string, every
+ * fbclid/gclid would be its own row and paid traffic would spill into "(other)".
  */
 export async function fetchGa4CategoryRevenue(propertyId: string, range: DateRange): Promise<Ga4CategoryRevenue> {
   const id = digits(propertyId);
+  if (!id) throw new Error("GA4 property id must be numeric, e.g. properties/123456.");
   if (!DATE.test(range.since) || !DATE.test(range.until)) {
     throw new Error("GA4 date range must be YYYY-MM-DD.");
   }
 
   const [item, channel] = await Promise.all([
     runReport(id, range, ["itemCategory"], ["itemRevenue", "itemsPurchased"]),
-    runReport(
-      id,
-      range,
-      ["landingPagePlusQueryString", "sessionDefaultChannelGroup", "sessionSource"],
-      ["purchaseRevenue"],
-    ),
+    runReport(id, range, ["landingPage", "sessionDefaultChannelGroup", "sessionSource"], ["purchaseRevenue"]),
   ]);
+  const warnings: string[] = [];
+  if (channel.dataLoss) {
+    warnings.push("GA4 grouped some landing pages into (other); per-channel figures may be understated");
+  }
 
   const byChannelMap = new Map<string, Ga4CategoryRevenue["byChannel"][number]>();
   for (const row of channel.rows) {
@@ -205,14 +212,20 @@ export async function fetchGa4CategoryRevenue(propertyId: string, range: DateRan
 
   const itemRows = revenueRows(item.rows, (category) => category.trim());
   if (itemRows.length > 0) {
-    return { method: "item", currency: item.currency || channel.currency, rows: itemRows, byChannel };
+    if (item.dataLoss) {
+      warnings.push("GA4 grouped some item categories into (other); category figures may be understated");
+    }
+    return { method: "item", currency: item.currency || channel.currency, rows: itemRows, byChannel, warnings };
   }
 
-  const landing = await runReport(id, range, ["landingPagePlusQueryString"], ["purchaseRevenue", "ecommercePurchases"]);
+  const landing = await runReport(id, range, ["landingPage"], ["purchaseRevenue", "ecommercePurchases"]);
   const landingRows = revenueRows(landing.rows, landingPath);
   const currency = item.currency || landing.currency || channel.currency;
   if (landingRows.length > 0) {
-    return { method: "landing_page", currency, rows: landingRows, byChannel };
+    if (landing.dataLoss) {
+      warnings.push("GA4 grouped some landing pages into (other); landing page figures may be understated");
+    }
+    return { method: "landing_page", currency, rows: landingRows, byChannel, warnings };
   }
-  return { method: "none", currency, rows: [], byChannel };
+  return { method: "none", currency, rows: [], byChannel, warnings };
 }

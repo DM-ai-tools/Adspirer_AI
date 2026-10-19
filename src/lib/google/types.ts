@@ -19,6 +19,8 @@ export type Ga4CategoryRevenue = {
   rows: Array<{ key: string; revenueCents: number; purchases: number }>;
   /** Revenue by landing page and channel, used for the per-channel split. */
   byChannel: Array<{ landingPage: string; channel: Ga4Channel; revenueCents: number }>;
+  /** Plain notes on data GA4 dropped or grouped, e.g. into "(other)". */
+  warnings?: string[];
 };
 export type AdsPerformance = {
   customerId: string; currency: string; merchantCenterLinked: boolean;

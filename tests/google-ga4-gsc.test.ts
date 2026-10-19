@@ -45,29 +45,38 @@ function route(handler: (call: Call) => Response) {
 const RANGE = { since: "2026-09-01", until: "2026-09-30" };
 
 /** A GA4 runReport response from rows of [dimension values..., metric values...]. */
-function report(dimensionCount: number, rows: string[][], currencyCode = "AUD") {
+function report(
+  dimensionCount: number,
+  rows: string[][],
+  extra: { dataLossFromOtherRow?: boolean; rowCount?: number } = {},
+) {
   return json({
     rows: rows.map((row) => ({
       dimensionValues: row.slice(0, dimensionCount).map((value) => ({ value })),
       metricValues: row.slice(dimensionCount).map((value) => ({ value })),
     })),
-    rowCount: rows.length,
-    metadata: { currencyCode },
+    rowCount: extra.rowCount ?? rows.length,
+    metadata: { currencyCode: "AUD", dataLossFromOtherRow: extra.dataLossFromOtherRow ?? false },
   });
 }
 
 const dims = (call: Call) => (call.body?.dimensions ?? []).map((d) => d.name).join(",");
 
+type ReportExtra = { dataLossFromOtherRow?: boolean; rowCount?: number };
+
 /** Routes the three GA4 reports by their dimensions. */
-function ga4Reports(reports: { item?: string[][]; landing?: string[][]; channel?: string[][] }) {
+function ga4Reports(
+  reports: { item?: string[][]; landing?: string[][]; channel?: string[][] },
+  extra: { item?: ReportExtra; landing?: ReportExtra; channel?: ReportExtra } = {},
+) {
   route((call) => {
     switch (dims(call)) {
       case "itemCategory":
-        return report(1, reports.item ?? []);
-      case "landingPagePlusQueryString":
-        return report(1, reports.landing ?? []);
-      case "landingPagePlusQueryString,sessionDefaultChannelGroup,sessionSource":
-        return report(3, reports.channel ?? []);
+        return report(1, reports.item ?? [], extra.item);
+      case "landingPage":
+        return report(1, reports.landing ?? [], extra.landing);
+      case "landingPage,sessionDefaultChannelGroup,sessionSource":
+        return report(3, reports.channel ?? [], extra.channel);
       default:
         throw new Error(`unexpected report ${dims(call)}`);
     }
@@ -134,7 +143,8 @@ describe("fetchGa4CategoryRevenue", () => {
     expect(item?.body?.dateRanges).toEqual([{ startDate: "2026-09-01", endDate: "2026-09-30" }]);
     expect(item?.body?.limit).toBe(10000);
     // The landing-page report is only a fallback.
-    expect(calls.some((call) => dims(call) === "landingPagePlusQueryString")).toBe(false);
+    expect(calls.some((call) => dims(call) === "landingPage")).toBe(false);
+    expect(result.warnings).toEqual([]);
   });
 
   it("falls back to landing pages when the item report has no revenue", async () => {
@@ -155,7 +165,7 @@ describe("fetchGa4CategoryRevenue", () => {
       { key: "/sofas", revenueCents: 40050, purchases: 3 },
       { key: "/bar-stools", revenueCents: 8000, purchases: 1 },
     ]);
-    const landing = calls.find((call) => dims(call) === "landingPagePlusQueryString");
+    const landing = calls.find((call) => dims(call) === "landingPage");
     expect(landing?.body?.metrics?.map((m) => m.name)).toEqual(["purchaseRevenue", "ecommercePurchases"]);
     expect(landing?.body?.limit).toBe(10000);
   });
@@ -197,8 +207,57 @@ describe("fetchGa4CategoryRevenue", () => {
       { landingPage: "/bar-stools", channel: "other", revenueCents: 4000 },
     ]);
     const channel = calls.find((call) => dims(call).includes("sessionDefaultChannelGroup"));
+    // The path alone: with the query string every fbclid/gclid would be its own row.
+    expect(dims(channel!)).toBe("landingPage,sessionDefaultChannelGroup,sessionSource");
+    expect(calls.every((call) => !dims(call).includes("landingPagePlusQueryString"))).toBe(true);
     expect(channel?.body?.metrics?.map((m) => m.name)).toEqual(["purchaseRevenue"]);
     expect(channel?.body?.limit).toBe(10000);
+  });
+
+  it("warns when GA4 grouped channel rows into (other)", async () => {
+    ga4Reports(
+      { item: [["Sofas", "500", "2"]], channel: [["/sofas", "Paid Social", "facebook", "200"]] },
+      { channel: { dataLossFromOtherRow: true } },
+    );
+
+    const result = await fetchGa4CategoryRevenue("123", RANGE);
+
+    expect(result.warnings).toEqual([
+      "GA4 grouped some landing pages into (other); per-channel figures may be understated",
+    ]);
+  });
+
+  it("warns when a report has more rows than the limit returned", async () => {
+    ga4Reports(
+      { item: [], landing: [["/sofas", "100", "1"]], channel: [["/sofas", "Paid Search", "google", "100"]] },
+      { landing: { rowCount: 12000 }, channel: { rowCount: 10001 } },
+    );
+
+    const result = await fetchGa4CategoryRevenue("123", RANGE);
+
+    expect(result.method).toBe("landing_page");
+    expect(result.warnings).toEqual([
+      "GA4 grouped some landing pages into (other); per-channel figures may be understated",
+      "GA4 grouped some landing pages into (other); landing page figures may be understated",
+    ]);
+  });
+
+  it("drops placeholder rows even with surrounding whitespace", async () => {
+    ga4Reports({
+      item: [[" (not set) ", "50", "1"], ["(other) ", "40", "1"], ["Sofas", "10", "1"]],
+      channel: [[" (not set)", "Direct", "(direct)", "70"], ["/sofas", "Direct", "(direct)", "10"]],
+    });
+
+    const result = await fetchGa4CategoryRevenue("123", RANGE);
+
+    expect(result.rows).toEqual([{ key: "Sofas", revenueCents: 1000, purchases: 1 }]);
+    expect(result.byChannel).toEqual([{ landingPage: "/sofas", channel: "other", revenueCents: 1000 }]);
+  });
+
+  it("rejects an empty property id before calling Google", async () => {
+    ga4Reports({});
+    await expect(fetchGa4CategoryRevenue("properties/", RANGE)).rejects.toThrow(/property id/);
+    expect(calls).toHaveLength(0);
   });
 
   it("rejects a malformed date range before calling Google", async () => {
