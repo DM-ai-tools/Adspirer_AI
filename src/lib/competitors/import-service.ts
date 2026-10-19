@@ -125,8 +125,8 @@ export async function upsertImportedCompetitors(input: {
       updated += 1;
       continue;
     }
+    // No id: competitors.id is a uuid the database assigns.
     const { error } = await supabase.from("competitors").insert({
-      id: `comp_${nanoid(10)}`,
       client_id: input.clientId,
       name: row.name,
       website: row.website_url,

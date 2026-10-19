@@ -199,7 +199,8 @@ async function loadBriefs(clientId: string): Promise<CompetitorBrief[]> {
     .select("*")
     .eq("client_id", clientId)
     .eq("status", "ready");
-  return (data as CompetitorBrief[]) ?? [];
+  const { competitorBriefFromRow } = await import("@/lib/competitors/brief-row");
+  return ((data ?? []) as Array<Record<string, unknown>>).map(competitorBriefFromRow);
 }
 
 import { loadMappedMetaAccounts } from "@/lib/adspirer/resolve-meta-account";

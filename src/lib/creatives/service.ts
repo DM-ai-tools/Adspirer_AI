@@ -16,6 +16,7 @@ import { logger } from "@/lib/observability/logger";
 import { appendWorkflowMessage } from "@/lib/workflow/events";
 import { patchTaskAgentState } from "@/lib/workflow/state";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { competitorBriefFromRow } from "@/lib/competitors/brief-row";
 
 export type GenerateCreativesInput = {
   clientId: string;
@@ -114,10 +115,10 @@ async function loadScope(input: GenerateCreativesInput) {
           .from("competitor_briefs")
           .select("*")
           .eq("client_id", input.clientId)
-          .eq("client_service_id", input.serviceId)
-          .order("generated_at", { ascending: false })
+          .eq("service_id", input.serviceId)
+          .order("researched_at", { ascending: false })
           .limit(1);
-        brief = briefs?.[0] ?? null;
+        brief = briefs?.[0] ? competitorBriefFromRow(briefs[0] as Record<string, unknown>) : null;
       }
     }
   }
