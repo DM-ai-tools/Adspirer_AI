@@ -248,6 +248,13 @@ export interface ClientService {
   landing_page_url: string | null;
   priority?: number;
   is_active: boolean;
+  /** Strategy: gross margin percent, 0-100 */
+  gross_margin_pct?: number | null;
+  /** Strategy: average order value in integer cents */
+  average_order_value_cents?: number | null;
+  /** Strategy: URL path fragments that attribute spend to this category */
+  url_patterns?: string[] | null;
+  source?: "manual" | "import" | "site_scan" | null;
   created_at: string;
   updated_at: string;
 }
