@@ -116,7 +116,7 @@ async function loadScope(input: GenerateCreativesInput) {
           .select("*")
           .eq("client_id", input.clientId)
           .eq("service_id", input.serviceId)
-          .order("researched_at", { ascending: false })
+          .order("researched_at", { ascending: false, nullsFirst: false })
           .limit(1);
         brief = briefs?.[0] ? competitorBriefFromRow(briefs[0] as Record<string, unknown>) : null;
       }

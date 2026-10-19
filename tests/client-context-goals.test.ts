@@ -38,6 +38,29 @@ describe("buildClientContext: goals & guardrails", () => {
     expect(ctx).toContain("- Daily account cap: 1200.00 AUD");
   });
 
+  it("lists attribution, the budget-change limit and decision rules when set", async () => {
+    const client = firstClient();
+    client.goals_profile = {
+      attribution: "7d_click",
+      max_budget_change_pct: 25,
+      policy: { kill_multiple: 2.5 },
+    };
+    const ctx = await buildClientContext(client.id);
+    expect(ctx).toContain("- Attribution: 7d_click");
+    expect(ctx).toContain("- Budget increases above 25% need admin approval");
+    expect(ctx).toContain("- Decision rules: kill multiple 2.5");
+    expect(ctx).not.toContain("- No goals set yet");
+  });
+
+  it("shows the budget ceiling in major units", async () => {
+    const client = firstClient();
+    client.budget_ceiling_cents = 250000;
+    client.currency = "AUD";
+    const ctx = await buildClientContext(client.id);
+    expect(ctx).toContain("Budget ceiling: 2500.00 AUD");
+    expect(ctx).not.toContain("Budget ceiling (cents)");
+  });
+
   it("says when no goals are set instead of leaving the agent to guess", async () => {
     const client = firstClient();
     client.goals_profile = {};

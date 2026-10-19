@@ -17,7 +17,7 @@ import {
   loadDocumentsForContext,
 } from "@/lib/documents/service";
 import { humanToolLabel } from "@/lib/tools/display-labels";
-import { describeGoalsForAgent, resolveGoals } from "@/lib/clients/goals";
+import { describeGoalsForAgent } from "@/lib/clients/goals";
 import { mapClientRow } from "@/lib/clients/map-client";
 import { buildClientBrandBlock } from "./prompts";
 
@@ -95,7 +95,7 @@ export async function buildClientContext(
       : null,
     "",
     "## Goals & guardrails",
-    describeGoalsForAgent(resolveGoals(client), client.currency).join("\n"),
+    describeGoalsForAgent(client.goals_profile ?? {}, client.currency).join("\n"),
     "",
     ...(client.standing_instructions
       ? [
@@ -199,12 +199,16 @@ async function loadServices(clientId: string): Promise<ClientService[]> {
   return (data as ClientService[]) ?? [];
 }
 
+/** Every research run adds a brief; the chat context carries only the newest few. */
+const CONTEXT_BRIEF_LIMIT = 5;
+
 async function loadBriefs(clientId: string): Promise<CompetitorBrief[]> {
   const config = getConfig();
   if (config.isDemoMode || !config.hasSupabase) {
-    return getDemoStore().competitorBriefs.filter(
-      (b) => b.client_id === clientId && b.status === "ready",
-    );
+    return getDemoStore()
+      .competitorBriefs.filter((b) => b.client_id === clientId && b.status === "ready")
+      .sort((a, b) => (b.generated_at ?? b.created_at).localeCompare(a.generated_at ?? a.created_at))
+      .slice(0, CONTEXT_BRIEF_LIMIT);
   }
   const { createAdminClient } = await import("@/lib/supabase/admin");
   const supabase = createAdminClient();
@@ -212,7 +216,9 @@ async function loadBriefs(clientId: string): Promise<CompetitorBrief[]> {
     .from("competitor_briefs")
     .select("*")
     .eq("client_id", clientId)
-    .eq("status", "ready");
+    .eq("status", "ready")
+    .order("researched_at", { ascending: false, nullsFirst: false })
+    .limit(CONTEXT_BRIEF_LIMIT);
   const { competitorBriefFromRow } = await import("@/lib/competitors/brief-row");
   return ((data ?? []) as Array<Record<string, unknown>>).map(competitorBriefFromRow);
 }

@@ -243,7 +243,7 @@ export function buildClientBrandBlock(client: Client): string {
     client.target_audience ? `Audience: ${client.target_audience}` : null,
     client.value_proposition ? `Value prop: ${client.value_proposition}` : null,
     client.budget_ceiling_cents != null
-      ? `Budget ceiling (cents): ${client.budget_ceiling_cents} ${client.currency}`
+      ? `Budget ceiling: ${(client.budget_ceiling_cents / 100).toFixed(2)} ${client.currency}`
       : null,
     client.is_demo ? "Note: DEMO DATA client" : null,
   ]

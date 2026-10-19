@@ -130,10 +130,13 @@ export function resolveGoals(client: { goals_profile?: GoalsProfile | null }): R
 
 /**
  * The client's targets as context lines for the agent, so any turn can answer
- * "what's our target ROAS?" without guessing. Only fields the client set are listed.
+ * "what's our target ROAS?" without guessing. Only fields the client set are
+ * listed (plus the break-even figures derived from them), never the defaults.
  */
-export function describeGoalsForAgent(goals: ResolvedGoals, currency: string): string[] {
+export function describeGoalsForAgent(profile: GoalsProfile, currency: string): string[] {
+  const goals = resolveGoals({ goals_profile: profile });
   const money = (cents: number) => `${(cents / 100).toFixed(2)} ${currency}`;
+  const policy = Object.entries(profile.policy ?? {}).map(([key, value]) => `${key.replace(/_/g, " ")} ${value}`);
   const lines = [
     goals.business_model ? `- Business model: ${goals.business_model}` : null,
     goals.optimisation_event ? `- Optimises for: ${goals.optimisation_event}` : null,
@@ -150,6 +153,11 @@ export function describeGoalsForAgent(goals: ResolvedGoals, currency: string): s
       ? `- Special ad category: ${goals.special_ad_category}`
       : null,
     goals.compliance_notes ? `- Compliance notes: ${goals.compliance_notes}` : null,
+    profile.attribution ? `- Attribution: ${profile.attribution}` : null,
+    profile.max_budget_change_pct != null
+      ? `- Budget increases above ${profile.max_budget_change_pct}% need admin approval`
+      : null,
+    policy.length ? `- Decision rules: ${policy.join(", ")}` : null,
   ].filter((line): line is string => line !== null);
   return lines.length
     ? lines
