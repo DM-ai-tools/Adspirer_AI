@@ -84,6 +84,7 @@ import {
   type StrategyCategory,
 } from "@/lib/strategy/categories";
 import { attributeSpendToCategories, type CategoryAttribution } from "@/lib/strategy/category-attribution";
+import { addCategoryFromRequest } from "@/lib/strategy/requested-category";
 import { buildChannelPerformance, type ChannelPerformance } from "@/lib/strategy/channels";
 import { buildStrategyPlan } from "@/lib/strategy/plan";
 import { renderCategorySpendEvidence, renderStrategyEvidence } from "@/lib/strategy/render";
@@ -2399,7 +2400,15 @@ export async function gatherDiagnoseEvidence(input: {
           label: `Matching spend & return to each ${categoryWord}…`,
           stepId: "pull_insights",
         });
-        const categories = categoriesFromServices(await activeClientServices(input.clientId));
+        // A category the ask names but isn't set up yet is found on the website and added.
+        const requested = await addCategoryFromRequest({
+          clientId: input.clientId,
+          request: input.request,
+          kind: "strategy",
+          active: await activeClientServices(input.clientId),
+        });
+        if (requested.evidence) sections.push(requested.evidence);
+        const categories = categoriesFromServices(requested.services);
         const attribution = attributeSpendToCategories(snapshot, categories);
         const scorecard = evaluateCheckpoints(snapshot, { goals });
         toolCalls.push({
@@ -2419,7 +2428,9 @@ export async function gatherDiagnoseEvidence(input: {
           categories,
           attribution,
         );
-        const scoped = scopeCategoriesFromRequest(input.request, categories);
+        const scoped = requested.scoped
+          ? categories.filter((c) => c.id === requested.scoped!.id)
+          : scopeCategoriesFromRequest(input.request, categories);
         const plan = buildStrategyPlan({
           snapshot,
           scorecard,
@@ -2479,8 +2490,16 @@ export async function gatherDiagnoseEvidence(input: {
   // "How much went into bar stools, and what did it return?": spend and return
   // per category from the snapshot. Figures only, no plan or allocation.
   if (accountId && (intent === "general" || intent === "budget")) {
-    const categories = categoriesFromServices(await activeClientServices(input.clientId).catch(() => []));
-    if (categories.length && asksAboutCategorySpend(input.request, categories)) {
+    // A category the ask names but isn't set up yet is found on the website and added.
+    const requested = await addCategoryFromRequest({
+      clientId: input.clientId,
+      request: input.request,
+      kind: "spend",
+      active: await activeClientServices(input.clientId).catch(() => []),
+    });
+    if (requested.evidence) sections.push(requested.evidence);
+    const categories = categoriesFromServices(requested.services);
+    if (categories.length && (requested.scoped || asksAboutCategorySpend(input.request, categories))) {
       const goals = await clientGoals(input.clientId);
       const categoryWord = goals.business_model === "ecommerce" ? "category" : "service";
       await input.onProgress?.({
