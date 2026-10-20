@@ -47,8 +47,8 @@ const settings = (...items: unknown[]) => JSON.stringify({ settings: items });
 
 const ctClient = () => getDemoStore().clients.find((c) => c.id === CT)!;
 const ctServices = () => getDemoStore().clientServices.filter((s) => s.client_id === CT);
-const extracted = async (message: string, categories = categoriesFromServices([])) =>
-  (await extractChatSettings(message, categories)).settings;
+const extracted = async (message: string, categories = categoriesFromServices([]), clientName?: string) =>
+  (await extractChatSettings(message, { categories, clientName })).settings;
 
 beforeEach(() => {
   process.env.OPENAI_API_KEY = "test-key";
@@ -580,14 +580,14 @@ describe("final review: what never counts as a setting", () => {
   it("never saves a category-scoped target as the account's", async () => {
     llm.reply = settings({ field: "target_roas", value: 12 });
     for (const message of ["bar stools target ROAS is 12x", "Our ROAS target for bar stools is 12x"]) {
-      const out = await extractChatSettings(message, categories());
+      const out = await extractChatSettings(message, { categories: categories() });
       expect(out.settings, message).toEqual([]);
       expect(out.rejected, message).toEqual([
         "Didn't save target ROAS 12×: targets are per account, and that names Bar stools.",
       ]);
     }
     llm.reply = settings({ field: "target_cpa", value: 40 });
-    const cpa = await extractChatSettings("Target CPA for bar stools is $40", categories());
+    const cpa = await extractChatSettings("Target CPA for bar stools is $40", { categories: categories() });
     expect(cpa.settings).toEqual([]);
     expect(cpa.rejected).toEqual(["Didn't save target CPA $40: targets are per account, and that names Bar stools."]);
   });
@@ -654,6 +654,103 @@ describe("final review: what never counts as a setting", () => {
     ]) {
       expect(await extracted(message), message).toEqual([{ field: "website_url", value: "https://duringdays.example" }]);
     }
+  });
+});
+
+describe("re-review: Nx ROAS wording, target qualifiers and ad-spend caps", () => {
+  const categories = () => categoriesFromServices(ctServices());
+  const NX_ROAS = [
+    "Our target is 8x ROAS",
+    "Set target to 8x ROAS",
+    "Target 8x ROAS",
+    "We want 8x ROAS",
+    "Aim for 8x ROAS",
+    "Our 8x ROAS target",
+  ];
+
+  it("reads 'Nx ROAS' as the account target, never as a category called x", async () => {
+    llm.reply = settings({ field: "target_roas", value: 8 });
+    for (const message of NX_ROAS) {
+      const out = await extractChatSettings(message, { categories: categories(), clientName: "ClickTrends" });
+      expect(out.settings, message).toEqual([{ field: "target_roas", value: 8 }]);
+      expect(out.rejected, message).toEqual([]);
+    }
+  });
+
+  it("saves each 'Nx ROAS' wording for an admin", async () => {
+    llm.reply = settings({ field: "target_roas", value: 8 });
+    for (const request of NX_ROAS) {
+      ctClient().goals_profile = { ...ctClient().goals_profile, target_roas: 4 };
+      const gathered = await gatherDiagnoseEvidence({ clientId: CT, userId: ADMIN, request, intent: "general" });
+      expect(ctClient().goals_profile.target_roas, request).toBe(8);
+      expect(gathered.evidence, request).toContain("Saved to ClickTrends' settings: target ROAS 8× (was 4×).");
+    }
+  });
+
+  it("doesn't take a target's qualifier for a category", async () => {
+    llm.reply = settings({ field: "target_roas", value: 8 });
+    for (const message of [
+      "The client's target ROAS is 8x",
+      "Target ROAS for this month is 8x",
+      "Target ROAS for December is 8x",
+      "Our ROAS target on Meta is 8x",
+      "ClickTrends target ROAS is 8x",
+    ]) {
+      expect(await extracted(message, categories(), "ClickTrends"), message).toEqual([{ field: "target_roas", value: 8 }]);
+    }
+    llm.reply = settings({ field: "target_roas", value: 4 });
+    expect(await extracted("Our minimum ROAS is 4x", categories(), "ClickTrends")).toEqual([{ field: "target_roas", value: 4 }]);
+    llm.reply = settings({ field: "target_roas", value: 12 });
+    const scoped = await extractChatSettings("bar stools target ROAS is 12x", { categories: categories(), clientName: "ClickTrends" });
+    expect(scoped.settings).toEqual([]);
+    expect(scoped.rejected).toEqual(["Didn't save target ROAS 12×: targets are per account, and that names Bar stools."]);
+  });
+
+  it("keeps a margin named by the client the account's", async () => {
+    llm.reply = settings({ field: "gross_margin_pct", value: 40 });
+    expect(await extracted("ClickTrends margin is 40%", categories(), "ClickTrends")).toEqual([
+      { field: "gross_margin_pct", value: 40 },
+    ]);
+  });
+
+  it("saves the client's own target named by the client for an admin", async () => {
+    llm.reply = settings({ field: "target_roas", value: 8 });
+    await gatherDiagnoseEvidence({ clientId: CT, userId: ADMIN, request: "ClickTrends target ROAS is 8x", intent: "general" });
+    expect(ctClient().goals_profile.target_roas).toBe(8);
+  });
+
+  it("saves account caps worded with 'ad spend', 'ads' or 'all campaigns'", async () => {
+    for (const [message, reply, expected] of [
+      ["Our daily ad spend cap is $1,200", { field: "daily_account_cap", value: 1200 }, { field: "daily_account_cap", value: 1200 }],
+      ["Monthly ad spend cap is $30k", { field: "monthly_cap", value: 30000 }, { field: "monthly_cap", value: 30000 }],
+      ["Our Meta ads budget ceiling is $40k", { field: "budget_ceiling", value: 40000 }, { field: "budget_ceiling", value: 40000 }],
+      ["Daily cap $1,200 across all campaigns", { field: "daily_account_cap", value: 1200 }, { field: "daily_account_cap", value: 1200 }],
+    ] as const) {
+      llm.reply = settings(reply);
+      expect(await extracted(message), message).toEqual([expected]);
+    }
+  });
+
+  it("still refuses a cap for one named campaign, ad set or ad", async () => {
+    llm.reply = settings({ field: "monthly_cap", value: 30000 });
+    expect(await extracted("Monthly spend limit is $30k for the Black Friday campaign")).toEqual([]);
+    expect(await extracted("Monthly cap is $30k for the Black Friday campaign")).toEqual([]);
+    llm.reply = settings({ field: "daily_account_cap", value: 200 });
+    expect(await extracted("Set the campaign's daily budget limit to $200")).toEqual([]);
+    expect(await extracted("Set the campaign's daily cap to $200")).toEqual([]);
+    expect(await extracted("Daily cap for this ad set is $200")).toEqual([]);
+    expect(await extracted("Daily cap on campaign Summer Sale is $200")).toEqual([]);
+  });
+
+  it("treats a month or holiday as a period, not a category", async () => {
+    for (const [request, target] of [
+      ["Plan 10x on $500/day for December", 10],
+      ["Plan 11x on $500/day for Halloween", 11],
+    ] as const) {
+      await gatherDiagnoseEvidence({ clientId: CT, userId: ADMIN, request, intent: "strategy" });
+      expect(ctClient().goals_profile.target_roas, request).toBe(target);
+    }
+    expect(scanSiteCandidates).not.toHaveBeenCalled();
   });
 });
 

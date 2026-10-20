@@ -50,6 +50,9 @@ const SEASONS = [
   "autumn", "fall", "eofy", "end of financial year", "new year", "new years", "new year's", "boxing day",
   "cyber monday", "bfcm", "black friday", "mother's day", "mothers day", "father's day", "fathers day",
   "valentine's day", "valentines day", "valentines", "back to school", "q1", "q2", "q3", "q4", "peak season",
+  "halloween", "thanksgiving", "diwali", "ramadan", "eid", "lunar new year", "chinese new year",
+  "january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
+  "november", "december",
 ];
 const SEASON_RE = new RegExp(
   String.raw`^(?:${SEASONS.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/'/g, "['’]")).join("|")})(?:\s+(?:sale|sales|season|period|campaign|campaigns|push|promo|promos|rush|quarter|peak|weekend|week))?$`,
@@ -59,6 +62,12 @@ const SEASON_RE = new RegExp(
 /** A phrase that names a season or period, not a category. */
 export function namesSeason(phrase: string): boolean {
   return SEASON_RE.test(phrase.trim());
+}
+
+/** A phrase that means money, a period, a channel, an audience or the account, not a category. */
+export function notACategoryPhrase(phrase: string): boolean {
+  const lower = phrase.trim().toLowerCase();
+  return NOT_A_CATEGORY.some((t) => lower === t || lower.startsWith(`${t} `)) || namesSeason(lower);
 }
 
 /** A phrase that names the client itself ("a 10x plan for During Days"). */
@@ -90,9 +99,7 @@ export function requestedCategorySpan(
     const article = raw.match(LEADING_ARTICLES)?.[0] ?? "";
     const phrase = raw.slice(article.length).trim();
     if (!phrase || /[\d$€£¥%]/.test(phrase)) continue;
-    const lower = phrase.toLowerCase();
-    if (NOT_A_CATEGORY.some((t) => lower === t || lower.startsWith(`${t} `))) continue;
-    if (namesSeason(phrase) || namesClient(phrase, clientName)) continue;
+    if (notACategoryPhrase(phrase) || namesClient(phrase, clientName)) continue;
     const start = match.index! + match[0].length + article.length;
     return { phrase, start, end: start + phrase.length };
   }

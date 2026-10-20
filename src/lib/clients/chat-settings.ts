@@ -5,7 +5,7 @@ import { logger } from "@/lib/observability/logger";
 import { isAdmin } from "@/lib/security/roles";
 import { categoriesFromServices, scopeCategoriesFromRequest, type StrategyCategory } from "@/lib/strategy/categories";
 import { matchCategoryByLabel } from "@/lib/strategy/category-match";
-import { namesSeason, requestedCategoryPhrase } from "@/lib/strategy/requested-category";
+import { namesClient, notACategoryPhrase, requestedCategoryPhrase } from "@/lib/strategy/requested-category";
 import { nowIso } from "@/lib/utils";
 import type { Client, ClientService, Profile } from "@/types";
 import {
@@ -201,7 +201,18 @@ const ATTRIBUTION_WORDS: Record<string, RegExp> = {
 const PLAN_FIELDS = new Set<Field>(["target_roas", "daily_account_cap", "monthly_cap", "budget_ceiling"]);
 /** Account-wide limits: a clause about a campaign, ad set or ad sets that one's budget, not these. */
 const CAP_FIELDS = new Set<Field>(["daily_account_cap", "monthly_cap", "budget_ceiling"]);
-const NAMES_CAMPAIGN = /\b(?:campaigns?|ad[\s-]?sets?|ads?)\b|\bad['’]s\b/i;
+/**
+ * One specific campaign, ad set or ad ("the Black Friday campaign", "this ad
+ * set", "the campaign's", "campaign Summer Sale", "create a campaign"); the
+ * generic "ad spend", "ads" and "all campaigns" don't count.
+ */
+const NAMES_CAMPAIGN = new RegExp(
+  [
+    String.raw`\b(?:the|this|that|a|an|one|each|new|our|my)\s+(?:[\w'’&-]+\s+){0,4}?(?:campaign|ad[\s-]?set|ad)(?:['’]s)?\b(?!\s+(?:spend|accounts?)\b)`,
+    String.raw`\b(?:campaign|ad[\s-]?set)(?:['’]s)?\s+(?:["“'‘][^"”'’]+["”'’]|[A-Z0-9][\w-]*)`,
+    String.raw`\b(?:create|launch|start|set\s+up)\s+(?:a\s+|an\s+|the\s+)?(?:new\s+)?(?:campaign|ad[\s-]?set|ad)\b`,
+  ].join("|"),
+);
 /** Negations and the past: "isn't 40%", "was 40%", "used to", "last year". */
 const NEGATION_OR_PAST =
   /\b(?:not|isn['’]?t|wasn['’]?t|aren['’]?t|weren['’]?t|didn['’]?t|doesn['’]?t|was|used\s+to|last\s+year|previously|formerly)\b/i;
@@ -258,6 +269,7 @@ const ACCOUNT_WORDS = new Set([
   "with", "at", "of", "in", "for", "on", "your", "this", "that", "blended", "can", "you", "please", "i",
   "we", "us", "change", "update", "make", "use", "new", "current", "target", "contribution", "product",
   "products", "actual", "roas", "cpa", "want", "like", "need", "would", "love", "have", "has", "had",
+  "minimum", "maximum", "min", "max", "client", "client's", "clients", "aim", "goal", "goals",
 ]);
 
 /** A phrase made only of account words ("the business", "average") names no category. */
@@ -392,7 +404,9 @@ function wordsBefore(clause: string, field: Scopable): string | null {
   const before = new RegExp(String.raw`^(.*?)\b${SCOPE_WORDS[field]}\b`, "i").exec(clause)?.[1] ?? "";
   const run: string[] = [];
   for (const word of before.trim().split(/\s+/).reverse()) {
-    const w = word.toLowerCase().replace(/[^a-z'-]/g, "");
+    // "8x ROAS": a number is never part of a category's name.
+    if (/\d/.test(word)) break;
+    const w = word.toLowerCase().replace(/[’]/g, "'").replace(/[^a-z'-]/g, "");
     if (!w || ACCOUNT_WORDS.has(w) || run.length >= 4) break;
     run.unshift(w);
   }
@@ -409,11 +423,22 @@ function categoryAfter(clause: string, field: Scopable): string | null {
 }
 
 /** The category a clause names for a margin or order value, if it names one. */
-function categoryNamedIn(clause: string, field: Scopable, categories: StrategyCategory[]): string | null {
+function categoryNamedIn(
+  clause: string,
+  field: Scopable,
+  categories: StrategyCategory[],
+  clientName?: string | null,
+): string | null {
   const loaded = scopeCategoriesFromRequest(clause, categories);
   if (loaded.length) return loaded.sort((a, b) => b.name.length - a.name.length)[0]!.name;
-  const phrase = [wordsBefore(clause, field), categoryAfter(clause, field), requestedCategoryPhrase(clause, "strategy")].find(
-    (p): p is string => p != null && !onlyAccountWords(p) && !namesSeason(p),
+  // Qualifiers that aren't categories: the account, a period or season, a channel, the client itself.
+  const phrase = [
+    wordsBefore(clause, field),
+    categoryAfter(clause, field),
+    requestedCategoryPhrase(clause, "strategy", clientName),
+  ].find(
+    (p): p is string =>
+      p != null && !onlyAccountWords(p) && !notACategoryPhrase(p) && !namesClient(p, clientName),
   );
   if (!phrase) return null;
   return matchCategoryByLabel(phrase, categories)?.name ?? phrase;
@@ -499,12 +524,11 @@ export type ExtractedSettings = {
  * states but that can't be read is reported; and anything the message doesn't
  * plainly state, with this very value, is dropped.
  */
-export function parseSettingsReply(
-  reply: string,
-  message: string,
-  categories: StrategyCategory[] = [],
-  currency = "USD",
-): ExtractedSettings {
+/** What the extraction knows about the client: its categories, currency and name. */
+export type ExtractContext = { categories?: StrategyCategory[]; currency?: string; clientName?: string | null };
+
+export function parseSettingsReply(reply: string, message: string, context: ExtractContext = {}): ExtractedSettings {
+  const { categories = [], currency = "USD", clientName = null } = context;
   const out: ExtractedSettings = { settings: [], rejected: [] };
   const json = reply.match(/\{[\s\S]*\}/);
   if (!json) return out;
@@ -543,7 +567,7 @@ export function parseSettingsReply(
     if (!backing) continue;
     // Targets are per account: one stated for a category is never saved as the account's.
     if (setting.field === "target_roas" || setting.field === "target_cpa") {
-      const category = categoryNamedIn(backing, setting.field, categories);
+      const category = categoryNamedIn(backing, setting.field, categories, clientName);
       if (category) {
         const value =
           setting.field === "target_roas"
@@ -557,7 +581,7 @@ export function parseSettingsReply(
     }
     // An "account" margin or order value in a clause that names a category is that category's.
     if (setting.field === "gross_margin_pct" || setting.field === "average_value") {
-      const category = categoryNamedIn(backing, setting.field, categories);
+      const category = categoryNamedIn(backing, setting.field, categories, clientName);
       if (category) {
         setting = {
           field: setting.field === "gross_margin_pct" ? "category_margin" : "category_average_value",
@@ -605,11 +629,7 @@ const EXTRACT_SYSTEM = [
  * `categories` lets a category's margin be told from the account's.
  * Never throws: without a key, or when the call or its JSON fails, nothing.
  */
-export async function extractChatSettings(
-  message: string,
-  categories: StrategyCategory[] = [],
-  currency = "USD",
-): Promise<ExtractedSettings> {
+export async function extractChatSettings(message: string, context: ExtractContext = {}): Promise<ExtractedSettings> {
   const none: ExtractedSettings = { settings: [], rejected: [] };
   if (!mentionsSettings(message)) return none;
   const config = getConfig();
@@ -625,7 +645,7 @@ export async function extractChatSettings(
       system: EXTRACT_SYSTEM,
       prompt: message.slice(0, 4000),
     });
-    return parseSettingsReply(reply, message, categories, currency);
+    return parseSettingsReply(reply, message, context);
   } catch (error) {
     logger.warn("Chat settings: extraction failed", {
       error: error instanceof Error ? error.message : String(error),
@@ -1126,8 +1146,13 @@ export async function applyChatSettings(input: {
   if (mentionsSettings(input.request)) {
     try {
       const services = await input.loadServices();
-      currency = (await loadClient(clientId).catch(() => null))?.currency || currency;
-      const extracted = await extractChatSettings(input.request, categoriesFromServices(services), currency);
+      const client = await loadClient(clientId).catch(() => null);
+      currency = client?.currency || currency;
+      const extracted = await extractChatSettings(input.request, {
+        categories: categoriesFromServices(services),
+        currency,
+        clientName: client?.name ?? null,
+      });
       notSaved.push(...extracted.rejected);
       statedTarget = extracted.settings.some((s) => s.field === "target_roas");
       if (extracted.settings.length) await apply(extracted.settings, services);
