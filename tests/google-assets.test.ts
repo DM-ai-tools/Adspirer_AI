@@ -61,7 +61,6 @@ beforeEach(() => {
   process.env.DEMO_MODE = "false";
   process.env.GOOGLE_OAUTH_CLIENT_ID = "cid";
   process.env.GOOGLE_OAUTH_CLIENT_SECRET = "csecret";
-  process.env.GOOGLE_ADS_DEVELOPER_TOKEN = "devtoken";
   resetConfigCache();
   vi.mocked(listGa4Properties).mockReset().mockResolvedValue(ga4());
   vi.mocked(discoverAdsAccounts).mockReset().mockResolvedValue(ads());
@@ -72,7 +71,6 @@ afterEach(() => {
   process.env.DEMO_MODE = "true";
   delete process.env.GOOGLE_OAUTH_CLIENT_ID;
   delete process.env.GOOGLE_OAUTH_CLIENT_SECRET;
-  delete process.env.GOOGLE_ADS_DEVELOPER_TOKEN;
   resetConfigCache();
 });
 
@@ -116,12 +114,11 @@ describe("syncGoogleAssets", () => {
     expect(byExternal("https://shop.example/")).toBeDefined();
   });
 
-  it("skips Google Ads when no developer token is configured", async () => {
-    delete process.env.GOOGLE_ADS_DEVELOPER_TOKEN;
-    resetConfigCache();
+  it("syncs Google Ads with only the OAuth client set (no developer token)", async () => {
     const result = await syncGoogleAssets();
-    expect(result).toEqual({ ga4: 1, ads: 0, gsc: 2, warnings: ["Google Ads: developer token not configured"] });
-    expect(discoverAdsAccounts).not.toHaveBeenCalled();
+    expect(result.warnings).toEqual([]);
+    expect(result.ads).toBeGreaterThan(0);
+    expect(discoverAdsAccounts).toHaveBeenCalled();
   });
 });
 

@@ -12,7 +12,6 @@ import { getCurrentUser } from "@/lib/security/auth";
 const LIVE_ENV = {
   GOOGLE_OAUTH_CLIENT_ID: "cid",
   GOOGLE_OAUTH_CLIENT_SECRET: "csecret",
-  GOOGLE_ADS_DEVELOPER_TOKEN: "devtoken",
   NEXT_PUBLIC_SUPABASE_URL: "https://project.supabase.co",
   NEXT_PUBLIC_SUPABASE_ANON_KEY: "anon",
 };
@@ -51,7 +50,6 @@ describe("Google in DEMO_MODE", () => {
     const body = (await (await GET()).json()) as { data: Record<string, unknown> };
     expect(body.data).toMatchObject({
       configured: true,
-      adsConfigured: true,
       connected: true,
       email: "demo@clicktrends.example",
       needsReconnect: false,

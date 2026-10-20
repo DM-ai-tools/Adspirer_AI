@@ -9,7 +9,7 @@ const db = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/config", () => ({
-  getConfig: () => ({ isDemoMode: false, hasSupabase: true, hasGoogleAds: true }),
+  getConfig: () => ({ isDemoMode: false, hasSupabase: true }),
 }));
 
 vi.mock("@/lib/supabase/admin", () => ({
