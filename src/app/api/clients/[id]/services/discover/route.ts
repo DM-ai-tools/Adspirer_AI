@@ -7,6 +7,7 @@ import { jsonOk, withApiHandler } from "@/lib/api/response";
 import { logger } from "@/lib/observability/logger";
 import {
   discoverCategoryCandidates,
+  fetchCategorySitemapUrls,
   mapSiteUrls,
   matchServicePages,
   type CategoryCandidate,
@@ -61,8 +62,21 @@ export async function GET(_request: Request, context: RouteContext) {
     }
     if (!siteUrl) return jsonOk(unavailable("no_website"));
 
+    // The store's own sitemap lists its collections even when the crawl map
+    // fills up with product pages first; it never throws.
+    const sitemapUrls = await fetchCategorySitemapUrls(siteUrl);
     try {
-      const urls = await mapSiteUrls(siteUrl);
+      let mapped: string[] = [];
+      try {
+        mapped = await mapSiteUrls(siteUrl);
+      } catch (error) {
+        if (!sitemapUrls.length) throw error;
+        logger.warn("Category scan: site map failed; using the sitemap only", {
+          clientId: id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      const urls = [...sitemapUrls, ...mapped];
       let candidates = discoverCategoryCandidates(urls, siteUrl, existing);
       // No shop-style category pages (agencies, clinics): read the service
       // names from the site and match each to its own page in the map.

@@ -4,6 +4,7 @@ import {
   categoryPatchFromEdit,
   importOutcome,
   marginPctFromNumber,
+  filterScanCandidates,
   scanUnavailableMessage,
 } from "@/lib/clients/category-form";
 import { parseCategorySheet } from "@/lib/clients/category-import";
@@ -96,5 +97,31 @@ describe("scanUnavailableMessage", () => {
     expect(scanUnavailableMessage(undefined, "categories")).toBe(
       "Website scan is unavailable. Add categories by hand or import a sheet.",
     );
+  });
+});
+
+describe("filterScanCandidates", () => {
+  const c = (name: string, alreadyAdded = false) => ({ name, landing_page_url: null, alreadyAdded });
+  const all = [c("Adjustable Bar Stools"), c("Bar Stools", true), c("Counter Stools"), c("3 Seater Outdoor Sofa"), c("Sofa Beds")];
+
+  it("matches every typed word, in any order, ignoring case", () => {
+    expect(filterScanCandidates(all, "stools bar").shown.map((x) => x.name)).toEqual(["Adjustable Bar Stools", "Bar Stools"]);
+    expect(filterScanCandidates(all, "SOFA").shown.map((x) => x.name)).toEqual(["3 Seater Outdoor Sofa", "Sofa Beds"]);
+  });
+
+  it("shows everything for an empty search", () => {
+    expect(filterScanCandidates(all, "  ").shown).toHaveLength(5);
+    expect(filterScanCandidates(all, "").matched).toBe(5);
+  });
+
+  it("renders at most the limit but reports how many matched", () => {
+    const many = Array.from({ length: 450 }, (_, i) => c(`Cat ${i}`));
+    const out = filterScanCandidates(many, "cat", 300);
+    expect(out.shown).toHaveLength(300);
+    expect(out.matched).toBe(450);
+  });
+
+  it("lists the names 'select all shown' would add, skipping ones already added", () => {
+    expect(filterScanCandidates(all, "stools").selectable).toEqual(["Adjustable Bar Stools", "Counter Stools"]);
   });
 });

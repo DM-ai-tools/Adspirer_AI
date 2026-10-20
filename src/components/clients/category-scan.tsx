@@ -3,12 +3,13 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { apiFetch } from "@/lib/api-client";
-import { scanUnavailableMessage } from "@/lib/clients/category-form";
+import { filterScanCandidates, scanUnavailableMessage, type ScanCandidate } from "@/lib/clients/category-form";
 import type { ClientService } from "@/types/database";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 
-type Candidate = { name: string; landing_page_url: string | null; alreadyAdded: boolean };
+type Candidate = ScanCandidate;
 
 /** "Scan website": lists discovered candidates and adds the ticked ones. */
 export function CategoryScan({
@@ -26,6 +27,8 @@ export function CategoryScan({
   /** Set when the scan couldn't run: the reason the route gave ("no_website", …). */
   const [unavailable, setUnavailable] = useState<string | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [query, setQuery] = useState("");
+  const view = filterScanCandidates(candidates ?? [], query);
 
   async function scan() {
     setBusy(true);
@@ -36,6 +39,7 @@ export function CategoryScan({
       setCandidates(data.candidates);
       setUnavailable(data.source === "unavailable" ? (data.reason ?? "unknown") : null);
       setPicked(new Set());
+      setQuery("");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Scan failed");
     } finally {
@@ -78,7 +82,30 @@ export function CategoryScan({
             <p className="text-sm text-muted">No {word} candidates found on the site.</p>
           ) : (
             <>
-              {candidates.map((c) => (
+              <div className="flex flex-wrap items-center gap-2">
+                <Input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder={`Search ${candidates.length} ${words}, e.g. bar stools`}
+                  className="max-w-xs"
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={view.selectable.length === 0}
+                  onClick={() => setPicked((prev) => new Set([...prev, ...view.selectable]))}
+                >
+                  Select all shown ({view.selectable.length})
+                </Button>
+                <span className="text-xs text-muted">
+                  {view.matched > view.shown.length
+                    ? `Showing ${view.shown.length} of ${view.matched}; search to narrow it down`
+                    : `${view.matched} of ${candidates.length} shown`}
+                </span>
+              </div>
+              <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
+              {view.shown.map((c) => (
                 <label key={c.name} className="flex items-center gap-2 text-sm">
                   <Checkbox
                     disabled={c.alreadyAdded}
@@ -96,6 +123,7 @@ export function CategoryScan({
                   {c.alreadyAdded ? <span className="text-xs text-muted">already added</span> : null}
                 </label>
               ))}
+              </div>
               <Button type="button" size="sm" disabled={busy || picked.size === 0} onClick={() => void addSelected()}>
                 Add selected ({picked.size})
               </Button>

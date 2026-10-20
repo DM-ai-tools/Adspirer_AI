@@ -18,7 +18,8 @@ const CATEGORY_MARKERS = [
   "/department/",
 ];
 
-const MAX_CANDIDATES = 1000;
+// duringdays.com.au alone has 2,451 collections; never cut a real catalogue short.
+const MAX_CANDIDATES = 5000;
 
 /** List URLs on a site via Firecrawl's map endpoint. Throws on failure. */
 export async function mapSiteUrls(
@@ -194,4 +195,63 @@ export function matchServicePages(
   }
 
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name)).slice(0, MAX_CANDIDATES);
+}
+
+/** Child sitemaps worth reading: shop collections and category lists, never products or posts. */
+const CATEGORY_SITEMAP = /collection|categor|product[-_]cat|department/i;
+const MAX_CATEGORY_SITEMAPS = 10;
+const MAX_SITEMAP_URLS = 20_000;
+
+type SitemapDeps = {
+  fetchImpl?: typeof fetch;
+  /** Refuses internal addresses (SSRF guard); defaults to assertPublicUrl. */
+  assertPublic?: (url: string) => Promise<void>;
+};
+
+function sitemapLocs(xml: string): string[] {
+  return [...xml.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)].map((m) =>
+    m[1]!.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'"),
+  );
+}
+
+/**
+ * Large stores fill the 5,000-URL crawl map with product pages before any
+ * collection page appears (duringdays.com.au: 4,973 of 5,000). Shopify and
+ * WooCommerce list their collections / categories in their own sitemaps, so
+ * read /sitemap.xml and, when it is an index, only the collection and category
+ * child sitemaps. Never throws: no sitemap or a refused address returns [].
+ */
+export async function fetchCategorySitemapUrls(siteUrl: string, deps: SitemapDeps = {}): Promise<string[]> {
+  const site = parseUrl(siteUrl);
+  if (!site) return [];
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const assertPublic =
+    deps.assertPublic ?? (async (url: string) => (await import("@/lib/security/public-url")).assertPublicUrl(url));
+
+  const read = async (url: string): Promise<string | null> => {
+    try {
+      await assertPublic(url);
+      const res = await fetchImpl(url, {
+        headers: { "User-Agent": "AdspirerAIBot/1.0" },
+        signal: AbortSignal.timeout(15_000),
+      });
+      return res.ok ? await res.text() : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const root = await read(`${site.origin}/sitemap.xml`);
+  if (!root) return [];
+  const locs = sitemapLocs(root);
+  if (!/<sitemapindex/i.test(root)) return locs.slice(0, MAX_SITEMAP_URLS);
+
+  const children = locs.filter((u) => CATEGORY_SITEMAP.test(u)).slice(0, MAX_CATEGORY_SITEMAPS);
+  const urls: string[] = [];
+  for (const child of children) {
+    const xml = await read(child);
+    if (xml) urls.push(...sitemapLocs(xml));
+    if (urls.length >= MAX_SITEMAP_URLS) break;
+  }
+  return urls.slice(0, MAX_SITEMAP_URLS);
 }
