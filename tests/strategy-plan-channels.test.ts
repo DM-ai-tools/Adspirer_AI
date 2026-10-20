@@ -481,6 +481,30 @@ describe("buildStrategyPlan channel split", () => {
     expect(p.allocations[0].googleCampaignTypes).toEqual([]);
   });
 
+  it("gives Google its 20% test share when the ask names Google Ads, even with no Google history", () => {
+    // Karthik: "…using Google Ads and Meta together". During Days' Ads account is new,
+    // so Google has no spend and there's no Search Console data yet.
+    const p = plan({
+      snapshot,
+      categories: [cat("Shoes")],
+      channels: channelPerf([shoesRow(0)]),
+      brief: { wantsGoogle: true },
+    });
+    expect(p.allocations[0].channelSplit).toMatchObject({ metaCents: 8_000, googleCents: 2_000 });
+    // A Google budget always names a campaign type: Search when there's nothing else to go on.
+    expect(p.allocations[0].googleCampaignTypes.length).toBeGreaterThan(0);
+    expect(p.assumptions).toContain(
+      "Google gets a 20% test share for Shoes because the plan was asked to include Google Ads; Google has no spend or search data there yet.",
+    );
+  });
+
+  it("still leaves Google out when the ask names Google Ads but no Ads account is mapped", () => {
+    const channels = channelPerf([shoesRow(0)], { googleAdsMapped: false, ads: null });
+    const p = plan({ snapshot, categories: [cat("Shoes")], channels, brief: { wantsGoogle: true } });
+    expect(p.allocations[0].channelSplit).toMatchObject({ metaCents: 10_000, googleCents: 0 });
+    expect(p.channelNote).toBe(NO_ADS_NOTE);
+  });
+
   it("puts everything on Meta, with a note, when no Google Ads account is mapped", () => {
     const channels = channelPerf([shoesRow(500)], { googleAdsMapped: false, ads: null });
     const p = plan({ snapshot, categories: [cat("Shoes")], channels });

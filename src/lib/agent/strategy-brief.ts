@@ -115,6 +115,8 @@ type StatedBrief = {
   periodDays: number | null;
   targetRoas: number | null;
   stretch: number[];
+  /** The ask names Google ("using Google Ads and Meta together"). */
+  wantsGoogle: boolean;
 };
 
 function statedBrief(text: string): StatedBrief {
@@ -127,6 +129,7 @@ function statedBrief(text: string): StatedBrief {
     periodDays: total?.periodDays ?? null,
     targetRoas: values.length ? values[0] : impliedRoas(text),
     stretch: values.slice(1),
+    wantsGoogle: /\bgoogle\b/i.test(text),
   };
 }
 
@@ -171,6 +174,7 @@ function completeBrief(stated: StatedBrief, defaults: BriefDefaults): BriefResul
   const target = targetRoas;
   const stretchTargets = [...new Set(stated.stretch)].filter((v) => v !== target).sort((a, b) => a - b);
   const brief: StrategyBrief = { dailyBudgetCents, targetRoas: target, stretchTargets };
+  if (stated.wantsGoogle) brief.wantsGoogle = true;
   if (total != null) {
     brief.totalBudgetCents = total;
     brief.periodDays = periodDays;
@@ -226,6 +230,7 @@ export function resolveStrategyBrief(
       periodDays: now.periodDays ?? before.periodDays,
       targetRoas: now.targetRoas ?? before.targetRoas,
       stretch: [...before.stretch, ...now.stretch],
+      wantsGoogle: now.wantsGoogle || before.wantsGoogle,
     },
     defaults,
   );
