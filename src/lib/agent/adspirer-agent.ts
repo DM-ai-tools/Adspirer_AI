@@ -1669,6 +1669,22 @@ export async function gatherDiagnoseEvidence(input: {
 
   // Settings the message states ("our margin is 40%") are saved before any
   // plan is built, so this turn already uses them. Reported in one section.
+  // Every step reports straight away (onChange), so a save always has its
+  // line and its audit row even if a later step throws.
+  let settingsSection = -1;
+  let settingsCall: AgentToolCallProposal | null = null;
+  const showSettings = (turn: ChatSettingsTurn) => {
+    const text = turn.evidence();
+    if (text) {
+      if (settingsSection < 0) settingsSection = sections.push(text) - 1;
+      else sections[settingsSection] = text;
+    }
+    const call = turn.toolCall();
+    if (call) {
+      if (settingsCall) Object.assign(settingsCall, call);
+      else toolCalls.push((settingsCall = { ...call }));
+    }
+  };
   const settings: ChatSettingsTurn | null =
     intent === "chat" || intent === "out_of_scope"
       ? null
@@ -1676,23 +1692,11 @@ export async function gatherDiagnoseEvidence(input: {
           clientId: input.clientId,
           userId: input.userId,
           request: input.request,
-          services: await activeClientServices(input.clientId).catch(() => []),
+          loadServices: () => activeClientServices(input.clientId).catch(() => []),
+          onChange: showSettings,
         });
-  let settingsSection = -1;
-  let settingsCall: AgentToolCallProposal | null = null;
-  const showSettings = () => {
-    const text = settings?.evidence();
-    if (text) {
-      if (settingsSection < 0) settingsSection = sections.push(text) - 1;
-      else sections[settingsSection] = text;
-    }
-    const call = settings?.toolCall();
-    if (call) {
-      if (settingsCall) Object.assign(settingsCall, call);
-      else toolCalls.push((settingsCall = { ...call }));
-    }
-  };
-  showSettings();
+  /** The client's goals with this turn's stated values on top. */
+  const turnGoals = () => clientGoals(input.clientId, settings?.goalsOverride());
 
   if (
     !accountId &&
@@ -1704,7 +1708,7 @@ export async function gatherDiagnoseEvidence(input: {
   ) {
     if (intent === "strategy") {
       // No account, no snapshot: say so instead of letting a generic plan through.
-      const goals = await clientGoals(input.clientId);
+      const goals = await turnGoals();
       const word = goals.business_model === "ecommerce" ? "category" : "service";
       const loaded = categoriesFromServices(await activeClientServices(input.clientId)).length;
       sections.push(
@@ -2324,7 +2328,7 @@ export async function gatherDiagnoseEvidence(input: {
                 brief.scope === "campaigns"
                   ? scopeAuditSnapshot(accountSnapshot, matchedCampaigns.map((c) => c.id))
                   : accountSnapshot;
-              const scorecard = evaluateCheckpoints(snapshot, { goals: await clientGoals(input.clientId) });
+              const scorecard = evaluateCheckpoints(snapshot, { goals: await turnGoals() });
               sections.push(renderScorecardEvidence(scorecard, snapshot));
               sections.push(renderAdSetEvidence(snapshot));
               auditAppendix = renderScorecardMarkdown(scorecard, snapshot);
@@ -2426,7 +2430,7 @@ export async function gatherDiagnoseEvidence(input: {
         until: range.dateStop,
         days: 30,
       });
-      const goals = await clientGoals(input.clientId, settings?.goalsOverride());
+      const goals = await turnGoals();
       const currentDailySpendCents = snapshot.totals
         ? Math.round(snapshot.totals.spendCents / snapshot.period.days)
         : null;
@@ -2474,7 +2478,6 @@ export async function gatherDiagnoseEvidence(input: {
         if (requested.evidence) sections.push(requested.evidence);
         // A margin stated for the category just added applies to it now.
         await settings?.applyPendingCategories(requested.services);
-        showSettings();
         const categories = categoriesFromServices(settings?.withServiceOverrides(requested.services) ?? requested.services);
         const attribution = attributeSpendToCategories(snapshot, categories);
         const scorecard = evaluateCheckpoints(snapshot, { goals });
@@ -2566,7 +2569,7 @@ export async function gatherDiagnoseEvidence(input: {
     // The website scan below can be slow, so say what's happening first.
     const namesCategory = requestedCategoryPhrase(input.request, "spend") != null;
     if (namesCategory) {
-      const goals = await clientGoals(input.clientId);
+      const goals = await turnGoals();
       await spendProgress(goals.business_model === "ecommerce" ? "category" : "service");
     }
     // A category the ask names but isn't set up yet is found on the website and added.
@@ -2578,10 +2581,9 @@ export async function gatherDiagnoseEvidence(input: {
     });
     if (requested.evidence) sections.push(requested.evidence);
     await settings?.applyPendingCategories(requested.services);
-    showSettings();
     const categories = categoriesFromServices(settings?.withServiceOverrides(requested.services) ?? requested.services);
     if (categories.length && (requested.scoped || asksAboutCategorySpend(input.request, categories))) {
-      const goals = await clientGoals(input.clientId);
+      const goals = await turnGoals();
       const categoryWord = goals.business_model === "ecommerce" ? "category" : "service";
       if (!namesCategory) await spendProgress(categoryWord);
       try {
@@ -3324,7 +3326,7 @@ export async function gatherDiagnoseEvidence(input: {
         (line) => !hold.heldIds.some((id) => line.includes(id)),
       );
       if (snapshot) {
-        sections.push(renderOptimisationSignals(evaluateCheckpoints(snapshot, { goals: await clientGoals(input.clientId) })));
+        sections.push(renderOptimisationSignals(evaluateCheckpoints(snapshot, { goals: await turnGoals() })));
         toolCalls.push({
           name: "audit_checkpoints",
           args: { account_id: accountId, days: 14 },

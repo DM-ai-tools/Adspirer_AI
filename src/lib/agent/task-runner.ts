@@ -5,6 +5,7 @@ import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
 import { AgentPausedError } from "@/lib/errors";
 import { classify } from "@/lib/tools/policy";
+import { SETTINGS_TOOL, withoutSettingsCalls } from "@/lib/clients/chat-settings";
 import "@/lib/tools"; // ensure tools registered
 import { createPendingApproval } from "@/lib/approvals/service";
 import { humanToolLabel } from "@/lib/tools/display-labels";
@@ -412,7 +413,11 @@ export async function runTask(
         const ts = nowIso();
         return {
           ...newToolCall(task, call.name, classify(call.name), call.args),
-          result: { queued_by: "preflight" },
+          // A settings save keeps its one-line summary for the Audit Log.
+          result:
+            call.name === SETTINGS_TOOL && call.rationale
+              ? { queued_by: "preflight", summary: call.rationale }
+              : { queued_by: "preflight" },
           completed_at: ts,
         };
       }),
@@ -842,6 +847,8 @@ export async function runTask(
       );
     }
 
+    // Only the settings step records a settings save; the writer never can.
+    agentResult.toolCalls = withoutSettingsCalls(agentResult.toolCalls);
     for (const call of agentResult.toolCalls) {
       const safety = classify(call.name);
       const args =

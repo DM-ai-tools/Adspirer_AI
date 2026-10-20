@@ -26,34 +26,43 @@ vi.mock("ai", async (importOriginal) => ({
 vi.mock("@/lib/supabase/admin", () => ({
   createAdminClient: () => ({
     from: (table: string) => {
-      // A chainable read that resolves to the table's first row matching every .eq().
+      const matching = (filters: Array<[string, unknown]>) =>
+        (db.rows[table] ?? []).filter((r) => filters.every(([k, v]) => r[k] === v));
+      // A chainable read that resolves to the rows matching every .eq().
       const read = () => {
         const filters: Array<[string, unknown]> = [];
-        const rows = () => (db.rows[table] ?? []).filter((r) => filters.every(([k, v]) => r[k] === v));
         const q: Record<string, unknown> = {
           eq: (k: string, v: unknown) => {
             filters.push([k, v]);
             return q;
           },
-          single: async () => ({ data: rows()[0] ?? null, error: rows()[0] ? null : { message: "no row" } }),
-          maybeSingle: async () => ({ data: rows()[0] ?? null, error: null }),
-          then: (resolve: (v: unknown) => unknown) => resolve({ data: rows(), error: null }),
+          single: async () => {
+            const row = matching(filters)[0];
+            return { data: row ? structuredClone(row) : null, error: row ? null : { message: "no row" } };
+          },
+          maybeSingle: async () => ({ data: matching(filters)[0] ?? null, error: null }),
+          then: (resolve: (v: unknown) => unknown) => resolve({ data: matching(filters), error: null }),
         };
         return q;
       };
       return {
         select: () => read(),
+        // Records the update and applies it to the matching rows when awaited.
         update: (patch: Record<string, unknown>) => {
           const entry = { table, patch, filters: [] as Array<[string, unknown]> };
           db.updates.push(entry);
-          const saved = () => ({ data: { ...(db.rows[table]?.[0] ?? {}), ...patch }, error: null });
+          const run = () => {
+            const rows = matching(entry.filters);
+            for (const row of rows) Object.assign(row, structuredClone(patch));
+            return { data: rows[0] ?? null, error: null };
+          };
           const q: Record<string, unknown> = {
             eq: (k: string, v: unknown) => {
               entry.filters.push([k, v]);
               return q;
             },
-            select: () => ({ single: async () => saved() }),
-            then: (resolve: (v: unknown) => unknown) => resolve({ error: null }),
+            select: () => ({ single: async () => run() }),
+            then: (resolve: (v: unknown) => unknown) => resolve(run()),
           };
           return q;
         },
@@ -78,13 +87,16 @@ const service: ClientService = {
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
 };
+const REQUEST = "our target ROAS is 8x, budget ceiling is $10k and bar stools margin is 45%";
+const clientRow = () => db.rows.clients[0]!;
 
 beforeEach(() => {
   db.updates = [];
   db.rows = {
     profiles: [
-      { id: "u_admin", role: "admin" },
-      { id: "u_op", role: "operator" },
+      { id: "u_admin", role: "admin", is_active: true },
+      { id: "u_off", role: "admin", is_active: false },
+      { id: "u_op", role: "operator", is_active: true },
     ],
     clients: [
       {
@@ -98,7 +110,7 @@ beforeEach(() => {
         updated_at: "2026-01-01T00:00:00Z",
       },
     ],
-    client_services: [service as unknown as Record<string, unknown>],
+    client_services: [{ ...service } as unknown as Record<string, unknown>],
   };
   db.reply = JSON.stringify({
     settings: [
@@ -114,8 +126,8 @@ describe("chat settings on Supabase", () => {
     const turn = await applyChatSettings({
       clientId: "c1",
       userId: "u_admin",
-      request: "our target ROAS is 8x, budget ceiling is $10k and bar stools margin is 45%",
-      services: [service],
+      request: REQUEST,
+      loadServices: async () => [service],
     });
 
     const client = db.updates.find((u) => u.table === "clients")!;
@@ -140,18 +152,30 @@ describe("chat settings on Supabase", () => {
     expect(turn.withServiceOverrides([service])[0].gross_margin_pct).toBe(45);
   });
 
-  it("reads the role from profiles and saves nothing for an operator", async () => {
+  it("reads the role from profiles and saves nothing for an operator or a switched-off admin", async () => {
+    for (const userId of ["u_op", "u_off"]) {
+      const turn = await applyChatSettings({ clientId: "c1", userId, request: REQUEST, loadServices: async () => [service] });
+      expect(db.updates).toEqual([]);
+      expect(turn.evidence()).toContain("Only an admin can save client settings; I used");
+      expect(turn.toolCall()).toBeNull();
+      // Still used for this turn.
+      expect(turn.goalsOverride()).toMatchObject({ target_roas: 8 });
+      expect(turn.withServiceOverrides([service])[0].gross_margin_pct).toBe(45);
+    }
+  });
+
+  it("re-reads the client before each write and merges onto the fresh profile", async () => {
+    db.reply = JSON.stringify({ settings: [{ field: "budget_ceiling", value: 10000 }] });
     const turn = await applyChatSettings({
       clientId: "c1",
-      userId: "u_op",
-      request: "our target ROAS is 8x, budget ceiling is $10k and bar stools margin is 45%",
-      services: [service],
+      userId: "u_admin",
+      request: "budget ceiling is $10k",
+      loadServices: async () => [service],
     });
-    expect(db.updates).toEqual([]);
-    expect(turn.evidence()).toContain("Only an admin can save client settings; I used");
-    expect(turn.toolCall()).toBeNull();
-    // Still used for this turn.
-    expect(turn.goalsOverride()).toMatchObject({ target_roas: 8 });
-    expect(turn.withServiceOverrides([service])[0].gross_margin_pct).toBe(45);
+    // Someone saves the Settings tab between the two writes.
+    clientRow().goals_profile = { business_model: "ecommerce", target_roas: 6, monthly_cap_cents: 3_000_000 };
+    await turn.saveStrategyTarget(10);
+    const last = db.updates.filter((u) => u.table === "clients").at(-1)!;
+    expect(last.patch.goals_profile).toEqual({ business_model: "ecommerce", target_roas: 10, monthly_cap_cents: 3_000_000 });
   });
 });

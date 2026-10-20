@@ -65,15 +65,25 @@ function parseBudgetCents(text: string): number | null {
 
 /** Every "Nx" / "roas of N" value in the order it appears; "400%" is 4×, and values over the cap are dropped. */
 function parseRoasValues(text: string): number[] {
-  const found: Array<{ at: number; value: number }> = [];
+  return roasMatches(text).map((f) => f.value);
+}
+
+/**
+ * Every ROAS value in order, each marked as a stretch target when "stretch"
+ * comes before it in the same sentence ("stretch 12x and 15x").
+ */
+function roasMatches(text: string): Array<{ at: number; value: number; stretch: boolean }> {
+  const found: Array<{ at: number; value: number; stretch: boolean }> = [];
   for (const re of [MULTIPLE_RE, ROAS_OF_RE]) {
     for (const m of text.matchAll(re)) {
       const raw = Number(m[1].replace(/,/g, ""));
       const value = m[2] ? raw / 100 : raw;
-      if (value > 0 && value <= MAX_ROAS) found.push({ at: m.index ?? 0, value: round2(value) });
+      const at = m.index ?? 0;
+      const sentence = text.slice(0, at).split(/[.!?;\n]/).pop() ?? "";
+      if (value > 0 && value <= MAX_ROAS) found.push({ at, value: round2(value), stretch: /\bstretch\b/i.test(sentence) });
     }
   }
-  return found.sort((a, b) => a.at - b.at).map((f) => f.value);
+  return found.sort((a, b) => a.at - b.at);
 }
 
 /** A period right after a total or its "to get $B (back)" clause; "in the last 90 days" never counts. */
@@ -121,14 +131,16 @@ type StatedBrief = {
 
 function statedBrief(text: string): StatedBrief {
   const total = parseTotal(text);
-  // An explicit "Nx" wins over the "$A to get $B back" form.
-  const values = parseRoasValues(text);
+  // An explicit "Nx" wins over the "$A to get $B back" form; a value after
+  // "stretch" is only ever a stretch target.
+  const values = roasMatches(text);
+  const main = values.find((v) => !v.stretch);
   return {
     dailyBudgetCents: parseBudgetCents(text),
     totalBudgetCents: total?.cents ?? null,
     periodDays: total?.periodDays ?? null,
-    targetRoas: values.length ? values[0] : impliedRoas(text),
-    stretch: values.slice(1),
+    targetRoas: main ? main.value : impliedRoas(text),
+    stretch: values.filter((v) => v !== main).map((v) => v.value),
     wantsGoogle: /\bgoogle\b/i.test(text),
   };
 }

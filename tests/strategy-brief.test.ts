@@ -47,6 +47,15 @@ describe("parseStrategyBrief", () => {
     expect(r.brief?.stretchTargets).toEqual([12, 15]);
   });
 
+  it("never reads a value after 'stretch' as the main target", () => {
+    const missing = parseStrategyBrief("Plan on $500/day, stretch 15x", defaults());
+    expect(missing.brief).toBeNull();
+    expect(missing.missing).toEqual(["target_roas"]);
+    const fromGoals = parseStrategyBrief("Plan on $500/day, stretch 15x", defaults({ target_roas: 6 }));
+    expect(fromGoals.brief).toEqual({ dailyBudgetCents: 50000, targetRoas: 6, stretchTargets: [15] });
+    expect(fromGoals.usedDefaults).toEqual(["target_roas"]);
+  });
+
   it("asks for everything when nothing is given", () => {
     const r = parseStrategyBrief("build me a strategy", defaults());
     expect(r.brief).toBeNull();
