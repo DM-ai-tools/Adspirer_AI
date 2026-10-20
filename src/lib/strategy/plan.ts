@@ -27,6 +27,8 @@ export type StrategyBrief = {
   /** The brief's total budget and period, when it was given that way; dailyBudgetCents is what the engine uses. */
   totalBudgetCents?: number | null;
   periodDays?: number | null;
+  /** The ask names Google ("…using Google Ads and Meta together"): Google gets its test share even with no history. */
+  wantsGoogle?: boolean;
 };
 export type AllocationTier = "proven" | "promising" | "test" | "hold";
 export type CategoryAllocation = {
@@ -110,6 +112,11 @@ const STRUCTURE: Record<AllocationTier, MetaCapabilityId[]> = {
 };
 
 const FUNDED_TIERS = ["proven", "promising", "test"] as const;
+
+/** A Google budget always names a campaign type: Search when nothing else applies. */
+function withFallbackType(types: GoogleCapabilityId[]): GoogleCapabilityId[] {
+  return types.length ? types : ["google_search"];
+}
 
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
@@ -288,6 +295,9 @@ export function buildStrategyPlan(input: {
    * test share when it shows demand (Google: search impressions; Meta: a landing page); with no
    * Google Ads account mapped, or no data on either channel, it all stays on Meta.
    */
+  /** Categories whose Google share comes only from the ask naming Google. */
+  const askedGoogleOnly = new Set<string>();
+
   function splitChannels(
     category: StrategyCategory,
     tier: AllocationTier,
@@ -302,7 +312,12 @@ export function buildStrategyPlan(input: {
     let weights: [number, number];
     if (metaSpends && googleSpends) weights = [weight(meta), weight(google)];
     else if (googleSpends) weights = category.landingPageUrl?.trim() ? [share, 1 - share] : [0, 1];
-    else weights = googleMapped && ch.searchImpressions > 0 ? [1 - share, share] : [1, 0];
+    else if (googleMapped && ch.searchImpressions > 0) weights = [1 - share, share];
+    else if (googleMapped && brief.wantsGoogle) {
+      // Asked for Google, but it has no spend or search data here yet: a test share, said so.
+      askedGoogleOnly.add(category.name);
+      weights = [1 - share, share];
+    } else weights = [1, 0];
     const [metaCents, googleCents] = splitCents(budget, weights);
 
     // The basis is GA4 only when every channel ROAS behind the funded shares came from GA4.
@@ -396,11 +411,13 @@ export function buildStrategyPlan(input: {
         channelSplit,
         googleCampaignTypes:
           channelSplit && channelSplit.googleCents > 0
-            ? recommendGoogleCampaignTypes({
-                tier: setupTier,
-                merchantCenterLinked: channels?.ads?.merchantCenterLinked ?? false,
-                searchImpressions: observed.channel?.searchImpressions ?? 0,
-              })
+            ? withFallbackType(
+                recommendGoogleCampaignTypes({
+                  tier: setupTier,
+                  merchantCenterLinked: channels?.ads?.merchantCenterLinked ?? false,
+                  searchImpressions: observed.channel?.searchImpressions ?? 0,
+                }),
+              )
             : [],
       };
     });
@@ -549,6 +566,14 @@ export function buildStrategyPlan(input: {
   if (channels && googleMapped) {
     assumptions.push(
       `Within each funded ${word}, budget splits between Meta and Google by each channel's ROAS; a channel with no spend gets a ${pct(C.minChannelTestShare)} test share when it shows demand (Google: search impressions; Meta: a landing page) and is assumed to return ${pct(C.testDiscount)} of the account ROAS. The Google share is a recommendation for the Google Ads account — this tool doesn't change Google.`,
+    );
+  }
+  const asked = main.allocations
+    .filter((a) => askedGoogleOnly.has(a.name) && (a.channelSplit?.googleCents ?? 0) > 0)
+    .map((a) => a.name);
+  if (asked.length) {
+    assumptions.push(
+      `Google gets a ${pct(C.minChannelTestShare)} test share for ${asked.join(", ")} because the plan was asked to include Google Ads; Google has no spend or search data there yet.`,
     );
   }
   if (input.channels && channelNote) assumptions.push(channelNote);
