@@ -397,6 +397,7 @@ export async function runTask(
         ? { accountId: null, evidence: "", toolCalls: [] }
         : await gatherDiagnoseEvidence({
             clientId: task.client_id,
+            userId: task.created_by,
             request,
             conversationId: task.conversation_id,
             history,

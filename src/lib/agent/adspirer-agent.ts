@@ -4,15 +4,20 @@ import {
   gatherDeliveryStructure,
 } from "@/lib/agent/delivery-structure";
 import { evaluateCheckpoints } from "@/lib/audit/checkpoints";
-import { resolveGoals, type ResolvedGoals } from "@/lib/clients/goals";
+import { applyChatSettings, isWholeAccountAsk, type ChatSettingsTurn } from "@/lib/clients/chat-settings";
+import { resolveGoals, type GoalsProfile, type ResolvedGoals } from "@/lib/clients/goals";
 
-/** The client's goals for judging the account; defaults when it can't be loaded. */
-async function clientGoals(clientId: string): Promise<ResolvedGoals> {
+/**
+ * The client's goals for judging the account; defaults when it can't be loaded.
+ * `override` holds values stated this turn (used even when they weren't saved).
+ */
+async function clientGoals(clientId: string, override: GoalsProfile = {}): Promise<ResolvedGoals> {
   try {
     const { getClient } = await import("@/lib/approvals/service");
-    return resolveGoals(await getClient(clientId));
+    const client = await getClient(clientId);
+    return resolveGoals({ goals_profile: { ...(client.goals_profile ?? {}), ...override } });
   } catch {
-    return resolveGoals({ goals_profile: {} });
+    return resolveGoals({ goals_profile: { ...override } });
   }
 }
 
@@ -92,6 +97,7 @@ import { STRATEGY_FRAMEWORK } from "@/lib/agent/strategy-framework";
 import {
   buildStrategyClarifyingQuestion,
   resolveStrategyBrief,
+  strategyAskTexts,
 } from "@/lib/agent/strategy-brief";
 import {
   renderAdSetEvidence,
@@ -1556,6 +1562,8 @@ function formatInsightMetrics(
 /** Collect live Meta evidence before the LLM writes the report. */
 export async function gatherDiagnoseEvidence(input: {
   clientId: string;
+  /** The turn's user (the task's created_by): only an admin's stated settings are saved. */
+  userId?: string | null;
   request: string;
   conversationId?: string | null;
   history?: AgentHistoryMessage[];
@@ -1642,6 +1650,33 @@ export async function gatherDiagnoseEvidence(input: {
     };
   }
 
+  // Settings the message states ("our margin is 40%") are saved before any
+  // plan is built, so this turn already uses them. Reported in one section.
+  const settings: ChatSettingsTurn | null =
+    intent === "chat" || intent === "out_of_scope"
+      ? null
+      : await applyChatSettings({
+          clientId: input.clientId,
+          userId: input.userId,
+          request: input.request,
+          services: await activeClientServices(input.clientId).catch(() => []),
+        });
+  let settingsSection = -1;
+  let settingsCall: AgentToolCallProposal | null = null;
+  const showSettings = () => {
+    const text = settings?.evidence();
+    if (text) {
+      if (settingsSection < 0) settingsSection = sections.push(text) - 1;
+      else sections[settingsSection] = text;
+    }
+    const call = settings?.toolCall();
+    if (call) {
+      if (settingsCall) Object.assign(settingsCall, call);
+      else toolCalls.push((settingsCall = { ...call }));
+    }
+  };
+  showSettings();
+
   if (
     !accountId &&
     intent !== "ad_copy" &&
@@ -1668,7 +1703,7 @@ export async function gatherDiagnoseEvidence(input: {
     }
     return {
       accountId: null,
-      evidence: noMappedAccountMessage(),
+      evidence: [...sections, noMappedAccountMessage()].join("\n\n"),
       toolCalls,
     };
   }
@@ -1679,9 +1714,12 @@ export async function gatherDiagnoseEvidence(input: {
   } catch (error) {
     return {
       accountId,
-      evidence: `### Provider\n- Failed to resolve Meta access: ${
-        error instanceof Error ? error.message : String(error)
-      }\n- Connect Facebook in the Workspace header or under Connections, then retry.`,
+      evidence: [
+        ...sections,
+        `### Provider\n- Failed to resolve Meta access: ${
+          error instanceof Error ? error.message : String(error)
+        }\n- Connect Facebook in the Workspace header or under Connections, then retry.`,
+      ].join("\n\n"),
       toolCalls,
     };
   }
@@ -2371,7 +2409,7 @@ export async function gatherDiagnoseEvidence(input: {
         until: range.dateStop,
         days: 30,
       });
-      const goals = await clientGoals(input.clientId);
+      const goals = await clientGoals(input.clientId, settings?.goalsOverride());
       const currentDailySpendCents = snapshot.totals
         ? Math.round(snapshot.totals.spendCents / snapshot.period.days)
         : null;
@@ -2395,6 +2433,15 @@ export async function gatherDiagnoseEvidence(input: {
       } else {
         const brief = parsed.brief;
         const categoryWord = goals.business_model === "ecommerce" ? "category" : "service";
+        const active = await activeClientServices(input.clientId);
+        // A whole-account ask's stated target becomes the client's target ROAS (never a stretch or a category's).
+        if (
+          settings &&
+          !parsed.usedDefaults.includes("target_roas") &&
+          isWholeAccountAsk(strategyAskTexts(input.request, input.history), categoriesFromServices(active))
+        ) {
+          await settings.saveStrategyTarget(brief.targetRoas);
+        }
         await input.onProgress?.({
           phase: "pull_insights",
           label: `Matching spend & return to each ${categoryWord}…`,
@@ -2405,10 +2452,13 @@ export async function gatherDiagnoseEvidence(input: {
           clientId: input.clientId,
           request: input.request,
           kind: "strategy",
-          active: await activeClientServices(input.clientId),
+          active,
         });
         if (requested.evidence) sections.push(requested.evidence);
-        const categories = categoriesFromServices(requested.services);
+        // A margin stated for the category just added applies to it now.
+        await settings?.applyPendingCategories(requested.services);
+        showSettings();
+        const categories = categoriesFromServices(settings?.withServiceOverrides(requested.services) ?? requested.services);
         const attribution = attributeSpendToCategories(snapshot, categories);
         const scorecard = evaluateCheckpoints(snapshot, { goals });
         toolCalls.push({
@@ -2498,7 +2548,9 @@ export async function gatherDiagnoseEvidence(input: {
       active: await activeClientServices(input.clientId).catch(() => []),
     });
     if (requested.evidence) sections.push(requested.evidence);
-    const categories = categoriesFromServices(requested.services);
+    await settings?.applyPendingCategories(requested.services);
+    showSettings();
+    const categories = categoriesFromServices(settings?.withServiceOverrides(requested.services) ?? requested.services);
     if (categories.length && (requested.scoped || asksAboutCategorySpend(input.request, categories))) {
       const goals = await clientGoals(input.clientId);
       const categoryWord = goals.business_model === "ecommerce" ? "category" : "service";

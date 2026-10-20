@@ -25,6 +25,9 @@ const TOOL_POLICY: Record<string, ToolSafetyClass> = {
   list_competitor_ads_v2: "diagnose",
   // Strategy plan engine: reads the snapshot, recommends only.
   strategy_plan: "diagnose",
+  // Settings typed in the chat: writes the client's own settings (goals,
+  // categories) only and never touches Meta, so it is recorded, not blocked.
+  update_client_settings: "diagnose",
 
   // Execute
   update_adset_budget: "execute",

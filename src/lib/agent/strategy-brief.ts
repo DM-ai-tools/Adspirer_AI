@@ -236,6 +236,14 @@ export function resolveStrategyBrief(
   );
 }
 
+/** The texts that make up the strategy ask: the request, plus the earlier ask when it answers the brief question. */
+export function strategyAskTexts(request: string, history: AgentHistoryMessage[] = []): string[] {
+  const at = history.findLastIndex((m) => m.role === "assistant");
+  const answersQuestion = at >= 0 && history[at].content.toLowerCase().includes(STRATEGY_BRIEF_MARKER);
+  const earlier = answersQuestion ? history.slice(0, at).findLast((m) => m.role === "user") : undefined;
+  return earlier ? [request, earlier.content] : [request];
+}
+
 /** A short reply with a money amount and/or an Nx / ROAS value. */
 export function looksLikeStrategyBriefReply(text: string): boolean {
   const t = text.trim();
