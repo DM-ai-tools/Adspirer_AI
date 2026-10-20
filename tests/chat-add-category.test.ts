@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { gatherDiagnoseEvidence } from "@/lib/agent/adspirer-agent";
+import { gatherDiagnoseEvidence, runAdspirerAgent } from "@/lib/agent/adspirer-agent";
+import { createTask } from "@/lib/agent/task-runner";
 import { detectRequestIntent } from "@/lib/agent/task-plan";
 import { getDemoStore, resetDemoStore } from "@/lib/demo/store";
 import { scanSiteCandidates } from "@/lib/scraping/site-scan";
@@ -68,6 +69,36 @@ describe("requestedCategoryPhrase", () => {
     expect(requestedCategoryPhrase("How much have we spent on ads?", "spend")).toBeNull();
   });
 
+  it("ends the phrase at a period word", () => {
+    expect(requestedCategoryPhrase("How much have we spent on bar stools last month?", "spend")).toBe("bar stools");
+    expect(requestedCategoryPhrase("spent on bar stools this week", "spend")).toBe("bar stools");
+    expect(requestedCategoryPhrase("spent on bar stools in March", "spend")).toBe("bar stools");
+    expect(requestedCategoryPhrase("spent on bar stools during the sale", "spend")).toBe("bar stools");
+    expect(requestedCategoryPhrase("spent on bar stools since June", "spend")).toBe("bar stools");
+    expect(requestedCategoryPhrase("spent on bar stools vs sofas", "spend")).toBe("bar stools");
+    expect(requestedCategoryPhrase("spent on bar stools versus sofas", "spend")).toBe("bar stools");
+    expect(requestedCategoryPhrase("spent on bar stools compared to sofas", "spend")).toBe("bar stools");
+  });
+
+  it("skips common terms that aren't categories", () => {
+    for (const ask of [
+      "How much have we spent on retargeting?",
+      "How much have we spent on Black Friday?",
+      "spent on new customers",
+      "spent on Advantage+ campaigns",
+      "spent on reels",
+      "spent on stories",
+      "spent on brand campaigns",
+      "spent on lookalikes",
+      "spent on prospecting",
+      "spent on leads",
+      "spent on sales",
+      "spent on growth",
+    ]) {
+      expect(requestedCategoryPhrase(ask, "spend"), ask).toBeNull();
+    }
+  });
+
   it("needs a spend word before on/into for a category-spend ask", () => {
     expect(requestedCategoryPhrase("Which ads are on bar stools?", "spend")).toBeNull();
     expect(requestedCategoryPhrase("What was the best category last month?", "spend")).toBeNull();
@@ -87,6 +118,23 @@ describe("pickCandidateForRequest", () => {
     expect(pickCandidateForRequest("plan for sofa sales", all)).toEqual(SOFAS);
     expect(pickCandidateForRequest("plan for barstools", all)).toBeNull();
     expect(pickCandidateForRequest("plan for footstools", [candidate("Stools", "stools")])).toBeNull();
+  });
+
+  it("doesn't treat 's as a plural, and matches -ies with -y", () => {
+    const mens = candidate("Men's Shoes", "mens-shoes");
+    expect(pickCandidateForRequest("plan for men's shoes", [mens])).toEqual(mens);
+    expect(pickCandidateForRequest("plan for men\u2019s shoe sales", [mens])).toEqual(mens);
+    expect(pickCandidateForRequest("plan for men shoes", [mens])).toBeNull();
+    const acc = candidate("Accessories", "accessories");
+    expect(pickCandidateForRequest("plan for accessory sales", [acc])).toEqual(acc);
+    const one = candidate("Accessory", "accessory");
+    expect(pickCandidateForRequest("plan for accessories", [one])).toEqual(one);
+  });
+
+  it("never picks a generic collection", () => {
+    for (const name of ["All", "Sale", "Sales", "New", "New Arrivals", "Frontpage", "Home", "Best Sellers", "Best-Sellers", "All Products", "Shop All"]) {
+      expect(pickCandidateForRequest(`plan for ${name.toLowerCase()} today`, [candidate(name, "x")]), name).toBeNull();
+    }
   });
 
   it("gives null when no candidate's name is in the request", () => {
@@ -123,6 +171,68 @@ describe("resolveRequestedCategory", () => {
       kind: "not_found",
       phrase: "bar stools",
     });
+  });
+});
+
+describe("resolveRequestedCategory picks only the category the phrase names", () => {
+  const resolve = (request: string, candidates: CategoryCandidate[]) =>
+    resolveRequestedCategory({
+      request,
+      loaded: [],
+      kind: "strategy",
+      scan: vi.fn().mockResolvedValue({ candidates, source: "firecrawl" }),
+    });
+  const ALL = candidate("All", "all");
+
+  it("doesn't add All for 'using all our channels'", async () => {
+    const ask = "How do we spend $4k on dining chairs using all our channels?";
+    expect(await resolve(ask, [ALL, SOFAS])).toEqual({ kind: "not_found", phrase: "dining chairs" });
+    const chairs = candidate("Dining Chairs", "dining-chairs");
+    expect(await resolve(ask, [ALL, chairs, SOFAS])).toEqual({ kind: "matched", phrase: "dining chairs", candidate: chairs });
+  });
+
+  it("picks Stools, not Outdoor Kitchen, for 'on stools for the outdoor kitchen'", async () => {
+    const stools = candidate("Stools", "stools");
+    const kitchen = candidate("Outdoor Kitchen", "outdoor-kitchen");
+    expect(await resolve("Plan 5x ROAS on stools for the outdoor kitchen", [kitchen, stools])).toEqual({
+      kind: "matched",
+      phrase: "stools",
+      candidate: stools,
+    });
+  });
+
+  it("doesn't add Sale for 'grow sales for patio sets'", async () => {
+    expect(await resolve("Plan to grow sales for patio sets", [candidate("Sale", "sale"), SOFAS])).toEqual({
+      kind: "not_found",
+      phrase: "patio sets",
+    });
+  });
+
+  it("still finds a name the phrase was cut short of ('tables and chairs')", async () => {
+    const both = candidate("Tables and Chairs", "tables-and-chairs");
+    expect(await resolve("Plan 6x ROAS for tables and chairs", [candidate("Tables", "tables"), both])).toEqual({
+      kind: "matched",
+      phrase: "tables",
+      candidate: both,
+    });
+  });
+
+  it("doesn't scan for the client's own name", async () => {
+    const scan = vi.fn();
+    for (const request of ["Build a 10x plan for During Days", "Build a 10x plan for during days furniture"]) {
+      expect(await resolveRequestedCategory({ request, loaded: [], kind: "strategy", scan, clientName: "During Days" })).toEqual({ kind: "none" });
+    }
+    expect(scan).not.toHaveBeenCalled();
+  });
+
+  it("says a switched-off category is off, without scanning", async () => {
+    const scan = vi.fn();
+    const off = { ...getDemoStore().clientServices.find((s) => s.id === "svc_ct_bar_stools")!, is_active: false };
+    expect(await resolveRequestedCategory({ request: STRATEGY_ASK, loaded: [], kind: "strategy", scan, switchedOff: [off] })).toEqual({
+      kind: "switched_off",
+      service: off,
+    });
+    expect(scan).not.toHaveBeenCalled();
   });
 });
 
@@ -207,6 +317,24 @@ describe("strategy ask for a category that isn't set up (DEMO_MODE)", () => {
     const gathered = await gatherDiagnoseEvidence({ clientId: CT, request: STRATEGY_ASK, intent: "strategy" });
     expect(store.clientServices).toHaveLength(before);
     expect(gathered.evidence).toContain("**Bar stools** is switched off on the Services tab");
+    expect(scanSiteCandidates).not.toHaveBeenCalled();
+  });
+
+  it("never scans for the client's own name or a non-category term", async () => {
+    noCategories([BAR_STOOLS]);
+    getDemoStore().clients.find((c) => c.id === CT)!.name = "During Days";
+    await gatherDiagnoseEvidence({ clientId: CT, request: "Build a 10x plan for During Days", intent: "strategy" });
+    await gatherDiagnoseEvidence({ clientId: CT, request: "How much have we spent on retargeting?", intent: "general" });
+    expect(scanSiteCandidates).not.toHaveBeenCalled();
+    expect(ctServices()).toEqual([]);
+  });
+
+  it("starts the reply with the Added line", async () => {
+    noCategories([BAR_STOOLS, BLACK_BAR_STOOLS]);
+    const task = await createTask({ clientId: CT, createdBy: "profile_operator_demo", title: STRATEGY_ASK, goal: STRATEGY_ASK });
+    const gathered = await gatherDiagnoseEvidence({ clientId: CT, request: STRATEGY_ASK, intent: "strategy" });
+    const result = await runAdspirerAgent({ task, clientContext: "", toolEvidence: gathered.evidence, intent: "strategy" });
+    expect(result.summary.startsWith(ADDED_LINE)).toBe(true);
   });
 });
 
@@ -217,6 +345,37 @@ describe("category-spend ask for a category that isn't set up (DEMO_MODE)", () =
     expect(ctServices().map((s) => s.name)).toEqual(["Bar Stools"]);
     expect(gathered.evidence).toContain(ADDED_LINE);
     expect(gathered.evidence).toContain("### Spend & return by category");
+    const task = await createTask({ clientId: CT, createdBy: "profile_operator_demo", title: SPEND_ASK, goal: SPEND_ASK });
+    const result = await runAdspirerAgent({ task, clientContext: "", toolEvidence: gathered.evidence, intent: detectRequestIntent(SPEND_ASK) });
+    expect(result.summary.startsWith(ADDED_LINE)).toBe(true);
+  });
+
+  it("says it's matching spend before the slow website scan", async () => {
+    noCategories([BAR_STOOLS]);
+    const order: string[] = [];
+    vi.mocked(scanSiteCandidates).mockImplementation(async () => {
+      order.push("scan");
+      return { candidates: [BAR_STOOLS], source: "firecrawl" };
+    });
+    await gatherDiagnoseEvidence({
+      clientId: CT,
+      request: "How much have we spent on bar stools?",
+      intent: "general",
+      onProgress: (e) => void order.push(e.label ?? ""),
+    });
+    const progress = order.indexOf("Matching spend & return to each category…");
+    expect(progress).toBeGreaterThanOrEqual(0);
+    expect(progress).toBeLessThan(order.indexOf("scan"));
+    expect(order.filter((l) => l.startsWith("Matching spend"))).toHaveLength(1);
+  });
+
+  it("starts the reply with the Couldn't find line", async () => {
+    noCategories([SOFAS]);
+    const ask = "How much have we spent on bar stools?";
+    const gathered = await gatherDiagnoseEvidence({ clientId: CT, request: ask, intent: "general" });
+    const task = await createTask({ clientId: CT, createdBy: "profile_operator_demo", title: ask, goal: ask });
+    const result = await runAdspirerAgent({ task, clientContext: "", toolEvidence: gathered.evidence, intent: "general" });
+    expect(result.summary.startsWith(`Couldn't find "bar stools" on ${SITE}; add it on the Services tab.`)).toBe(true);
   });
 
   it("adds nothing and says what it couldn't find", async () => {

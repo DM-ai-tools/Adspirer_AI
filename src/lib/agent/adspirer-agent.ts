@@ -89,7 +89,11 @@ import {
   type StrategyCategory,
 } from "@/lib/strategy/categories";
 import { attributeSpendToCategories, type CategoryAttribution } from "@/lib/strategy/category-attribution";
-import { addCategoryFromRequest } from "@/lib/strategy/requested-category";
+import {
+  addCategoryFromRequest,
+  categoryNoticeLine,
+  requestedCategoryPhrase,
+} from "@/lib/strategy/requested-category";
 import { buildChannelPerformance, type ChannelPerformance } from "@/lib/strategy/channels";
 import { buildStrategyPlan } from "@/lib/strategy/plan";
 import { renderCategorySpendEvidence, renderStrategyEvidence } from "@/lib/strategy/render";
@@ -720,6 +724,14 @@ function buildWriterMessages(input: WriterInput): {
           ]
         : [];
 
+  // A category added from the question (or not found, or switched off) is said first.
+  const categoryNotice = categoryNoticeLine(evidence);
+  const categoryNoticeRules = categoryNotice
+    ? [
+        `- Start the reply with this line, word for word, before anything else: ${categoryNotice}`,
+      ]
+    : [];
+
   const optimizeRules =
     intent === "optimize"
       ? [
@@ -799,6 +811,7 @@ function buildWriterMessages(input: WriterInput): {
         "- When you queue Approvals, say in one sentence what is waiting in Approvals and that nothing changes in Meta until it is approved. Never claim Meta mutations applied yet.",
         "- If they asked for Word/PDF export, deliver a complete markdown report and tell them to use Export Word / Export PDF under the message.",
         ...auditRules,
+        ...categoryNoticeRules,
         ...strategyRules,
         ...optimizeRules,
       ]
@@ -1100,7 +1113,9 @@ async function runMockAgent(input: {
     if (evidence && inputsAt >= 0) {
       const frameworkAt = evidence.indexOf("### Strategy framework", inputsAt);
       const body = evidence.slice(inputsAt, frameworkAt < 0 ? undefined : frameworkAt).trim();
+      const notice = categoryNoticeLine(evidence);
       summary = [
+        ...(notice ? [notice, ""] : []),
         "## Strategy plan (demo)",
         "",
         body,
@@ -1343,8 +1358,10 @@ async function runMockAgent(input: {
     const humanized = evidence
       ? humanizeAgentReply(evidence)
       : null;
+    const notice = categoryNoticeLine(evidence);
     summary = humanized?.display
       ? [
+          ...(notice ? [notice, ""] : []),
           humanized.display,
           "",
           "Use **Export Word** / **Export PDF** under this message if you need a file.",
@@ -2540,6 +2557,18 @@ export async function gatherDiagnoseEvidence(input: {
   // "How much went into bar stools, and what did it return?": spend and return
   // per category from the snapshot. Figures only, no plan or allocation.
   if (accountId && (intent === "general" || intent === "budget")) {
+    const spendProgress = async (categoryWord: string) =>
+      input.onProgress?.({
+        phase: "pull_insights",
+        label: `Matching spend & return to each ${categoryWord}…`,
+        stepId: "pull_insights",
+      });
+    // The website scan below can be slow, so say what's happening first.
+    const namesCategory = requestedCategoryPhrase(input.request, "spend") != null;
+    if (namesCategory) {
+      const goals = await clientGoals(input.clientId);
+      await spendProgress(goals.business_model === "ecommerce" ? "category" : "service");
+    }
     // A category the ask names but isn't set up yet is found on the website and added.
     const requested = await addCategoryFromRequest({
       clientId: input.clientId,
@@ -2554,11 +2583,7 @@ export async function gatherDiagnoseEvidence(input: {
     if (categories.length && (requested.scoped || asksAboutCategorySpend(input.request, categories))) {
       const goals = await clientGoals(input.clientId);
       const categoryWord = goals.business_model === "ecommerce" ? "category" : "service";
-      await input.onProgress?.({
-        phase: "pull_insights",
-        label: `Matching spend & return to each ${categoryWord}…`,
-        stepId: "pull_insights",
-      });
+      if (!namesCategory) await spendProgress(categoryWord);
       try {
         if (!provider.getAuditSnapshot) {
           throw new Error("this Meta connection can't load an account snapshot");

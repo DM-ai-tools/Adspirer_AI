@@ -5,7 +5,7 @@ import { scanSiteCandidates, type ScanUnavailableReason, type SiteScanResult } f
 import type { CategoryCandidate } from "@/lib/scraping/site-map";
 import { nowIso } from "@/lib/utils";
 import type { ClientService } from "@/types";
-import { categoriesFromServices, scopeCategoriesFromRequest, type StrategyCategory } from "./categories";
+import { categoriesFromServices, GENERIC_NAMES, scopeCategoriesFromRequest, type StrategyCategory } from "./categories";
 import { escapeRegExp, normalizeUrl } from "./category-match";
 
 /**
@@ -17,10 +17,11 @@ import { escapeRegExp, normalizeUrl } from "./category-match";
 export type RequestKind = "strategy" | "spend";
 
 /**
- * Where the phrase stops: "using", "with", "at", "over", "in the", "to", "and",
- * "by", the next "on" / "for" / "into", or punctuation.
+ * Where the phrase stops: "using", "with", "at", "over", "in", "to", "and",
+ * "by", a period word ("last", "this", "during", "since", "vs", "versus",
+ * "compared"), the next "on" / "for" / "into", or punctuation.
  */
-const PHRASE_END = String.raw`(?=\s+(?:using|with|at|over|in\s+the|to|and|by|on|for|into)\b|\s*[,?.!;:]|\s*$)`;
+const PHRASE_END = String.raw`(?=\s+(?:using|with|at|over|in|to|and|by|last|this|during|since|vs|versus|compared|on|for|into)\b|\s*[,?.!;:]|\s*$)`;
 // The phrase sits inside a lookahead, so "for Q4 on bar stools" still reaches "on bar stools".
 const STRATEGY_PHRASE = new RegExp(String.raw`\b(?:on|for|into)\s+(?=(.+?)${PHRASE_END})`, "gi");
 const SPEND_PHRASE = new RegExp(
@@ -28,36 +29,63 @@ const SPEND_PHRASE = new RegExp(
   "gi",
 );
 const LEADING_ARTICLES = /^(?:(?:the|our|my|a|an|their|its)\s+)+/i;
-/** First words that mean money, a period, a channel or the whole account, not a category. */
-const NOT_A_CATEGORY = new Set([
+/** Phrases starting with these mean money, a period, a channel, an audience or the whole account, not a category. */
+const NOT_A_CATEGORY = [
   "meta", "facebook", "instagram", "google", "tiktok", "linkedin", "youtube", "microsoft", "bing",
   "ads", "ad", "advertising", "campaign", "campaigns", "creative", "creatives", "retargeting", "prospecting",
   "search", "shopping", "pmax", "display", "video", "account", "accounts", "budget", "roas", "spend",
   "next", "last", "this", "that", "these", "those", "each", "every", "all", "both", "it", "them", "us",
   "me", "everything", "today", "now", "day", "days", "week", "weeks", "month", "months", "quarter", "year",
+  "growth", "black friday", "new customers", "advantage+", "reels", "stories", "brand", "brand campaigns",
+  "lookalikes", "leads", "sales",
+];
+
+/** Collections that hold everything (or a promotion), never one category. */
+const GENERIC_COLLECTIONS = new Set([
+  ...GENERIC_NAMES,
+  "sale", "sales", "new", "new arrivals", "frontpage", "home", "best sellers", "best-sellers", "all products", "shop all",
 ]);
 
-/**
- * The category a request clearly names: the words after "on" / "for" / "into"
- * (a category-spend ask needs "spent on" / "gone into"), up to the next
- * "using" / "with" / "at" / "over" / "in the" or punctuation. Money, periods
- * and channels ("on $500/day", "for the next 30 days", "spent on Meta") don't count.
- */
-export function requestedCategoryPhrase(request: string, kind: RequestKind): string | null {
+export type PhraseSpan = { phrase: string; start: number; end: number };
+
+/** The phrase a request names a category with, and where it sits in the request. */
+export function requestedCategorySpan(request: string, kind: RequestKind): PhraseSpan | null {
   const pattern = kind === "spend" ? SPEND_PHRASE : STRATEGY_PHRASE;
   for (const match of request.matchAll(pattern)) {
-    const phrase = match[1]!.trim().replace(LEADING_ARTICLES, "").trim();
+    const raw = match[1]!;
+    const article = raw.match(LEADING_ARTICLES)?.[0] ?? "";
+    const phrase = raw.slice(article.length).trim();
     if (!phrase || /[\d$€£¥%]/.test(phrase)) continue;
-    const first = phrase.split(/\s+/)[0]!.toLowerCase();
-    if (NOT_A_CATEGORY.has(first)) continue;
-    return phrase;
+    const lower = phrase.toLowerCase();
+    if (NOT_A_CATEGORY.some((t) => lower === t || lower.startsWith(`${t} `))) continue;
+    const start = match.index! + match[0].length + article.length;
+    return { phrase, start, end: start + phrase.length };
   }
   return null;
 }
 
-/** One word, singular or plural: "stools" also matches "stool", "boxes" also "box". */
+/**
+ * The category a request clearly names: the words after "on" / "for" / "into"
+ * (a category-spend ask needs "spent on" / "gone into"), up to the next
+ * "using" / "with" / "at" / "over" / "in", a period word, or punctuation. Money,
+ * periods, channels and audiences ("on $500/day", "for the next 30 days",
+ * "spent on Meta", "spent on retargeting") don't count.
+ */
+export function requestedCategoryPhrase(request: string, kind: RequestKind): string | null {
+  return requestedCategorySpan(request, kind)?.phrase ?? null;
+}
+
+const APOSTROPHE = /['’]/;
+
+/**
+ * One word, singular or plural: "stools" also matches "stool", "boxes" "box",
+ * "accessories" "accessory". "Men's" is matched as written (either apostrophe).
+ */
 function wordPattern(word: string): string {
+  if (APOSTROPHE.test(word)) return word.split(APOSTROPHE).map(escapeRegExp).join("['’]");
   const lower = word.toLowerCase();
+  if (lower.length > 4 && lower.endsWith("ies")) return `${escapeRegExp(word.slice(0, -3))}(?:y|ies)`;
+  if (lower.length > 2 && /[^aeiou]y$/.test(lower)) return `${escapeRegExp(word.slice(0, -1))}(?:y|ies)`;
   const stem = /(?:ss|x|ch|sh|z)es$/.test(lower)
     ? word.slice(0, -2)
     : /[^s]s$/.test(lower) && lower.length > 3
@@ -66,23 +94,33 @@ function wordPattern(word: string): string {
   return /[a-z]$/i.test(stem) ? `${escapeRegExp(stem)}(?:es|s)?` : escapeRegExp(stem);
 }
 
-/** Whole-word, case-insensitive, plural-tolerant test for a full name in the text. */
-function containsName(text: string, name: string): boolean {
+/** Where a full name sits in the text: whole-word, case-insensitive, plural-tolerant. */
+function nameOccurrences(text: string, name: string): Array<{ start: number; end: number }> {
   const words = name.trim().split(/[\s-]+/).filter(Boolean);
-  if (!words.length) return false;
-  return new RegExp(`(?<![a-z0-9])${words.map(wordPattern).join(String.raw`[\s-]+`)}(?![a-z0-9])`, "i").test(text);
+  if (!words.length) return [];
+  const re = new RegExp(`(?<![a-z0-9])${words.map(wordPattern).join(String.raw`[\s-]+`)}(?![a-z0-9])`, "gi");
+  return [...text.matchAll(re)].map((m) => ({ start: m.index!, end: m.index! + m[0].length }));
 }
 
-/** The candidate whose full name the request contains; the longest such name wins. */
-export function pickCandidateForRequest(
+/**
+ * The candidate whose full name the request contains; the longest such name
+ * wins. With a phrase span, the name must overlap the phrase ("on stools for
+ * the outdoor kitchen" is about Stools); a name may run past the phrase, so
+ * "tables and chairs" still finds Tables and Chairs. Generic collections
+ * (All, Sale, New Arrivals, …) never win.
+ */
+export function pickCandidateForRequest<T extends { name: string }>(
   request: string,
-  candidates: CategoryCandidate[],
-): CategoryCandidate | null {
-  let winner: CategoryCandidate | null = null;
+  candidates: T[],
+  span?: PhraseSpan,
+): T | null {
+  let winner: T | null = null;
   for (const c of candidates) {
-    if (containsName(request, c.name) && (!winner || c.name.trim().length > winner.name.trim().length)) {
-      winner = c;
-    }
+    const name = c.name.trim();
+    if (!name || GENERIC_COLLECTIONS.has(name.toLowerCase())) continue;
+    const hits = nameOccurrences(request, name);
+    const inPhrase = span ? hits.some((h) => h.start < span.end && h.end > span.start) : hits.length > 0;
+    if (inPhrase && (!winner || name.length > winner.name.trim().length)) winner = c;
   }
   return winner;
 }
@@ -90,27 +128,37 @@ export function pickCandidateForRequest(
 export type RequestedCategory =
   | { kind: "loaded" }
   | { kind: "none" }
+  | { kind: "switched_off"; service: ClientService }
   | { kind: "matched"; phrase: string; candidate: CategoryCandidate }
   | { kind: "not_found"; phrase: string }
   | { kind: "unavailable"; phrase: string; reason: ScanUnavailableReason };
 
 /**
- * What a request's category resolves to. A loaded category that matches wins
- * and nothing is scanned; so does a request that names no category.
+ * What a request's category resolves to. Nothing is scanned when a loaded
+ * category matches, the request names no category, the phrase is the
+ * client's own name, or the phrase names a category that is switched off.
  */
 export async function resolveRequestedCategory(input: {
   request: string;
   loaded: StrategyCategory[];
   kind: RequestKind;
   scan: () => Promise<SiteScanResult>;
+  /** The client's name: "a 10x plan for During Days" names the client, not a category. */
+  clientName?: string;
+  /** The client's inactive services. */
+  switchedOff?: ClientService[];
 }): Promise<RequestedCategory> {
   if (scopeCategoriesFromRequest(input.request, input.loaded).length) return { kind: "loaded" };
-  const phrase = requestedCategoryPhrase(input.request, input.kind);
-  if (!phrase) return { kind: "none" };
+  const span = requestedCategorySpan(input.request, input.kind);
+  if (!span) return { kind: "none" };
+  const clientName = input.clientName?.trim().toLowerCase();
+  if (clientName && span.phrase.toLowerCase().includes(clientName)) return { kind: "none" };
+  const off = pickCandidateForRequest(input.request, input.switchedOff ?? [], span);
+  if (off) return { kind: "switched_off", service: off };
   const scanned = await input.scan();
-  if (scanned.source === "unavailable") return { kind: "unavailable", phrase, reason: scanned.reason };
-  const candidate = pickCandidateForRequest(input.request, scanned.candidates);
-  return candidate ? { kind: "matched", phrase, candidate } : { kind: "not_found", phrase };
+  if (scanned.source === "unavailable") return { kind: "unavailable", phrase: span.phrase, reason: scanned.reason };
+  const candidate = pickCandidateForRequest(input.request, scanned.candidates, span);
+  return candidate ? { kind: "matched", phrase: span.phrase, candidate } : { kind: "not_found", phrase: span.phrase };
 }
 
 const SCAN_TTL_MS = 24 * 60 * 60 * 1000;
@@ -169,6 +217,33 @@ function evidence(heading: string, line: string, instruction: string): string {
   return [heading, `- ${line}`, instruction].join("\n");
 }
 
+const switchedOff = (service: ClientService) =>
+  evidence(
+    "### Category switched off",
+    `**${service.name}** is switched off on the Services tab; switch it on to plan on it.`,
+    "Repeat the line above to the user exactly. Nothing was added.",
+  );
+
+/** The evidence headings whose line the reply must open with. */
+export const CATEGORY_NOTICE_HEADINGS = [
+  "### Category added from the question",
+  "### Category not found",
+  "### Category switched off",
+] as const;
+
+/** The line under a category notice section in the evidence ("Added **Bar Stools** …"), if any. */
+export function categoryNoticeLine(evidenceText: string | null | undefined): string | null {
+  if (!evidenceText) return null;
+  for (const heading of CATEGORY_NOTICE_HEADINGS) {
+    const at = evidenceText.indexOf(`${heading}\n- `);
+    if (at < 0) continue;
+    const from = at + heading.length + 3;
+    const end = evidenceText.indexOf("\n", from);
+    return evidenceText.slice(from, end < 0 ? undefined : end).trim();
+  }
+  return null;
+}
+
 export type CategoryFromRequest = {
   /** Active services for the turn, including one added from the request. */
   services: ClientService[];
@@ -203,12 +278,16 @@ export async function addCategoryFromRequest(input: {
       loaded: categoriesFromServices(active),
       kind,
       scan: () => cachedSiteScan(clientId, client.website_url, all),
+      clientName: client.name,
+      switchedOff: all.filter((s) => !s.is_active),
     });
     const site = client.website_url ?? "the website";
     switch (resolved.kind) {
       case "loaded":
       case "none":
         return { services: active };
+      case "switched_off":
+        return { services: active, evidence: switchedOff(resolved.service) };
       case "not_found":
         return {
           services: active,
@@ -238,14 +317,7 @@ export async function addCategoryFromRequest(input: {
         );
         if (existing) {
           if (existing.is_active) return { services: active, scoped: existing };
-          return {
-            services: active,
-            evidence: evidence(
-              "### Category switched off",
-              `**${existing.name}** is switched off on the Services tab; switch it on to plan on it.`,
-              "Repeat the line above to the user exactly. Nothing was added.",
-            ),
-          };
+          return { services: active, evidence: switchedOff(existing) };
         }
         const ts = nowIso();
         const added = await insertService({
