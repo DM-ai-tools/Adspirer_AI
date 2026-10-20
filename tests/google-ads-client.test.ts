@@ -136,6 +136,37 @@ describe("listAccessibleCustomers", () => {
 });
 
 describe("discoverAdsAccounts", () => {
+  it("says why when no account can be read, instead of returning an empty list", async () => {
+    // Pooja's login: a manager, a set-up-in-progress account and During Days.
+    // With a Test-access Cloud project every account query is refused.
+    const testAccess = () =>
+      json(
+        {
+          error: {
+            code: 403,
+            message: "The caller does not have permission",
+            status: "PERMISSION_DENIED",
+            details: [{ errors: [{ errorCode: { authorizationError: "CLOUD_PROJECT_NOT_APPROVED_FOR_PRODUCTION" } }] }],
+          },
+        },
+        403,
+      );
+    route((call) =>
+      call.url.endsWith("customers:listAccessibleCustomers")
+        ? json({ resourceNames: ["customers/6906117691", "customers/1759902698", "customers/2058089727"] })
+        : testAccess(),
+    );
+    await expect(discoverAdsAccounts()).rejects.toMatchObject({
+      code: "CLOUD_PROJECT_NOT_APPROVED_FOR_PRODUCTION",
+      message: expect.stringContaining("only has Test access"),
+    });
+  });
+
+  it("returns an empty list, without an error, when the login simply has no accounts", async () => {
+    route(() => json({ resourceNames: [] }));
+    expect(await discoverAdsAccounts()).toEqual([]);
+  });
+
   it("returns a direct account and a manager's child once each, skipping a manager whose query fails", async () => {
     route((call) => {
       if (call.url.endsWith("customers:listAccessibleCustomers")) {

@@ -106,14 +106,18 @@ export type AdsAccount = {
 export async function discoverAdsAccounts(): Promise<AdsAccount[]> {
   const preferred = getConfig().GOOGLE_ADS_LOGIN_CUSTOMER_ID ?? null;
   const ids = await listAccessibleCustomers();
+  // One unreadable account is skipped, but if nothing can be read the reason
+  // is raised: a Test-access Cloud project refuses every account, and an
+  // empty list with no explanation looks like "no accounts".
+  const failures: unknown[] = [];
 
   const roots = await Promise.all(
     ids.map(async (id) => {
       try {
         const [row] = await searchGaql<CustomerRow>(id, CUSTOMER_QUERY, null);
         return row?.customer ? { ...row.customer, id } : null;
-      } catch {
-        // A cancelled or unreadable account is skipped, not fatal.
+      } catch (error) {
+        failures.push(error);
         return null;
       }
     }),
@@ -127,8 +131,9 @@ export async function discoverAdsAccounts(): Promise<AdsAccount[]> {
         try {
           const rows = await searchGaql<CustomerClientRow>(root.id, CLIENTS_QUERY, root.id);
           return { root, rows };
-        } catch {
+        } catch (error) {
           // One manager failing must not hide the others.
+          failures.push(error);
           return null;
         }
       }),
@@ -173,6 +178,7 @@ export async function discoverAdsAccounts(): Promise<AdsAccount[]> {
   }
   managers.filter((entry) => !isPreferred(entry)).forEach(addChildren);
 
+  if (!accounts.size && failures.length) throw failures[0];
   return [...accounts.values()];
 }
 
