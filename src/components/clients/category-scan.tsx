@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { apiFetch } from "@/lib/api-client";
+import { scanUnavailableMessage } from "@/lib/clients/category-form";
 import type { ClientService } from "@/types/database";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -22,17 +23,18 @@ export function CategoryScan({
   const words = word === "category" ? "categories" : "services";
   const [busy, setBusy] = useState(false);
   const [candidates, setCandidates] = useState<Candidate[] | null>(null);
-  const [unavailable, setUnavailable] = useState(false);
+  /** Set when the scan couldn't run: the reason the route gave ("no_website", …). */
+  const [unavailable, setUnavailable] = useState<string | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
 
   async function scan() {
     setBusy(true);
     try {
-      const data = await apiFetch<{ candidates: Candidate[]; source: string }>(
+      const data = await apiFetch<{ candidates: Candidate[]; source: string; reason?: string }>(
         `/api/clients/${clientId}/services/discover`,
       );
       setCandidates(data.candidates);
-      setUnavailable(data.source === "unavailable");
+      setUnavailable(data.source === "unavailable" ? (data.reason ?? "unknown") : null);
       setPicked(new Set());
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Scan failed");
@@ -71,9 +73,7 @@ export function CategoryScan({
       {candidates ? (
         <div className="space-y-2 rounded-lg border border-border-subtle p-3">
           {unavailable ? (
-            <p className="text-sm text-muted">
-              Website scan is unavailable (no crawler configured). Add {words} by hand or import a sheet.
-            </p>
+            <p className="text-sm text-muted">{scanUnavailableMessage(unavailable, words)}</p>
           ) : candidates.length === 0 ? (
             <p className="text-sm text-muted">No {word} candidates found on the site.</p>
           ) : (

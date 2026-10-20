@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import * as XLSX from "xlsx";
-import { categoryPatchFromEdit, importOutcome, marginPctFromNumber } from "@/lib/clients/category-form";
+import {
+  categoryPatchFromEdit,
+  importOutcome,
+  marginPctFromNumber,
+  scanUnavailableMessage,
+} from "@/lib/clients/category-form";
 import { parseCategorySheet } from "@/lib/clients/category-import";
 
 describe("categoryPatchFromEdit", () => {
@@ -65,5 +70,31 @@ describe("importOutcome", () => {
     expect(importOutcome(false, null)).toEqual({ ok: false, error: "Import failed" });
     expect(importOutcome(false, { ok: false, error: { message: "Too big" } })).toEqual({ ok: false, error: "Too big" });
     expect(importOutcome(true, { ok: false })).toEqual({ ok: false, error: "Import failed" });
+  });
+});
+
+describe("scanUnavailableMessage", () => {
+  it("tells the operator to add the website when the client has none", () => {
+    expect(scanUnavailableMessage("no_website", "categories")).toBe(
+      "Add the client's website in Settings, then scan again. Or add categories by hand or import a sheet.",
+    );
+  });
+
+  it("only blames the crawler when the crawler really isn't configured", () => {
+    expect(scanUnavailableMessage("not_configured", "services")).toBe(
+      "Website scan isn't set up (FIRECRAWL_API_KEY is missing). Add services by hand or import a sheet.",
+    );
+  });
+
+  it("says the scan failed when the crawl errored", () => {
+    expect(scanUnavailableMessage("scan_failed", "categories")).toBe(
+      "The website scan didn't work this time. Try again in a minute, or add categories by hand or import a sheet.",
+    );
+  });
+
+  it("falls back to a neutral line for an unknown reason", () => {
+    expect(scanUnavailableMessage(undefined, "categories")).toBe(
+      "Website scan is unavailable. Add categories by hand or import a sheet.",
+    );
   });
 });
