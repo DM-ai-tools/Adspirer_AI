@@ -55,6 +55,8 @@ beforeEach(() => {
   process.env.GOOGLE_OAUTH_CLIENT_SECRET = "csecret";
   process.env.APP_URL = "https://app.example.com";
   resetConfigCache();
+  // These tests walk the connect flow from scratch, so without the seeded demo connection.
+  getDemoStore().googleConnection = null;
   jar.clear();
   tokenOverride.fail = false;
   fetchMock = vi.fn();

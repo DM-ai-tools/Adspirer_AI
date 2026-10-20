@@ -100,6 +100,9 @@ describe("connection storage (demo store)", () => {
   });
 
   it("demo mode returns the demo token with a connection, else needs reconnect", async () => {
+    // The demo store seeds a connection; without one a reconnect is needed.
+    expect(await getGoogleAccessToken()).toBe("demo-google-token");
+    await deleteGoogleConnection();
     await expect(getGoogleAccessToken()).rejects.toBeInstanceOf(GoogleReconnectRequired);
     await saveGoogleConnection({ refreshToken: "rt", email: null, scopes: [], connectedBy: null });
     expect(await getGoogleAccessToken()).toBe("demo-google-token");

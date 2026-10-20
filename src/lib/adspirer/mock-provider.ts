@@ -66,13 +66,21 @@ function seedState(): MutableState {
         objective: "OUTCOME_LEADS",
         daily_budget_cents: 15000,
       },
+      // ClickTrends: the same two campaigns as its ecommerce audit snapshot (meta-audit-data.ts).
       {
-        id: "camp_ct_catalog",
+        id: "ct_campaign_asc",
         account_id: CT_ACCOUNT,
-        name: "Catalog Sales — Asc",
+        name: "Bar Stools | Advantage+ | Sales",
         status: "ACTIVE",
         objective: "OUTCOME_SALES",
-        daily_budget_cents: 20000,
+        daily_budget_cents: 7000,
+      },
+      {
+        id: "ct_campaign_rt",
+        account_id: CT_ACCOUNT,
+        name: "Sofas | Retargeting | Sales",
+        status: "ACTIVE",
+        objective: "OUTCOME_SALES",
       },
     ],
     adsets: [
@@ -180,12 +188,17 @@ export class MockMetaAdsProvider implements MetaAdsProvider {
     dateStart: string,
     dateStop: string,
   ): Promise<MetaInsights> {
+    // ClickTrends' figures are its audit snapshot's 30 days.
     const base =
       campaignId === "camp_mdc_npl"
         ? { spend: 412.2, impressions: 32_400, clicks: 780, conversions: 28 }
         : campaignId === "camp_mdc_cosmetic"
           ? { spend: 200.2, impressions: 15_800, clicks: 360, conversions: 10 }
-          : { spend: 80, impressions: 6_000, clicks: 90, conversions: 2 };
+          : campaignId === "ct_campaign_asc"
+            ? { spend: 2_100, impressions: 336_000, clicks: 3_763, conversions: 31 }
+            : campaignId === "ct_campaign_rt"
+              ? { spend: 1_200, impressions: 192_000, clicks: 1_805, conversions: 9 }
+              : { spend: 80, impressions: 6_000, clicks: 90, conversions: 2 };
 
     const ctr = base.impressions ? (base.clicks / base.impressions) * 100 : 0;
     const cpc = base.clicks ? base.spend / base.clicks : 0;
@@ -322,8 +335,9 @@ export class MockMetaAdsProvider implements MetaAdsProvider {
           : accountId === CT_ACCOUNT
             ? "America/Los_Angeles"
             : "America/New_York",
-      spend_7d: accountId === MDC_ACCOUNT ? 612.4 : 1_240,
-      spend_30d: accountId === MDC_ACCOUNT ? 2_480 : 5_100,
+      spend_7d: accountId === MDC_ACCOUNT ? 612.4 : accountId === CT_ACCOUNT ? 770 : 1_240,
+      // ClickTrends: its audit snapshot's 30-day spend ($2,100 + $1,200).
+      spend_30d: accountId === MDC_ACCOUNT ? 2_480 : accountId === CT_ACCOUNT ? 3_300 : 5_100,
       active_campaigns: campaigns.filter((c) => c.status === "ACTIVE").length,
       paused_campaigns: campaigns.filter((c) => c.status === "PAUSED").length,
       health: accountId === MDC_ACCOUNT ? "attention" : "healthy",

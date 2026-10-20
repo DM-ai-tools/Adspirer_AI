@@ -121,6 +121,11 @@ export async function syncGoogleAssets(): Promise<{
   gsc: number;
   warnings: string[];
 }> {
+  // DEMO_MODE never calls Google: the seeded demo assets are what there is to sync.
+  if (getConfig().isDemoMode) {
+    const count = (kind: GoogleAssetKind) => getDemoStore().googleAssets.filter((a) => a.kind === kind).length;
+    return { ga4: count("ga4_property"), ads: count("ads_customer"), gsc: count("gsc_site"), warnings: [] };
+  }
   const warnings: string[] = [];
   const part = async (label: string, discover: () => Promise<DiscoveredAsset[]>): Promise<number> => {
     try {

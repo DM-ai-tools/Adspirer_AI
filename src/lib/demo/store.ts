@@ -59,7 +59,7 @@ type GlobalDemo = typeof globalThis & {
   __adspirerDemoStoreVersion?: number;
 };
 
-const DEMO_STORE_VERSION = 9;
+const DEMO_STORE_VERSION = 10;
 
 function id(prefix: string): string {
   return `${prefix}_${nanoid(10)}`;
@@ -630,13 +630,14 @@ function seedStore(): DemoStore {
       client_id: clickTrendsId,
       connected_meta_account_id: "meta_acc_ct_1",
       access_method: "business_manager_partner",
-      status: "requested",
+      // Granted, like ClickTrends' Meta account (access_status "granted").
+      status: "granted",
       instructions: "Invite the CampaignForge BM as partner with Ads management.",
       recipient_email: "ads@clicktrends.example",
       sent_at: ts,
       sent_manually: true,
       marked_stale_at: null,
-      granted_at: null,
+      granted_at: ts,
       created_by: operatorId,
       created_at: ts,
       updated_at: ts,
@@ -665,7 +666,19 @@ function seedStore(): DemoStore {
     oauthPkceStates: [],
     workspaceDocuments: [],
     changeLog: [],
-    googleConnection: null,
+    // The agency's demo Google connection, so the Connections card works in DEMO_MODE.
+    // The token is a placeholder: demo mode never calls Google with it.
+    googleConnection: {
+      id: "demo_google_connection",
+      google_email: "demo@clicktrends.example",
+      scopes: ["openid", "email"],
+      refresh_token_encrypted: encryptToken("demo"),
+      connected_by: adminId,
+      connected_at: ts,
+      last_refreshed_at: null,
+      created_at: ts,
+      updated_at: ts,
+    },
     googleAssets,
   };
 }

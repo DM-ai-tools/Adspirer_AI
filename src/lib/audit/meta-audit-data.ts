@@ -703,7 +703,8 @@ export function demoMetaAuditSnapshot(accountId: string, accountName: string, da
       period: { days, since, until },
       totals: perf(330_000, 40, 2.4, 1.05, 2.55),
       previousPeriod: previousPeriodOf(since, until),
-      previousTotals: perf(300_000, 35, 2.3, 1.1, 2.4),
+      // The previous campaigns' sum: (190,000 × 2.9 + 110,000 × 1.7) ÷ 300,000 = 2.46.
+      previousTotals: perf(300_000, 35, 2.3, 1.1, 2.46),
       pixels: [
         {
           id: "demo_ct_pixel",

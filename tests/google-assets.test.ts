@@ -56,6 +56,9 @@ const sites = () => [
 const byExternal = (externalId: string) => getDemoStore().googleAssets.find((a) => a.external_id === externalId);
 
 beforeEach(() => {
+  // Discovery is live-only (DEMO_MODE sync is a no-op). Without Supabase variables the
+  // demo store still holds the assets, so these tests run discovery against it.
+  process.env.DEMO_MODE = "false";
   process.env.GOOGLE_OAUTH_CLIENT_ID = "cid";
   process.env.GOOGLE_OAUTH_CLIENT_SECRET = "csecret";
   process.env.GOOGLE_ADS_DEVELOPER_TOKEN = "devtoken";
@@ -66,6 +69,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  process.env.DEMO_MODE = "true";
   delete process.env.GOOGLE_OAUTH_CLIENT_ID;
   delete process.env.GOOGLE_OAUTH_CLIENT_SECRET;
   delete process.env.GOOGLE_ADS_DEVELOPER_TOKEN;
