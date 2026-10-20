@@ -1,11 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getDemoStore } from "@/lib/demo/store";
 import { resetConfigCache } from "@/lib/config";
-import { discoverCategoryCandidates } from "@/lib/scraping/site-map";
+import { discoverCategoryCandidates, matchServicePages } from "@/lib/scraping/site-map";
 import type { ClientService } from "@/types";
 
 vi.mock("@/lib/security/auth", () => ({ getCurrentUser: vi.fn() }));
 import { getCurrentUser } from "@/lib/security/auth";
+// The service-name fallback reads the homepage with the existing scraper.
+vi.mock("@/lib/scraping/firecrawl", () => ({
+  scrapeWebsiteServices: vi.fn().mockResolvedValue({ url: "", services: [], source: "firecrawl" }),
+}));
+import { scrapeWebsiteServices } from "@/lib/scraping/firecrawl";
 
 const SITE = "https://shop.example";
 const svc = (landing: string | null): ClientService =>
@@ -143,6 +148,33 @@ describe("GET /api/clients/:id/services/discover", () => {
     warn.mockRestore();
   });
 
+  it("falls back to the site's service names when it has no category pages", async () => {
+    vi.stubEnv("FIRECRAWL_API_KEY", "fc-test");
+    resetConfigCache();
+    const site = getDemoStore().clients.find((c) => c.id === "client_modern_dental")!.website_url!;
+    const origin = new URL(site).origin;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        Response.json({ success: true, links: [`${origin}/dental-implants`, `${origin}/dental-implants-cost-guide`, `${origin}/blog`] }),
+      ),
+    );
+    vi.mocked(scrapeWebsiteServices).mockResolvedValueOnce({
+      url: site,
+      services: [
+        { id: "1", name: "Dental Implants" },
+        { id: "2", name: "Teeth Whitening" },
+      ],
+      source: "firecrawl",
+    });
+    const { data } = await call();
+    expect(data.source).toBe("firecrawl");
+    expect(data.candidates).toEqual([
+      { name: "Dental Implants", landing_page_url: `${origin}/dental-implants`, alreadyAdded: expect.any(Boolean) },
+      { name: "Teeth Whitening", landing_page_url: null, alreadyAdded: expect.any(Boolean) },
+    ]);
+  });
+
   it("returns candidates from the mapped site", async () => {
     vi.stubEnv("FIRECRAWL_API_KEY", "fc-test");
     resetConfigCache();
@@ -157,5 +189,80 @@ describe("GET /api/clients/:id/services/discover", () => {
       { name: "Implants", landing_page_url: `${site}/collections/implants`, alreadyAdded: false },
     ]);
     expect(fetchMock.mock.calls[0][0]).toBe("https://api.firecrawl.dev/v1/map");
+  });
+});
+
+describe("matchServicePages (service sites with no category paths)", () => {
+  // Real paths from trafficradius.com.au: service pages sit at the top level
+  // next to hundreds of blog posts, so only the service names can find them.
+  const TR = "https://trafficradius.com.au/";
+  const urls = [
+    "/",
+    "/seo-services",
+    "/seo-services-explained",
+    "/seo-services-cost-sydney-pricing-guide",
+    "/local-seo-services",
+    "/local-seo-for-perth-businesses-boost-rankings-with-the-best-strategies",
+    "/google-ads-management",
+    "/google-adwords-express",
+    "/meta-ads",
+    "/social-media-marketing",
+    "/link-building",
+    "/blog",
+    "/about-us",
+  ].map((p) => `https://trafficradius.com.au${p}`);
+
+  it("matches each service name to its own page, not to blog posts that mention it", () => {
+    const out = matchServicePages(
+      ["SEO Services", "Local SEO", "Google Ads Management", "Meta Ads", "Social Media Marketing", "Link Building"],
+      urls,
+      TR,
+      [],
+    );
+    expect(out).toEqual([
+      { name: "Google Ads Management", landing_page_url: "https://trafficradius.com.au/google-ads-management", alreadyAdded: false },
+      { name: "Link Building", landing_page_url: "https://trafficradius.com.au/link-building", alreadyAdded: false },
+      { name: "Local SEO", landing_page_url: "https://trafficradius.com.au/local-seo-services", alreadyAdded: false },
+      { name: "Meta Ads", landing_page_url: "https://trafficradius.com.au/meta-ads", alreadyAdded: false },
+      { name: "SEO Services", landing_page_url: "https://trafficradius.com.au/seo-services", alreadyAdded: false },
+      { name: "Social Media Marketing", landing_page_url: "https://trafficradius.com.au/social-media-marketing", alreadyAdded: false },
+    ]);
+  });
+
+  it("keeps a service with no matching page, without pointing it at the homepage", () => {
+    const out = matchServicePages(["Email Marketing"], urls, TR, []);
+    expect(out).toEqual([{ name: "Email Marketing", landing_page_url: null, alreadyAdded: false }]);
+  });
+
+  it("doesn't link a service to a long blog post that only mentions it", () => {
+    const withPost = [...urls, "https://trafficradius.com.au/10-proven-tips-to-maximise-roi-in-ppc-advertising"];
+    const out = matchServicePages(["PPC Advertising", "Web Development Services"], [...withPost, "https://trafficradius.com.au/php-web-development-services"], TR, []);
+    expect(out).toEqual([
+      { name: "PPC Advertising", landing_page_url: null, alreadyAdded: false },
+      { name: "Web Development Services", landing_page_url: "https://trafficradius.com.au/php-web-development-services", alreadyAdded: false },
+    ]);
+  });
+
+  it("treats singular and plural the same", () => {
+    const out = matchServicePages(["SEO Service"], urls, TR, []);
+    expect(out[0]!.landing_page_url).toBe("https://trafficradius.com.au/seo-services");
+  });
+
+  it("marks services already added by name or by page", () => {
+    const existing = [
+      { id: "a", client_id: "c", name: "seo services", landing_page_url: null },
+      { id: "b", client_id: "c", name: "Paid Social", landing_page_url: "https://trafficradius.com.au/meta-ads" },
+    ] as ClientService[];
+    const out = matchServicePages(["SEO Services", "Meta Ads", "Link Building"], urls, TR, existing);
+    expect(out.map((c) => [c.name, c.alreadyAdded])).toEqual([
+      ["Link Building", false],
+      ["Meta Ads", true],
+      ["SEO Services", true],
+    ]);
+  });
+
+  it("de-duplicates names and ignores blanks", () => {
+    const out = matchServicePages(["Meta Ads", "meta ads", "  "], urls, TR, []);
+    expect(out.map((c) => c.name)).toEqual(["Meta Ads"]);
   });
 });

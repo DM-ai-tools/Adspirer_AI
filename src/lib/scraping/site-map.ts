@@ -3,7 +3,8 @@ import { getConfig } from "@/lib/config";
 
 export type CategoryCandidate = {
   name: string;
-  landing_page_url: string;
+  /** null when a service was found on the site but no page of its own matched it. */
+  landing_page_url: string | null;
   alreadyAdded: boolean;
 };
 
@@ -117,4 +118,80 @@ export function discoverCategoryCandidates(
   return [...byPath.values()]
     .sort((a, b) => a.name.localeCompare(b.name))
     .slice(0, MAX_CANDIDATES);
+}
+
+const STOPWORDS = new Set(["and", "the", "a", "an", "of", "for", "our", "in", "to", "with", "on", "by"]);
+/** Share of a page's words that must come from the service name. */
+const MIN_SERVICE_PAGE_MATCH = 0.5;
+
+/** Lowercase words with stopwords dropped and a plural "s" trimmed ("Services" → "service"). */
+function slugWords(text: string): string[] {
+  return text
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w && !STOPWORDS.has(w))
+    .map((w) => (w.length > 3 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w));
+}
+
+/**
+ * Service sites (agencies, clinics) keep their service pages at the top level
+ * next to blog posts, so paths alone can't find them. Given service names read
+ * from the site, pick each one's own page: a page of at most two path segments
+ * whose words include every word of the name, closest match first (so "SEO
+ * Services" is /seo-services, not /seo-services-explained). A name with no
+ * such page is kept with no landing page rather than the homepage.
+ */
+export function matchServicePages(
+  names: string[],
+  urls: string[],
+  siteUrl: string,
+  existing: ClientService[],
+): CategoryCandidate[] {
+  const site = parseUrl(siteUrl);
+  if (!site) return [];
+  const addedPaths = new Set<string>();
+  const addedNames = new Set(existing.map((s) => s.name.trim().toLowerCase()));
+  for (const s of existing) {
+    const u = s.landing_page_url ? parseUrl(s.landing_page_url, siteUrl) : null;
+    if (u) addedPaths.add(normalizePath(u.pathname));
+  }
+
+  const pages: Array<{ url: string; path: string; words: Set<string> }> = [];
+  const seenPaths = new Set<string>();
+  for (const raw of urls) {
+    const u = parseUrl(raw);
+    if (!u || siteHost(u) !== siteHost(site)) continue;
+    const path = normalizePath(u.pathname);
+    const segments = path.split("/").filter(Boolean);
+    if (!segments.length || segments.length > 2 || seenPaths.has(path)) continue;
+    seenPaths.add(path);
+    pages.push({ url: `${u.origin}${u.pathname.replace(/\/+$/, "")}`, path, words: new Set(slugWords(decodeSegment(path))) });
+  }
+
+  const byName = new Map<string, CategoryCandidate>();
+  for (const raw of names) {
+    const name = raw.trim();
+    const key = name.toLowerCase();
+    if (!name || byName.has(key)) continue;
+    const wanted = slugWords(name);
+    let best: { url: string; path: string; score: number } | null = null;
+    if (wanted.length) {
+      for (const page of pages) {
+        if (!wanted.every((w) => page.words.has(w))) continue;
+        const score = wanted.length / page.words.size;
+        // Mostly the service's own words; a long post title that mentions it isn't its page.
+        if (score < MIN_SERVICE_PAGE_MATCH) continue;
+        if (!best || score > best.score || (score === best.score && page.path.length < best.path.length)) {
+          best = { url: page.url, path: page.path, score };
+        }
+      }
+    }
+    byName.set(key, {
+      name,
+      landing_page_url: best?.url ?? null,
+      alreadyAdded: addedNames.has(key) || (best ? addedPaths.has(best.path) : false),
+    });
+  }
+
+  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name)).slice(0, MAX_CANDIDATES);
 }

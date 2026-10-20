@@ -8,6 +8,7 @@ import { logger } from "@/lib/observability/logger";
 import {
   discoverCategoryCandidates,
   mapSiteUrls,
+  matchServicePages,
   type CategoryCandidate,
 } from "@/lib/scraping/site-map";
 
@@ -62,10 +63,20 @@ export async function GET(_request: Request, context: RouteContext) {
 
     try {
       const urls = await mapSiteUrls(siteUrl);
-      return jsonOk({
-        candidates: discoverCategoryCandidates(urls, siteUrl, existing),
-        source: "firecrawl" as const,
-      });
+      let candidates = discoverCategoryCandidates(urls, siteUrl, existing);
+      // No shop-style category pages (agencies, clinics): read the service
+      // names from the site and match each to its own page in the map.
+      if (!candidates.length) {
+        const { scrapeWebsiteServices } = await import("@/lib/scraping/firecrawl");
+        const scraped = await scrapeWebsiteServices(siteUrl);
+        candidates = matchServicePages(
+          scraped.services.map((s) => s.name),
+          urls,
+          siteUrl,
+          existing,
+        );
+      }
+      return jsonOk({ candidates, source: "firecrawl" as const });
     } catch (error) {
       logger.warn("Category scan: site map failed", {
         clientId: id,
