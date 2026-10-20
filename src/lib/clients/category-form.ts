@@ -98,3 +98,27 @@ export function scanUnavailableMessage(reason: string | undefined, words: "categ
       return `Website scan is unavailable. Add ${words} by hand or import a sheet.`;
   }
 }
+
+export type ScanCandidate = { name: string; landing_page_url: string | null; alreadyAdded: boolean };
+
+/**
+ * Search for the scan list: every typed word must appear in the name, any
+ * order, any case. Large stores return thousands of candidates, so only the
+ * first `limit` are rendered while `matched` says how many there are.
+ * `selectable` is what "Select all shown" adds (not the ones already added).
+ */
+export function filterScanCandidates<T extends ScanCandidate>(
+  candidates: T[],
+  query: string,
+  limit = 300,
+): { shown: T[]; matched: number; selectable: string[] } {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const matching = words.length
+    ? candidates.filter((c) => {
+        const name = c.name.toLowerCase();
+        return words.every((w) => name.includes(w));
+      })
+    : candidates;
+  const shown = matching.slice(0, limit);
+  return { shown, matched: matching.length, selectable: shown.filter((c) => !c.alreadyAdded).map((c) => c.name) };
+}
