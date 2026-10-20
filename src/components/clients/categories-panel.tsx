@@ -6,6 +6,7 @@ import type { ClientService } from "@/types/database";
 import { apiFetch } from "@/lib/api-client";
 import { categoryPatchFromEdit, importOutcome, type CategoryFormField } from "@/lib/clients/category-form";
 import { CategoryScan } from "@/components/clients/category-scan";
+import { CategoryGoogleImport } from "@/components/clients/category-google-import";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -195,6 +196,7 @@ export function CategoriesPanel({
             }}
           />
           <CategoryScan clientId={clientId} word={word} onAdded={() => void load()} />
+          <CategoryGoogleImport clientId={clientId} word={word} onAdded={() => void load()} />
         </div>
         {mode === "replace" ? (
           <p className="text-xs text-muted">

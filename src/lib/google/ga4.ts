@@ -1,6 +1,6 @@
 import { googleFetch } from "./http";
 import { getGoogleAccessToken } from "./oauth";
-import type { DateRange, Ga4CategoryRevenue, Ga4Channel } from "./types";
+import type { DateRange, Ga4CategoryRevenue, Ga4Channel, Ga4LandingPages } from "./types";
 
 /**
  * Read-only GA4 client: the Admin API for property discovery and the Data API
@@ -183,12 +183,18 @@ function revenueRows(rows: ReportRow[], keyOf: (dim: string) => string): Ga4Cate
  * They group by landingPage (the path alone): with the query string, every
  * fbclid/gclid would be its own row and paid traffic would spill into "(other)".
  */
-export async function fetchGa4CategoryRevenue(propertyId: string, range: DateRange): Promise<Ga4CategoryRevenue> {
+/** The numeric property id, after checking the id and date range before anything calls Google. */
+function checkedPropertyId(propertyId: string, range: DateRange): string {
   const id = digits(propertyId);
   if (!id) throw new Error("GA4 property id must be numeric, e.g. properties/123456.");
   if (!DATE.test(range.since) || !DATE.test(range.until)) {
     throw new Error("GA4 date range must be YYYY-MM-DD.");
   }
+  return id;
+}
+
+export async function fetchGa4CategoryRevenue(propertyId: string, range: DateRange): Promise<Ga4CategoryRevenue> {
+  const id = checkedPropertyId(propertyId, range);
 
   const [item, channel] = await Promise.all([
     runReport(id, range, ["itemCategory"], ["itemRevenue", "itemsPurchased"]),
@@ -231,4 +237,21 @@ export async function fetchGa4CategoryRevenue(propertyId: string, range: DateRan
     return { method: "landing_page", currency, rows: landingRows, byChannel, warnings };
   }
   return { method: "none", currency, rows: [], byChannel, warnings };
+}
+
+/**
+ * Purchase revenue and purchases by session landing page (the path alone),
+ * for pages that earned revenue. Same report as the landing-page fallback above.
+ */
+export async function fetchGa4LandingPages(propertyId: string, range: DateRange): Promise<Ga4LandingPages> {
+  const id = checkedPropertyId(propertyId, range);
+  const landing = await runReport(id, range, ["landingPage"], ["purchaseRevenue", "ecommercePurchases"]);
+  const warnings = landing.dataLoss
+    ? ["GA4 grouped some landing pages into (other); landing page figures may be understated"]
+    : [];
+  return {
+    currency: landing.currency,
+    rows: revenueRows(landing.rows, landingPath).map(({ key, revenueCents, purchases }) => ({ path: key, revenueCents, purchases })),
+    warnings,
+  };
 }

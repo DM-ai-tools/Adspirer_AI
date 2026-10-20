@@ -41,10 +41,15 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/** ClickTrends with no categories set up, and a scan that returns `candidates`. */
+/**
+ * ClickTrends with no categories set up, and a scan that returns `candidates`.
+ * Its GA4 and Search Console are unmapped, so these tests take the website
+ * scan path (Google comes first: tests/google-category-candidates.test.ts).
+ */
 function noCategories(candidates: CategoryCandidate[]) {
   const store = getDemoStore();
   store.clientServices = store.clientServices.filter((s) => s.client_id !== CT);
+  for (const asset of store.googleAssets) if (asset.mapped_client_id === CT) asset.mapped_client_id = null;
   vi.mocked(scanSiteCandidates).mockResolvedValue({ candidates, source: "firecrawl" });
 }
 

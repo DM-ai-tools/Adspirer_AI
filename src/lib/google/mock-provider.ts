@@ -1,6 +1,6 @@
 import { getDemoStore } from "@/lib/demo/store";
 import type { GoogleDataProvider } from "./provider";
-import type { AdsPerformance, Ga4CategoryRevenue, SearchDemand } from "./types";
+import type { AdsPerformance, Ga4CategoryRevenue, Ga4LandingPages, SearchDemand } from "./types";
 
 /**
  * Demo Google data for ClickTrends (Bar stools and Sofas). Sized against the
@@ -36,6 +36,16 @@ const ga4: Omit<Ga4CategoryRevenue, "currency"> = {
   ],
 };
 
+/** Session landing pages: the byChannel totals per page; the product page counts toward its collection. */
+const landing: Omit<Ga4LandingPages, "currency"> = {
+  rows: [
+    { path: BAR_PATH, revenueCents: 620_000, purchases: 82 },
+    { path: `${BAR_PATH}/products/oak-counter-stool`, revenueCents: 40_000, purchases: 5 },
+    { path: SOFAS_PATH, revenueCents: 285_000, purchases: 19 },
+    { path: "/", revenueCents: 45_000, purchases: 4 },
+  ],
+};
+
 const ads: Omit<AdsPerformance, "currency"> = {
   customerId: "1112223334",
   merchantCenterLinked: true,
@@ -67,6 +77,7 @@ const gsc: Omit<SearchDemand, "siteUrl"> = {
 export function getMockGoogleDataProvider(): GoogleDataProvider {
   return {
     ga4CategoryRevenue: async (propertyId) => structuredClone({ ...ga4, currency: assetCurrency(propertyId) }),
+    ga4LandingPages: async (propertyId) => structuredClone({ ...landing, currency: assetCurrency(propertyId) }),
     adsPerformance: async (customerId) =>
       structuredClone({ ...ads, customerId, currency: assetCurrency(customerId) }),
     searchDemand: async (siteUrl) => structuredClone({ ...gsc, siteUrl }),
