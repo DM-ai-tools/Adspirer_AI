@@ -31,9 +31,60 @@ async function activeClientServices(clientId: string): Promise<ClientService[]> 
   if (error) throw new Error(error.message);
   return (data ?? []) as ClientService[];
 }
-import { scopeAuditSnapshot } from "@/lib/audit/meta-audit-data";
-import { asksAboutCategorySpend, categoriesFromServices } from "@/lib/strategy/categories";
-import { attributeSpendToCategories } from "@/lib/strategy/category-attribution";
+
+/**
+ * The client's Google figures per category for the snapshot's period, read-only.
+ * Nothing when no Google asset is mapped (or the mapping can't be read), so those
+ * clients keep the Meta-only evidence; a Google load that fails outright becomes a
+ * warning, never an error.
+ */
+async function loadChannelPerformance(
+  clientId: string,
+  snapshot: MetaAuditSnapshot,
+  categories: StrategyCategory[],
+  metaAttribution: CategoryAttribution,
+): Promise<{ channels?: ChannelPerformance; channelWarnings: string[] }> {
+  try {
+    const assets = await clientGoogleAssets(clientId);
+    if (!assets.ga4 && !assets.ads && !assets.gsc) return { channelWarnings: [] };
+  } catch (error) {
+    logger.warn("agent.google_assets_unreadable", {
+      clientId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return { channelWarnings: [] };
+  }
+  try {
+    const google = await loadChannelSnapshot(clientId, {
+      since: snapshot.period.since,
+      until: snapshot.period.until,
+    });
+    const channels = buildChannelPerformance({
+      categories,
+      metaAttribution,
+      metaCurrency: snapshot.account.currency,
+      snapshot: google,
+    });
+    return { channels, channelWarnings: [] };
+  } catch (error) {
+    return {
+      channelWarnings: [
+        `Google data couldn't load (${error instanceof Error ? error.message : String(error)}), so the figures are Meta only.`,
+      ],
+    };
+  }
+}
+import { scopeAuditSnapshot, type MetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
+import { clientGoogleAssets } from "@/lib/google/assets";
+import { loadChannelSnapshot } from "@/lib/google/snapshot";
+import {
+  asksAboutCategorySpend,
+  categoriesFromServices,
+  scopeCategoriesFromRequest,
+  type StrategyCategory,
+} from "@/lib/strategy/categories";
+import { attributeSpendToCategories, type CategoryAttribution } from "@/lib/strategy/category-attribution";
+import { buildChannelPerformance, type ChannelPerformance } from "@/lib/strategy/channels";
 import { buildStrategyPlan } from "@/lib/strategy/plan";
 import { renderCategorySpendEvidence, renderStrategyEvidence } from "@/lib/strategy/render";
 import { STRATEGY_FRAMEWORK } from "@/lib/agent/strategy-framework";
@@ -2362,7 +2413,23 @@ export async function gatherDiagnoseEvidence(input: {
           label: "Building the plan…",
           stepId: "build_plan",
         });
-        const plan = buildStrategyPlan({ snapshot, scorecard, categories, goals, brief, categoryWord });
+        const { channels, channelWarnings } = await loadChannelPerformance(
+          input.clientId,
+          snapshot,
+          categories,
+          attribution,
+        );
+        const scoped = scopeCategoriesFromRequest(input.request, categories);
+        const plan = buildStrategyPlan({
+          snapshot,
+          scorecard,
+          categories,
+          goals,
+          brief,
+          categoryWord,
+          channels,
+          scopeCategoryIds: scoped.length > 0 ? scoped.map((c) => c.id) : undefined,
+        });
         strategyPlanBuilt = true;
         const cents = (value: number) => formatMoneyMajor(value / 100, snapshot.account.currency);
         const defaultsUsed: string[] = [];
@@ -2381,7 +2448,11 @@ export async function gatherDiagnoseEvidence(input: {
             currency: snapshot.account.currency,
             categoryWord,
             defaultsUsed,
+            // The "Total budget" line says the period was assumed, so no separate default line.
+            periodAssumed: parsed.usedDefaults.includes("period"),
             warnings: snapshot.warnings,
+            channels,
+            channelWarnings,
           }),
         );
         sections.push(["### Strategy framework (write the report with these headings)", STRATEGY_FRAMEWORK].join("\n"));
@@ -2427,13 +2498,22 @@ export async function gatherDiagnoseEvidence(input: {
           until: range.dateStop,
           days: 30,
         });
+        const attribution = attributeSpendToCategories(snapshot, categories);
+        const { channels, channelWarnings } = await loadChannelPerformance(
+          input.clientId,
+          snapshot,
+          categories,
+          attribution,
+        );
         sections.push(
-          renderCategorySpendEvidence(attributeSpendToCategories(snapshot, categories), categories, {
+          renderCategorySpendEvidence(attribution, categories, {
             currency: snapshot.account.currency,
             categoryWord,
             periodDays: snapshot.period.days,
             accountSpendCents: snapshot.totals?.spendCents ?? null,
             warnings: snapshot.warnings,
+            channels,
+            channelWarnings,
           }),
         );
       } catch (error) {

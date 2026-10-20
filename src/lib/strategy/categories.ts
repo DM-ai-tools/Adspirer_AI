@@ -1,4 +1,5 @@
 import type { ClientService } from "@/types/database";
+import { escapeRegExp, matchCategoryByName } from "./category-match";
 
 export type StrategyCategory = {
   id: string;
@@ -30,10 +31,6 @@ export function categoriesFromServices(services: ClientService[]): StrategyCateg
 const SPEND_RETURN_WORDS = /\b(?:spend|spent|spending|return|returns|returned|revenue|roas|best|top)\b/i;
 const CATEGORY_WORDS = /\b(?:categor(?:y|ies)|services?)\b/i;
 
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 /**
  * A question about spend and return by category: it names one of the client's
  * categories (whole word, any case), or says "category" / "service" next to a
@@ -45,4 +42,17 @@ export function asksAboutCategorySpend(request: string, categories: StrategyCate
     return name !== "" && new RegExp(`(?<![a-z0-9])${escapeRegExp(name)}(?![a-z0-9])`, "i").test(request);
   });
   return named || (CATEGORY_WORDS.test(request) && SPEND_RETURN_WORDS.test(request));
+}
+
+/** Names that mean "everything" rather than one category. */
+const GENERIC_NAMES = new Set(["all", "other", "others", "general", "misc", "miscellaneous", "uncategorized", "uncategorised", "default"]);
+
+/**
+ * The categories a request names (whole-word name or keyword, any case), in
+ * category order. A category called only "All", "Other" or "General" never matches.
+ */
+export function scopeCategoriesFromRequest(request: string, categories: StrategyCategory[]): StrategyCategory[] {
+  return categories.filter(
+    (c) => !GENERIC_NAMES.has(c.name.trim().toLowerCase()) && matchCategoryByName([request], [c]) != null,
+  );
 }

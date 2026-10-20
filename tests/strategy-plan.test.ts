@@ -91,6 +91,7 @@ describe("PLAN_CONSTANTS", () => {
       testDiscount: 0.7,
       minSpendForVerdictCents: 5000,
       testDurationDays: 14,
+      minChannelTestShare: 0.2,
     });
   });
 });

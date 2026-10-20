@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { listOpenAlerts, updateAlert } from "@/lib/monitoring/alert-store";
 
 describe("acknowledge and snooze (demo store)", () => {
-  it("lists open alerts and records acknowledge and snooze", async () => {
+  // Cold dynamic imports of the audit/health/approvals module graph take ~1s alone and far longer under full-suite load.
+  it("lists open alerts and records acknowledge and snooze", { timeout: 20_000 }, async () => {
     const alerts = await listOpenAlerts("client_modern_dental");
     expect(alerts.length).toBeGreaterThan(0);
     const [first, second] = alerts;

@@ -65,11 +65,11 @@ describe("parseStrategyBrief", () => {
     expect(s.usedDefaults).toEqual(["budget"]);
   });
 
-  it("derives the target from '$A to get $B back' but not the budget", () => {
+  it("derives the target and a total budget from '$A to get $B back'", () => {
     const r = parseStrategyBrief("build a strategy for $4k to get $40k back", defaults());
-    expect(r.missing).toEqual(["budget"]);
+    expect(r.brief).toMatchObject({ totalBudgetCents: 400000, periodDays: 30, dailyBudgetCents: 13333, targetRoas: 10 });
     const r2 = parseStrategyBrief("$4k to get $40k back, $800/day", defaults());
-    expect(r2.brief).toEqual({ dailyBudgetCents: 80000, targetRoas: 10, stretchTargets: [] });
+    expect(r2.brief).toMatchObject({ dailyBudgetCents: 80000, targetRoas: 10, stretchTargets: [] });
   });
 
   it("lets an explicit Nx win over the A-to-B form", () => {

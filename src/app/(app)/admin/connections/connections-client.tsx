@@ -15,6 +15,8 @@ import { ErrorState } from "@/components/shared/error-state";
 import { EmptyState } from "@/components/shared/empty-state";
 import { ClientStatusBadge } from "@/components/clients/client-status-badge";
 import { MetaConnectButton } from "@/components/meta-connect-button";
+import { GoogleConnectCard } from "@/components/connections/google-connect-card";
+import { googleErrorMessage } from "@/lib/google/assets-view";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -110,6 +112,30 @@ export default function ConnectionsPortalPage() {
         void load({ silent: true });
       },
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once for OAuth return
+  }, []);
+
+  // ?google_connected= / ?google_error= from the Google OAuth callback: toast once, then strip.
+  useEffect(() => {
+    const connected = searchParams.get("google_connected") === "1";
+    const googleError = searchParams.get("google_error");
+    if (!connected && !googleError) return;
+    if (connected) {
+      const n = Number(searchParams.get("google_assets") ?? "0");
+      toast.success(
+        n > 0
+          ? `Google connected · ${n} asset${n === 1 ? "" : "s"} found`
+          : "Google connected",
+      );
+    } else if (googleError) {
+      toast.error(googleErrorMessage(googleError));
+    }
+    const next = new URLSearchParams(searchParams.toString());
+    next.delete("google_connected");
+    next.delete("google_assets");
+    next.delete("google_error");
+    const qs = next.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- run once for OAuth return
   }, []);
 
@@ -277,6 +303,10 @@ export default function ConnectionsPortalPage() {
             </p>
           </CardContent>
         </Card>
+      </div>
+
+      <div className="mb-6">
+        <GoogleConnectCard clients={clients} />
       </div>
 
       {accounts.length === 0 ? (

@@ -21,6 +21,7 @@ import type {
   UserClientAccess,
   WorkspaceDocument,
 } from "@/types";
+import type { GoogleAsset, GoogleConnection } from "@/lib/google/types";
 import { encryptToken } from "@/lib/security/token-vault";
 import { addDaysIso, addHoursIso, nowIso } from "@/lib/utils";
 
@@ -48,6 +49,9 @@ export interface DemoStore {
   /** Append-only record of executed Meta changes. */
   changeLog: import("@/lib/changes/change-log").ChangeLogEntry[];
   creativeDrafts?: import("@/lib/creatives/drafts").CreativeDraft[];
+  /** The agency read-only Google connection (admin-connected). */
+  googleConnection: GoogleConnection | null;
+  googleAssets: GoogleAsset[];
 }
 
 type GlobalDemo = typeof globalThis & {
@@ -55,7 +59,7 @@ type GlobalDemo = typeof globalThis & {
   __adspirerDemoStoreVersion?: number;
 };
 
-const DEMO_STORE_VERSION = 7;
+const DEMO_STORE_VERSION = 10;
 
 function id(prefix: string): string {
   return `${prefix}_${nanoid(10)}`;
@@ -129,7 +133,7 @@ function seedStore(): DemoStore {
       budget_ceiling_cents: 750_000,
       currency: "USD",
       notes: "DEMO DATA",
-      goals_profile: {},
+      goals_profile: { business_model: "ecommerce", target_roas: 4, gross_margin_pct: 45 },
       is_demo: true,
       created_by: adminId,
       created_at: ts,
@@ -225,13 +229,43 @@ function seedStore(): DemoStore {
       currency: "USD",
       timezone: "America/Los_Angeles",
       business_id: "bm_9003",
-      access_status: "requested",
+      access_status: "granted",
       access_method: "business_manager_partner",
-      last_synced_at: null,
+      last_synced_at: ts,
       raw: { demo: true },
       created_at: ts,
       updated_at: ts,
     },
+  ];
+
+  // Mapped to ClickTrends so the cross-channel plan has Google data in DEMO_MODE.
+  // Same currency as its Meta account; the mock Google provider must match it.
+  const clickTrendsCurrency = clients.find((c) => c.id === clickTrendsId)!.currency;
+  const googleAsset = (
+    assetId: string,
+    kind: GoogleAsset["kind"],
+    externalId: string,
+    name: string,
+    currency: string | null,
+  ): GoogleAsset => ({
+    id: assetId,
+    kind,
+    external_id: externalId,
+    name,
+    parent_name: "ClickTrends",
+    currency,
+    timezone: currency ? "America/Los_Angeles" : null,
+    login_customer_id: null,
+    mapped_client_id: clickTrendsId,
+    raw_metadata: { demo: true },
+    last_synced_at: ts,
+    created_at: ts,
+    updated_at: ts,
+  });
+  const googleAssets: GoogleAsset[] = [
+    googleAsset("gasset_ct_ga4", "ga4_property", "properties/demo-ga4", "ClickTrends Store (GA4)", clickTrendsCurrency),
+    googleAsset("gasset_ct_ads", "ads_customer", "1112223334", "ClickTrends Google Ads", clickTrendsCurrency),
+    googleAsset("gasset_ct_gsc", "gsc_site", "https://clicktrends.example/", "https://clicktrends.example/", null),
   ];
 
   const conversationId = "conv_mdc_audit_1";
@@ -596,13 +630,14 @@ function seedStore(): DemoStore {
       client_id: clickTrendsId,
       connected_meta_account_id: "meta_acc_ct_1",
       access_method: "business_manager_partner",
-      status: "requested",
+      // Granted, like ClickTrends' Meta account (access_status "granted").
+      status: "granted",
       instructions: "Invite the CampaignForge BM as partner with Ads management.",
       recipient_email: "ads@clicktrends.example",
       sent_at: ts,
       sent_manually: true,
       marked_stale_at: null,
-      granted_at: null,
+      granted_at: ts,
       created_by: operatorId,
       created_at: ts,
       updated_at: ts,
@@ -631,6 +666,20 @@ function seedStore(): DemoStore {
     oauthPkceStates: [],
     workspaceDocuments: [],
     changeLog: [],
+    // The agency's demo Google connection, so the Connections card works in DEMO_MODE.
+    // The token is a placeholder: demo mode never calls Google with it.
+    googleConnection: {
+      id: "demo_google_connection",
+      google_email: "demo@clicktrends.example",
+      scopes: ["openid", "email"],
+      refresh_token_encrypted: encryptToken("demo"),
+      connected_by: adminId,
+      connected_at: ts,
+      last_refreshed_at: null,
+      created_at: ts,
+      updated_at: ts,
+    },
+    googleAssets,
   };
 }
 
