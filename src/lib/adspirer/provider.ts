@@ -443,7 +443,8 @@ export interface MetaAdsProvider {
    */
   getAuditSnapshot?(
     accountId: string,
-    options?: { days?: number; since?: string; until?: string },
+    /** compareSince/compareUntil: a comparison range the operator named (default: the period just before). */
+    options?: { days?: number; since?: string; until?: string; compareSince?: string; compareUntil?: string },
   ): Promise<MetaAuditSnapshot>;
 
   /**

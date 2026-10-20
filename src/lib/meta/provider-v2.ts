@@ -684,7 +684,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
   /** Overview (cached per turn): the agent and analyzeAccount share one fetch. */
   async getAuditSnapshot(
     accountId: string,
-    options?: { days?: number; since?: string; until?: string },
+    options?: { days?: number; since?: string; until?: string; compareSince?: string; compareUntil?: string },
   ) {
     return fetchMetaAuditSnapshot(this.graph, normalizeAccountId(accountId), options);
   }
