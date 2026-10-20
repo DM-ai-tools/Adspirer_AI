@@ -1359,10 +1359,17 @@ async function runMockAgent(input: {
       ? humanizeAgentReply(evidence)
       : null;
     const notice = categoryNoticeLine(evidence);
-    summary = humanized?.display
+    // The notice opens the reply, so it isn't repeated where the evidence had it.
+    const display = notice
+      ? humanized?.display
+          ?.split("\n")
+          .filter((line) => line.trim().replace(/^[-*]\s+/, "") !== notice)
+          .join("\n")
+      : humanized?.display;
+    summary = display
       ? [
           ...(notice ? [notice, ""] : []),
-          humanized.display,
+          display,
           "",
           "Use **Export Word** / **Export PDF** under this message if you need a file.",
           "If you want an execute change (budget/pause/create campaign), ask me to propose it for Approvals.",

@@ -120,6 +120,16 @@ describe("pickCandidateForRequest", () => {
     expect(pickCandidateForRequest("plan for footstools", [candidate("Stools", "stools")])).toBeNull();
   });
 
+  it("matches -ies names with their -ie and -y singulars", () => {
+    const hoodies = candidate("Hoodies", "hoodies");
+    expect(pickCandidateForRequest("plan for a hoodie push", [hoodies])).toEqual(hoodies);
+    const accessories = candidate("Accessories", "accessories");
+    expect(pickCandidateForRequest("plan for accessory sales", [accessories])).toEqual(accessories);
+    const cookies = candidate("Cookies", "cookies");
+    expect(pickCandidateForRequest("plan for cookies", [cookies])).toEqual(cookies);
+    expect(pickCandidateForRequest("plan for a cookie box", [cookies])).toEqual(cookies);
+  });
+
   it("doesn't treat 's as a plural, and matches -ies with -y", () => {
     const mens = candidate("Men's Shoes", "mens-shoes");
     expect(pickCandidateForRequest("plan for men's shoes", [mens])).toEqual(mens);
@@ -335,6 +345,7 @@ describe("strategy ask for a category that isn't set up (DEMO_MODE)", () => {
     const gathered = await gatherDiagnoseEvidence({ clientId: CT, request: STRATEGY_ASK, intent: "strategy" });
     const result = await runAdspirerAgent({ task, clientContext: "", toolEvidence: gathered.evidence, intent: "strategy" });
     expect(result.summary.startsWith(ADDED_LINE)).toBe(true);
+    expect(result.summary.split(ADDED_LINE)).toHaveLength(2);
   });
 });
 
@@ -348,6 +359,7 @@ describe("category-spend ask for a category that isn't set up (DEMO_MODE)", () =
     const task = await createTask({ clientId: CT, createdBy: "profile_operator_demo", title: SPEND_ASK, goal: SPEND_ASK });
     const result = await runAdspirerAgent({ task, clientContext: "", toolEvidence: gathered.evidence, intent: detectRequestIntent(SPEND_ASK) });
     expect(result.summary.startsWith(ADDED_LINE)).toBe(true);
+    expect(result.summary.split(ADDED_LINE)).toHaveLength(2);
   });
 
   it("says it's matching spend before the slow website scan", async () => {

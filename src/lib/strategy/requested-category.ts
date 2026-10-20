@@ -84,7 +84,8 @@ const APOSTROPHE = /['’]/;
 function wordPattern(word: string): string {
   if (APOSTROPHE.test(word)) return word.split(APOSTROPHE).map(escapeRegExp).join("['’]");
   const lower = word.toLowerCase();
-  if (lower.length > 4 && lower.endsWith("ies")) return `${escapeRegExp(word.slice(0, -3))}(?:y|ies)`;
+  // "Hoodies" → hoodie, "Accessories" → accessory.
+  if (lower.length > 4 && lower.endsWith("ies")) return `${escapeRegExp(word.slice(0, -3))}(?:y|ie|ies)`;
   if (lower.length > 2 && /[^aeiou]y$/.test(lower)) return `${escapeRegExp(word.slice(0, -1))}(?:y|ies)`;
   const stem = /(?:ss|x|ch|sh|z)es$/.test(lower)
     ? word.slice(0, -2)
