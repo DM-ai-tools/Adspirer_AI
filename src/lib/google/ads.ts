@@ -19,9 +19,10 @@ async function adsHeaders(loginCustomerId: string | null): Promise<{
   accessToken: string;
   headers: Record<string, string>;
 }> {
-  const developerToken = getConfig().GOOGLE_ADS_DEVELOPER_TOKEN;
-  if (!developerToken) throw new Error("Google Ads isn't configured (no developer token).");
-  const headers: Record<string, string> = { "developer-token": developerToken };
+  // No developer-token header: Google retired developer tokens on 9 Sep 2026
+  // (access now follows the OAuth client's Cloud project) and will reject them
+  // in a later API version.
+  const headers: Record<string, string> = {};
   if (loginCustomerId) headers["login-customer-id"] = digits(loginCustomerId);
   return { accessToken: await getGoogleAccessToken(), headers };
 }

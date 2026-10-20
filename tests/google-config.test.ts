@@ -4,7 +4,6 @@ import { getConfig, resetConfigCache } from "@/lib/config";
 const GOOGLE_VARS = [
   "GOOGLE_OAUTH_CLIENT_ID",
   "GOOGLE_OAUTH_CLIENT_SECRET",
-  "GOOGLE_ADS_DEVELOPER_TOKEN",
   "GOOGLE_ADS_LOGIN_CUSTOMER_ID",
   "GOOGLE_ADS_API_VERSION",
 ];
@@ -24,35 +23,19 @@ describe("google config", () => {
     resetConfigCache();
     const config = getConfig();
     expect(config.hasGoogle).toBe(false);
-    expect(config.hasGoogleAds).toBe(false);
   });
 
-  it("enables Google with a client id and secret, but not Ads", () => {
+  it("enables Google, Google Ads included, with just a client id and secret", () => {
+    // Google retired developer tokens on 9 Sep 2026: access now comes from the
+    // Cloud project that owns the OAuth client, so nothing else is needed.
     clearGoogleEnv();
     vi.stubEnv("GOOGLE_OAUTH_CLIENT_ID", "id");
     vi.stubEnv("GOOGLE_OAUTH_CLIENT_SECRET", "secret");
     resetConfigCache();
     const config = getConfig();
     expect(config.hasGoogle).toBe(true);
-    expect(config.hasGoogleAds).toBe(false);
-  });
-
-  it("enables Google Ads with the developer token too", () => {
-    clearGoogleEnv();
-    vi.stubEnv("GOOGLE_OAUTH_CLIENT_ID", "id");
-    vi.stubEnv("GOOGLE_OAUTH_CLIENT_SECRET", "secret");
-    vi.stubEnv("GOOGLE_ADS_DEVELOPER_TOKEN", "dev");
-    resetConfigCache();
-    const config = getConfig();
-    expect(config.hasGoogle).toBe(true);
-    expect(config.hasGoogleAds).toBe(true);
-  });
-
-  it("does not enable Ads from a developer token alone", () => {
-    clearGoogleEnv();
-    vi.stubEnv("GOOGLE_ADS_DEVELOPER_TOKEN", "dev");
-    resetConfigCache();
-    expect(getConfig().hasGoogleAds).toBe(false);
+    expect(config).not.toHaveProperty("hasGoogleAds");
+    expect(config).not.toHaveProperty("GOOGLE_ADS_DEVELOPER_TOKEN");
   });
 
   it("strips non-digits from the login customer id", () => {

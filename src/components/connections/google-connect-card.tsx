@@ -19,7 +19,6 @@ import {
 
 type GoogleStatus = {
   configured: boolean;
-  adsConfigured: boolean;
   connected: boolean;
   email: string | null;
   needsReconnect: boolean;
@@ -42,7 +41,6 @@ const SECTIONS: Array<{ kind: GoogleAssetKind; title: string; empty: string }> =
 const ENV_VARS = [
   "GOOGLE_OAUTH_CLIENT_ID",
   "GOOGLE_OAUTH_CLIENT_SECRET",
-  "GOOGLE_ADS_DEVELOPER_TOKEN",
   "GOOGLE_ADS_LOGIN_CUSTOMER_ID",
 ];
 
@@ -202,12 +200,6 @@ export function GoogleConnectCard({ clients, onChanged }: Props) {
           </div>
         ) : status ? (
           <>
-            {!status.adsConfigured ? (
-              <p className="text-xs text-muted">
-                Google Ads accounts won&apos;t sync until GOOGLE_ADS_DEVELOPER_TOKEN is set.
-              </p>
-            ) : null}
-
             {status.connected ? (
               <p className="text-sm">
                 Connected as <span className="font-medium">{status.email ?? "a Google account"}</span>

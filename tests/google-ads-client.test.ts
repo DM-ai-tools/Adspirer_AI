@@ -42,7 +42,6 @@ function route(handler: (call: Call) => Response) {
 beforeEach(() => {
   process.env.GOOGLE_OAUTH_CLIENT_ID = "cid";
   process.env.GOOGLE_OAUTH_CLIENT_SECRET = "csecret";
-  process.env.GOOGLE_ADS_DEVELOPER_TOKEN = "dev-token";
   resetConfigCache();
   calls = [];
   fetchMock = vi.fn();
@@ -53,7 +52,6 @@ afterEach(() => {
   vi.unstubAllGlobals();
   delete process.env.GOOGLE_OAUTH_CLIENT_ID;
   delete process.env.GOOGLE_OAUTH_CLIENT_SECRET;
-  delete process.env.GOOGLE_ADS_DEVELOPER_TOKEN;
   delete process.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID;
   delete process.env.GOOGLE_ADS_API_VERSION;
   resetConfigCache();
@@ -87,7 +85,8 @@ describe("searchGaql", () => {
       `https://googleads.googleapis.com/${DEFAULT_GOOGLE_ADS_API_VERSION}/customers/123/googleAds:search`,
     );
     expect(calls[0].method).toBe("POST");
-    expect(calls[0].headers["developer-token"]).toBe("dev-token");
+    // Developer tokens were retired (9 Sep 2026) and will be rejected later: never sent.
+    expect(calls[0].headers).not.toHaveProperty("developer-token");
     expect(calls[0].headers["login-customer-id"]).toBe("999");
     expect(calls[0].headers.Authorization).toBe("Bearer access-token");
     expect(calls[0].query).toBe("SELECT campaign.id FROM campaign");
@@ -111,7 +110,28 @@ describe("listAccessibleCustomers", () => {
     route(() => json({ resourceNames: ["customers/1112223333", "customers/4445556666"] }));
     expect(await listAccessibleCustomers()).toEqual(["1112223333", "4445556666"]);
     expect(calls[0].method).toBe("GET");
-    expect(calls[0].headers["developer-token"]).toBe("dev-token");
+    expect(calls[0].headers).not.toHaveProperty("developer-token");
+  });
+
+  it("explains a Cloud project that only has Test access", async () => {
+    route(() =>
+      new Response(
+        JSON.stringify({
+          error: {
+            code: 403,
+            message: "The caller does not have permission",
+            status: "PERMISSION_DENIED",
+            details: [{ errors: [{ errorCode: { authorizationError: "CLOUD_PROJECT_NOT_APPROVED_FOR_PRODUCTION" } }] }],
+          },
+        }),
+        { status: 403, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    await expect(listAccessibleCustomers()).rejects.toMatchObject({
+      status: 403,
+      code: "CLOUD_PROJECT_NOT_APPROVED_FOR_PRODUCTION",
+      message: expect.stringContaining("only has Test access to the Google Ads API"),
+    });
   });
 });
 

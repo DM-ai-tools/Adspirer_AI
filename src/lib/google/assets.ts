@@ -139,9 +139,7 @@ export async function syncGoogleAssets(): Promise<{
   };
 
   const ga4 = await part("GA4", discoverGa4);
-  let ads = 0;
-  if (getConfig().hasGoogleAds) ads = await part("Google Ads", discoverAds);
-  else warnings.push("Google Ads: developer token not configured");
+  const ads = await part("Google Ads", discoverAds);
   const gsc = await part("Search Console", discoverGsc);
 
   return { ga4, ads, gsc, warnings };

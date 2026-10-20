@@ -97,7 +97,7 @@ Plan: [`docs/superpowers/plans/2026-10-19-strategy-mvp-phase1.md`](../superpower
 
 1. **GA4, Search Console and Google Ads: build direct Google integrations.** No third-party dependency, so the Adspirer MCP is not coming back. Phase 3 needs:
    - a Google OAuth app per environment;
-   - the GA4 Data API, Search Console API and Google Ads API (the last needs a developer token);
+   - the GA4 Data API, Search Console API and Google Ads API (no developer token since Google retired them on 9 Sep 2026; Ads access follows the OAuth client's Cloud project, which needs Explorer, Basic or Standard access);
    - a `connected_google_accounts` table mapped to clients, like `connected_meta_accounts`.
 
    Amazon data in Phase 4 will need its own route (direct API or a scraped best-seller source).
