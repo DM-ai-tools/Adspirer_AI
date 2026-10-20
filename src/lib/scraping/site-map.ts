@@ -81,6 +81,50 @@ function titleCase(slug: string): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+export type CategoryPage = {
+  /** Canonical lowercase path, e.g. "/collections/bar-stools". */
+  path: string;
+  /** The page's URL, in the casing it was found with. */
+  url: string;
+  /** The name read from its slug ("Bar Stools"). */
+  name: string;
+};
+
+/**
+ * The category page a URL on the site belongs to: a collection-style path
+ * ("/collections/x", "/category/x", …), with nested product and pagination
+ * segments dropped. null for other sites and for pages that aren't under a
+ * category path.
+ */
+export function categoryPageOf(raw: string, siteUrl: string | URL): CategoryPage | null {
+  const site = typeof siteUrl === "string" ? parseUrl(siteUrl) : siteUrl;
+  const u = parseUrl(raw);
+  if (!site || !u || siteHost(u) !== siteHost(site)) return null;
+  const full = normalizePath(u.pathname);
+  const marker = CATEGORY_MARKERS.find((m) => full.includes(m));
+  if (!marker) return null;
+  const at = full.indexOf(marker) + marker.length;
+  const segment = full.slice(at).split("/")[0];
+  if (!segment) return null;
+  // Original casing for the URL; the marker and segment have the same length
+  const original = u.pathname.slice(0, at) + u.pathname.slice(at).split("/")[0];
+  return {
+    path: full.slice(0, at) + segment,
+    url: `${u.origin}${original}`,
+    name: titleCase(decodeSegment(segment)),
+  };
+}
+
+/** Normalized paths of the existing services' landing pages on the site. */
+export function addedCategoryPaths(existing: ClientService[], siteUrl: string): Set<string> {
+  const added = new Set<string>();
+  for (const s of existing) {
+    const u = s.landing_page_url ? parseUrl(s.landing_page_url, siteUrl) : null;
+    if (u) added.add(normalizePath(u.pathname));
+  }
+  return added;
+}
+
 export function discoverCategoryCandidates(
   urls: string[],
   siteUrl: string,
@@ -88,31 +132,16 @@ export function discoverCategoryCandidates(
 ): CategoryCandidate[] {
   const site = parseUrl(siteUrl);
   if (!site) return [];
-  const added = new Set<string>();
-  for (const s of existing) {
-    const u = s.landing_page_url ? parseUrl(s.landing_page_url, siteUrl) : null;
-    if (u) added.add(normalizePath(u.pathname));
-  }
+  const added = addedCategoryPaths(existing, siteUrl);
 
   const byPath = new Map<string, CategoryCandidate>();
   for (const raw of urls) {
-    const u = parseUrl(raw);
-    if (!u || siteHost(u) !== siteHost(site)) continue;
-    const full = normalizePath(u.pathname);
-    const marker = CATEGORY_MARKERS.find((m) => full.includes(m));
-    if (!marker) continue;
-    const at = full.indexOf(marker) + marker.length;
-    const segment = full.slice(at).split("/")[0];
-    if (!segment) continue;
-    // Canonical category path: drop nested product / pagination segments
-    const path = full.slice(0, at) + segment;
-    if (byPath.has(path)) continue;
-    // Original casing for the URL; the marker and segment have the same length
-    const original = u.pathname.slice(0, at) + u.pathname.slice(at).split("/")[0];
-    byPath.set(path, {
-      name: titleCase(decodeSegment(segment)),
-      landing_page_url: `${u.origin}${original}`,
-      alreadyAdded: added.has(path),
+    const page = categoryPageOf(raw, site);
+    if (!page || byPath.has(page.path)) continue;
+    byPath.set(page.path, {
+      name: page.name,
+      landing_page_url: page.url,
+      alreadyAdded: added.has(page.path),
     });
   }
 

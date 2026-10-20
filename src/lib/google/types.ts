@@ -22,6 +22,12 @@ export type Ga4CategoryRevenue = {
   /** Plain notes on data GA4 dropped or grouped, e.g. into "(other)". */
   warnings?: string[];
 };
+/** GA4 purchase revenue by session landing page (path only), pages with revenue only. */
+export type Ga4LandingPages = {
+  currency: string;
+  rows: Array<{ path: string; revenueCents: number; purchases: number }>;
+  warnings?: string[];
+};
 export type AdsPerformance = {
   customerId: string; currency: string; merchantCenterLinked: boolean;
   campaigns: Array<{ id: string; name: string; type: string; status: string; costCents: number; conversions: number; conversionValueCents: number }>;

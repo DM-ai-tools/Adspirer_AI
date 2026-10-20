@@ -1,5 +1,7 @@
+import { formatCents } from "@/lib/api-client";
 import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
+import type { GoogleCandidatesResult, GoogleCategoryCandidate } from "@/lib/google/category-candidates";
 import { logger } from "@/lib/observability/logger";
 import { scanSiteCandidates, type ScanUnavailableReason, type SiteScanResult } from "@/lib/scraping/site-scan";
 import type { CategoryCandidate } from "@/lib/scraping/site-map";
@@ -10,8 +12,9 @@ import { escapeRegExp, normalizeUrl } from "./category-match";
 
 /**
  * Categories added straight from a chat question: when a strategy or
- * category-spend ask names a category that isn't set up, find it on the
- * client's website (the Services tab's "Scan website" scan) and add it.
+ * category-spend ask names a category that isn't set up, find it in the
+ * client's GA4 / Search Console data, else on the client's website (the
+ * Services tab's "Scan website" scan), and add it.
  */
 
 export type RequestKind = "strategy" | "spend";
@@ -77,7 +80,7 @@ export function namesClient(phrase: string, clientName: string | null | undefine
 }
 
 /** Collections that hold everything (or a promotion), never one category. */
-const GENERIC_COLLECTIONS = new Set([
+export const GENERIC_COLLECTIONS = new Set([
   ...GENERIC_NAMES,
   "sale", "sales", "new", "new arrivals", "frontpage", "home", "best sellers", "best-sellers", "all products", "shop all",
 ]);
@@ -146,6 +149,15 @@ function nameOccurrences(text: string, name: string): Array<{ start: number; end
 }
 
 /**
+ * Two category names with the same words, singular or plural, any case
+ * ("Bar Stool" and "bar stools"); the whole name, not a part of it.
+ */
+export function sameCategoryName(a: string, b: string): boolean {
+  const text = a.trim();
+  return text !== "" && nameOccurrences(text, b).some((h) => h.start === 0 && h.end === text.length);
+}
+
+/**
  * The candidate whose full name the request contains; the longest such name
  * wins. With a phrase span, the name must overlap the phrase ("on stools for
  * the outdoor kitchen" is about Stools); a name may run past the phrase, so
@@ -173,6 +185,7 @@ export type RequestedCategory =
   | { kind: "none" }
   | { kind: "switched_off"; service: ClientService }
   | { kind: "matched"; phrase: string; candidate: CategoryCandidate }
+  | { kind: "matched_google"; phrase: string; candidate: GoogleCategoryCandidate; currency: string | null }
   | { kind: "not_found"; phrase: string }
   | { kind: "unavailable"; phrase: string; reason: ScanUnavailableReason };
 
@@ -180,12 +193,16 @@ export type RequestedCategory =
  * What a request's category resolves to. Nothing is scanned when a loaded
  * category matches, the request names no category, the phrase is the
  * client's own name, or the phrase names a category that is switched off.
+ * Google's candidates (GA4 / Search Console) come before the website scan;
+ * Google unavailable or without a match falls through to the scan.
  */
 export async function resolveRequestedCategory(input: {
   request: string;
   loaded: StrategyCategory[];
   kind: RequestKind;
   scan: () => Promise<SiteScanResult>;
+  /** The client's categories from GA4 and Search Console, read before the scan. */
+  google?: () => Promise<GoogleCandidatesResult>;
   /** The client's name: "a 10x plan for During Days" names the client, not a category. */
   clientName?: string;
   /** The client's inactive services. */
@@ -196,6 +213,13 @@ export async function resolveRequestedCategory(input: {
   if (!span) return { kind: "none" };
   const off = pickCandidateForRequest(input.request, input.switchedOff ?? [], span);
   if (off) return { kind: "switched_off", service: off };
+  if (input.google) {
+    const google = await input.google();
+    if (google.source === "google") {
+      const hit = pickCandidateForRequest(input.request, google.candidates, span);
+      if (hit) return { kind: "matched_google", phrase: span.phrase, candidate: hit, currency: google.currency };
+    }
+  }
   const scanned = await input.scan();
   if (scanned.source === "unavailable") return { kind: "unavailable", phrase: span.phrase, reason: scanned.reason };
   const candidate = pickCandidateForRequest(input.request, scanned.candidates, span);
@@ -204,10 +228,29 @@ export async function resolveRequestedCategory(input: {
 
 const SCAN_TTL_MS = 24 * 60 * 60 * 1000;
 const scanCache = new Map<string, { at: number; result: SiteScanResult }>();
+const googleCache = new Map<string, { at: number; result: GoogleCandidatesResult }>();
 
-/** Clears remembered scans (tests). */
+/** Clears remembered scans and Google candidates (tests). */
 export function resetSiteScanCache(): void {
   scanCache.clear();
+  googleCache.clear();
+}
+
+/** The client's Google candidates, remembered per client and website for 24 hours. Failures aren't remembered. */
+export async function cachedGoogleCandidates(
+  clientId: string,
+  websiteUrl: string | null,
+  existing: ClientService[],
+): Promise<GoogleCandidatesResult> {
+  const key = `${clientId}\u0000${websiteUrl ?? ""}`;
+  const hit = googleCache.get(key);
+  if (hit && Date.now() - hit.at < SCAN_TTL_MS) return hit.result;
+  // Loaded on use: the candidates module imports this one for its name matching.
+  const { googleCategoryCandidates } = await import("@/lib/google/category-candidates");
+  const result = await googleCategoryCandidates({ clientId, existing, websiteUrl });
+  if (result.source === "google") googleCache.set(key, { at: Date.now(), result });
+  else googleCache.delete(key);
+  return result;
 }
 
 /** The site scan, remembered per client and website for 24 hours. Failed scans aren't remembered. */
@@ -296,8 +339,9 @@ export type CategoryFromRequest = {
 
 /**
  * Adds the category a strategy or category-spend request names when it isn't
- * loaded yet: finds it on the client's website and stores it as a
- * `site_scan` service. Never throws; on an error the turn keeps the loaded services.
+ * loaded yet: finds it in the client's GA4 / Search Console data (stored as an
+ * `import` service with its order value), else on the client's website
+ * (stored as a `site_scan` service). Never throws; on an error the turn keeps the loaded services.
  */
 export async function addCategoryFromRequest(input: {
   clientId: string;
@@ -319,6 +363,7 @@ export async function addCategoryFromRequest(input: {
       loaded: categoriesFromServices(active),
       kind,
       scan: () => cachedSiteScan(clientId, client.website_url, all),
+      google: () => cachedGoogleCandidates(clientId, client.website_url, all),
       clientName: client.name,
       switchedOff: all.filter((s) => !s.is_active),
     });
@@ -347,7 +392,8 @@ export async function addCategoryFromRequest(input: {
             "Repeat the line above to the user exactly. Nothing was added.",
           ),
         };
-      case "matched": {
+      case "matched":
+      case "matched_google": {
         const { candidate } = resolved;
         // Already stored (by name, or by its page): never add a second row.
         const page = candidate.landing_page_url ? normalizeUrl(candidate.landing_page_url) : null;
@@ -360,6 +406,7 @@ export async function addCategoryFromRequest(input: {
           if (existing.is_active) return { services: active, scoped: existing };
           return { services: active, evidence: switchedOff(existing) };
         }
+        const fromGoogle = resolved.kind === "matched_google" ? resolved.candidate : null;
         const ts = nowIso();
         const added = await insertService({
           id: crypto.randomUUID(),
@@ -371,19 +418,25 @@ export async function addCategoryFromRequest(input: {
           priority: 0,
           is_active: true,
           gross_margin_pct: null,
-          average_order_value_cents: null,
+          average_order_value_cents: fromGoogle?.average_order_value_cents ?? null,
           url_patterns: null,
-          source: "site_scan",
+          source: fromGoogle ? "import" : "site_scan",
           created_at: ts,
           updated_at: ts,
         });
         const where = added.landing_page_url ? ` (${added.landing_page_url})` : "";
+        const from =
+          resolved.kind !== "matched_google"
+            ? ""
+            : resolved.candidate.revenueCents > 0
+              ? `, from GA4 (${formatCents(resolved.candidate.revenueCents, resolved.currency ?? "USD")} revenue, last 90 days)`
+              : ", from Search Console";
         return {
           services: [...active, added],
           scoped: added,
           evidence: evidence(
             "### Category added from the question",
-            `Added **${added.name}**${where} as a category for ${client.name}. Set its margin on the Services tab, or tell me ("${added.name.toLowerCase()} margin is 45%"), for sharper targets.`,
+            `Added **${added.name}**${where} as a category for ${client.name}${from}. Set its margin on the Services tab, or tell me ("${added.name.toLowerCase()} margin is 45%"), for sharper targets.`,
             "Repeat the line above to the user exactly, near the top of the reply.",
           ),
         };

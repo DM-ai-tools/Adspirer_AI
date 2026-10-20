@@ -9,7 +9,7 @@ vi.mock("@/lib/google/oauth", () => ({
   getGoogleAccessToken: async () => "access-token",
 }));
 
-import { fetchGa4CategoryRevenue, ga4ChannelOf, listGa4Properties } from "@/lib/google/ga4";
+import { fetchGa4CategoryRevenue, fetchGa4LandingPages, ga4ChannelOf, listGa4Properties } from "@/lib/google/ga4";
 import { fetchSearchDemand, listGscSites } from "@/lib/google/gsc";
 
 type Body = {
@@ -289,6 +289,37 @@ describe("fetchGa4CategoryRevenue", () => {
     await expect(fetchGa4CategoryRevenue("123", { since: "2026-9-1", until: "2026-09-30" })).rejects.toThrow(
       /YYYY-MM-DD/,
     );
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("fetchGa4LandingPages", () => {
+  it("reads purchase revenue and purchases by landing path, one read-only report", async () => {
+    ga4Reports(
+      {
+        landing: [
+          ["/collections/sofas?fbclid=x", "300.5", "2"],
+          ["/collections/sofas", "100", "1"],
+          ["/collections/rugs", "0", "0"],
+          ["(not set)", "999", "9"],
+        ],
+      },
+      { landing: { dataLossFromOtherRow: true } },
+    );
+    const result = await fetchGa4LandingPages("properties/123", RANGE);
+    expect(result).toEqual({
+      currency: "AUD",
+      rows: [{ path: "/collections/sofas", revenueCents: 40050, purchases: 3 }],
+      warnings: ["GA4 grouped some landing pages into (other); landing page figures may be understated"],
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toContain("/properties/123:runReport");
+    expect(calls[0]!.body?.metrics?.map((m) => m.name)).toEqual(["purchaseRevenue", "ecommercePurchases"]);
+  });
+
+  it("rejects a malformed date range before calling Google", async () => {
+    ga4Reports({});
+    await expect(fetchGa4LandingPages("123", { since: "2026-9-1", until: "2026-09-30" })).rejects.toThrow(/YYYY-MM-DD/);
     expect(calls).toHaveLength(0);
   });
 });
