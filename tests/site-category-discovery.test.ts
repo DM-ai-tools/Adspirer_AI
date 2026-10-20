@@ -108,7 +108,18 @@ describe("GET /api/clients/:id/services/discover", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     const { data } = await call();
-    expect(data).toEqual({ candidates: [], source: "unavailable" });
+    expect(data).toEqual({ candidates: [], source: "unavailable", reason: "not_configured" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("says the client has no website instead of blaming the crawler", async () => {
+    vi.stubEnv("FIRECRAWL_API_KEY", "fc-test");
+    resetConfigCache();
+    getDemoStore().clients.find((c) => c.id === "client_modern_dental")!.website_url = null;
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const { data } = await call();
+    expect(data).toEqual({ candidates: [], source: "unavailable", reason: "no_website" });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -117,7 +128,7 @@ describe("GET /api/clients/:id/services/discover", () => {
     resetConfigCache();
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("nope", { status: 500 })));
     const { data } = await call();
-    expect(data).toEqual({ candidates: [], source: "unavailable" });
+    expect(data).toEqual({ candidates: [], source: "unavailable", reason: "scan_failed" });
   });
 
   it("is unavailable when fetch throws", async () => {
@@ -126,7 +137,7 @@ describe("GET /api/clients/:id/services/discover", () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network")));
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { data } = await call();
-    expect(data).toEqual({ candidates: [], source: "unavailable" });
+    expect(data).toEqual({ candidates: [], source: "unavailable", reason: "scan_failed" });
     // The failure is logged, not swallowed.
     expect(warn.mock.calls.map((c) => String(c[0])).some((line) => line.includes("network"))).toBe(true);
     warn.mockRestore();

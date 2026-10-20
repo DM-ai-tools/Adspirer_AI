@@ -13,12 +13,19 @@ import {
 
 type RouteContext = { params: Promise<{ id: string }> };
 
-const unavailable = { candidates: [] as CategoryCandidate[], source: "unavailable" as const };
+export type ScanUnavailableReason = "not_configured" | "no_website" | "scan_failed";
+
+const unavailable = (reason: ScanUnavailableReason) => ({
+  candidates: [] as CategoryCandidate[],
+  source: "unavailable" as const,
+  reason,
+});
 
 /**
  * GET /api/clients/:id/services/discover
  * Scans the client's website for category pages. Never fails the request:
- * a missing key, missing website or Firecrawl error returns "unavailable".
+ * a missing key, missing website or Firecrawl error returns "unavailable"
+ * with the reason, so the page can say which one it was.
  */
 export async function GET(_request: Request, context: RouteContext) {
   return withApiHandler(async () => {
@@ -28,7 +35,7 @@ export async function GET(_request: Request, context: RouteContext) {
     await assertClientAccess(user.id, id);
 
     const config = getConfig();
-    if (!config.hasFirecrawl) return jsonOk(unavailable);
+    if (!config.hasFirecrawl) return jsonOk(unavailable("not_configured"));
 
     let siteUrl: string | null = null;
     let existing: ClientService[] = [];
@@ -51,7 +58,7 @@ export async function GET(_request: Request, context: RouteContext) {
         .eq("client_id", id);
       existing = (rows ?? []) as ClientService[];
     }
-    if (!siteUrl) return jsonOk(unavailable);
+    if (!siteUrl) return jsonOk(unavailable("no_website"));
 
     try {
       const urls = await mapSiteUrls(siteUrl);
@@ -64,7 +71,7 @@ export async function GET(_request: Request, context: RouteContext) {
         clientId: id,
         error: error instanceof Error ? error.message : String(error),
       });
-      return jsonOk(unavailable);
+      return jsonOk(unavailable("scan_failed"));
     }
   });
 }

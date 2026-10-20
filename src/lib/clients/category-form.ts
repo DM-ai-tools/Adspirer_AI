@@ -84,3 +84,17 @@ export function importOutcome(httpOk: boolean, payload: unknown): ImportOutcome 
     errors: body.data.errors?.length ?? 0,
   };
 }
+
+/** Why the website scan came back empty-handed, in plain words for the panel. */
+export function scanUnavailableMessage(reason: string | undefined, words: "categories" | "services"): string {
+  switch (reason) {
+    case "no_website":
+      return `Add the client's website in Settings, then scan again. Or add ${words} by hand or import a sheet.`;
+    case "not_configured":
+      return `Website scan isn't set up (FIRECRAWL_API_KEY is missing). Add ${words} by hand or import a sheet.`;
+    case "scan_failed":
+      return `The website scan didn't work this time. Try again in a minute, or add ${words} by hand or import a sheet.`;
+    default:
+      return `Website scan is unavailable. Add ${words} by hand or import a sheet.`;
+  }
+}
