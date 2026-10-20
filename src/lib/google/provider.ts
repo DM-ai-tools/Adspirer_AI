@@ -1,13 +1,13 @@
 import { getConfig } from "@/lib/config";
 import { fetchAdsPerformance } from "./ads";
-import { fetchGa4CategoryRevenue, fetchGa4LandingPages } from "./ga4";
+import { fetchGa4CategoryRevenue, fetchGa4LandingPages, type Ga4CategoryRevenueOptions } from "./ga4";
 import { fetchSearchDemand } from "./gsc";
 import { getMockGoogleDataProvider } from "./mock-provider";
 import type { AdsPerformance, DateRange, Ga4CategoryRevenue, Ga4LandingPages, SearchDemand } from "./types";
 
 /** Read-only Google data, live or mock; nothing here changes Google. */
 export interface GoogleDataProvider {
-  ga4CategoryRevenue(propertyId: string, range: DateRange): Promise<Ga4CategoryRevenue>;
+  ga4CategoryRevenue(propertyId: string, range: DateRange, opts?: Ga4CategoryRevenueOptions): Promise<Ga4CategoryRevenue>;
   ga4LandingPages(propertyId: string, range: DateRange): Promise<Ga4LandingPages>;
   adsPerformance(customerId: string, loginCustomerId: string | null, range: DateRange): Promise<AdsPerformance>;
   searchDemand(siteUrl: string, range: DateRange): Promise<SearchDemand>;

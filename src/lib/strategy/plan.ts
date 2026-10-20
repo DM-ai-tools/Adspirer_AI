@@ -202,9 +202,16 @@ export function buildStrategyPlan(input: {
 
   // A currency mismatch rules out every combined figure, so it is checked before any is read.
   const channels = input.channels && !input.channels.currencyMismatch ? input.channels : null;
-  // GA4 that matched under half its revenue to categories would judge most of the account on nothing.
-  const revenueBasis: StrategyPlan["revenueBasis"] = channels && ga4RevenueBasis(channels) ? "ga4" : "platform";
+  const scopeIds = new Set(input.scopeCategoryIds ?? []);
+  const scoped = categories.filter((c) => scopeIds.has(c.id));
+  // GA4 is used for item categories and for named categories, whatever share of GA4 revenue they
+  // cover; only a whole-account landing-page match under half falls back to platform revenue.
+  const revenueBasis: StrategyPlan["revenueBasis"] =
+    channels && ga4RevenueBasis(channels, { scoped: scoped.length > 0 }) ? "ga4" : "platform";
   const ga4LowMatchPct = channels?.ga4Available && revenueBasis === "platform" ? ga4MatchedPct(channels) : null;
+  // With GA4 the basis, how much of its revenue the categories cover is information, not a reason to drop it.
+  const ga4CoveragePct =
+    channels && revenueBasis === "ga4" && channels.ga4UnmatchedRevenueCents > 0 ? ga4MatchedPct(channels) : null;
   // Google Ads mapped but not loaded this time: Google is left out rather than read as no spend.
   const googleMissing = !!channels && channels.googleAdsMapped && !channels.googleAdsLoaded;
   const googleMapped = (channels?.googleAdsMapped ?? false) && !googleMissing;
@@ -265,8 +272,6 @@ export function buildStrategyPlan(input: {
   }
   const testRoas = accountRoas ?? BENCHMARKS.prospectingRoas;
 
-  const scopeIds = new Set(input.scopeCategoryIds ?? []);
-  const scoped = categories.filter((c) => scopeIds.has(c.id));
   const planned = scoped.length > 0 ? scoped : categories;
 
   const money = (cents: number) => {
@@ -562,6 +567,9 @@ export function buildStrategyPlan(input: {
     assumptions.push(`Revenue is what Meta reports for each ${word}, since GA4 isn't available; spend is Meta's.`);
   } else if (channels) {
     assumptions.push(`Revenue is what Meta and Google Ads report for each ${word}, since GA4 isn't available; spend is Meta + Google.`);
+  }
+  if (ga4CoveragePct !== null && ga4CoveragePct < 100) {
+    assumptions.push(`The ${words} set up cover ${ga4CoveragePct}% of GA4 revenue; the rest is in ${words} not set up yet.`);
   }
   if (channels && googleMapped) {
     assumptions.push(

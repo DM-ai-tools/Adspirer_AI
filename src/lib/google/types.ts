@@ -19,6 +19,12 @@ export type Ga4CategoryRevenue = {
   rows: Array<{ key: string; revenueCents: number; purchases: number }>;
   /** Revenue by landing page and channel, used for the per-channel split. */
   byChannel: Array<{ landingPage: string; channel: Ga4Channel; revenueCents: number }>;
+  /**
+   * Item revenue by item category and the channel of the order it was in (item and order
+   * reports joined on transactionId). Item method only; absent when either report failed or
+   * had no rows, so the split falls back to byChannel.
+   */
+  byItemChannel?: Array<{ itemCategory: string; channel: Ga4Channel; revenueCents: number }>;
   /** Plain notes on data GA4 dropped or grouped, e.g. into "(other)". */
   warnings?: string[];
 };
