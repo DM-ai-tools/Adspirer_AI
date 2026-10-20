@@ -4,7 +4,7 @@ import {
   gatherDeliveryStructure,
 } from "@/lib/agent/delivery-structure";
 import { evaluateCheckpoints } from "@/lib/audit/checkpoints";
-import { applyChatSettings, isWholeAccountAsk, type ChatSettingsTurn } from "@/lib/clients/chat-settings";
+import { applyChatSettings, settingsNoticeLines, type ChatSettingsTurn } from "@/lib/clients/chat-settings";
 import { resolveGoals, type GoalsProfile, type ResolvedGoals } from "@/lib/clients/goals";
 
 /**
@@ -336,7 +336,10 @@ export async function runAdspirerAgent(input: {
 
   // An incomplete strategy brief gets the clarifying question verbatim, in every
   // mode: the next turn's routing keys on its wording, so no writer rephrases it.
-  const briefQuestion = strategyBriefQuestion(input);
+  const question = strategyBriefQuestion(input);
+  // Settings saved (or not) this turn are said first; routing finds the brief marker anywhere.
+  const settingsLines = settingsNoticeLines(input.toolEvidence);
+  const briefQuestion = question && settingsLines.length ? [...settingsLines, "", question].join("\n") : question;
   if (briefQuestion) {
     await input.onProgress?.({
       phase: "write_report",
@@ -596,6 +599,22 @@ type WriterInput = {
 
 const BRIEF_FIELDS = ["budget", "target_roas"] as const;
 
+/** Writer rules: open the reply with the category notice line, then the settings lines, word for word. */
+export function writerNoticeRules(evidence: string): string[] {
+  const rules: string[] = [];
+  const categoryNotice = categoryNoticeLine(evidence);
+  if (categoryNotice) {
+    rules.push(`- Start the reply with this line, word for word, before anything else: ${categoryNotice}`);
+  }
+  const settingsLines = settingsNoticeLines(evidence);
+  if (settingsLines.length) {
+    rules.push(
+      `- ${categoryNotice ? "Right after that line" : "Start the reply"} with these client-settings lines, word for word, each on its own line: ${settingsLines.map((l) => `"${l}"`).join(" ")}`,
+    );
+  }
+  return rules;
+}
+
 /** The clarifying question for an incomplete strategy brief, rebuilt from the evidence's "Missing" line. */
 function strategyBriefQuestion(input: WriterInput): string | null {
   if (input.reportDraft || resolveWriterIntent(input) !== "strategy") return null;
@@ -724,13 +743,9 @@ function buildWriterMessages(input: WriterInput): {
           ]
         : [];
 
-  // A category added from the question (or not found, or switched off) is said first.
-  const categoryNotice = categoryNoticeLine(evidence);
-  const categoryNoticeRules = categoryNotice
-    ? [
-        `- Start the reply with this line, word for word, before anything else: ${categoryNotice}`,
-      ]
-    : [];
+  // A category added from the question (or not found, or switched off), then
+  // the settings saved this turn, are said first.
+  const categoryNoticeRules = writerNoticeRules(evidence);
 
   const optimizeRules =
     intent === "optimize"
@@ -1114,8 +1129,10 @@ async function runMockAgent(input: {
       const frameworkAt = evidence.indexOf("### Strategy framework", inputsAt);
       const body = evidence.slice(inputsAt, frameworkAt < 0 ? undefined : frameworkAt).trim();
       const notice = categoryNoticeLine(evidence);
+      const settingsLines = settingsNoticeLines(evidence);
       summary = [
         ...(notice ? [notice, ""] : []),
+        ...(settingsLines.length ? [...settingsLines, ""] : []),
         "## Strategy plan (demo)",
         "",
         body,
@@ -1359,16 +1376,19 @@ async function runMockAgent(input: {
       ? humanizeAgentReply(evidence)
       : null;
     const notice = categoryNoticeLine(evidence);
-    // The notice opens the reply, so it isn't repeated where the evidence had it.
-    const display = notice
+    const settingsLines = settingsNoticeLines(evidence);
+    const opening = [...(notice ? [notice] : []), ...settingsLines];
+    // The notices open the reply, so they aren't repeated where the evidence had them.
+    const display = opening.length
       ? humanized?.display
           ?.split("\n")
-          .filter((line) => line.trim().replace(/^[-*]\s+/, "") !== notice)
+          .filter((line) => !opening.includes(line.trim().replace(/^[-*]\s+/, "")))
           .join("\n")
       : humanized?.display;
     summary = display
       ? [
           ...(notice ? [notice, ""] : []),
+          ...(settingsLines.length ? [...settingsLines, ""] : []),
           display,
           "",
           "Use **Export Word** / **Export PDF** under this message if you need a file.",
@@ -1600,6 +1620,11 @@ export async function gatherDiagnoseEvidence(input: {
     selectedCreative?: Promise<CreativeDraft | null>;
   };
   onProgress?: (event: AgentProgressEvent) => void | Promise<void>;
+  /**
+   * Persists the settings save's audit record the moment it changes, so a
+   * later throw in this turn can never leave a save without its audit row.
+   */
+  onSettingsSaved?: (call: AgentToolCallProposal) => void | Promise<void>;
 }): Promise<{
   accountId: string | null;
   evidence: string;
@@ -1680,7 +1705,7 @@ export async function gatherDiagnoseEvidence(input: {
   // line and its audit row even if a later step throws.
   let settingsSection = -1;
   let settingsCall: AgentToolCallProposal | null = null;
-  const showSettings = (turn: ChatSettingsTurn) => {
+  const showSettings = async (turn: ChatSettingsTurn) => {
     const text = turn.evidence();
     if (text) {
       if (settingsSection < 0) settingsSection = sections.push(text) - 1;
@@ -1690,6 +1715,7 @@ export async function gatherDiagnoseEvidence(input: {
     if (call) {
       if (settingsCall) Object.assign(settingsCall, call);
       else toolCalls.push((settingsCall = { ...call }));
+      await input.onSettingsSaved?.({ ...settingsCall });
     }
   };
   const settings: ChatSettingsTurn | null =
@@ -2463,12 +2489,11 @@ export async function gatherDiagnoseEvidence(input: {
         const categoryWord = goals.business_model === "ecommerce" ? "category" : "service";
         const active = await activeClientServices(input.clientId);
         // A whole-account ask's stated target becomes the client's target ROAS (never a stretch or a category's).
-        if (
-          settings &&
-          !parsed.usedDefaults.includes("target_roas") &&
-          isWholeAccountAsk(strategyAskTexts(input.request, input.history), categoriesFromServices(active))
-        ) {
-          await settings.saveStrategyTarget(brief.targetRoas);
+        if (settings && !parsed.usedDefaults.includes("target_roas")) {
+          await settings.saveStrategyTarget(brief.targetRoas, {
+            texts: strategyAskTexts(input.request, input.history),
+            categories: categoriesFromServices(active),
+          });
         }
         await input.onProgress?.({
           phase: "pull_insights",

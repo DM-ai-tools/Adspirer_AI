@@ -14,6 +14,7 @@ import {
   runAdspirerAgent,
   gatherDiagnoseEvidence,
   type AgentProgressEvent,
+  type AgentToolCallProposal,
   type AgentRunResult,
 } from "@/lib/agent/adspirer-agent";
 import {
@@ -391,6 +392,26 @@ export async function runTask(
         steps,
       };
     }
+    // A settings save is persisted (one row, upserted) the moment it changes,
+    // so a throw later in the turn can never leave a save without its audit row.
+    let settingsToolCall: ToolCall | null = null;
+    const persistSettingsCall = async (call: AgentToolCallProposal) => {
+      settingsToolCall = {
+        ...(settingsToolCall ?? newToolCall(task, call.name, classify(call.name), call.args)),
+        arguments: call.args,
+        result: { queued_by: "preflight", summary: call.rationale ?? null },
+        completed_at: nowIso(),
+      };
+      try {
+        await saveToolCall(settingsToolCall, task.client_id);
+      } catch (error) {
+        logger.warn("Chat settings: couldn't save the audit row", {
+          taskId: task.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+
     // Conversational turns (greetings, definitions, "why is that") need no
     // fresh account data — skip the Graph preflight entirely.
     const gathered: Awaited<ReturnType<typeof gatherDiagnoseEvidence>> =
@@ -405,22 +426,23 @@ export async function runTask(
             intent,
             preloaded: { metaAccounts, documents, selectedCreative },
             onProgress: emit,
+            // Saved the moment it changes, so a later throw can't lose it.
+            onSettingsSaved: persistSettingsCall,
           });
 
     // One bulk write for the whole preflight batch (was 2 round trips each).
+    // The settings save is already persisted through persistSettingsCall.
     await saveToolCalls(
-      gathered.toolCalls.map((call) => {
-        const ts = nowIso();
-        return {
-          ...newToolCall(task, call.name, classify(call.name), call.args),
-          // A settings save keeps its one-line summary for the Audit Log.
-          result:
-            call.name === SETTINGS_TOOL && call.rationale
-              ? { queued_by: "preflight", summary: call.rationale }
-              : { queued_by: "preflight" },
-          completed_at: ts,
-        };
-      }),
+      gathered.toolCalls
+        .filter((call) => call.name !== SETTINGS_TOOL)
+        .map((call) => {
+          const ts = nowIso();
+          return {
+            ...newToolCall(task, call.name, classify(call.name), call.args),
+            result: { queued_by: "preflight" },
+            completed_at: ts,
+          };
+        }),
       task.client_id,
     );
 

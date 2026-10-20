@@ -40,6 +40,33 @@ const NOT_A_CATEGORY = [
   "lookalikes", "leads", "sales",
 ];
 
+/**
+ * Seasons and periods ("for Christmas", "for the holidays", "for summer"). Only
+ * the bare season (or "<season> sale/season/push…") counts, so "summer dresses"
+ * is still a category.
+ */
+const SEASONS = [
+  "christmas", "xmas", "holiday", "holidays", "holiday season", "easter", "summer", "winter", "spring",
+  "autumn", "fall", "eofy", "end of financial year", "new year", "new years", "new year's", "boxing day",
+  "cyber monday", "bfcm", "black friday", "mother's day", "mothers day", "father's day", "fathers day",
+  "valentine's day", "valentines day", "valentines", "back to school", "q1", "q2", "q3", "q4", "peak season",
+];
+const SEASON_RE = new RegExp(
+  String.raw`^(?:${SEASONS.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/'/g, "['’]")).join("|")})(?:\s+(?:sale|sales|season|period|campaign|campaigns|push|promo|promos|rush|quarter|peak|weekend|week))?$`,
+  "i",
+);
+
+/** A phrase that names a season or period, not a category. */
+export function namesSeason(phrase: string): boolean {
+  return SEASON_RE.test(phrase.trim());
+}
+
+/** A phrase that names the client itself ("a 10x plan for During Days"). */
+export function namesClient(phrase: string, clientName: string | null | undefined): boolean {
+  const name = clientName?.trim().toLowerCase();
+  return Boolean(name) && phrase.toLowerCase().includes(name!);
+}
+
 /** Collections that hold everything (or a promotion), never one category. */
 const GENERIC_COLLECTIONS = new Set([
   ...GENERIC_NAMES,
@@ -48,8 +75,15 @@ const GENERIC_COLLECTIONS = new Set([
 
 export type PhraseSpan = { phrase: string; start: number; end: number };
 
-/** The phrase a request names a category with, and where it sits in the request. */
-export function requestedCategorySpan(request: string, kind: RequestKind): PhraseSpan | null {
+/**
+ * The phrase a request names a category with, and where it sits in the request.
+ * With `clientName`, a phrase naming the client is skipped too.
+ */
+export function requestedCategorySpan(
+  request: string,
+  kind: RequestKind,
+  clientName?: string | null,
+): PhraseSpan | null {
   const pattern = kind === "spend" ? SPEND_PHRASE : STRATEGY_PHRASE;
   for (const match of request.matchAll(pattern)) {
     const raw = match[1]!;
@@ -58,6 +92,7 @@ export function requestedCategorySpan(request: string, kind: RequestKind): Phras
     if (!phrase || /[\d$€£¥%]/.test(phrase)) continue;
     const lower = phrase.toLowerCase();
     if (NOT_A_CATEGORY.some((t) => lower === t || lower.startsWith(`${t} `))) continue;
+    if (namesSeason(phrase) || namesClient(phrase, clientName)) continue;
     const start = match.index! + match[0].length + article.length;
     return { phrase, start, end: start + phrase.length };
   }
@@ -71,8 +106,8 @@ export function requestedCategorySpan(request: string, kind: RequestKind): Phras
  * periods, channels and audiences ("on $500/day", "for the next 30 days",
  * "spent on Meta", "spent on retargeting") don't count.
  */
-export function requestedCategoryPhrase(request: string, kind: RequestKind): string | null {
-  return requestedCategorySpan(request, kind)?.phrase ?? null;
+export function requestedCategoryPhrase(request: string, kind: RequestKind, clientName?: string | null): string | null {
+  return requestedCategorySpan(request, kind, clientName)?.phrase ?? null;
 }
 
 const APOSTROPHE = /['’]/;
@@ -150,10 +185,8 @@ export async function resolveRequestedCategory(input: {
   switchedOff?: ClientService[];
 }): Promise<RequestedCategory> {
   if (scopeCategoriesFromRequest(input.request, input.loaded).length) return { kind: "loaded" };
-  const span = requestedCategorySpan(input.request, input.kind);
+  const span = requestedCategorySpan(input.request, input.kind, input.clientName);
   if (!span) return { kind: "none" };
-  const clientName = input.clientName?.trim().toLowerCase();
-  if (clientName && span.phrase.toLowerCase().includes(clientName)) return { kind: "none" };
   const off = pickCandidateForRequest(input.request, input.switchedOff ?? [], span);
   if (off) return { kind: "switched_off", service: off };
   const scanned = await input.scan();

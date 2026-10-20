@@ -21,12 +21,15 @@ vi.mock("@/lib/strategy/requested-category", async (importOriginal) => {
   return { ...actual, addCategoryFromRequest: vi.fn(actual.addCategoryFromRequest) };
 });
 
-import { gatherDiagnoseEvidence } from "@/lib/agent/adspirer-agent";
-import { detectRequestIntent } from "@/lib/agent/task-plan";
+import { gatherDiagnoseEvidence, runAdspirerAgent, writerNoticeRules } from "@/lib/agent/adspirer-agent";
+import { STRATEGY_BRIEF_MARKER } from "@/lib/agent/strategy-brief";
+import { createTask, runTask } from "@/lib/agent/task-runner";
+import { detectRequestIntent, detectRequestIntentWithHistory } from "@/lib/agent/task-plan";
 import {
   extractChatSettings,
   mentionsSettings,
   settingsAuditDetail,
+  settingsNoticeLines,
   withoutSettingsCalls,
 } from "@/lib/clients/chat-settings";
 import { resetConfigCache } from "@/lib/config";
@@ -568,5 +571,233 @@ describe("tool policy and audit", () => {
       changes,
     });
     expect(settingsAuditDetail("list_campaigns", {}, null)).toBeNull();
+  });
+});
+
+describe("final review: what never counts as a setting", () => {
+  const categories = () => categoriesFromServices(ctServices());
+
+  it("never saves a category-scoped target as the account's", async () => {
+    llm.reply = settings({ field: "target_roas", value: 12 });
+    for (const message of ["bar stools target ROAS is 12x", "Our ROAS target for bar stools is 12x"]) {
+      const out = await extractChatSettings(message, categories());
+      expect(out.settings, message).toEqual([]);
+      expect(out.rejected, message).toEqual([
+        "Didn't save target ROAS 12×: targets are per account, and that names Bar stools.",
+      ]);
+    }
+    llm.reply = settings({ field: "target_cpa", value: 40 });
+    const cpa = await extractChatSettings("Target CPA for bar stools is $40", categories());
+    expect(cpa.settings).toEqual([]);
+    expect(cpa.rejected).toEqual(["Didn't save target CPA $40: targets are per account, and that names Bar stools."]);
+  });
+
+  it("never saves a campaign budget as an account cap", async () => {
+    llm.reply = settings({ field: "daily_account_cap", value: 100 });
+    expect(await extracted("Create a campaign, max $100/day")).toEqual([]);
+    llm.reply = settings({ field: "daily_account_cap", value: 200 });
+    expect(await extracted("Set the campaign's daily budget limit to $200")).toEqual([]);
+    expect(await extracted("Set the campaign's daily cap to $200")).toEqual([]);
+    llm.reply = settings({ field: "monthly_cap", value: 30000 });
+    expect(await extracted("Monthly spend limit is $30k for the Black Friday campaign")).toEqual([]);
+    expect(await extracted("Monthly cap is $30k for the Black Friday campaign")).toEqual([]);
+    llm.reply = settings({ field: "daily_account_cap", value: 1200 });
+    expect(await extracted("Our daily cap is $1,200")).toEqual([{ field: "daily_account_cap", value: 1200 }]);
+    expect(await extracted("our account-wide limit is $1,200 a day")).toEqual([{ field: "daily_account_cap", value: 1200 }]);
+  });
+
+  it("keeps an account margin as the account's", async () => {
+    llm.reply = settings({ field: "gross_margin_pct", value: 40 });
+    for (const message of ["Product margin is 40%", "Margin for the business is 40%", "Our margin is 40% on average"]) {
+      expect(await extracted(message, categories()), message).toEqual([{ field: "gross_margin_pct", value: 40 }]);
+    }
+  });
+
+  it("binds each number to its own field's word", async () => {
+    llm.reply = settings({ field: "target_roas", value: 40 });
+    expect(await extracted("Target ROAS 8 and margin 40%")).toEqual([]);
+    llm.reply = settings({ field: "target_roas", value: 8 }, { field: "gross_margin_pct", value: 40 });
+    expect(await extracted("Target ROAS 8 and margin 40%")).toEqual([
+      { field: "target_roas", value: 8 },
+      { field: "gross_margin_pct", value: 40 },
+    ]);
+  });
+
+  it("refuses negations, past tense and tag questions", async () => {
+    llm.reply = settings({ field: "gross_margin_pct", value: 40 });
+    for (const message of [
+      "our margin is not 40%",
+      "our margin isn't 40%",
+      "margin wasn't 40%",
+      "margin was 40%",
+      "last year our margin hit 40%",
+      "we used to have a margin of 40%",
+      "our margin is 40%, right?",
+      "our margin is 40%, correct?",
+      "our margin is 40%, yes?",
+    ]) {
+      expect(await extracted(message), message).toEqual([]);
+    }
+  });
+
+  it("only saves the client's own website", async () => {
+    llm.reply = settings({ field: "website_url", value: "https://other.com/landing" });
+    expect(await extracted("Launch a campaign for the website https://other.com/landing")).toEqual([]);
+    expect(await extracted("the landing page website is https://other.com/landing")).toEqual([]);
+    expect(await extracted("this ad's website is https://other.com/landing")).toEqual([]);
+    llm.reply = settings({ field: "website_url", value: "https://duringdays.example" });
+    for (const message of [
+      "our website is https://duringdays.example",
+      "the client's website: https://duringdays.example",
+      "website: https://duringdays.example",
+      "website is https://duringdays.example",
+    ]) {
+      expect(await extracted(message), message).toEqual([{ field: "website_url", value: "https://duringdays.example" }]);
+    }
+  });
+});
+
+describe("final review: whole-account targets, notices and audit (DEMO_MODE)", () => {
+  it("saves a target whose 'for' phrase is the client or a season, without scanning", async () => {
+    await gatherDiagnoseEvidence({
+      clientId: CT,
+      userId: ADMIN,
+      request: "Plan to hit 10x on $500/day for ClickTrends",
+      intent: "strategy",
+    });
+    expect(ctClient().goals_profile.target_roas).toBe(10);
+    for (const [request, target] of [
+      ["Plan to hit 11x on $500/day for Christmas", 11],
+      ["Plan to hit 12x on $500/day for the holidays", 12],
+      ["Plan to hit 13x on $500/day for summer", 13],
+    ] as const) {
+      await gatherDiagnoseEvidence({ clientId: CT, userId: ADMIN, request, intent: "strategy" });
+      expect(ctClient().goals_profile.target_roas, request).toBe(target);
+    }
+    expect(scanSiteCandidates).not.toHaveBeenCalled();
+  });
+
+  it("saves the target when 'stretch' governs no value", async () => {
+    await gatherDiagnoseEvidence({
+      clientId: CT,
+      userId: ADMIN,
+      request: "Stretch goals aside, plan 10x on $500/day",
+      intent: "strategy",
+    });
+    expect(ctClient().goals_profile.target_roas).toBe(10);
+  });
+
+  it("opens the brief question with the settings lines, and the brief still continues", async () => {
+    const TR = "client_trafficradius";
+    llm.reply = settings({ field: "gross_margin_pct", value: 40 });
+    const request = "Our margin is 40%. Build me a strategy";
+    const task = await createTask({ clientId: TR, createdBy: ADMIN, title: request, goal: request });
+    const gathered = await gatherDiagnoseEvidence({ clientId: TR, userId: ADMIN, request, intent: "strategy" });
+    expect(gathered.strategyBriefIncomplete).toBe(true);
+    const result = await runAdspirerAgent({ task, clientContext: "", toolEvidence: gathered.evidence, intent: "strategy" });
+    const saved = "Saved to TrafficRadius' settings: margin 40% (was not set).";
+    expect(result.summary.startsWith(saved)).toBe(true);
+    expect(result.summary.split(saved)).toHaveLength(2);
+    expect(result.summary.toLowerCase()).toContain(STRATEGY_BRIEF_MARKER);
+
+    const history = [
+      { role: "user" as const, content: request },
+      { role: "assistant" as const, content: result.summary },
+    ];
+    expect(detectRequestIntentWithHistory("10x on $500/day", history)).toBe("strategy");
+    llm.reply = settings();
+    const next = await gatherDiagnoseEvidence({
+      clientId: TR,
+      userId: ADMIN,
+      request: "10x on $500/day",
+      history,
+      intent: "strategy",
+    });
+    expect(next.toolCalls.find((c) => c.name === "strategy_plan")?.args).toMatchObject({
+      daily_budget_cents: 50_000,
+      target_roas: 10,
+    });
+  });
+
+  it("opens the demo strategy and general replies with the settings lines, once", async () => {
+    const strategyAsk = "Plan to hit 10x ROAS on $500/day";
+    const strategyTask = await createTask({ clientId: CT, createdBy: ADMIN, title: strategyAsk, goal: strategyAsk });
+    const strategy = await gatherDiagnoseEvidence({ clientId: CT, userId: ADMIN, request: strategyAsk, intent: "strategy" });
+    const plan = await runAdspirerAgent({
+      task: strategyTask,
+      clientContext: "",
+      toolEvidence: strategy.evidence,
+      intent: "strategy",
+    });
+    const line = "Saved to ClickTrends' settings: target ROAS 10× (was 4×).";
+    expect(plan.summary.startsWith(line)).toBe(true);
+    expect(plan.summary.split(line)).toHaveLength(2);
+
+    llm.reply = settings({ field: "gross_margin_pct", value: 40 });
+    const ask = "our margin is 40%";
+    const task = await createTask({ clientId: CT, createdBy: ADMIN, title: ask, goal: ask });
+    const general = await gatherDiagnoseEvidence({ clientId: CT, userId: ADMIN, request: ask, intent: "general" });
+    const reply = await runAdspirerAgent({ task, clientContext: "", toolEvidence: general.evidence, intent: "general" });
+    const marginLine = "Saved to ClickTrends' settings: margin 40% (was 45%).";
+    expect(reply.summary.startsWith(marginLine)).toBe(true);
+    expect(reply.summary.split(marginLine)).toHaveLength(2);
+  });
+
+  it("tells the writer to repeat the settings lines first", () => {
+    const evidence = [
+      "### Client settings from this message",
+      "- Saved to ClickTrends' settings: margin 40% (was 45%).",
+      "- Didn't save margin 140%: must be 0–100.",
+      "Repeat the lines above to the user exactly, near the top of the reply.",
+    ].join("\n");
+    expect(settingsNoticeLines(evidence)).toEqual([
+      "Saved to ClickTrends' settings: margin 40% (was 45%).",
+      "Didn't save margin 140%: must be 0–100.",
+    ]);
+    expect(settingsNoticeLines("### Account overview\n- Name: x")).toEqual([]);
+    const rules = writerNoticeRules(evidence).join("\n");
+    expect(rules).toContain("Saved to ClickTrends' settings: margin 40% (was 45%).");
+    expect(rules).toContain("Didn't save margin 140%: must be 0–100.");
+  });
+
+  it("records exactly one audit row for a turn's save, with its summary", async () => {
+    // No OpenAI key: the writer stays on the demo path and the strategy target needs no LLM.
+    delete process.env.OPENAI_API_KEY;
+    resetConfigCache();
+    const request = "Plan to hit 10x ROAS on $500/day";
+    const task = await createTask({ clientId: CT, createdBy: ADMIN, title: request, goal: request });
+    await runTask(task.id);
+    const rows = getDemoStore().toolCalls.filter((t) => t.task_id === task.id && t.tool_name === "update_client_settings");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      safety_class: "diagnose",
+      arguments: { changes: [{ field: "goals_profile.target_roas", before: 4, after: 10 }] },
+      result: { summary: "Saved to ClickTrends' settings: target ROAS 10× (was 4×)." },
+    });
+  });
+
+  it("persists a save before a later step throws, and the error still surfaces", async () => {
+    llm.reply = settings({ field: "gross_margin_pct", value: 40 });
+    const persisted: unknown[] = [];
+    await expect(
+      gatherDiagnoseEvidence({
+        clientId: CT,
+        userId: ADMIN,
+        request: "our margin is 40%",
+        intent: "general",
+        onProgress: () => {
+          throw new Error("progress exploded");
+        },
+        onSettingsSaved: (call) => {
+          persisted.push(call);
+        },
+      }),
+    ).rejects.toThrow("progress exploded");
+    expect(ctClient().goals_profile.gross_margin_pct).toBe(40);
+    expect(persisted.at(-1)).toMatchObject({
+      name: "update_client_settings",
+      args: { changes: [{ field: "goals_profile.gross_margin_pct", before: 45, after: 40 }] },
+      rationale: "Saved to ClickTrends' settings: margin 40% (was 45%).",
+    });
   });
 });

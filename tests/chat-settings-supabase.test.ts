@@ -174,7 +174,7 @@ describe("chat settings on Supabase", () => {
     });
     // Someone saves the Settings tab between the two writes.
     clientRow().goals_profile = { business_model: "ecommerce", target_roas: 6, monthly_cap_cents: 3_000_000 };
-    await turn.saveStrategyTarget(10);
+    await turn.saveStrategyTarget(10, { texts: ["Plan to hit 10x on $500/day"], categories: [] });
     const last = db.updates.filter((u) => u.table === "clients").at(-1)!;
     expect(last.patch.goals_profile).toEqual({ business_model: "ecommerce", target_roas: 10, monthly_cap_cents: 3_000_000 });
   });

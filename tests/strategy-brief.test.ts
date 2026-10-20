@@ -56,6 +56,22 @@ describe("parseStrategyBrief", () => {
     expect(fromGoals.usedDefaults).toEqual(["target_roas"]);
   });
 
+  it("treats only the values 'stretch' governs as stretch targets", () => {
+    expect(parseStrategyBrief("Stretch goals aside, plan 10x on $500/day", defaults()).brief).toEqual({
+      dailyBudgetCents: 50000,
+      targetRoas: 10,
+      stretchTargets: [],
+    });
+    expect(parseStrategyBrief("10x on $500/day, stretch to 15x", defaults()).brief?.stretchTargets).toEqual([15]);
+    expect(
+      parseStrategyBrief("10x on $500/day with stretch targets of 12x and 15x", defaults()).brief?.stretchTargets,
+    ).toEqual([12, 15]);
+    expect(parseStrategyBrief("stretch 15x, plan 10x on $500/day", defaults()).brief).toMatchObject({
+      targetRoas: 10,
+      stretchTargets: [15],
+    });
+  });
+
   it("asks for everything when nothing is given", () => {
     const r = parseStrategyBrief("build me a strategy", defaults());
     expect(r.brief).toBeNull();

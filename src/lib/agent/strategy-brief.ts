@@ -69,18 +69,29 @@ function parseRoasValues(text: string): number[] {
 }
 
 /**
- * Every ROAS value in order, each marked as a stretch target when "stretch"
- * comes before it in the same sentence ("stretch 12x and 15x").
+ * The values "stretch" governs directly: "stretch 15x", "stretch to 15x",
+ * "stretch target(s) of 12x and 15x", "stretch goal: 12x, 15x". "Stretch goals
+ * aside, plan 10x" governs none.
  */
+const STRETCH_LIST_RE = new RegExp(
+  String.raw`\bstretch(?:\s+(?:targets?|goals?))?(?:\s*(?:of|at|to|:|=|is|are|be|around))?\s*((?:\d[\d,]*(?:\.\d+)?\s*[x×](?![a-z0-9])(?:\s*(?:,|and|or|&|\/)\s*(?=\d))?)+)`,
+  "gi",
+);
+
+/** Every ROAS value in order, each marked as a stretch target when "stretch" governs it. */
 function roasMatches(text: string): Array<{ at: number; value: number; stretch: boolean }> {
+  const stretchSpans = [...text.matchAll(STRETCH_LIST_RE)].map((m) => {
+    const start = (m.index ?? 0) + m[0].length - m[1]!.length;
+    return { start, end: (m.index ?? 0) + m[0].length };
+  });
   const found: Array<{ at: number; value: number; stretch: boolean }> = [];
   for (const re of [MULTIPLE_RE, ROAS_OF_RE]) {
     for (const m of text.matchAll(re)) {
       const raw = Number(m[1].replace(/,/g, ""));
       const value = m[2] ? raw / 100 : raw;
       const at = m.index ?? 0;
-      const sentence = text.slice(0, at).split(/[.!?;\n]/).pop() ?? "";
-      if (value > 0 && value <= MAX_ROAS) found.push({ at, value: round2(value), stretch: /\bstretch\b/i.test(sentence) });
+      const stretch = stretchSpans.some((s) => at >= s.start && at < s.end);
+      if (value > 0 && value <= MAX_ROAS) found.push({ at, value: round2(value), stretch });
     }
   }
   return found.sort((a, b) => a.at - b.at);

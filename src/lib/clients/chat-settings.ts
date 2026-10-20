@@ -5,7 +5,7 @@ import { logger } from "@/lib/observability/logger";
 import { isAdmin } from "@/lib/security/roles";
 import { categoriesFromServices, scopeCategoriesFromRequest, type StrategyCategory } from "@/lib/strategy/categories";
 import { matchCategoryByLabel } from "@/lib/strategy/category-match";
-import { requestedCategoryPhrase } from "@/lib/strategy/requested-category";
+import { namesSeason, requestedCategoryPhrase } from "@/lib/strategy/requested-category";
 import { nowIso } from "@/lib/utils";
 import type { Client, ClientService, Profile } from "@/types";
 import {
@@ -30,7 +30,7 @@ import { servicePatchSchema } from "./service-schema";
 // Gate
 
 const SETTING_WORDS =
-  /\b(?:roas|margins?|cpa|order\s+value|aov|caps?|budget\s+ceiling|ceiling|business\s+model|e-?commerce|lead[\s-]?gen|industry|website|instructions?|always|never|countr(?:y|ies)|attribution|description)\b/i;
+  /\b(?:roas|margins?|cpa|order\s+value|aov|caps?|budget\s+ceiling|ceiling|account(?:[\s-]wide)?\s+limit|business\s+model|e-?commerce|lead[\s-]?gen|industry|website|instructions?|always|never|countr(?:y|ies)|attribution|description)\b/i;
 
 /** Only messages with a setting word go on to the LLM. */
 export function mentionsSettings(message: string): boolean {
@@ -173,8 +173,8 @@ const FIELD_WORDS: Record<Field, RegExp> = {
   average_value: /\b(?:order|lead|basket|average)\s+value\b|\baov\b/i,
   category_average_value: /\b(?:order|lead|basket|average)\s+value\b|\baov\b/i,
   target_cpa: /\bcpa\b|\bcost\s+per\s+(?:acquisition|lead|purchase|result|sale)\b/i,
-  daily_account_cap: /\bcaps?\b|\bceiling\b|\blimit\b|\bmax(?:imum)?\b/i,
-  monthly_cap: /\bcaps?\b|\bceiling\b|\blimit\b|\bmax(?:imum)?\b/i,
+  daily_account_cap: /\bcaps?\b|\bceiling\b|\baccount(?:[\s-]wide)?\s+limit\b/i,
+  monthly_cap: /\bcaps?\b|\bceiling\b|\baccount(?:[\s-]wide)?\s+limit\b/i,
   budget_ceiling: /\bceiling\b/i,
   business_model: /\be-?commerce\b|\blead[\s-]?gen|\blocal\s+service|\bb2b\b|\bbusiness\s+model\b/i,
   attribution: /\battribution\b/i,
@@ -199,6 +199,20 @@ const ATTRIBUTION_WORDS: Record<string, RegExp> = {
 };
 /** Fields a plan or strategy ask carries that are never settings ("$500/day", "hit 10x"). */
 const PLAN_FIELDS = new Set<Field>(["target_roas", "daily_account_cap", "monthly_cap", "budget_ceiling"]);
+/** Account-wide limits: a clause about a campaign, ad set or ad sets that one's budget, not these. */
+const CAP_FIELDS = new Set<Field>(["daily_account_cap", "monthly_cap", "budget_ceiling"]);
+const NAMES_CAMPAIGN = /\b(?:campaigns?|ad[\s-]?sets?|ads?)\b|\bad['’]s\b/i;
+/** Negations and the past: "isn't 40%", "was 40%", "used to", "last year". */
+const NEGATION_OR_PAST =
+  /\b(?:not|isn['’]?t|wasn['’]?t|aren['’]?t|weren['’]?t|didn['’]?t|doesn['’]?t|was|used\s+to|last\s+year|previously|formerly)\b/i;
+/** A sentence ending in a tag question (", right?") asks; nothing in it is stated. */
+const TAG_QUESTION = /,\s*(?:right|correct|yes|no|yeah|ok(?:ay)?|true|isn['’]?t\s+it|is\s+that\s+right)\s*\?\s*$/i;
+/** The client's own website: "our website is …", "the client's website: …", "website: …", a leading "website is …". */
+const OWN_WEBSITE =
+  /\b(?:our|my|their|the\s+client['’]?s?|client['’]?s?)\s+website\s*(?:is|:|=)|\bwebsite\s*:\s*\S|^\s*website\s+is\b/i;
+const NAMES_LANDING = /\b(?:campaigns?|ads?|ad['’]s|ad[\s-]?sets?|landing(?:\s+pages?)?)\b/i;
+/** Targets are per account: a clause naming a category can't set one. */
+const TARGET_FIELDS = new Set<Field>(["target_roas", "target_cpa"]);
 /**
  * Conditionals and hypotheticals. "would" counts only in a conditional form
  * ("would it work", "what would happen", a leading "would"); "would like",
@@ -242,12 +256,26 @@ const ACCOUNT_WORDS = new Set([
   "our", "the", "my", "their", "its", "a", "an", "gross", "net", "profit", "overall", "account", "business",
   "average", "total", "store", "company", "whole", "and", "but", "so", "also", "is", "set", "to", "what",
   "with", "at", "of", "in", "for", "on", "your", "this", "that", "blended", "can", "you", "please", "i",
-  "we", "us", "change", "update", "make", "use", "new", "current", "target", "contribution",
+  "we", "us", "change", "update", "make", "use", "new", "current", "target", "contribution", "product",
+  "products", "actual", "roas", "cpa", "want", "like", "need", "would", "love", "have", "has", "had",
 ]);
 
-/** Clauses split on sentence ends, ";" and ", " (keeping "$30,000" whole), each with its end mark. */
+/** A phrase made only of account words ("the business", "average") names no category. */
+function onlyAccountWords(phrase: string): boolean {
+  return phrase
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .every((w) => ACCOUNT_WORDS.has(w.replace(/[^a-z'-]/g, "")));
+}
+
+/**
+ * Clauses split on sentence ends, ";" and ", " (keeping "$30,000" whole), each
+ * with its end mark. A sentence ending in a tag question is dropped whole.
+ */
 function clauses(message: string): string[] {
   return (message.match(/[^.!?;\n]+(?:[.!?;]+|$)/g) ?? [])
+    .filter((sentence) => !TAG_QUESTION.test(sentence.trim()))
     .flatMap((part) => part.split(/,\s+/))
     .map((c) => c.trim())
     .filter(Boolean);
@@ -260,22 +288,63 @@ function clauseCanState(clause: string, field: Field): boolean {
   if (/\?\s*$/.test(clause) && (!SET_VERB.test(clause) || ADVICE_QUESTION.test(clause) || WH_QUESTION.test(clause))) {
     return false;
   }
+  if (field !== "standing_instruction" && NEGATION_OR_PAST.test(clause)) return false;
   if (field === "target_roas" && /\bstretch\b/i.test(clause)) return false;
   if (PLAN_FIELDS.has(field) && PLAN_ASK.test(clause)) return false;
-  if (field === "website_url" && SITE_LOOKUP.test(clause)) return false;
+  if (CAP_FIELDS.has(field) && NAMES_CAMPAIGN.test(clause)) return false;
+  if (field === "website_url" && (SITE_LOOKUP.test(clause) || !OWN_WEBSITE.test(clause) || NAMES_LANDING.test(clause.replace(/https?:\/\/\S+/gi, "")))) {
+    return false;
+  }
   if (field === "standing_instruction" && IDIOMS.test(clause)) return false;
   return true;
 }
 
+/** Field words in the clause, for telling which field a number belongs to. */
+const ALL_FIELD_WORDS = new RegExp(
+  Object.values(FIELD_WORDS)
+    .map((re) => `(?:${re.source})`)
+    .join("|"),
+  "gi",
+);
+
+/** Words strictly between two positions in the clause. */
+function wordsBetween(clause: string, from: number, to: number): number {
+  return clause.slice(from, to).split(/\s+/).filter((w) => /[a-z0-9]/i.test(w)).length;
+}
+
+/**
+ * With several numbers in one clause, a number belongs to the nearest field
+ * word, within 4 words: in "Target ROAS 8 and margin 40%" the 40 is the margin's.
+ */
+function numberIsField(clause: string, at: { start: number; end: number }, field: Field): boolean {
+  let best: { distance: number; text: string } | null = null;
+  for (const m of clause.matchAll(ALL_FIELD_WORDS)) {
+    const start = m.index!;
+    const end = start + m[0].length;
+    const distance = end <= at.start ? wordsBetween(clause, end, at.start) : wordsBetween(clause, at.end, start);
+    if (!best || distance < best.distance) best = { distance, text: m[0] };
+  }
+  return best != null && best.distance <= 4 && FIELD_WORDS[field].test(best.text);
+}
+
 /** Every number written in the clause, with k/m scaled, and whether a % follows. */
-function numbersIn(clause: string): Array<{ n: number; pct: boolean }> {
-  const out: Array<{ n: number; pct: boolean }> = [];
+type NumberAt = { n: number; pct: boolean; start: number; end: number };
+
+function numbersIn(clause: string): NumberAt[] {
+  const out: NumberAt[] = [];
   for (const m of clause.matchAll(/(\d[\d,]*(?:\.\d+)?)\s*(?:(k|m|thousand|million)(?![a-z]))?\s*(%|x|×)?/gi)) {
     const n = Number(m[1].replace(/,/g, ""));
     const scale = m[2] ? (/^(?:k|thousand)$/i.test(m[2]) ? 1000 : 1_000_000) : 1;
-    if (Number.isFinite(n)) out.push({ n: n * scale, pct: m[3] === "%" });
+    const start = m.index!;
+    if (Number.isFinite(n)) out.push({ n: n * scale, pct: m[3] === "%", start, end: start + m[0].trimEnd().length });
   }
   return out;
+}
+
+/** The clause's numbers this field can claim: all of them, or with several, those next to its word. */
+function fieldNumbers(clause: string, field: Field): NumberAt[] {
+  const all = numbersIn(clause);
+  return all.length > 1 ? all.filter((at) => numberIsField(clause, at, field)) : all;
 }
 
 const close = (a: number, b: number) => Math.abs(a - b) < 1e-6;
@@ -307,13 +376,20 @@ function countryInMessage(message: string, code: string): boolean {
   return names.some((n) => containsText(message, n));
 }
 
-/** The words just before "margin" / "average order value", if they name something other than the account. */
-function wordsBefore(clause: string, field: "gross_margin_pct" | "average_value"): string | null {
-  const re =
-    field === "gross_margin_pct"
-      ? /^(.*?)\b(?:gross\s+)?margins?\b/i
-      : /^(.*?)\b(?:(?:average\s+)?(?:order|lead|basket)\s+value|average\s+value|aov)\b/i;
-  const before = re.exec(clause)?.[1] ?? "";
+/** Fields whose value can be meant for one category ("bar stools margin", "ROAS target for bar stools"). */
+type Scopable = "gross_margin_pct" | "average_value" | "target_roas" | "target_cpa";
+
+/** The words that name each scopable field in a clause. */
+const SCOPE_WORDS: Record<Scopable, string> = {
+  gross_margin_pct: String.raw`(?:gross\s+)?margins?`,
+  average_value: String.raw`(?:(?:average\s+)?(?:order|lead|basket)\s+value|average\s+value|aov)`,
+  target_roas: String.raw`(?:target\s+roas|roas\s+target|roas)`,
+  target_cpa: String.raw`(?:target\s+cpa|cpa\s+target|cpa)`,
+};
+
+/** The words just before the field's word ("bar stools margin"), if they name something other than the account. */
+function wordsBefore(clause: string, field: Scopable): string | null {
+  const before = new RegExp(String.raw`^(.*?)\b${SCOPE_WORDS[field]}\b`, "i").exec(clause)?.[1] ?? "";
   const run: string[] = [];
   for (const word of before.trim().split(/\s+/).reverse()) {
     const w = word.toLowerCase().replace(/[^a-z'-]/g, "");
@@ -323,25 +399,22 @@ function wordsBefore(clause: string, field: "gross_margin_pct" | "average_value"
   return run.length ? run.join(" ") : null;
 }
 
-/** "margin on dining chairs is 30%" → "dining chairs". */
-function categoryAfter(clause: string, field: "gross_margin_pct" | "average_value"): string | null {
-  const re =
-    field === "gross_margin_pct"
-      ? /\bmargins?\s+(?:on|for)\s+(?:the\s+|our\s+)?([a-z][a-z' -]*?)\s+(?:is|are|=|:|at|of|sits)\b/i
-      : /\b(?:value|aov)\s+(?:on|for)\s+(?:the\s+|our\s+)?([a-z][a-z' -]*?)\s+(?:is|are|=|:|at|of|sits)\b/i;
+/** "margin on dining chairs is 30%", "ROAS target for bar stools is 12x" → the category. */
+function categoryAfter(clause: string, field: Scopable): string | null {
+  const re = new RegExp(
+    String.raw`\b${SCOPE_WORDS[field]}\s+(?:on|for)\s+(?:the\s+|our\s+)?([a-z][a-z' -]*?)\s+(?:is|are|=|:|at|of|sits|should)\b`,
+    "i",
+  );
   return re.exec(clause)?.[1]?.trim() || null;
 }
 
 /** The category a clause names for a margin or order value, if it names one. */
-function categoryNamedIn(
-  clause: string,
-  field: "gross_margin_pct" | "average_value",
-  categories: StrategyCategory[],
-): string | null {
+function categoryNamedIn(clause: string, field: Scopable, categories: StrategyCategory[]): string | null {
   const loaded = scopeCategoriesFromRequest(clause, categories);
   if (loaded.length) return loaded.sort((a, b) => b.name.length - a.name.length)[0]!.name;
-  const phrase =
-    wordsBefore(clause, field) ?? categoryAfter(clause, field) ?? requestedCategoryPhrase(clause, "strategy");
+  const phrase = [wordsBefore(clause, field), categoryAfter(clause, field), requestedCategoryPhrase(clause, "strategy")].find(
+    (p): p is string => p != null && !onlyAccountWords(p) && !namesSeason(p),
+  );
   if (!phrase) return null;
   return matchCategoryByLabel(phrase, categories)?.name ?? phrase;
 }
@@ -350,7 +423,9 @@ function categoryNamedIn(
 function valueIn(clause: string, message: string, setting: ChatSetting): boolean {
   switch (setting.field) {
     case "target_roas":
-      return numbersIn(clause).some(({ n, pct }) => close(n, setting.value) || (pct && close(n / 100, setting.value)));
+      return fieldNumbers(clause, setting.field).some(
+        ({ n, pct }) => close(n, setting.value) || (pct && close(n / 100, setting.value)),
+      );
     case "business_model":
       return MODEL_WORDS[setting.value]?.test(clause) ?? false;
     case "attribution":
@@ -364,7 +439,7 @@ function valueIn(clause: string, message: string, setting: ChatSetting): boolean
     case "website_url":
       return containsText(message, setting.value.replace(/^https?:\/\//i, "").replace(/^www\./i, "").replace(/\/+$/, ""));
     default:
-      return numbersIn(clause).some(({ n }) => close(n, setting.value));
+      return fieldNumbers(clause, setting.field).some(({ n }) => close(n, setting.value));
   }
 }
 
@@ -428,6 +503,7 @@ export function parseSettingsReply(
   reply: string,
   message: string,
   categories: StrategyCategory[] = [],
+  currency = "USD",
 ): ExtractedSettings {
   const out: ExtractedSettings = { settings: [], rejected: [] };
   const json = reply.match(/\{[\s\S]*\}/);
@@ -465,6 +541,20 @@ export function parseSettingsReply(
         (!("category" in setting) || containsText(c, setting.category)),
     );
     if (!backing) continue;
+    // Targets are per account: one stated for a category is never saved as the account's.
+    if (setting.field === "target_roas" || setting.field === "target_cpa") {
+      const category = categoryNamedIn(backing, setting.field, categories);
+      if (category) {
+        const value =
+          setting.field === "target_roas"
+            ? formatValue(setting.value, "roas", currency)
+            : formatValue(Math.round(setting.value * 100), "money", currency);
+        out.rejected.push(
+          `Didn't save ${LABELS[setting.field]} ${value}: targets are per account, and that names ${category}.`,
+        );
+        continue;
+      }
+    }
     // An "account" margin or order value in a clause that names a category is that category's.
     if (setting.field === "gross_margin_pct" || setting.field === "average_value") {
       const category = categoryNamedIn(backing, setting.field, categories);
@@ -518,6 +608,7 @@ const EXTRACT_SYSTEM = [
 export async function extractChatSettings(
   message: string,
   categories: StrategyCategory[] = [],
+  currency = "USD",
 ): Promise<ExtractedSettings> {
   const none: ExtractedSettings = { settings: [], rejected: [] };
   if (!mentionsSettings(message)) return none;
@@ -534,7 +625,7 @@ export async function extractChatSettings(
       system: EXTRACT_SYSTEM,
       prompt: message.slice(0, 4000),
     });
-    return parseSettingsReply(reply, message, categories);
+    return parseSettingsReply(reply, message, categories, currency);
   } catch (error) {
     logger.warn("Chat settings: extraction failed", {
       error: error instanceof Error ? error.message : String(error),
@@ -548,13 +639,18 @@ export async function extractChatSettings(
  * hypothetical, conditional or feasibility question) that names no category
  * (loaded, or one asked for by "on bar stools").
  */
-export function isWholeAccountAsk(texts: string[], categories: StrategyCategory[]): boolean {
+export function isWholeAccountAsk(
+  texts: string[],
+  categories: StrategyCategory[],
+  clientName?: string | null,
+): boolean {
   return texts.every(
     (t) =>
       !HYPOTHETICAL.test(t) &&
       !FEASIBILITY.test(t) &&
       !scopeCategoriesFromRequest(t, categories).length &&
-      !requestedCategoryPhrase(t, "strategy"),
+      // A "for" phrase naming the client or a season ("for Christmas") isn't a category.
+      !requestedCategoryPhrase(t, "strategy", clientName),
   );
 }
 
@@ -687,6 +783,21 @@ export type SettingsToolCall = {
   rationale: string;
 };
 
+export const SETTINGS_HEADING = "### Client settings from this message";
+
+/** The lines under the settings section in the evidence ("Saved to …", "Didn't save …"), in order. */
+export function settingsNoticeLines(evidenceText: string | null | undefined): string[] {
+  if (!evidenceText) return [];
+  const at = evidenceText.indexOf(`${SETTINGS_HEADING}\n`);
+  if (at < 0) return [];
+  const lines: string[] = [];
+  for (const line of evidenceText.slice(at + SETTINGS_HEADING.length + 1).split("\n")) {
+    if (!line.startsWith("- ")) break;
+    lines.push(line.slice(2).trim());
+  }
+  return lines;
+}
+
 /** Only the settings step records a settings save; a writer-emitted one is dropped. */
 export function withoutSettingsCalls<T extends { name: string }>(calls: T[]): T[] {
   return calls.filter((c) => c.name !== SETTINGS_TOOL);
@@ -728,8 +839,12 @@ export type ChatSettingsTurn = {
   withServiceOverrides(services: ClientService[]): ClientService[];
   /** Applies category settings still waiting for their category (e.g. one added from the question). */
   applyPendingCategories(services: ClientService[]): Promise<void>;
-  /** Saves a whole-account strategy ask's target ROAS, unless this turn already stated one. */
-  saveStrategyTarget(targetRoas: number): Promise<void>;
+  /**
+   * Saves a strategy ask's target ROAS when the ask is the whole account's
+   * (checked against `ask`, with the client's name), unless this turn already
+   * stated a target.
+   */
+  saveStrategyTarget(targetRoas: number, ask: { texts: string[]; categories: StrategyCategory[] }): Promise<void>;
   /** The evidence section for the writer, or null when there is nothing to say. */
   evidence(): string | null;
   /** The audit record of what was saved, or null when nothing was. */
@@ -747,7 +862,7 @@ export async function applyChatSettings(input: {
   request: string;
   /** The client's active services; read only when the message has setting words. */
   loadServices: () => Promise<ClientService[]>;
-  onChange?: (turn: ChatSettingsTurn) => void;
+  onChange?: (turn: ChatSettingsTurn) => void | Promise<void>;
 }): Promise<ChatSettingsTurn> {
   const { clientId, userId } = input;
   let admin: Promise<boolean> | null = null;
@@ -936,7 +1051,19 @@ export async function applyChatSettings(input: {
     } catch (error) {
       failure("the settings in this message", error);
     } finally {
-      input.onChange?.(turn);
+      await report();
+    }
+  }
+
+  /** Hands the turn to `onChange`; a failure there is logged, never thrown. */
+  async function report(): Promise<void> {
+    try {
+      await input.onChange?.(turn);
+    } catch (error) {
+      logger.warn("Chat settings: couldn't report", {
+        clientId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -955,8 +1082,13 @@ export async function applyChatSettings(input: {
       pending = [];
       await apply(waiting, services);
     },
-    async saveStrategyTarget(targetRoas) {
+    async saveStrategyTarget(targetRoas, ask) {
       if (statedTarget) return;
+      const name = await loadClient(clientId).then(
+        (c) => c.name,
+        () => null,
+      );
+      if (!isWholeAccountAsk(ask.texts, ask.categories, name)) return;
       statedTarget = true;
       await apply([{ field: "target_roas", value: targetRoas }], []);
     },
@@ -976,7 +1108,7 @@ export async function applyChatSettings(input: {
       }
       if (!lines.length) return null;
       return [
-        "### Client settings from this message",
+        SETTINGS_HEADING,
         ...lines.map((l) => `- ${l}`),
         "Repeat the lines above to the user exactly, near the top of the reply.",
       ].join("\n");
@@ -994,11 +1126,12 @@ export async function applyChatSettings(input: {
   if (mentionsSettings(input.request)) {
     try {
       const services = await input.loadServices();
-      const extracted = await extractChatSettings(input.request, categoriesFromServices(services));
+      currency = (await loadClient(clientId).catch(() => null))?.currency || currency;
+      const extracted = await extractChatSettings(input.request, categoriesFromServices(services), currency);
       notSaved.push(...extracted.rejected);
       statedTarget = extracted.settings.some((s) => s.field === "target_roas");
       if (extracted.settings.length) await apply(extracted.settings, services);
-      else if (extracted.rejected.length) input.onChange?.(turn);
+      else if (extracted.rejected.length) await report();
     } catch (error) {
       logger.warn("Chat settings: couldn't read the message", {
         clientId,
