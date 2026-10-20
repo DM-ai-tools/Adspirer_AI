@@ -28,6 +28,8 @@ export type AdsPerformance = {
   landingPages: Array<{ url: string; costCents: number; conversionValueCents: number }>;
   assetGroups: Array<{ name: string; campaignId: string; costCents: number; conversionValueCents: number }>;
   shoppingCategories: Array<{ productType: string; costCents: number; conversionValueCents: number }>;
+  /** "Google Ads: landing pages didn't load (…)", one per optional section that failed. */
+  warnings?: string[];
 };
 export type SearchDemand = { siteUrl: string; rows: Array<{ page: string; clicks: number; impressions: number; position: number; topQueries: string[] }> };
 export type ChannelSnapshot = {

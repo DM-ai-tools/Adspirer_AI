@@ -452,7 +452,7 @@ export function buildStrategyPlan(input: {
   const channelNote = !input.channels
     ? "No Google data was loaded: the plan uses Meta figures only."
     : input.channels.currencyMismatch
-      ? `${input.channels.currencyMismatch} The plan uses Meta figures only, with no Meta and Google split.`
+      ? `${input.channels.currencyMismatch} There is no Meta and Google split.`
       : !input.channels.googleAdsMapped
         ? "No Google Ads account mapped: Google wasn't considered."
         : googleMissing

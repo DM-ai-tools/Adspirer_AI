@@ -41,6 +41,7 @@ export async function loadChannelSnapshot(clientId: string, range: DateRange): P
       snapshot.ads = await run("Google Ads", () =>
         provider.adsPerformance(assets.ads!.external_id, assets.ads!.login_customer_id, range),
       );
+      if (snapshot.ads?.warnings) snapshot.warnings.push(...snapshot.ads.warnings);
     }
     if (assets.gsc) {
       snapshot.gsc = await run("Search Console", () => provider.searchDemand(assets.gsc!.external_id, range));

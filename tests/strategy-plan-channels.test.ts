@@ -542,7 +542,7 @@ describe("buildStrategyPlan channel split", () => {
 
 describe("buildStrategyPlan currency mismatch", () => {
   it("makes no split, uses no combined figures and says why", () => {
-    const mismatch = "Meta reports in AUD, GA4 in USD: figures are shown per channel and not combined.";
+    const mismatch = "Meta reports in AUD, GA4 in USD: Google and GA4 figures are left out so currencies aren't mixed; the plan uses Meta figures only.";
     const snapshot = snap([ad("Shoes", 20_000, 5)]);
     // Figures that would change every tier if they were read.
     const channels = channelPerf(
@@ -554,7 +554,7 @@ describe("buildStrategyPlan currency mismatch", () => {
     expect(p.revenueBasis).toBe("platform");
     expect(p.channelTotals).toBeNull();
     expect(p.googleCapabilities).toBeNull();
-    expect(p.channelNote).toContain(mismatch);
+    expect(p.channelNote).toBe(`${mismatch} There is no Meta and Google split.`);
     expect(p.assumptions).toContain(p.channelNote);
     expect(p.allocations).toEqual(metaOnly.allocations);
     expect(p.projection).toEqual(metaOnly.projection);

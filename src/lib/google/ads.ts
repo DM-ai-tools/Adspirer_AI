@@ -185,11 +185,15 @@ function unitsToCents(value: Num): number {
   return Math.round(Number(value ?? 0) * 100);
 }
 
-/** An optional section: a failed query gives the fallback instead of throwing. */
-async function optional<T>(run: () => Promise<T>, fallback: T): Promise<T> {
+/**
+ * An optional section: a failed query gives the fallback instead of throwing. With a label,
+ * the failure (quota included) becomes a warning; without one it stays silent.
+ */
+async function optional<T>(run: () => Promise<T>, fallback: T, warnings: string[], label?: string): Promise<T> {
   try {
     return await run();
-  } catch {
+  } catch (error) {
+    if (label) warnings.push(`Google Ads: ${label} didn't load (${error instanceof Error ? error.message : String(error)})`);
     return fallback;
   }
 }
@@ -216,6 +220,8 @@ export async function fetchAdsPerformance(
   }
   const during = `segments.date BETWEEN '${range.since}' AND '${range.until}'`;
   const search = <T>(query: string) => searchGaql<T>(id, query, loginCustomerId);
+  // Filled in the order the sections are listed, whatever order their queries fail in.
+  const sectionWarnings: Array<string[]> = [[], [], []];
 
   const [customerRows, campaignRows, landingRows, assetGroupRows, shoppingRows, merchantCenterLinked] =
     await Promise.all([
@@ -232,6 +238,8 @@ export async function fetchAdsPerformance(
               `FROM landing_page_view WHERE ${during}`,
           ),
         [],
+        sectionWarnings[0],
+        "landing pages",
       ),
       optional(
         () =>
@@ -240,6 +248,8 @@ export async function fetchAdsPerformance(
               `FROM asset_group WHERE ${during}`,
           ),
         [],
+        sectionWarnings[1],
+        "asset groups",
       ),
       optional(
         () =>
@@ -248,13 +258,16 @@ export async function fetchAdsPerformance(
               `FROM shopping_performance_view WHERE ${during}`,
           ),
         [],
+        sectionWarnings[2],
+        "Shopping product types",
       ),
       optional(async () => {
         const links = await search<Record<string, unknown>>(
           "SELECT product_link.product_link_id FROM product_link WHERE product_link.type = 'MERCHANT_CENTER'",
         );
         return links.length > 0;
-      }, false),
+        // Merchant Center is only a flag for recommendations: its failure stays silent.
+      }, false, []),
     ]);
 
   const shopping = new Map<string, { productType: string; costCents: number; conversionValueCents: number }>();
@@ -269,6 +282,7 @@ export async function fetchAdsPerformance(
     shopping.set(productType, entry);
   }
 
+  const warnings = sectionWarnings.flat();
   return {
     customerId: id,
     currency: customerRows[0]?.customer?.currencyCode ?? "",
@@ -297,5 +311,6 @@ export async function fetchAdsPerformance(
       conversionValueCents: unitsToCents(row.metrics?.conversionsValue),
     })),
     shoppingCategories: [...shopping.values()],
+    ...(warnings.length ? { warnings } : {}),
   };
 }

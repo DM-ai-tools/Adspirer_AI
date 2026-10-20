@@ -183,15 +183,31 @@ export async function deleteGoogleConnection(): Promise<void> {
 }
 
 let cached: { token: string; expiresAt: number } | null = null;
+/** The refresh in flight, shared by every caller until it settles. */
+let inflight: Promise<string> | null = null;
+/** Bumped by each reset, so a refresh a reset overtook never writes the cache. */
+let generation = 0;
 
 export function resetGoogleTokenCache(): void {
   cached = null;
+  inflight = null;
+  generation += 1;
 }
 
-/** Access tokens live in memory only, until `expires_in - 60` seconds. */
+/** Access tokens live in memory only, until `expires_in - 60` seconds; parallel callers share one refresh. */
 export async function getGoogleAccessToken(): Promise<string> {
   if (cached && cached.expiresAt > Date.now()) return cached.token;
+  if (inflight) return inflight;
 
+  const started = generation;
+  const refresh = refreshAccessToken(started).finally(() => {
+    if (inflight === refresh) inflight = null;
+  });
+  inflight = refresh;
+  return refresh;
+}
+
+async function refreshAccessToken(started: number): Promise<string> {
   const connection = await loadGoogleConnection();
   if (!connection) throw new GoogleReconnectRequired();
   if (inDemoStore()) return "demo-google-token";
@@ -201,7 +217,7 @@ export async function getGoogleAccessToken(): Promise<string> {
     refresh_token: decryptToken(connection.refresh_token_encrypted),
   });
   if (body.error === "invalid_grant") {
-    resetGoogleTokenCache();
+    if (generation === started) cached = null;
     throw new GoogleReconnectRequired();
   }
   if (status < 200 || status >= 300 || !body.access_token) {
@@ -209,7 +225,8 @@ export async function getGoogleAccessToken(): Promise<string> {
   }
 
   const ttlSec = Math.max((body.expires_in ?? 3600) - 60, 0);
-  cached = { token: body.access_token, expiresAt: Date.now() + ttlSec * 1000 };
+  // A reset (disconnect, reconnect) while this refresh was in flight: don't bring its token back.
+  if (generation === started) cached = { token: body.access_token, expiresAt: Date.now() + ttlSec * 1000 };
   // Best effort: a failed bookkeeping write must not fail the refresh.
   try {
     await createAdminClient()

@@ -369,7 +369,7 @@ describe("renderStrategyEvidence with channels", () => {
   });
 
   it("prints the currency mismatch reason, no combined figures and no split table", async () => {
-    const reason = "Meta reports in USD, GA4 in AUD, Google Ads in AUD: figures are shown per channel and not combined.";
+    const reason = "Meta reports in USD, GA4 in AUD, Google Ads in AUD: Google and GA4 figures are left out so currencies aren't mixed; the plan uses Meta figures only.";
     const { text, plan } = await clickTrends({ channels: (c) => ({ ...c, currencyMismatch: reason }) });
     expect(plan.channelTotals).toBeNull();
     expect(section(text, "### Channel data")).toContain(reason);
@@ -381,6 +381,16 @@ describe("renderStrategyEvidence with channels", () => {
     expect(split).not.toContain("| Category |");
     expect(split).not.toContain(LABEL);
     expect(section(text, "### Level 2: GA4 vs platform-reported")).toContain(reason);
+  });
+
+  it("says Google and GA4 are left out when GA4's currency differs from Meta's", async () => {
+    const { text, plan } = await clickTrends({ google: (s) => ({ ...s, ga4: { ...s.ga4!, currency: "AUD" } }) });
+    const note =
+      "Meta reports in USD, GA4 in AUD, Google Ads in USD: Google and GA4 figures are left out so currencies aren't mixed; the plan uses Meta figures only.";
+    expect(plan.channelNote).toBe(`${note} There is no Meta and Google split.`);
+    expect(section(text, "### Channel data")).toContain(`- Note: ${note}`);
+    expect(text).not.toContain("shown per channel");
+    expect(section(text, "### Level 1")).toContain("| Category | Spend (30d) | Revenue | ROAS | Tier | Match |");
   });
 
   it("prints load warnings passed without channels", () => {
@@ -420,7 +430,7 @@ describe("renderCategorySpendEvidence with channels", () => {
   });
 
   it("does not combine currencies that differ", async () => {
-    const reason = "Meta reports in USD, Google Ads in AUD: figures are shown per channel and not combined.";
+    const reason = "Meta reports in USD, Google Ads in AUD: Google and GA4 figures are left out so currencies aren't mixed; the plan uses Meta figures only.";
     const { spend } = await clickTrends({ channels: (c) => ({ ...c, currencyMismatch: reason }) });
     expect(spend).toContain(reason);
     expect(spend).toContain("- Ranked by: Meta-reported revenue");

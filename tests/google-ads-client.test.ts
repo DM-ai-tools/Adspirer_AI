@@ -195,7 +195,10 @@ describe("discoverAdsAccounts", () => {
 describe("fetchAdsPerformance", () => {
   const range = { since: "2026-09-01", until: "2026-09-30" };
 
-  function performanceRoute(opts: { merchantFails?: boolean; landingFails?: boolean } = {}) {
+  function performanceRoute(
+    opts: { merchantFails?: boolean; landingFails?: boolean; assetGroupsFail?: boolean; shoppingFails?: boolean } = {},
+  ) {
+    const quota = () => json({ error: { code: 429, message: "Resource has been exhausted", status: "RESOURCE_EXHAUSTED" } }, 400);
     route((call) => {
       const q = call.query ?? "";
       if (q.includes("FROM product_link")) {
@@ -225,6 +228,7 @@ describe("fetchAdsPerformance", () => {
         });
       }
       if (q.includes("FROM asset_group")) {
+        if (opts.assetGroupsFail) return quota();
         return json({
           results: [
             { assetGroup: { name: "Sofas AG", campaign: "customers/123/campaigns/55" }, metrics: { costMicros: "1005000", conversionsValue: 9.99 } },
@@ -232,6 +236,7 @@ describe("fetchAdsPerformance", () => {
         });
       }
       if (q.includes("FROM shopping_performance_view")) {
+        if (opts.shoppingFails) return quota();
         return json({
           results: [
             { segments: { productTypeL1: "Furniture", productTypeL2: "Sofas" }, metrics: { costMicros: "2000000", conversionsValue: 10 } },
@@ -270,6 +275,8 @@ describe("fetchAdsPerformance", () => {
     const perf = await fetchAdsPerformance("123", null, range);
     expect(perf.merchantCenterLinked).toBe(false);
     expect(perf.campaigns).toHaveLength(1);
+    // Merchant Center is only a flag: its failure stays silent.
+    expect(perf.warnings).toBeUndefined();
   });
 
   it("a failing landing page query gives an empty list without throwing", async () => {
@@ -277,5 +284,18 @@ describe("fetchAdsPerformance", () => {
     const perf = await fetchAdsPerformance("123", null, range);
     expect(perf.landingPages).toEqual([]);
     expect(perf.assetGroups).toHaveLength(1);
+    expect(perf.warnings).toEqual(["Google Ads: landing pages didn't load (bad)"]);
+  });
+
+  it("warns for each optional section that fails, quota errors included, and keeps the rest", async () => {
+    performanceRoute({ assetGroupsFail: true, shoppingFails: true });
+    const perf = await fetchAdsPerformance("123", null, range);
+    expect(perf.assetGroups).toEqual([]);
+    expect(perf.shoppingCategories).toEqual([]);
+    expect(perf.landingPages).toHaveLength(1);
+    expect(perf.warnings).toEqual([
+      "Google Ads: asset groups didn't load (Resource has been exhausted)",
+      "Google Ads: Shopping product types didn't load (Resource has been exhausted)",
+    ]);
   });
 });

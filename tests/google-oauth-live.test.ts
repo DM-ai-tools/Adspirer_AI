@@ -95,6 +95,27 @@ describe("Supabase token service", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("shares one refresh between parallel calls", async () => {
+    fetchMock.mockImplementation(async () => json({ access_token: "at1", expires_in: 3600 }));
+    const tokens = await Promise.all(Array.from({ length: 6 }, () => getGoogleAccessToken()));
+    expect(tokens).toEqual(Array(6).fill("at1"));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("doesn't put a refresh that a reset overtook back in the cache", async () => {
+    let answer!: (res: Response) => void;
+    fetchMock.mockImplementationOnce(() => new Promise<Response>((resolve) => (answer = resolve)));
+    const first = getGoogleAccessToken();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    // A disconnect or reconnect lands while the refresh is in flight.
+    resetGoogleTokenCache();
+    answer(json({ access_token: "stale", expires_in: 3600 }));
+    expect(await first).toBe("stale");
+    fetchMock.mockResolvedValueOnce(json({ access_token: "fresh", expires_in: 3600 }));
+    expect(await getGoogleAccessToken()).toBe("fresh");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("invalid_grant clears the cache and asks for a reconnect", async () => {
     fetchMock.mockResolvedValueOnce(json({ access_token: "at1", expires_in: 3600 }));
     await getGoogleAccessToken();

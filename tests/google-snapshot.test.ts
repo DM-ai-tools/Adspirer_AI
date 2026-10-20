@@ -85,6 +85,15 @@ describe("loadChannelSnapshot", () => {
     expect(snap.ga4).not.toBeNull();
   });
 
+  it("copies Google Ads section warnings, like GA4's, and keeps the Ads data", async () => {
+    const base = getMockGoogleDataProvider();
+    const warning = "Google Ads: landing pages didn't load (Resource has been exhausted)";
+    override({ adsPerformance: async (...a) => ({ ...(await base.adsPerformance(...a)), warnings: [warning] }) });
+    const snap = await loadChannelSnapshot(CT, range);
+    expect(snap.ads).not.toBeNull();
+    expect(snap.warnings).toEqual([warning]);
+  });
+
   it("gives one reconnect warning and no parts when Google needs reconnecting", async () => {
     override({ adsPerformance: async () => { throw new GoogleReconnectRequired(); } });
     const snap = await loadChannelSnapshot(CT, range);

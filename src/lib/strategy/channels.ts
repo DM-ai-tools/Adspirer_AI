@@ -194,7 +194,7 @@ export function buildChannelPerformance(input: {
     .filter((c) => c.code !== "");
   const currencyMismatch =
     new Set(currencies.map((c) => c.code)).size > 1
-      ? `${currencies.map((c, i) => `${c.label}${i === 0 ? " reports" : ""} in ${c.code}`).join(", ")}: figures are shown per channel and not combined.`
+      ? `${currencies.map((c, i) => `${c.label}${i === 0 ? " reports" : ""} in ${c.code}`).join(", ")}: Google and GA4 figures are left out so currencies aren't mixed; the plan uses Meta figures only.`
       : null;
 
   // --- Google spend ---------------------------------------------------------

@@ -480,7 +480,7 @@ describe("buildChannelPerformance — currency", () => {
       meta({ bar: [20_000, 50_000] }),
       "AUD",
     );
-    expect(perf.currencyMismatch).toBe("Meta reports in AUD, GA4 in USD: figures are shown per channel and not combined.");
+    expect(perf.currencyMismatch).toBe("Meta reports in AUD, GA4 in USD: Google and GA4 figures are left out so currencies aren't mixed; the plan uses Meta figures only.");
     const b = byId(perf, "bar");
     expect(b.ga4TotalRevenueCents).toBe(100_000);
     expect(b.meta.ga4RevenueCents).toBeNull();
@@ -494,7 +494,7 @@ describe("buildChannelPerformance — currency", () => {
       meta({}),
       "AUD",
     );
-    expect(perf.currencyMismatch).toBe("Meta reports in AUD, Google Ads in NZD: figures are shown per channel and not combined.");
+    expect(perf.currencyMismatch).toBe("Meta reports in AUD, Google Ads in NZD: Google and GA4 figures are left out so currencies aren't mixed; the plan uses Meta figures only.");
     expect(build(snapshot({ ga4: ga4({ currency: "" }), ads: ads({ currency: "AUD" }) }), meta({}), "AUD").currencyMismatch).toBeNull();
   });
 });
