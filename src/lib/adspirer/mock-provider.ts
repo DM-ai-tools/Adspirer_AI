@@ -1,4 +1,4 @@
-import { DEMO_CLICKTRENDS_META_ACCOUNT_ID, demoMetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
+import { DEMO_CLICKTRENDS_META_ACCOUNT_ID, demoMetaAuditSnapshot, type AuditSnapshotOptions } from "@/lib/audit/meta-audit-data";
 import type {
   CreateAdInput,
   CreateAdSetInput,
@@ -312,9 +312,9 @@ export class MockMetaAdsProvider implements MetaAdsProvider {
     };
   }
 
-  async getAuditSnapshot(accountId: string, options?: { days?: number }) {
+  async getAuditSnapshot(accountId: string, options?: AuditSnapshotOptions) {
     const overview = await this.getAccountOverview(accountId);
-    return demoMetaAuditSnapshot(accountId, overview.account_name, options?.days ?? 30);
+    return demoMetaAuditSnapshot(accountId, overview.account_name, { days: 30, ...options });
   }
 
   async getAccountOverview(accountId: string): Promise<MetaAccountOverview> {

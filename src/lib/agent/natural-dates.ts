@@ -172,3 +172,79 @@ export function parseNaturalDateRange(text: string, now = new Date()): ParsedRan
   }
   return null;
 }
+
+// ---------------------------------------------------------------------------
+// Two ranges compared: "Oct 19-20 vs Oct 17-18", "this week vs last week",
+// "last 7 days vs the 7 days before", "October compared to September".
+
+export type ComparisonRanges = { current: ParsedRange; comparison: ParsedRange };
+
+const DAY_MS = 86_400_000;
+
+function rangeOf(from: Date, to: Date): ParsedRange {
+  return { dateStart: iso(from), dateStop: iso(to), dateLabel: `${LABEL_FMT.format(from)} – ${LABEL_FMT.format(to)}` };
+}
+
+const fromIso = (s: string) => new Date(Date.parse(`${s}T00:00:00Z`));
+
+/** One side of a comparison: relative words, ISO dates, then natural dates. */
+function parseSide(text: string, today: Date, now: Date): ParsedRange | null {
+  const t = text.toLowerCase();
+  const lastN = /\b(?:last|past)\s+(\d{1,3})\s+days?\b/.exec(t);
+  if (lastN) {
+    const n = Math.min(365, Math.max(1, Number(lastN[1])));
+    return rangeOf(new Date(today.getTime() - (n - 1) * DAY_MS), today);
+  }
+  // Weeks run Monday to Sunday; this week stops today.
+  const monday = new Date(today.getTime() - ((today.getUTCDay() + 6) % 7) * DAY_MS);
+  if (/\bthis\s+week\b/.test(t)) return rangeOf(monday, today);
+  if (/\b(?:last|previous|prior)\s+week\b/.test(t)) {
+    return rangeOf(new Date(monday.getTime() - 7 * DAY_MS), new Date(monday.getTime() - DAY_MS));
+  }
+  if (/\bthis\s+month\b/.test(t)) return rangeOf(utc(today.getUTCFullYear(), today.getUTCMonth(), 1), today);
+  if (/\byesterday\b/.test(t)) {
+    const y = new Date(today.getTime() - DAY_MS);
+    return rangeOf(y, y);
+  }
+  if (/\btoday\b/.test(t)) return rangeOf(today, today);
+  const isoRange = /\b(20\d{2}-\d{2}-\d{2})\s*(?:to|through|until|–|—|-)\s*(20\d{2}-\d{2}-\d{2})\b/.exec(t);
+  if (isoRange && isoRange[1]! <= isoRange[2]!) return rangeOf(fromIso(isoRange[1]!), fromIso(isoRange[2]!));
+  const isoDay = /\b(20\d{2}-\d{2}-\d{2})\b/.exec(t);
+  if (isoDay) return rangeOf(fromIso(isoDay[1]!), fromIso(isoDay[1]!));
+  return parseNaturalDateRange(text, now);
+}
+
+/** "the 7 days before", "previous 7 days", "the previous period" — relative to the other range. */
+function parseRelativeTo(text: string, other: ParsedRange): ParsedRange | null {
+  const t = text.toLowerCase();
+  const start = fromIso(other.dateStart);
+  const days = Math.round((fromIso(other.dateStop).getTime() - start.getTime()) / DAY_MS) + 1;
+  const nDays =
+    /\b(\d{1,3})\s+days?\s+(?:before|prior|earlier|preceding)\b/.exec(t) ??
+    /\b(?:previous|prior|preceding)\s+(\d{1,3})\s+days?\b/.exec(t);
+  const n = nDays
+    ? Math.min(365, Math.max(1, Number(nDays[1])))
+    : /\b(?:previous|prior|preceding)\s+period\b|\b(?:period|time)\s+before\b|\bbefore\s+that\b|\bsame\s+(?:length|period)\s+before\b/.test(t)
+      ? days
+      : null;
+  if (n == null) return null;
+  return rangeOf(new Date(start.getTime() - n * DAY_MS), new Date(start.getTime() - DAY_MS));
+}
+
+/**
+ * Two named ranges, or null when the text doesn't compare two ranges.
+ * The range that ends later is the current one; the other is the comparison.
+ */
+export function parseComparisonRanges(text: string, now = new Date()): ComparisonRanges | null {
+  const t = text.replace(/\s+/g, " ");
+  const today = utc(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const split =
+    /^(.*?)\s+(?:vs\.?|versus|compared\s+(?:to|with)|against)\s+(.*)$/i.exec(t) ??
+    /^(.*?\bcompar(?:e|ing)\b.*?)\s+with\s+(.*)$/i.exec(t);
+  if (!split) return null;
+  const a = parseSide(split[1]!, today, now);
+  if (!a) return null;
+  const b = parseRelativeTo(split[2]!, a) ?? parseSide(split[2]!, today, now);
+  if (!b || (a.dateStart === b.dateStart && a.dateStop === b.dateStop)) return null;
+  return b.dateStop > a.dateStop ? { current: b, comparison: a } : { current: a, comparison: b };
+}

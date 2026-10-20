@@ -73,7 +73,9 @@ export function renderScorecardEvidence(scorecard: AuditScorecard, snap: MetaAud
       : "",
     "",
     ...scorecard.checkpoints.map(line),
-    snap.warnings.length ? `\nData not available: ${snap.warnings.join("; ")}` : "",
+    snap.warnings.length
+      ? `\nParts that failed to load (say which part failed to load — don't report its metrics as "not available"): ${snap.warnings.join("; ")}`
+      : "",
     "",
     "How to use this scorecard:",
     "- Lead the audit with the Fail items, most severe first; quote their evidence numbers and give the fix and impact in plain business language.",
@@ -218,8 +220,8 @@ function periodLine(
     p.results != null ? `${p.results.toLocaleString("en")} ${p.resultLabel}` : `${p.resultLabel}: not reported`,
     `cost per result ${p.costPerResultCents != null ? money(p.costPerResultCents) : "n/a"}`,
     `impressions ${p.impressions.toLocaleString("en")}`,
-    `reach ${p.reach.toLocaleString("en")}`,
-    `frequency ${p.frequency.toFixed(2)}`,
+    p.reachSummed ? "reach and frequency: not summable across campaigns (people overlap)" : `reach ${p.reach.toLocaleString("en")}`,
+    p.reachSummed ? null : `frequency ${p.frequency.toFixed(2)}`,
     `link CTR ${p.linkCtr.toFixed(2)}%`,
     `CPM ${p.cpmCents != null ? money(p.cpmCents) : "n/a"}`,
     p.roas != null ? `ROAS ${p.roas.toFixed(2)}×` : null,
@@ -238,26 +240,104 @@ function pctChange(before: number, after: number): string {
   return pct === 0 ? "no change" : `${pct > 0 ? "+" : "−"}${Math.abs(pct)}%`;
 }
 
-/** Previous period → this period, for the numbers that decide a verdict. */
+/** "impressions 50,000 → 60,000 (+20%)"; "n/a" on a side Meta didn't report. */
+function delta(
+  label: string,
+  before: number | null | undefined,
+  after: number | null | undefined,
+  fmt: (n: number) => string,
+): string {
+  const show = (n: number | null | undefined) => (n == null ? "n/a" : fmt(n));
+  return `${label} ${show(before)} → ${show(after)}${before != null && after != null ? ` (${pctChange(before, after)})` : ""}`;
+}
+
+const count = (n: number) => n.toLocaleString("en");
+
+/** Comparison period → this period, every metric "before → after (±%)". */
 function changeLine(
   current: PeriodPerformance | null,
   previous: PeriodPerformance | null | undefined,
   money: (cents: number) => string,
+  word = "previous period",
 ): string {
-  if (!previous || (previous.spendCents === 0 && previous.impressions === 0)) return "no delivery in the previous period";
-  const now = current ?? { ...previous, spendCents: 0, impressions: 0, results: 0, costPerResultCents: null, linkCtr: 0 };
+  if (!previous || (previous.spendCents === 0 && previous.impressions === 0)) return `no delivery in the ${word}`;
+  const now: PeriodPerformance = current ?? {
+    ...previous,
+    spendCents: 0,
+    impressions: 0,
+    reach: 0,
+    frequency: 0,
+    results: previous.results != null ? 0 : null,
+    costPerResultCents: null,
+    linkCtr: 0,
+    cpmCents: null,
+    roas: null,
+    ...(previous.linkClicks != null ? { linkClicks: 0 } : {}),
+    ...(previous.landingPageViews != null ? { landingPageViews: 0 } : {}),
+  };
+  const value = (p: PeriodPerformance) => (p.roas != null ? Math.round(p.roas * p.spendCents) : null);
+  const summed = previous.reachSummed || now.reachSummed;
   return [
-    `spend ${money(previous.spendCents)} → ${money(now.spendCents)} (${pctChange(previous.spendCents, now.spendCents)})`,
+    delta("spend", previous.spendCents, now.spendCents, money),
+    delta("impressions", previous.impressions, now.impressions, count),
+    summed
+      ? "reach: not summable across campaigns (people overlap), so no reach or frequency for this total"
+      : delta("reach", previous.reach, now.reach, count),
+    summed ? null : delta("frequency", previous.frequency, now.frequency, (n) => n.toFixed(2)),
+    delta("CPM", previous.cpmCents, now.cpmCents, money),
+    previous.linkClicks != null || now.linkClicks != null ? delta("link clicks", previous.linkClicks, now.linkClicks, count) : null,
+    delta("link CTR", previous.linkCtr, now.linkCtr, (n) => `${n.toFixed(2)}%`),
     previous.results != null || now.results != null
-      ? `${now.resultLabel || previous.resultLabel} ${previous.results ?? "n/a"} → ${now.results ?? "n/a"}`
+      ? delta(now.resultLabel || previous.resultLabel, previous.results, now.results, count)
       : null,
-    previous.costPerResultCents != null && now.costPerResultCents != null
-      ? `cost per result ${money(previous.costPerResultCents)} → ${money(now.costPerResultCents)} (${pctChange(previous.costPerResultCents, now.costPerResultCents)})`
+    previous.costPerResultCents != null || now.costPerResultCents != null
+      ? delta("cost per result", previous.costPerResultCents, now.costPerResultCents, money)
       : null,
-    `link CTR ${previous.linkCtr.toFixed(2)}% → ${now.linkCtr.toFixed(2)}%`,
+    previous.roas != null || now.roas != null ? delta("ROAS", previous.roas, now.roas, (n) => `${n.toFixed(2)}×`) : null,
+    // Purchase value = ROAS × spend (Meta's purchase ROAS is value ÷ spend).
+    value(previous) != null || value(now) != null ? delta("purchase value", value(previous), value(now), money) : null,
+    previous.landingPageViews != null || now.landingPageViews != null
+      ? delta("landing page views", previous.landingPageViews, now.landingPageViews, count)
+      : null,
   ]
     .filter(Boolean)
     .join(" · ");
+}
+
+const daysIn = (since: string, until: string) =>
+  Math.round((Date.parse(`${until}T00:00:00Z`) - Date.parse(`${since}T00:00:00Z`)) / 86_400_000) + 1;
+const dayCount = (n: number) => `${n} day${n === 1 ? "" : "s"}`;
+
+/** Per-day figures, for windows of different lengths. */
+function dailyLine(
+  current: PeriodPerformance | null | undefined,
+  previous: PeriodPerformance | null | undefined,
+  days: number,
+  previousDays: number,
+  money: (cents: number) => string,
+): string {
+  const per = (p: PeriodPerformance | null | undefined, n: number, pick: (p: PeriodPerformance) => number | null) => {
+    const v = p ? pick(p) : null;
+    return v == null ? null : v / n;
+  };
+  const both = (pick: (p: PeriodPerformance) => number | null) => [per(previous, previousDays, pick), per(current, days, pick)] as const;
+  const [s0, s1] = both((p) => p.spendCents);
+  const [i0, i1] = both((p) => p.impressions);
+  const [r0, r1] = both((p) => p.results);
+  const label = current?.resultLabel || previous?.resultLabel || "Results";
+  return [
+    delta("spend/day", s0, s1, (n) => money(Math.round(n))),
+    delta("impressions/day", i0, i1, (n) => count(Math.round(n))),
+    r0 != null || r1 != null ? delta(`${label}/day`, r0, r1, (n) => n.toFixed(1)) : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+type CompareContext = { word: string; failures: NonNullable<MetaAuditSnapshot["comparisonFailures"]> };
+
+function failedLine(word: string) {
+  return `failed to load (Meta returned an error for this part of the ${word}) — say it failed to load; don't call these metrics "not available"`;
 }
 
 function adSetBlock(
@@ -265,7 +345,7 @@ function adSetBlock(
   ads: AuditAd[],
   campaignSpend: number,
   money: (cents: number) => string,
-  compare: boolean,
+  compare: CompareContext | null,
 ): string {
   const spend = a.performance?.spendCents ?? 0;
   const liveAds = ads.filter((ad) => isLiveStatus(ad.status));
@@ -302,7 +382,11 @@ function adSetBlock(
     `  - Period: ${periodLine(a.performance, money)}${
       campaignSpend > 0 && spend > 0 ? ` · ${Math.round((spend / campaignSpend) * 100)}% of campaign spend` : ""
     }${a.frequency7d != null ? ` · 7-day frequency ${a.frequency7d.toFixed(2)}` : ""}`,
-    compare ? `  - vs previous period: ${changeLine(a.performance, a.previousPerformance, money)}` : null,
+    compare
+      ? `  - vs ${compare.word}: ${
+          compare.failures.includes("ad sets") ? failedLine(compare.word) : changeLine(a.performance, a.previousPerformance, money, compare.word)
+        }`
+      : null,
     `  - Ads: live ads ${liveAds.length} of ${ads.length}${ads.length > 8 ? " (top 8 by spend below)" : ""}`,
     ...adLines,
   ]
@@ -335,13 +419,27 @@ export function renderAdSetEvidence(snap: MetaAuditSnapshot, maxAdSets = 40): st
     (x, y) => (y.performance?.spendCents ?? 0) - (x.performance?.spendCents ?? 0),
   );
   const previous = snap.previousPeriod;
-  const compare = Boolean(previous);
+  const compare: CompareContext | null = previous
+    ? { word: snap.comparisonNamed ? "comparison period" : "previous period", failures: snap.comparisonFailures ?? [] }
+    : null;
   const lines: string[] = [header];
-  if (previous) {
+  if (previous && compare) {
+    const days = daysIn(snap.period.since, snap.period.until);
+    const previousDays = daysIn(previous.since, previous.until);
     lines.push(
+      `Current: ${snap.period.since} → ${snap.period.until} (${dayCount(days)}); Comparison: ${previous.since} → ${previous.until} (${dayCount(previousDays)}) — ${
+        snap.comparisonNamed ? "the range the operator named" : "the same number of days immediately before"
+      }. Use exactly these dates in table headers and labels.`,
       `Totals: ${periodLine(snap.totals, money)}`,
-      `Totals vs previous period (${previous.since} → ${previous.until}): ${changeLine(snap.totals, snap.previousTotals, money)}`,
+      `Totals vs ${compare.word} (${previous.since} → ${previous.until}): ${
+        compare.failures.includes("totals") ? failedLine(compare.word) : changeLine(snap.totals, snap.previousTotals, money, compare.word)
+      }`,
     );
+    if (days !== previousDays && !compare.failures.includes("totals")) {
+      lines.push(
+        `Daily averages (the periods differ in length, ${dayCount(days)} vs ${dayCount(previousDays)}, so totals are not like-for-like): ${dailyLine(snap.totals, snap.previousTotals, days, previousDays, money)}`,
+      );
+    }
   }
   let shown = 0;
   for (const c of campaignOrder) {
@@ -354,7 +452,15 @@ export function renderAdSetEvidence(snap: MetaAuditSnapshot, maxAdSets = 40): st
         c.dailyBudgetCents ? ` · campaign daily budget ${money(c.dailyBudgetCents)}` : ""
       } — ${own.length} ad set${own.length === 1 ? "" : "s"}, ${live} live`,
       `Campaign period: ${periodLine(c.performance, money)}`,
-      ...(compare ? [`Campaign vs previous period: ${changeLine(c.performance, c.previousPerformance, money)}`] : []),
+      ...(compare
+        ? [
+            `Campaign vs ${compare.word}: ${
+              compare.failures.includes("campaigns")
+                ? failedLine(compare.word)
+                : changeLine(c.performance, c.previousPerformance, money, compare.word)
+            }`,
+          ]
+        : []),
     );
     for (const a of own.slice(0, maxAdSets - shown)) {
       lines.push(adSetBlock(a, snap.ads.filter((ad) => ad.adSetId === a.id), c.performance?.spendCents ?? 0, money, compare));
@@ -366,7 +472,11 @@ export function renderAdSetEvidence(snap: MetaAuditSnapshot, maxAdSets = 40): st
     "",
     "Use these numbers for the per-ad-set audit. A metric marked \"not reported\" or \"n/a\" was not measured — say so; never estimate it.",
     ...(compare
-      ? ["The \"vs previous period\" lines compare against the same number of days immediately before — use them to say whether each campaign and ad set is improving or getting worse."]
+      ? [
+          `The "vs ${compare.word}" lines compare against the Comparison window above (${
+            snap.comparisonNamed ? "the range the operator named" : "the same number of days immediately before"
+          }) — use them to say whether each campaign and ad set is improving or getting worse. Every metric in those lines was loaded: never call it "not available". Only a line that says "failed to load" is missing — say that part failed to load.`,
+        ]
       : []),
   );
   return lines.join("\n");
