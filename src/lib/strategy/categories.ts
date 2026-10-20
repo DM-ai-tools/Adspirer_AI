@@ -45,7 +45,7 @@ export function asksAboutCategorySpend(request: string, categories: StrategyCate
 }
 
 /** Names that mean "everything" rather than one category. */
-const GENERIC_NAMES = new Set(["all", "other", "others", "general", "misc", "miscellaneous", "uncategorized", "uncategorised", "default"]);
+export const GENERIC_NAMES = new Set(["all", "other", "others", "general", "misc", "miscellaneous", "uncategorized", "uncategorised", "default"]);
 
 /**
  * The categories a request names (whole-word name or keyword, any case), in

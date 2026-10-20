@@ -4,15 +4,20 @@ import {
   gatherDeliveryStructure,
 } from "@/lib/agent/delivery-structure";
 import { evaluateCheckpoints } from "@/lib/audit/checkpoints";
-import { resolveGoals, type ResolvedGoals } from "@/lib/clients/goals";
+import { applyChatSettings, settingsNoticeLines, type ChatSettingsTurn } from "@/lib/clients/chat-settings";
+import { resolveGoals, type GoalsProfile, type ResolvedGoals } from "@/lib/clients/goals";
 
-/** The client's goals for judging the account; defaults when it can't be loaded. */
-async function clientGoals(clientId: string): Promise<ResolvedGoals> {
+/**
+ * The client's goals for judging the account; defaults when it can't be loaded.
+ * `override` holds values stated this turn (used even when they weren't saved).
+ */
+async function clientGoals(clientId: string, override: GoalsProfile = {}): Promise<ResolvedGoals> {
   try {
     const { getClient } = await import("@/lib/approvals/service");
-    return resolveGoals(await getClient(clientId));
+    const client = await getClient(clientId);
+    return resolveGoals({ goals_profile: { ...(client.goals_profile ?? {}), ...override } });
   } catch {
-    return resolveGoals({ goals_profile: {} });
+    return resolveGoals({ goals_profile: { ...override } });
   }
 }
 
@@ -84,6 +89,11 @@ import {
   type StrategyCategory,
 } from "@/lib/strategy/categories";
 import { attributeSpendToCategories, type CategoryAttribution } from "@/lib/strategy/category-attribution";
+import {
+  addCategoryFromRequest,
+  categoryNoticeLine,
+  requestedCategoryPhrase,
+} from "@/lib/strategy/requested-category";
 import { buildChannelPerformance, type ChannelPerformance } from "@/lib/strategy/channels";
 import { buildStrategyPlan } from "@/lib/strategy/plan";
 import { renderCategorySpendEvidence, renderStrategyEvidence } from "@/lib/strategy/render";
@@ -91,6 +101,7 @@ import { STRATEGY_FRAMEWORK } from "@/lib/agent/strategy-framework";
 import {
   buildStrategyClarifyingQuestion,
   resolveStrategyBrief,
+  strategyAskTexts,
 } from "@/lib/agent/strategy-brief";
 import {
   renderAdSetEvidence,
@@ -325,7 +336,10 @@ export async function runAdspirerAgent(input: {
 
   // An incomplete strategy brief gets the clarifying question verbatim, in every
   // mode: the next turn's routing keys on its wording, so no writer rephrases it.
-  const briefQuestion = strategyBriefQuestion(input);
+  const question = strategyBriefQuestion(input);
+  // Settings saved (or not) this turn are said first; routing finds the brief marker anywhere.
+  const settingsLines = settingsNoticeLines(input.toolEvidence);
+  const briefQuestion = question && settingsLines.length ? [...settingsLines, "", question].join("\n") : question;
   if (briefQuestion) {
     await input.onProgress?.({
       phase: "write_report",
@@ -585,6 +599,22 @@ type WriterInput = {
 
 const BRIEF_FIELDS = ["budget", "target_roas"] as const;
 
+/** Writer rules: open the reply with the category notice line, then the settings lines, word for word. */
+export function writerNoticeRules(evidence: string): string[] {
+  const rules: string[] = [];
+  const categoryNotice = categoryNoticeLine(evidence);
+  if (categoryNotice) {
+    rules.push(`- Start the reply with this line, word for word, before anything else: ${categoryNotice}`);
+  }
+  const settingsLines = settingsNoticeLines(evidence);
+  if (settingsLines.length) {
+    rules.push(
+      `- ${categoryNotice ? "Right after that line" : "Start the reply"} with these client-settings lines, word for word, each on its own line: ${settingsLines.map((l) => `"${l}"`).join(" ")}`,
+    );
+  }
+  return rules;
+}
+
 /** The clarifying question for an incomplete strategy brief, rebuilt from the evidence's "Missing" line. */
 function strategyBriefQuestion(input: WriterInput): string | null {
   if (input.reportDraft || resolveWriterIntent(input) !== "strategy") return null;
@@ -713,6 +743,10 @@ function buildWriterMessages(input: WriterInput): {
           ]
         : [];
 
+  // A category added from the question (or not found, or switched off), then
+  // the settings saved this turn, are said first.
+  const categoryNoticeRules = writerNoticeRules(evidence);
+
   const optimizeRules =
     intent === "optimize"
       ? [
@@ -792,6 +826,7 @@ function buildWriterMessages(input: WriterInput): {
         "- When you queue Approvals, say in one sentence what is waiting in Approvals and that nothing changes in Meta until it is approved. Never claim Meta mutations applied yet.",
         "- If they asked for Word/PDF export, deliver a complete markdown report and tell them to use Export Word / Export PDF under the message.",
         ...auditRules,
+        ...categoryNoticeRules,
         ...strategyRules,
         ...optimizeRules,
       ]
@@ -1093,7 +1128,11 @@ async function runMockAgent(input: {
     if (evidence && inputsAt >= 0) {
       const frameworkAt = evidence.indexOf("### Strategy framework", inputsAt);
       const body = evidence.slice(inputsAt, frameworkAt < 0 ? undefined : frameworkAt).trim();
+      const notice = categoryNoticeLine(evidence);
+      const settingsLines = settingsNoticeLines(evidence);
       summary = [
+        ...(notice ? [notice, ""] : []),
+        ...(settingsLines.length ? [...settingsLines, ""] : []),
         "## Strategy plan (demo)",
         "",
         body,
@@ -1336,9 +1375,21 @@ async function runMockAgent(input: {
     const humanized = evidence
       ? humanizeAgentReply(evidence)
       : null;
-    summary = humanized?.display
+    const notice = categoryNoticeLine(evidence);
+    const settingsLines = settingsNoticeLines(evidence);
+    const opening = [...(notice ? [notice] : []), ...settingsLines];
+    // The notices open the reply, so they aren't repeated where the evidence had them.
+    const display = opening.length
+      ? humanized?.display
+          ?.split("\n")
+          .filter((line) => !opening.includes(line.trim().replace(/^[-*]\s+/, "")))
+          .join("\n")
+      : humanized?.display;
+    summary = display
       ? [
-          humanized.display,
+          ...(notice ? [notice, ""] : []),
+          ...(settingsLines.length ? [...settingsLines, ""] : []),
+          display,
           "",
           "Use **Export Word** / **Export PDF** under this message if you need a file.",
           "If you want an execute change (budget/pause/create campaign), ask me to propose it for Approvals.",
@@ -1555,6 +1606,8 @@ function formatInsightMetrics(
 /** Collect live Meta evidence before the LLM writes the report. */
 export async function gatherDiagnoseEvidence(input: {
   clientId: string;
+  /** The turn's user (the task's created_by): only an admin's stated settings are saved. */
+  userId?: string | null;
   request: string;
   conversationId?: string | null;
   history?: AgentHistoryMessage[];
@@ -1567,6 +1620,11 @@ export async function gatherDiagnoseEvidence(input: {
     selectedCreative?: Promise<CreativeDraft | null>;
   };
   onProgress?: (event: AgentProgressEvent) => void | Promise<void>;
+  /**
+   * Persists the settings save's audit record the moment it changes, so a
+   * later throw in this turn can never leave a save without its audit row.
+   */
+  onSettingsSaved?: (call: AgentToolCallProposal) => void | Promise<void>;
 }): Promise<{
   accountId: string | null;
   evidence: string;
@@ -1641,6 +1699,38 @@ export async function gatherDiagnoseEvidence(input: {
     };
   }
 
+  // Settings the message states ("our margin is 40%") are saved before any
+  // plan is built, so this turn already uses them. Reported in one section.
+  // Every step reports straight away (onChange), so a save always has its
+  // line and its audit row even if a later step throws.
+  let settingsSection = -1;
+  let settingsCall: AgentToolCallProposal | null = null;
+  const showSettings = async (turn: ChatSettingsTurn) => {
+    const text = turn.evidence();
+    if (text) {
+      if (settingsSection < 0) settingsSection = sections.push(text) - 1;
+      else sections[settingsSection] = text;
+    }
+    const call = turn.toolCall();
+    if (call) {
+      if (settingsCall) Object.assign(settingsCall, call);
+      else toolCalls.push((settingsCall = { ...call }));
+      await input.onSettingsSaved?.({ ...settingsCall });
+    }
+  };
+  const settings: ChatSettingsTurn | null =
+    intent === "chat" || intent === "out_of_scope"
+      ? null
+      : await applyChatSettings({
+          clientId: input.clientId,
+          userId: input.userId,
+          request: input.request,
+          loadServices: () => activeClientServices(input.clientId).catch(() => []),
+          onChange: showSettings,
+        });
+  /** The client's goals with this turn's stated values on top. */
+  const turnGoals = () => clientGoals(input.clientId, settings?.goalsOverride());
+
   if (
     !accountId &&
     intent !== "ad_copy" &&
@@ -1651,7 +1741,7 @@ export async function gatherDiagnoseEvidence(input: {
   ) {
     if (intent === "strategy") {
       // No account, no snapshot: say so instead of letting a generic plan through.
-      const goals = await clientGoals(input.clientId);
+      const goals = await turnGoals();
       const word = goals.business_model === "ecommerce" ? "category" : "service";
       const loaded = categoriesFromServices(await activeClientServices(input.clientId)).length;
       sections.push(
@@ -1667,7 +1757,7 @@ export async function gatherDiagnoseEvidence(input: {
     }
     return {
       accountId: null,
-      evidence: noMappedAccountMessage(),
+      evidence: [...sections, noMappedAccountMessage()].join("\n\n"),
       toolCalls,
     };
   }
@@ -1678,9 +1768,12 @@ export async function gatherDiagnoseEvidence(input: {
   } catch (error) {
     return {
       accountId,
-      evidence: `### Provider\n- Failed to resolve Meta access: ${
-        error instanceof Error ? error.message : String(error)
-      }\n- Connect Facebook in the Workspace header or under Connections, then retry.`,
+      evidence: [
+        ...sections,
+        `### Provider\n- Failed to resolve Meta access: ${
+          error instanceof Error ? error.message : String(error)
+        }\n- Connect Facebook in the Workspace header or under Connections, then retry.`,
+      ].join("\n\n"),
       toolCalls,
     };
   }
@@ -2268,7 +2361,7 @@ export async function gatherDiagnoseEvidence(input: {
                 brief.scope === "campaigns"
                   ? scopeAuditSnapshot(accountSnapshot, matchedCampaigns.map((c) => c.id))
                   : accountSnapshot;
-              const scorecard = evaluateCheckpoints(snapshot, { goals: await clientGoals(input.clientId) });
+              const scorecard = evaluateCheckpoints(snapshot, { goals: await turnGoals() });
               sections.push(renderScorecardEvidence(scorecard, snapshot));
               sections.push(renderAdSetEvidence(snapshot));
               auditAppendix = renderScorecardMarkdown(scorecard, snapshot);
@@ -2370,7 +2463,7 @@ export async function gatherDiagnoseEvidence(input: {
         until: range.dateStop,
         days: 30,
       });
-      const goals = await clientGoals(input.clientId);
+      const goals = await turnGoals();
       const currentDailySpendCents = snapshot.totals
         ? Math.round(snapshot.totals.spendCents / snapshot.period.days)
         : null;
@@ -2394,12 +2487,30 @@ export async function gatherDiagnoseEvidence(input: {
       } else {
         const brief = parsed.brief;
         const categoryWord = goals.business_model === "ecommerce" ? "category" : "service";
+        const active = await activeClientServices(input.clientId);
+        // A whole-account ask's stated target becomes the client's target ROAS (never a stretch or a category's).
+        if (settings && !parsed.usedDefaults.includes("target_roas")) {
+          await settings.saveStrategyTarget(brief.targetRoas, {
+            texts: strategyAskTexts(input.request, input.history),
+            categories: categoriesFromServices(active),
+          });
+        }
         await input.onProgress?.({
           phase: "pull_insights",
           label: `Matching spend & return to each ${categoryWord}…`,
           stepId: "pull_insights",
         });
-        const categories = categoriesFromServices(await activeClientServices(input.clientId));
+        // A category the ask names but isn't set up yet is found on the website and added.
+        const requested = await addCategoryFromRequest({
+          clientId: input.clientId,
+          request: input.request,
+          kind: "strategy",
+          active,
+        });
+        if (requested.evidence) sections.push(requested.evidence);
+        // A margin stated for the category just added applies to it now.
+        await settings?.applyPendingCategories(requested.services);
+        const categories = categoriesFromServices(settings?.withServiceOverrides(requested.services) ?? requested.services);
         const attribution = attributeSpendToCategories(snapshot, categories);
         const scorecard = evaluateCheckpoints(snapshot, { goals });
         toolCalls.push({
@@ -2419,7 +2530,9 @@ export async function gatherDiagnoseEvidence(input: {
           categories,
           attribution,
         );
-        const scoped = scopeCategoriesFromRequest(input.request, categories);
+        const scoped = requested.scoped
+          ? categories.filter((c) => c.id === requested.scoped!.id)
+          : scopeCategoriesFromRequest(input.request, categories);
         const plan = buildStrategyPlan({
           snapshot,
           scorecard,
@@ -2479,15 +2592,32 @@ export async function gatherDiagnoseEvidence(input: {
   // "How much went into bar stools, and what did it return?": spend and return
   // per category from the snapshot. Figures only, no plan or allocation.
   if (accountId && (intent === "general" || intent === "budget")) {
-    const categories = categoriesFromServices(await activeClientServices(input.clientId).catch(() => []));
-    if (categories.length && asksAboutCategorySpend(input.request, categories)) {
-      const goals = await clientGoals(input.clientId);
-      const categoryWord = goals.business_model === "ecommerce" ? "category" : "service";
-      await input.onProgress?.({
+    const spendProgress = async (categoryWord: string) =>
+      input.onProgress?.({
         phase: "pull_insights",
         label: `Matching spend & return to each ${categoryWord}…`,
         stepId: "pull_insights",
       });
+    // The website scan below can be slow, so say what's happening first.
+    const namesCategory = requestedCategoryPhrase(input.request, "spend") != null;
+    if (namesCategory) {
+      const goals = await turnGoals();
+      await spendProgress(goals.business_model === "ecommerce" ? "category" : "service");
+    }
+    // A category the ask names but isn't set up yet is found on the website and added.
+    const requested = await addCategoryFromRequest({
+      clientId: input.clientId,
+      request: input.request,
+      kind: "spend",
+      active: await activeClientServices(input.clientId).catch(() => []),
+    });
+    if (requested.evidence) sections.push(requested.evidence);
+    await settings?.applyPendingCategories(requested.services);
+    const categories = categoriesFromServices(settings?.withServiceOverrides(requested.services) ?? requested.services);
+    if (categories.length && (requested.scoped || asksAboutCategorySpend(input.request, categories))) {
+      const goals = await turnGoals();
+      const categoryWord = goals.business_model === "ecommerce" ? "category" : "service";
+      if (!namesCategory) await spendProgress(categoryWord);
       try {
         if (!provider.getAuditSnapshot) {
           throw new Error("this Meta connection can't load an account snapshot");
@@ -3228,7 +3358,7 @@ export async function gatherDiagnoseEvidence(input: {
         (line) => !hold.heldIds.some((id) => line.includes(id)),
       );
       if (snapshot) {
-        sections.push(renderOptimisationSignals(evaluateCheckpoints(snapshot, { goals: await clientGoals(input.clientId) })));
+        sections.push(renderOptimisationSignals(evaluateCheckpoints(snapshot, { goals: await turnGoals() })));
         toolCalls.push({
           name: "audit_checkpoints",
           args: { account_id: accountId, days: 14 },

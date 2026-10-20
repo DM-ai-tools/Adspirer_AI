@@ -47,6 +47,31 @@ describe("parseStrategyBrief", () => {
     expect(r.brief?.stretchTargets).toEqual([12, 15]);
   });
 
+  it("never reads a value after 'stretch' as the main target", () => {
+    const missing = parseStrategyBrief("Plan on $500/day, stretch 15x", defaults());
+    expect(missing.brief).toBeNull();
+    expect(missing.missing).toEqual(["target_roas"]);
+    const fromGoals = parseStrategyBrief("Plan on $500/day, stretch 15x", defaults({ target_roas: 6 }));
+    expect(fromGoals.brief).toEqual({ dailyBudgetCents: 50000, targetRoas: 6, stretchTargets: [15] });
+    expect(fromGoals.usedDefaults).toEqual(["target_roas"]);
+  });
+
+  it("treats only the values 'stretch' governs as stretch targets", () => {
+    expect(parseStrategyBrief("Stretch goals aside, plan 10x on $500/day", defaults()).brief).toEqual({
+      dailyBudgetCents: 50000,
+      targetRoas: 10,
+      stretchTargets: [],
+    });
+    expect(parseStrategyBrief("10x on $500/day, stretch to 15x", defaults()).brief?.stretchTargets).toEqual([15]);
+    expect(
+      parseStrategyBrief("10x on $500/day with stretch targets of 12x and 15x", defaults()).brief?.stretchTargets,
+    ).toEqual([12, 15]);
+    expect(parseStrategyBrief("stretch 15x, plan 10x on $500/day", defaults()).brief).toMatchObject({
+      targetRoas: 10,
+      stretchTargets: [15],
+    });
+  });
+
   it("asks for everything when nothing is given", () => {
     const r = parseStrategyBrief("build me a strategy", defaults());
     expect(r.brief).toBeNull();

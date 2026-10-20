@@ -21,6 +21,7 @@ const TOOL_LABELS: Record<string, string> = {
   optimize_meta_placements: "Placement recommendations",
   detect_meta_creative_fatigue: "Creative fatigue check",
   list_competitor_ads_v2: "List competitor ads",
+  update_client_settings: "Update client settings",
 
   // Execute
   update_adset_budget: "Update ad set budget",

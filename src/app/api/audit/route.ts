@@ -11,6 +11,7 @@ import { jsonOk, withApiHandler } from "@/lib/api/response";
 import { humanToolLabel } from "@/lib/tools/display-labels";
 import { approvalAuditEvent, type AuditEvent } from "@/lib/audit/events";
 import { mapApprovalRow } from "@/lib/db/live-maps";
+import { settingsAuditDetail } from "@/lib/clients/chat-settings";
 
 export type { AuditEvent };
 
@@ -28,18 +29,21 @@ function buildDemoAuditEvents(): AuditEvent[] {
 
   for (const t of store.toolCalls) {
     const task = store.tasks.find((x) => x.id === t.task_id);
+    // A settings save shows what changed: its one-line summary and before/after.
+    const settings = settingsAuditDetail(t.tool_name, t.arguments, t.result);
     events.push({
       id: `audit_tool_${t.id}`,
       at: t.completed_at ?? t.started_at,
       type: `tool.${t.safety_class}`,
       client_id: task?.client_id ?? null,
       actor_id: task?.created_by ?? null,
-      summary: `${humanToolLabel(t.tool_name)} (${t.safety_class})`,
+      summary: settings?.summary ?? `${humanToolLabel(t.tool_name)} (${t.safety_class})`,
       payload: {
         toolCallId: t.id,
         toolName: t.tool_name,
         safetyClass: t.safety_class,
         approvalId: t.approval_id,
+        ...(settings ? { changes: settings.changes } : {}),
       },
     });
   }
@@ -100,13 +104,14 @@ async function buildLiveAuditEvents(limit: number): Promise<AuditEvent[]> {
   }
 
   for (const t of (toolCalls ?? []) as Array<Record<string, unknown>>) {
+    const settings = settingsAuditDetail(String(t.tool_name), t.input, t.output);
     events.push({
       id: `audit_tool_${t.id}`,
       at: String(t.completed_at ?? t.started_at ?? t.created_at),
       type: `tool.${String(t.tool_type ?? t.status ?? "call")}`,
       client_id: (t.client_id as string) ?? null,
       actor_id: null,
-      summary: `${humanToolLabel(String(t.tool_name))} (${String(t.tool_type ?? t.status)})`,
+      summary: settings?.summary ?? `${humanToolLabel(String(t.tool_name))} (${String(t.tool_type ?? t.status)})`,
       payload: {
         toolCallId: t.id,
         toolName: t.tool_name,
@@ -114,6 +119,7 @@ async function buildLiveAuditEvents(limit: number): Promise<AuditEvent[]> {
         status: t.status,
         approvalId: t.approval_id,
         error: t.error,
+        ...(settings ? { changes: settings.changes } : {}),
       },
     });
   }

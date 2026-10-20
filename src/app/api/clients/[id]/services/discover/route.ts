@@ -4,24 +4,9 @@ import { getCurrentUser } from "@/lib/security/auth";
 import { assertAuthenticated, assertClientAccess } from "@/lib/authz/assert";
 import type { ClientService } from "@/types";
 import { jsonOk, withApiHandler } from "@/lib/api/response";
-import { logger } from "@/lib/observability/logger";
-import {
-  discoverCategoryCandidates,
-  fetchCategorySitemapUrls,
-  mapSiteUrls,
-  matchServicePages,
-  type CategoryCandidate,
-} from "@/lib/scraping/site-map";
+import { scanSiteCandidates } from "@/lib/scraping/site-scan";
 
 type RouteContext = { params: Promise<{ id: string }> };
-
-export type ScanUnavailableReason = "not_configured" | "no_website" | "scan_failed";
-
-const unavailable = (reason: ScanUnavailableReason) => ({
-  candidates: [] as CategoryCandidate[],
-  source: "unavailable" as const,
-  reason,
-});
 
 /**
  * GET /api/clients/:id/services/discover
@@ -37,7 +22,8 @@ export async function GET(_request: Request, context: RouteContext) {
     await assertClientAccess(user.id, id);
 
     const config = getConfig();
-    if (!config.hasFirecrawl) return jsonOk(unavailable("not_configured"));
+    // Checked before the client is read, so an unconfigured scan costs nothing.
+    if (!config.hasFirecrawl) return jsonOk(await scanSiteCandidates({ siteUrl: null, existing: [], clientId: id }));
 
     let siteUrl: string | null = null;
     let existing: ClientService[] = [];
@@ -60,43 +46,6 @@ export async function GET(_request: Request, context: RouteContext) {
         .eq("client_id", id);
       existing = (rows ?? []) as ClientService[];
     }
-    if (!siteUrl) return jsonOk(unavailable("no_website"));
-
-    // The store's own sitemap lists its collections even when the crawl map
-    // fills up with product pages first; it never throws.
-    const sitemapUrls = await fetchCategorySitemapUrls(siteUrl);
-    try {
-      let mapped: string[] = [];
-      try {
-        mapped = await mapSiteUrls(siteUrl);
-      } catch (error) {
-        if (!sitemapUrls.length) throw error;
-        logger.warn("Category scan: site map failed; using the sitemap only", {
-          clientId: id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-      const urls = [...sitemapUrls, ...mapped];
-      let candidates = discoverCategoryCandidates(urls, siteUrl, existing);
-      // No shop-style category pages (agencies, clinics): read the service
-      // names from the site and match each to its own page in the map.
-      if (!candidates.length) {
-        const { scrapeWebsiteServices } = await import("@/lib/scraping/firecrawl");
-        const scraped = await scrapeWebsiteServices(siteUrl);
-        candidates = matchServicePages(
-          scraped.services.map((s) => s.name),
-          urls,
-          siteUrl,
-          existing,
-        );
-      }
-      return jsonOk({ candidates, source: "firecrawl" as const });
-    } catch (error) {
-      logger.warn("Category scan: site map failed", {
-        clientId: id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return jsonOk(unavailable("scan_failed"));
-    }
+    return jsonOk(await scanSiteCandidates({ siteUrl, existing, clientId: id }));
   });
 }

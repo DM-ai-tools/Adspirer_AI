@@ -5,6 +5,7 @@ import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
 import { AgentPausedError } from "@/lib/errors";
 import { classify } from "@/lib/tools/policy";
+import { SETTINGS_TOOL, withoutSettingsCalls } from "@/lib/clients/chat-settings";
 import "@/lib/tools"; // ensure tools registered
 import { createPendingApproval } from "@/lib/approvals/service";
 import { humanToolLabel } from "@/lib/tools/display-labels";
@@ -13,6 +14,7 @@ import {
   runAdspirerAgent,
   gatherDiagnoseEvidence,
   type AgentProgressEvent,
+  type AgentToolCallProposal,
   type AgentRunResult,
 } from "@/lib/agent/adspirer-agent";
 import {
@@ -390,6 +392,26 @@ export async function runTask(
         steps,
       };
     }
+    // A settings save is persisted (one row, upserted) the moment it changes,
+    // so a throw later in the turn can never leave a save without its audit row.
+    let settingsToolCall: ToolCall | null = null;
+    const persistSettingsCall = async (call: AgentToolCallProposal) => {
+      settingsToolCall = {
+        ...(settingsToolCall ?? newToolCall(task, call.name, classify(call.name), call.args)),
+        arguments: call.args,
+        result: { queued_by: "preflight", summary: call.rationale ?? null },
+        completed_at: nowIso(),
+      };
+      try {
+        await saveToolCall(settingsToolCall, task.client_id);
+      } catch (error) {
+        logger.warn("Chat settings: couldn't save the audit row", {
+          taskId: task.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+
     // Conversational turns (greetings, definitions, "why is that") need no
     // fresh account data — skip the Graph preflight entirely.
     const gathered: Awaited<ReturnType<typeof gatherDiagnoseEvidence>> =
@@ -397,24 +419,30 @@ export async function runTask(
         ? { accountId: null, evidence: "", toolCalls: [] }
         : await gatherDiagnoseEvidence({
             clientId: task.client_id,
+            userId: task.created_by,
             request,
             conversationId: task.conversation_id,
             history,
             intent,
             preloaded: { metaAccounts, documents, selectedCreative },
             onProgress: emit,
+            // Saved the moment it changes, so a later throw can't lose it.
+            onSettingsSaved: persistSettingsCall,
           });
 
     // One bulk write for the whole preflight batch (was 2 round trips each).
+    // The settings save is already persisted through persistSettingsCall.
     await saveToolCalls(
-      gathered.toolCalls.map((call) => {
-        const ts = nowIso();
-        return {
-          ...newToolCall(task, call.name, classify(call.name), call.args),
-          result: { queued_by: "preflight" },
-          completed_at: ts,
-        };
-      }),
+      gathered.toolCalls
+        .filter((call) => call.name !== SETTINGS_TOOL)
+        .map((call) => {
+          const ts = nowIso();
+          return {
+            ...newToolCall(task, call.name, classify(call.name), call.args),
+            result: { queued_by: "preflight" },
+            completed_at: ts,
+          };
+        }),
       task.client_id,
     );
 
@@ -841,6 +869,8 @@ export async function runTask(
       );
     }
 
+    // Only the settings step records a settings save; the writer never can.
+    agentResult.toolCalls = withoutSettingsCalls(agentResult.toolCalls);
     for (const call of agentResult.toolCalls) {
       const safety = classify(call.name);
       const args =
