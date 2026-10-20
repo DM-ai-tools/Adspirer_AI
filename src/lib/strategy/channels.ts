@@ -19,6 +19,16 @@ export type CategoryChannels = {
    * null when GA4 is unavailable or no GA4 row matched the category (never a made-up $0).
    */
   ga4TotalRevenueCents: number | null;
+  /**
+   * The category's GA4 revenue from every other channel (organic, direct, email, referral,
+   * untagged): its GA4 total less the Meta and Google shares. Null without a GA4 split.
+   */
+  ga4OtherRevenueCents?: number | null;
+  /**
+   * How GA4 revenue was split across channels: by the channel of each order its items were in,
+   * or by the channel of the sessions landing on its pages (an estimate). Null without a split.
+   */
+  ga4SplitBy?: "order" | "landing_page" | null;
   searchImpressions: number;
   searchClicks: number;
   topQueries: string[];
@@ -38,7 +48,7 @@ export type ChannelPerformance = {
   /**
    * Paid-social check: what Meta reports vs what GA4 credits to paid social, over the categories
    * GA4 has a paid-social estimate for. ga4PaidSocialCents is the sum of those per-category
-   * estimates on matched pages, not GA4's raw paid-social total.
+   * estimates (by order, or by landing page), not GA4's raw paid-social total.
    */
   metaVsGa4: { metaReportedCents: number; ga4PaidSocialCents: number } | null;
   /** The snapshot's Google Ads data, passed through for campaign-type detection (Task 11). */
@@ -52,7 +62,10 @@ const ITEM_TO_LANDING_NOTE =
   "GA4 item categories didn't match any category, so GA4 revenue is matched by landing page instead (an estimate).";
 const ITEM_UNUSED_NOTE =
   "GA4 item categories didn't match any category and there is no landing-page data, so GA4 revenue isn't used.";
-/** Below this share of GA4 revenue matched to categories, figures use platform-reported revenue. */
+/**
+ * Below this share of GA4 revenue matched to categories, a whole-account plan on GA4 landing
+ * pages uses platform-reported revenue instead.
+ */
 export const MIN_GA4_MATCHED_PCT = 50;
 const MAX_TOP_QUERIES = 5;
 /** Host for GA4 paths when no category landing page or Search Console site gives one. */
@@ -74,10 +87,17 @@ export function ga4MatchedPct(perf: ChannelPerformance): number | null {
   return total > 0 ? Math.round((matched / total) * 1000) / 10 : null;
 }
 
-/** GA4 is the revenue basis: it loaded and matched at least half its revenue to categories. */
-export function ga4RevenueBasis(perf: ChannelPerformance): boolean {
+/**
+ * GA4 is the revenue basis when it loaded and either its item categories named the categories
+ * directly, the question is about named categories (`scoped`), or it matched at least half its
+ * revenue to categories. A low share then only means few categories are set up, not that GA4
+ * is wrong; only a whole-account landing-page match under half falls back to platform revenue.
+ */
+export function ga4RevenueBasis(perf: ChannelPerformance, opts: { scoped?: boolean } = {}): boolean {
+  if (!perf.ga4Available) return false;
+  if (perf.ga4Method === "item" || opts.scoped) return true;
   const pct = ga4MatchedPct(perf);
-  return perf.ga4Available && (pct === null || pct >= MIN_GA4_MATCHED_PCT);
+  return pct === null || pct >= MIN_GA4_MATCHED_PCT;
 }
 
 /** GA4 revenue from paid social + paid search sessions; null when GA4 has neither share. */
@@ -324,7 +344,15 @@ export function buildChannelPerformance(input: {
 
   // A category no GA4 row matched has no GA4 figure (null), never a real $0.
   const ga4Totals = new Map<string, number | null>(categories.map((c) => [c.id, null]));
-  const channels = new Map(categories.map((c) => [c.id, { social: 0, search: 0, all: 0 }]));
+  type Split = { social: number; search: number; all: number };
+  const emptySplit = (): Split => ({ social: 0, search: 0, all: 0 });
+  const addTo = (split: Split, channel: string, revenueCents: number) => {
+    split.all += revenueCents;
+    if (channel === "paid_social") split.social += revenueCents;
+    if (channel === "paid_search") split.search += revenueCents;
+  };
+  const channels = new Map(categories.map((c) => [c.id, emptySplit()]));
+  const orderChannels = new Map(categories.map((c) => [c.id, emptySplit()]));
   let ga4UnmatchedRevenueCents = 0;
   if (ga4 && ga4Available) {
     const matchRows = (rows: Array<{ key: string; revenueCents: number }>, byItem: boolean) =>
@@ -353,11 +381,15 @@ export function buildChannelPerformance(input: {
   if (ga4 && ga4Available) {
     for (const row of ga4.byChannel) {
       const hit = matchPath(row.landingPage);
-      if (!hit) continue;
-      const c = channels.get(hit.id)!;
-      c.all += row.revenueCents;
-      if (row.channel === "paid_social") c.social += row.revenueCents;
-      if (row.channel === "paid_search") c.search += row.revenueCents;
+      if (hit) addTo(channels.get(hit.id)!, row.channel, row.revenueCents);
+    }
+    // Item categories joined to each order's channel credit a sale whatever page it landed on;
+    // only while GA4 revenue is still matched by item category.
+    if (ga4Method === "item") {
+      for (const row of ga4.byItemChannel ?? []) {
+        const hit = matchCategoryByLabel(row.itemCategory, categories);
+        if (hit) addTo(orderChannels.get(hit.id)!, row.channel, row.revenueCents);
+      }
     }
   }
   // Splitting GA4 revenue across channels mixes its currency with the platforms', so not when they differ.
@@ -398,17 +430,26 @@ export function buildChannelPerformance(input: {
 
   const byCategory = categories.map((category): CategoryChannels => {
     const total = ga4Available ? ga4Totals.get(category.id)! : null;
-    const ch = channels.get(category.id)!;
-    const share = (part: number) =>
-      splitGa4 && total != null && ch.all > 0 ? Math.round((total * part) / ch.all) : null;
+    // The order split when GA4 has the category's orders, else its landing pages'.
+    const byOrder = orderChannels.get(category.id)!;
+    const splitBy = byOrder.all > 0 ? "order" : channels.get(category.id)!.all > 0 ? "landing_page" : null;
+    const ch = splitBy === "order" ? byOrder : channels.get(category.id)!;
+    const splitTotal = splitGa4 && splitBy !== null ? total : null;
+    const split = splitTotal !== null;
+    // Each channel's share of the category's GA4 total, so the shares and "other" sum to it.
+    const share = (part: number) => (splitTotal !== null ? Math.round((splitTotal * part) / ch.all) : null);
+    const metaShare = share(ch.social);
+    const googleShare = share(ch.search);
     const m = metaById.get(category.id);
     const g = google.get(category.id)!;
     const s = search.get(category.id)!;
     return {
       categoryId: category.id,
-      meta: figures(m?.spendCents ?? 0, m?.purchaseValueCents ?? 0, m?.roas != null, share(ch.social)),
-      google: figures(g.cost, g.value, ads != null && g.cost > 0, share(ch.search)),
+      meta: figures(m?.spendCents ?? 0, m?.purchaseValueCents ?? 0, m?.roas != null, metaShare),
+      google: figures(g.cost, g.value, ads != null && g.cost > 0, googleShare),
       ga4TotalRevenueCents: total,
+      ga4OtherRevenueCents: splitTotal !== null ? Math.max(0, splitTotal - (metaShare ?? 0) - (googleShare ?? 0)) : null,
+      ga4SplitBy: split ? splitBy : null,
       searchImpressions: s.impressions,
       searchClicks: s.clicks,
       topQueries: s.queries,

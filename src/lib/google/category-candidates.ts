@@ -140,7 +140,7 @@ export async function googleCategoryCandidates(input: {
     const ga4Id = assets.ga4?.external_id;
     const gscId = assets.gsc?.external_id;
     const [items, landing, gsc] = await Promise.all([
-      ga4Id ? part("GA4", () => provider.ga4CategoryRevenue(ga4Id, range)) : null,
+      ga4Id ? part("GA4", () => provider.ga4CategoryRevenue(ga4Id, range, { byItemChannel: false })) : null,
       ga4Id ? part("GA4", () => provider.ga4LandingPages(ga4Id, range)) : null,
       gscId ? part("Search Console", () => provider.searchDemand(gscId, range)) : null,
     ]);

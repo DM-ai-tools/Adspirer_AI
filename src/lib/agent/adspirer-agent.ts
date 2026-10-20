@@ -739,6 +739,7 @@ function buildWriterMessages(input: WriterInput): {
       : evidence.includes("### Spend & return by")
         ? [
             "- For spend or return by category / service, quote only the “Spend & return by” table and its coverage lines; if they say the figures are partial, say so.",
+            "- When it has “GA4 … revenue by platform” lines, give each one with how it was matched, and pass on any UTM-tag check it names.",
             "- Do NOT build a plan or suggest budget allocations for this question.",
           ]
         : [];
@@ -2644,6 +2645,8 @@ export async function gatherDiagnoseEvidence(input: {
             warnings: snapshot.warnings,
             channels,
             channelWarnings,
+            // A question about named categories uses GA4 for them, however few are set up.
+            scoped: !!requested.scoped || scopeCategoriesFromRequest(input.request, categories).length > 0,
           }),
         );
       } catch (error) {

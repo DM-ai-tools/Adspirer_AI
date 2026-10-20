@@ -5,7 +5,7 @@ import { loadChannelSnapshot } from "@/lib/google/snapshot";
 import type { AdsPerformance, ChannelSnapshot, Ga4CategoryRevenue, SearchDemand } from "@/lib/google/types";
 import { categoriesFromServices, type StrategyCategory } from "@/lib/strategy/categories";
 import { attributeSpendToCategories, type CategoryAttribution } from "@/lib/strategy/category-attribution";
-import { buildChannelPerformance } from "@/lib/strategy/channels";
+import { buildChannelPerformance, ga4MatchedPct, ga4RevenueBasis } from "@/lib/strategy/channels";
 
 const SITE = "https://clicktrends.example";
 const SCALED = "Google figures from different sources overlap; the category split of Google spend is approximate.";
@@ -398,6 +398,161 @@ describe("buildChannelPerformance — GA4", () => {
     const perf = build({ ...snapshot(), mapped: { ga4: false, ads: true, gsc: false }, warnings: ["Google Ads: quota exceeded"] });
     expect(perf.googleAdsMapped).toBe(true);
     expect(perf.googleAdsLoaded).toBe(false);
+  });
+});
+
+describe("buildChannelPerformance — GA4 split by order", () => {
+  it("splits each category's GA4 revenue by the channel of the orders its items were in", () => {
+    const perf = build(
+      snapshot({
+        ga4: ga4({
+          rows: [
+            { key: "Furniture > Bar Stools", revenueCents: 100_000, purchases: 10 },
+            { key: "Sofas", revenueCents: 40_000, purchases: 2 },
+          ],
+          // Landing pages alone would give bar stools' paid social only 30%.
+          byChannel: [
+            { landingPage: "/collections/bar-stools", channel: "paid_social", revenueCents: 30_000 },
+            { landingPage: "/collections/bar-stools", channel: "other", revenueCents: 70_000 },
+          ],
+          byItemChannel: [
+            { itemCategory: "Furniture > Bar Stools", channel: "paid_social", revenueCents: 50_000 },
+            { itemCategory: "Furniture > Bar Stools", channel: "paid_search", revenueCents: 20_000 },
+            { itemCategory: "Furniture > Bar Stools", channel: "other", revenueCents: 30_000 },
+            { itemCategory: "Sofas", channel: "other", revenueCents: 40_000 },
+          ],
+        }),
+      }),
+      meta({ bar: [20_000, 50_000], sofas: [5_000, 15_000] }),
+    );
+    const b = byId(perf, "bar");
+    expect(b.meta).toEqual({ spendCents: 20_000, platformRevenueCents: 50_000, ga4RevenueCents: 50_000, roas: 2.5, basis: "ga4" });
+    expect(b.google.ga4RevenueCents).toBe(20_000);
+    expect(b.ga4OtherRevenueCents).toBe(30_000);
+    expect(b.ga4SplitBy).toBe("order");
+    const s = byId(perf, "sofas");
+    // GA4 credits Meta nothing for sofas: a real $0, since GA4 has the category's orders.
+    expect(s.meta.ga4RevenueCents).toBe(0);
+    expect(s.google.ga4RevenueCents).toBe(0);
+    expect(s.ga4OtherRevenueCents).toBe(40_000);
+    expect(s.ga4SplitBy).toBe("order");
+    expect(perf.metaVsGa4).toEqual({ metaReportedCents: 65_000, ga4PaidSocialCents: 50_000 });
+  });
+
+  it("scales the order split to the category's GA4 total when some items had no order id", () => {
+    const perf = build(
+      snapshot({
+        ga4: ga4({
+          rows: [{ key: "Bar Stools", revenueCents: 100_000, purchases: 10 }],
+          byItemChannel: [
+            { itemCategory: "Bar Stools", channel: "paid_social", revenueCents: 30_000 },
+            { itemCategory: "Bar Stools", channel: "other", revenueCents: 20_000 },
+          ],
+        }),
+      }),
+    );
+    const b = byId(perf, "bar");
+    expect(b.meta.ga4RevenueCents).toBe(60_000);
+    expect(b.google.ga4RevenueCents).toBe(0);
+    expect(b.ga4OtherRevenueCents).toBe(40_000);
+  });
+
+  it("uses the landing-page split for a category with no order rows", () => {
+    const perf = build(
+      snapshot({
+        ga4: ga4({
+          rows: [
+            { key: "Bar Stools", revenueCents: 100_000, purchases: 10 },
+            { key: "Sofas", revenueCents: 40_000, purchases: 2 },
+          ],
+          byChannel: [
+            { landingPage: "/collections/sofas", channel: "paid_social", revenueCents: 10_000 },
+            { landingPage: "/collections/sofas", channel: "other", revenueCents: 10_000 },
+          ],
+          byItemChannel: [{ itemCategory: "Bar Stools", channel: "paid_social", revenueCents: 100_000 }],
+        }),
+      }),
+    );
+    expect(byId(perf, "bar").ga4SplitBy).toBe("order");
+    expect(byId(perf, "bar").meta.ga4RevenueCents).toBe(100_000);
+    const s = byId(perf, "sofas");
+    expect(s.ga4SplitBy).toBe("landing_page");
+    expect(s.meta.ga4RevenueCents).toBe(20_000);
+    expect(s.ga4OtherRevenueCents).toBe(20_000);
+  });
+
+  it("keeps the landing-page split, unchanged, without byItemChannel", () => {
+    const perf = build(
+      snapshot({
+        ga4: ga4({
+          rows: [{ key: "Bar Stools", revenueCents: 100_000, purchases: 10 }],
+          byChannel: [
+            { landingPage: "/collections/bar-stools", channel: "paid_social", revenueCents: 30_000 },
+            { landingPage: "/collections/bar-stools", channel: "paid_search", revenueCents: 10_000 },
+            { landingPage: "/collections/bar-stools", channel: "other", revenueCents: 10_000 },
+          ],
+        }),
+      }),
+    );
+    const b = byId(perf, "bar");
+    expect(b.meta.ga4RevenueCents).toBe(60_000);
+    expect(b.google.ga4RevenueCents).toBe(20_000);
+    expect(b.ga4OtherRevenueCents).toBe(20_000);
+    expect(b.ga4SplitBy).toBe("landing_page");
+    // No GA4 split for sofas: nothing to say how it splits.
+    expect(byId(perf, "sofas").ga4SplitBy).toBeNull();
+    expect(byId(perf, "sofas").ga4OtherRevenueCents).toBeNull();
+  });
+
+  it("ignores the order split once item categories fell back to landing pages", () => {
+    const perf = build(
+      snapshot({
+        ga4: ga4({
+          rows: [{ key: "Furniture", revenueCents: 90_000, purchases: 9 }],
+          byChannel: [{ landingPage: "/collections/bar-stools", channel: "paid_social", revenueCents: 30_000 }],
+          byItemChannel: [{ itemCategory: "Furniture", channel: "paid_search", revenueCents: 90_000 }],
+        }),
+      }),
+    );
+    expect(perf.ga4Method).toBe("landing_page");
+    expect(byId(perf, "bar").ga4SplitBy).toBe("landing_page");
+    expect(byId(perf, "bar").meta.ga4RevenueCents).toBe(30_000);
+  });
+});
+
+describe("ga4RevenueBasis", () => {
+  const perfWith = (method: "item" | "landing_page", matched: number, unmatched: number) =>
+    build(
+      snapshot({
+        ga4: ga4({
+          method,
+          rows: [
+            { key: method === "item" ? "Bar Stools" : "/collections/bar-stools", revenueCents: matched, purchases: 1 },
+            { key: method === "item" ? "Lamps" : "/lamps", revenueCents: unmatched, purchases: 1 },
+          ],
+          byChannel: [{ landingPage: "/collections/bar-stools", channel: "paid_social", revenueCents: matched }],
+        }),
+      }),
+    );
+
+  it("uses GA4 for item categories, whatever share of GA4 revenue they cover", () => {
+    const perf = perfWith("item", 4_700, 95_300);
+    expect(ga4MatchedPct(perf)).toBe(4.7);
+    expect(ga4RevenueBasis(perf)).toBe(true);
+    expect(ga4RevenueBasis(perf, { scoped: true })).toBe(true);
+  });
+
+  it("uses GA4 for named categories, and for a whole account only at half its revenue or more", () => {
+    const low = perfWith("landing_page", 30_000, 70_000);
+    expect(ga4RevenueBasis(low)).toBe(false);
+    expect(ga4RevenueBasis(low, { scoped: false })).toBe(false);
+    expect(ga4RevenueBasis(low, { scoped: true })).toBe(true);
+    expect(ga4RevenueBasis(perfWith("landing_page", 50_000, 50_000))).toBe(true);
+  });
+
+  it("never uses GA4 that didn't load", () => {
+    const perf = build(snapshot());
+    expect(ga4RevenueBasis(perf, { scoped: true })).toBe(false);
   });
 });
 

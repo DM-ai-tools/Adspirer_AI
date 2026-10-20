@@ -64,11 +64,38 @@ const dims = (call: Call) => (call.body?.dimensions ?? []).map((d) => d.name).jo
 
 type ReportExtra = { dataLossFromOtherRow?: boolean; rowCount?: number };
 
-/** Routes the three GA4 reports by their dimensions. */
+type PagedBody = Body & { offset?: number };
+
+/** One page of an order-level report: rows from body.offset, body.limit long, rowCount the full total. */
+function page(dimensionCount: number, rows: string[][], call: Call, extra: ReportExtra = {}) {
+  const body = call.body as PagedBody | null;
+  const offset = body?.offset ?? 0;
+  const limit = body?.limit ?? rows.length;
+  return report(dimensionCount, rows.slice(offset, offset + limit), { rowCount: rows.length, ...extra });
+}
+
+const ORDER_ITEMS = "transactionId,itemCategory";
+const ORDER_CHANNELS = "transactionId,sessionDefaultChannelGroup,sessionSource";
+
+/** Routes the GA4 reports by their dimensions; the order-level reports page by offset. */
 function ga4Reports(
-  reports: { item?: string[][]; landing?: string[][]; channel?: string[][] },
-  extra: { item?: ReportExtra; landing?: ReportExtra; channel?: ReportExtra } = {},
+  reports: {
+    item?: string[][];
+    landing?: string[][];
+    channel?: string[][];
+    orderItems?: string[][];
+    orderChannels?: string[][];
+  },
+  extra: {
+    item?: ReportExtra;
+    landing?: ReportExtra;
+    channel?: ReportExtra;
+    orderItems?: ReportExtra;
+    orderChannels?: ReportExtra;
+  } = {},
+  fail: { orderItems?: boolean; orderChannels?: boolean } = {},
 ) {
+  const denied = () => json({ error: { message: "Forbidden", status: "PERMISSION_DENIED" } }, 403);
   route((call) => {
     switch (dims(call)) {
       case "itemCategory":
@@ -77,6 +104,10 @@ function ga4Reports(
         return report(1, reports.landing ?? [], extra.landing);
       case "landingPage,sessionDefaultChannelGroup,sessionSource":
         return report(3, reports.channel ?? [], extra.channel);
+      case ORDER_ITEMS:
+        return fail.orderItems ? denied() : page(2, reports.orderItems ?? [], call, extra.orderItems);
+      case ORDER_CHANNELS:
+        return fail.orderChannels ? denied() : page(3, reports.orderChannels ?? [], call, extra.orderChannels);
       default:
         throw new Error(`unexpected report ${dims(call)}`);
     }
@@ -126,6 +157,25 @@ describe("ga4ChannelOf", () => {
     expect(ga4ChannelOf("Paid Social")).toBe("other");
     // Organic Facebook traffic is not paid social.
     expect(ga4ChannelOf("Organic Social", "facebook")).toBe("other");
+  });
+
+  it("counts every Google paid group with a Google source as Google, Paid Video included", () => {
+    for (const group of ["Paid Search", "Paid Shopping", "Cross-network", "Paid Video", "Paid Other"]) {
+      expect(ga4ChannelOf(group, "google"), group).toBe("paid_search");
+    }
+    expect(ga4ChannelOf("Paid Video", "bing")).toBe("other");
+  });
+
+  it("counts Meta sources as Meta in Paid Social, Paid Other, Paid Shopping and Paid Video", () => {
+    const sources = ["facebook", "fb", "ig", "instagram", "meta", "an", "msg", "messenger", "Facebook_Mobile_Feed"];
+    for (const group of ["Paid Social", "Paid Other", "Paid Shopping", "Paid Video"]) {
+      for (const source of sources) expect(ga4ChannelOf(group, source), `${group} / ${source}`).toBe("paid_social");
+    }
+    // Short Meta sources only count as a whole part of the source.
+    for (const source of ["plan", "msgraph", "anthropic", "bigspend"]) {
+      expect(ga4ChannelOf("Paid Social", source), source).toBe("other");
+    }
+    expect(ga4ChannelOf("Organic Social", "msg")).toBe("other");
   });
 
   it("counts paid search only when the source is Google", () => {
@@ -290,6 +340,154 @@ describe("fetchGa4CategoryRevenue", () => {
       /YYYY-MM-DD/,
     );
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("fetchGa4CategoryRevenue — revenue per item category per channel, by order", () => {
+  const item = [
+    ["Bar Stools", "330", "4"],
+    ["Sofas", "50", "1"],
+  ];
+
+  it("joins item revenue to each order's channel, splitting a multi-item order across categories", async () => {
+    ga4Reports({
+      item,
+      orderItems: [
+        // T1: two categories in one Meta order.
+        ["T1", "Bar Stools", "100"],
+        ["T1", "Sofas", "50"],
+        // T2: a Google order.
+        ["T2", "Bar Stools", "80"],
+        // T3: in the item report but not the channel report, so "other".
+        ["T3", "Bar Stools", "120"],
+        // T4: organic.
+        ["T4", "Bar Stools", "30"],
+        // Placeholder transaction ids and categories are skipped.
+        ["(not set)", "Bar Stools", "999"],
+        ["", "Bar Stools", "999"],
+        ["T5", "(not set)", "40"],
+      ],
+      orderChannels: [
+        ["T1", "Paid Social", "facebook", "150"],
+        ["T2", "Paid Shopping", "google", "80"],
+        ["T4", "Organic Search", "google", "30"],
+        ["(not set)", "Paid Social", "facebook", "999"],
+      ],
+    });
+
+    const result = await fetchGa4CategoryRevenue("123", RANGE);
+
+    expect(result.method).toBe("item");
+    expect(result.byItemChannel).toEqual([
+      { itemCategory: "Bar Stools", channel: "paid_social", revenueCents: 10_000 },
+      { itemCategory: "Sofas", channel: "paid_social", revenueCents: 5_000 },
+      { itemCategory: "Bar Stools", channel: "paid_search", revenueCents: 8_000 },
+      { itemCategory: "Bar Stools", channel: "other", revenueCents: 15_000 },
+    ]);
+    const a = calls.find((call) => dims(call) === ORDER_ITEMS);
+    expect(a?.body?.metrics?.map((m) => m.name)).toEqual(["itemRevenue"]);
+    const b = calls.find((call) => dims(call) === ORDER_CHANNELS);
+    expect(b?.body?.metrics?.map((m) => m.name)).toEqual(["purchaseRevenue"]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("pages through both reports by offset until every row is read", async () => {
+    const orderItems = Array.from({ length: 25_000 }, (_, i) => [`T${i}`, "Bar Stools", "1"]);
+    const orderChannels = Array.from({ length: 12_000 }, (_, i) => [`T${i}`, "Paid Social", "facebook", "1"]);
+    ga4Reports({ item, orderItems, orderChannels });
+
+    const result = await fetchGa4CategoryRevenue("123", RANGE);
+
+    const offsets = (d: string) =>
+      calls.filter((call) => dims(call) === d).map((call) => (call.body as PagedBody).offset ?? 0);
+    expect(offsets(ORDER_ITEMS)).toEqual([0, 10_000, 20_000]);
+    expect(offsets(ORDER_CHANNELS)).toEqual([0, 10_000]);
+    expect(result.byItemChannel).toEqual([
+      { itemCategory: "Bar Stools", channel: "paid_social", revenueCents: 1_200_000 },
+      { itemCategory: "Bar Stools", channel: "other", revenueCents: 1_300_000 },
+    ]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("stops at 100,000 rows per report and warns", async () => {
+    // Every page returns 10,000 rows of a report that says it has 150,000.
+    const rows = Array.from({ length: 10_000 }, (_, i) => [`T${i}`, "Bar Stools", "1"]);
+    route((call) => {
+      switch (dims(call)) {
+        case "itemCategory":
+          return report(1, item);
+        case "landingPage,sessionDefaultChannelGroup,sessionSource":
+          return report(3, []);
+        case ORDER_ITEMS:
+          return report(2, rows, { rowCount: 150_000 });
+        case ORDER_CHANNELS:
+          return report(3, [["T1", "Paid Social", "facebook", "1"]]);
+        default:
+          throw new Error(`unexpected report ${dims(call)}`);
+      }
+    });
+
+    const result = await fetchGa4CategoryRevenue("123", RANGE);
+
+    expect(calls.filter((call) => dims(call) === ORDER_ITEMS)).toHaveLength(10);
+    expect(result.byItemChannel).toBeDefined();
+    expect(result.warnings).toEqual([
+      "GA4 has more order rows than were read (over 100,000, or grouped into (other)); per-channel category figures may be understated",
+    ]);
+  });
+
+  it("keeps the rest of the GA4 figures, with a warning, when an order report fails", async () => {
+    for (const fail of [{ orderItems: true }, { orderChannels: true }]) {
+      calls = [];
+      ga4Reports(
+        {
+          item,
+          channel: [["/collections/bar-stools", "Paid Social", "facebook", "200"]],
+          orderItems: [["T1", "Bar Stools", "100"]],
+          orderChannels: [["T1", "Paid Social", "facebook", "100"]],
+        },
+        {},
+        fail,
+      );
+
+      const result = await fetchGa4CategoryRevenue("123", RANGE);
+
+      expect(result.method).toBe("item");
+      expect(result.rows).toHaveLength(2);
+      expect(result.byChannel).toEqual([
+        { landingPage: "/collections/bar-stools", channel: "paid_social", revenueCents: 20_000 },
+      ]);
+      expect(result.byItemChannel).toBeUndefined();
+      expect(result.warnings).toEqual([
+        "GA4 revenue by order and channel didn't load (Forbidden); the per-channel split uses landing pages instead",
+      ]);
+    }
+  });
+
+  it("leaves byItemChannel out, with no warning, when either order report has no rows", async () => {
+    ga4Reports({ item, orderItems: [["T1", "Bar Stools", "100"]], orderChannels: [] });
+    const result = await fetchGa4CategoryRevenue("123", RANGE);
+    expect(result.byItemChannel).toBeUndefined();
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("doesn't read the order reports without item categories", async () => {
+    ga4Reports({ item: [], landing: [["/sofas", "100", "1"]] });
+    const result = await fetchGa4CategoryRevenue("123", RANGE);
+    expect(result.method).toBe("landing_page");
+    expect(result.byItemChannel).toBeUndefined();
+    expect(calls.some((call) => dims(call).startsWith("transactionId"))).toBe(false);
+  });
+
+  it("doesn't read the order reports when asked not to", async () => {
+    ga4Reports({
+      item,
+      orderItems: [["T1", "Bar Stools", "100"]],
+      orderChannels: [["T1", "Paid Social", "facebook", "100"]],
+    });
+    const result = await fetchGa4CategoryRevenue("123", RANGE, { byItemChannel: false });
+    expect(result.byItemChannel).toBeUndefined();
+    expect(calls.some((call) => dims(call).startsWith("transactionId"))).toBe(false);
   });
 });
 
