@@ -1,6 +1,6 @@
 import { logger } from "@/lib/observability/logger";
 import { categoryPageOf, discoverCategoryCandidates, type CategoryCandidate } from "@/lib/scraping/site-map";
-import { GENERIC_COLLECTIONS, sameCategoryName } from "@/lib/strategy/requested-category";
+import { GENERIC_COLLECTIONS, isRankingPhrase, sameCategoryName } from "@/lib/strategy/requested-category";
 import type { ClientService } from "@/types";
 import { clientGoogleAssets } from "./assets";
 import { GoogleReconnectRequired } from "./oauth";
@@ -69,10 +69,10 @@ function message(error: unknown): string {
 
 const GIFT_CARD = /^(?:e-?)?gift[\s-]*cards?$/i;
 
-/** Placeholders, gift cards and catch-all collections are never a category. */
+/** Placeholders, gift cards, catch-all collections and rankings ("Best Selling Products") are never a category. */
 function isJunk(name: string): boolean {
   const lower = name.trim().toLowerCase();
-  return !lower || lower === "(not set)" || lower === "(other)" || GIFT_CARD.test(lower) || GENERIC_COLLECTIONS.has(lower);
+  return !lower || lower === "(not set)" || lower === "(other)" || GIFT_CARD.test(lower) || GENERIC_COLLECTIONS.has(lower) || isRankingPhrase(lower);
 }
 
 /** The site's origin: the client's website, else the Search Console site ("sc-domain:x.com" is https://x.com). */

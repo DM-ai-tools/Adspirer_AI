@@ -796,8 +796,8 @@ function buildWriterMessages(input: WriterInput): {
           "- Plain prose only: no headings, tables, bullet menus, or sign-off questions like \"Anything else?\".",
           "- Use the conversation so far for follow-ups (\"why is that\", \"what does that mean\"). Do not repeat earlier reports.",
           "- For greetings or thanks, reply in one short, friendly sentence.",
-          "- If a correct answer needs live account numbers that are not in the conversation, say so in one sentence and offer to pull them. Never invent figures.",
-          "- Do NOT propose tools, JSON, or Meta changes.",
+          "- If a correct answer needs live numbers that are not in the conversation, read them with the read-only data tools (Meta, GA4, Search Console, Google Ads) and name the source. Never invent figures.",
+          "- Do NOT propose execute tools, JSON, or Meta changes.",
         ].join("\n")
       : [
         `Operator request: ${input.task.goal ?? input.task.title}`,
@@ -815,7 +815,7 @@ function buildWriterMessages(input: WriterInput): {
           ? "- This is a report: use clear headings and tables where they help. Lead with the answer (scope, period, headline numbers)."
           : "- Answer exactly what was asked, directly, in the first sentence. Keep it short — a few sentences, or a compact list/table only when listing several campaigns or numbers. No report structure, no headings unless the answer genuinely needs sections.",
         "- Quote real numbers from the evidence with their currency, and keep campaign / ad set / ad names exactly as Meta returns them.",
-        "- If a number is not in the evidence, say it is not available — never estimate or invent it.",
+        "- If a number or answer is not in the evidence, read it with the data tools (meta_insights, ga4_report, search_console_query, google_ads_report, list_client_categories, …) before saying it isn't available — never estimate or invent it. Name the source of each number (Meta, GA4, Search Console, Google Ads).",
         "- Offer at most ONE next step, and only when there is an obvious one. Never end with a menu of options or \"Anything else?\".",
         "- No emojis.",
         "- NEVER make the entire reply a JSON object/array or a wrapper like {\"message\":...}. JSON is only an optional appendix at the very end for tool proposals or pickers.",
@@ -875,28 +875,28 @@ async function streamWriterText(args: {
       : m) as ModelMessage,
   );
 
-  const evidence = input.toolEvidence ?? "";
-  const auditToolsEnabled = evidence.includes("### Diagnose tools");
-
-  let tools: Awaited<ReturnType<typeof import("./diagnose-tools-ai").buildAuditDiagnoseToolSet>> | undefined;
-  if (auditToolsEnabled) {
-    const { buildAuditDiagnoseToolSet } = await import(
-      "@/lib/agent/diagnose-tools-ai"
-    );
-    tools = buildAuditDiagnoseToolSet({
-      clientId: input.task.client_id,
-      userId: input.task.created_by,
-      taskId: input.task.id,
-      conversationId: input.task.conversation_id,
-      correlationId: input.correlationId,
-    });
-  }
-
   // `textStream` only forwards text deltas — it drops error parts and ends
   // cleanly, so a failed call would otherwise look like an empty success and get
   // reported as "Done". Capture the error here and rethrow it after the loop.
   let streamError: unknown = null;
   const intent = resolveWriterIntent(input);
+
+  // Every question gets the read-only tools (Meta, GA4, Search Console, Google
+  // Ads, categories), so a question the evidence doesn't cover is answered by
+  // reading, not refused. The fixed picker flows keep their own steps.
+  const { buildWorkspaceReadToolSet, writerHasTools } = await import(
+    "@/lib/agent/diagnose-tools-ai"
+  );
+  const tools =
+    !input.reportDraft && writerHasTools(intent)
+      ? buildWorkspaceReadToolSet({
+          clientId: input.task.client_id,
+          userId: input.task.created_by,
+          taskId: input.task.id,
+          conversationId: input.task.conversation_id,
+          correlationId: input.correlationId,
+        })
+      : undefined;
   const label = writingLabel(input);
   const result = streamText({
     model,
@@ -1264,7 +1264,7 @@ async function runMockAgent(input: {
 
   if (intent === "out_of_scope") {
     const summary = [
-      "I'm scoped to **Meta Ads operations** for the selected client — audits, delivery, budgets, and approval-gated changes.",
+      "I'm scoped to this client's ads and analytics — Meta audits, delivery, budgets and approval-gated changes, plus read-only GA4, Search Console and Google Ads data.",
       "",
       "Try: “Audit this account”, “List campaigns”, or “Propose a budget increase”.",
     ].join("\n");
@@ -1780,7 +1780,7 @@ export async function gatherDiagnoseEvidence(input: {
   }
 
   if (intent === "out_of_scope") {
-    return { accountId, evidence: "Request appears out of Meta Ads scope.", toolCalls };
+    return { accountId, evidence: "Request appears outside this client's ads and analytics. If it is about the client's Meta, GA4, Search Console or Google Ads data, answer it with the read-only data tools.", toolCalls };
   }
 
   const wantsCampaignList = Boolean(
@@ -1988,6 +1988,9 @@ export async function gatherDiagnoseEvidence(input: {
                 ? `- Campaigns: ${matchedCampaigns.map((c) => `${c.name} (${c.id})`).join("; ")}`
                 : null,
               `- Period: ${dateLabel} (${dateStart} → ${dateStop})`,
+              brief.compareStart && brief.compareStop
+                ? `- Compared with: ${brief.compareLabel ?? ""} (${brief.compareStart} → ${brief.compareStop}), as the operator asked`
+                : `- Compared with: the same number of days immediately before`,
               `- Competitor LPs: ${
                 brief.competitorLanding === "skip"
                   ? "skipped"
@@ -2356,6 +2359,10 @@ export async function gatherDiagnoseEvidence(input: {
                   1,
                   Math.round((Date.parse(`${dateStop}T00:00:00Z`) - Date.parse(`${dateStart}T00:00:00Z`)) / 86_400_000) + 1,
                 ),
+                // A range the operator named to compare against ("Oct 19-20 vs Oct 17-18").
+                ...(brief.compareStart && brief.compareStop
+                  ? { compareSince: brief.compareStart, compareUntil: brief.compareStop }
+                  : {}),
               });
               // A campaign audit scores and lists only those campaigns' ad sets and ads.
               const snapshot =

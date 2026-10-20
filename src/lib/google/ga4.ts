@@ -1,6 +1,14 @@
 import { googleFetch } from "./http";
 import { getGoogleAccessToken } from "./oauth";
-import type { DateRange, Ga4CategoryRevenue, Ga4Channel, Ga4LandingPages } from "./types";
+import type {
+  DateRange,
+  Ga4CategoryRevenue,
+  Ga4Channel,
+  Ga4LandingPages,
+  Ga4ReportRequest,
+  Ga4ReportResult,
+  Ga4StringFilter,
+} from "./types";
 
 /**
  * Read-only GA4 client: the Admin API for property discovery and the Data API
@@ -379,5 +387,67 @@ export async function fetchGa4LandingPages(propertyId: string, range: DateRange)
     currency: landing.currency,
     rows: revenueRows(landing.rows, landingPath).map(({ key, revenueCents, purchases }) => ({ path: key, revenueCents, purchases })),
     warnings,
+  };
+}
+
+const MATCH_TYPE: Record<Ga4StringFilter["match"], string> = {
+  exact: "EXACT",
+  contains: "CONTAINS",
+  begins_with: "BEGINS_WITH",
+};
+
+function ga4Filter(filter: Ga4StringFilter) {
+  return {
+    filter: {
+      fieldName: filter.dimension,
+      stringFilter: { matchType: MATCH_TYPE[filter.match], value: filter.value, caseSensitive: false },
+    },
+  };
+}
+
+type FreeReportResponse = ReportResponse & {
+  dimensionHeaders?: Array<{ name?: string }>;
+  metricHeaders?: Array<{ name?: string }>;
+};
+
+/**
+ * A free-form runReport for the workspace's ga4_report tool: any dimension and
+ * metric names (GA4 checks them and its error message goes back to the model),
+ * up to two date ranges, an AND of string filters, one order and a row limit.
+ * Read-only.
+ */
+export async function runGa4Report(propertyId: string, request: Ga4ReportRequest): Promise<Ga4ReportResult> {
+  const id = digits(propertyId);
+  if (!id) throw new Error("GA4 property id must be numeric, e.g. properties/123456.");
+  const filters = request.dimensionFilter ?? [];
+  const order = request.orderBy ?? (request.metrics[0] ? { field: request.metrics[0], desc: true } : undefined);
+  const orderBys = order
+    ? request.metrics.includes(order.field)
+      ? [{ metric: { metricName: order.field }, desc: order.desc }]
+      : [{ dimension: { dimensionName: order.field }, desc: order.desc }]
+    : undefined;
+  const res = await googleFetch<FreeReportResponse>(`${DATA_BASE}/properties/${id}:runReport`, {
+    method: "POST",
+    accessToken: await getGoogleAccessToken(),
+    body: {
+      dateRanges: request.dateRanges.map((r) => ({ startDate: r.startDate, endDate: r.endDate })),
+      dimensions: request.dimensions.map((name) => ({ name })),
+      metrics: request.metrics.map((name) => ({ name })),
+      ...(filters.length === 1
+        ? { dimensionFilter: ga4Filter(filters[0]!) }
+        : filters.length > 1
+          ? { dimensionFilter: { andGroup: { expressions: filters.map(ga4Filter) } } }
+          : {}),
+      ...(orderBys ? { orderBys } : {}),
+      limit: request.limit,
+    },
+  });
+  const rows = reportRows(res);
+  return {
+    currency: res.metadata?.currencyCode ?? "",
+    dimensionHeaders: (res.dimensionHeaders ?? []).map((h) => h.name ?? ""),
+    metricHeaders: (res.metricHeaders ?? []).map((h) => h.name ?? ""),
+    rows: rows.map((row) => ({ dimensions: row.dims, metrics: row.values })),
+    rowCount: Math.max(num(String(res.rowCount ?? 0)), rows.length),
   };
 }

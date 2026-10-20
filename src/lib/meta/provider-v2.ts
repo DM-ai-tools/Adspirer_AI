@@ -10,6 +10,8 @@ import type {
   MetaAdsProvider,
   MetaCampaign,
   MetaInsights,
+  MetaInsightsQuery,
+  MetaInsightsReport,
   UpdateAdSetBudgetInput,
   UpdateCampaignBudgetInput,
   TextOptions,
@@ -17,6 +19,7 @@ import type {
   AdPreview,
 } from "@/lib/adspirer/provider";
 import { MetaGraphClient } from "@/lib/meta/graph-client";
+import { compactInsightsRow, insightsParams } from "@/lib/meta/insights-report";
 import { fetchMetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
 import type {
   MetaCustomAudience,
@@ -504,6 +507,37 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     return this.mapInsightsRow(id, id, "account", dateStart, dateStop, first);
   }
 
+  async getInsightsReport(accountId: string, query: MetaInsightsQuery): Promise<MetaInsightsReport> {
+    const id = normalizeAccountId(accountId);
+    const currencyPromise = this.accountCurrency(id);
+    const rows: Array<Record<string, unknown>> = [];
+    let after: string | undefined;
+    let hasMore = false;
+    // Up to 5 pages of at most 100 rows: the tool's limit is 500.
+    for (let page = 0; page < 5; page++) {
+      const data = await this.graph.get<{
+        data?: Array<Record<string, unknown>>;
+        paging?: { cursors?: { after?: string }; next?: string };
+      }>(`${id}/insights`, {
+        ...insightsParams(query, Math.min(100, query.limit)),
+        ...(after ? { after } : {}),
+      });
+      rows.push(...(data.data ?? []));
+      after = data.paging?.next ? data.paging.cursors?.after : undefined;
+      if (rows.length >= query.limit) {
+        hasMore = rows.length > query.limit || Boolean(after);
+        break;
+      }
+      if (!after || !data.data?.length) break;
+      hasMore = page === 4;
+    }
+    return {
+      currency: await currencyPromise,
+      rows: rows.slice(0, query.limit).map(compactInsightsRow),
+      has_more: hasMore,
+    };
+  }
+
   private mapInsightsRow(
     accountId: string,
     entityId: string,
@@ -650,7 +684,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
   /** Overview (cached per turn): the agent and analyzeAccount share one fetch. */
   async getAuditSnapshot(
     accountId: string,
-    options?: { days?: number; since?: string; until?: string },
+    options?: { days?: number; since?: string; until?: string; compareSince?: string; compareUntil?: string },
   ) {
     return fetchMetaAuditSnapshot(this.graph, normalizeAccountId(accountId), options);
   }

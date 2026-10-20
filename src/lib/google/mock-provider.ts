@@ -1,4 +1,5 @@
 import { getDemoStore } from "@/lib/demo/store";
+import { mockGa4Report, mockSearchAnalytics } from "./mock-reports";
 import type { GoogleDataProvider } from "./provider";
 import type { AdsPerformance, Ga4CategoryRevenue, Ga4LandingPages, SearchDemand } from "./types";
 
@@ -98,5 +99,7 @@ export function getMockGoogleDataProvider(): GoogleDataProvider {
     adsPerformance: async (customerId) =>
       structuredClone({ ...ads, customerId, currency: assetCurrency(customerId) }),
     searchDemand: async (siteUrl) => structuredClone({ ...gsc, siteUrl }),
+    ga4Report: async (propertyId, request) => mockGa4Report(request, assetCurrency(propertyId)),
+    searchAnalytics: async (_siteUrl, request) => mockSearchAnalytics(request),
   };
 }

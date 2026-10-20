@@ -73,6 +73,29 @@ export function notACategoryPhrase(phrase: string): boolean {
   return NOT_A_CATEGORY.some((t) => lower === t || lower.startsWith(`${t} `)) || namesSeason(lower);
 }
 
+const RANK_WORDS = "best|top|most|worst|least|highest|lowest|biggest|leading|popular|trending";
+const RANK_QUALIFIERS = [
+  "selling", "sellers?", "performing", "performers?", "sold", "converting", "converters?", "rated", "reviewed",
+  "viewed", "purchased", "bought", "popular", "profitable", "earning", "grossing", "revenue", "roas", "spend(?:ing)?",
+  "value", String.raw`\d+`,
+].join("|");
+const RANK_NOUNS = String.raw`products?|items?|skus?|categor(?:y|ies)|collections?|ads?|campaigns?|ad\s*sets?|creatives?|pages?|ones?|things?|stuff|lines?|brands?`;
+/**
+ * A ranking or superlative ("best selling products", "top 10 products", "best sellers",
+ * "most popular items", "worst performing ads", "highest ROAS products"): a ranking word
+ * alone, or followed by a ranking qualifier, a number or a generic noun. "Top hats" and
+ * "tops" stay categories.
+ */
+const RANKING_RE = new RegExp(
+  String.raw`^(?:best[\s-]*sellers?(?![a-z])|(?:${RANK_WORDS})(?:$|[\s-]+(?:${RANK_QUALIFIERS}|${RANK_NOUNS})(?![a-z])))`,
+  "i",
+);
+
+/** A phrase that ranks things rather than naming a category ("best selling products", "top 10 items"). */
+export function isRankingPhrase(phrase: string): boolean {
+  return RANKING_RE.test(phrase.trim().replace(LEADING_ARTICLES, ""));
+}
+
 /** A phrase that names the client itself ("a 10x plan for During Days"). */
 export function namesClient(phrase: string, clientName: string | null | undefined): boolean {
   const name = clientName?.trim().toLowerCase();
@@ -83,6 +106,8 @@ export function namesClient(phrase: string, clientName: string | null | undefine
 export const GENERIC_COLLECTIONS = new Set([
   ...GENERIC_NAMES,
   "sale", "sales", "new", "new arrivals", "frontpage", "home", "best sellers", "best-sellers", "all products", "shop all",
+  "best selling products", "best-selling-products", "best selling", "best-selling", "bestsellers", "bestseller",
+  "trending", "featured", "popular", "new in", "clearance", "collections", "all",
 ]);
 
 export type PhraseSpan = { phrase: string; start: number; end: number };
@@ -102,7 +127,7 @@ export function requestedCategorySpan(
     const article = raw.match(LEADING_ARTICLES)?.[0] ?? "";
     const phrase = raw.slice(article.length).trim();
     if (!phrase || /[\d$€£¥%]/.test(phrase)) continue;
-    if (notACategoryPhrase(phrase) || namesClient(phrase, clientName)) continue;
+    if (notACategoryPhrase(phrase) || isRankingPhrase(phrase) || namesClient(phrase, clientName)) continue;
     const start = match.index! + match[0].length + article.length;
     return { phrase, start, end: start + phrase.length };
   }
