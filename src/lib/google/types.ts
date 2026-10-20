@@ -50,3 +50,40 @@ export type ChannelSnapshot = {
   /** "Google needs reconnecting", "Google Ads: <error>", … one per failed part. */
   warnings: string[];
 };
+/** A GA4 string filter on one dimension; several are combined with AND. */
+export type Ga4StringFilter = { dimension: string; match: "exact" | "contains" | "begins_with"; value: string };
+/** A free-form GA4 runReport: any API dimension and metric names, validated by GA4 itself. */
+export type Ga4ReportRequest = {
+  dimensions: string[];
+  metrics: string[];
+  /** YYYY-MM-DD or GA4's relative forms (today, yesterday, NdaysAgo). */
+  dateRanges: Array<{ startDate: string; endDate: string }>;
+  dimensionFilter?: Ga4StringFilter[];
+  /** A requested metric or dimension; the first metric, descending, when absent. */
+  orderBy?: { field: string; desc: boolean };
+  limit: number;
+};
+export type Ga4ReportResult = {
+  currency: string;
+  /** As GA4 returns them; two date ranges add a "dateRange" dimension. */
+  dimensionHeaders: string[];
+  metricHeaders: string[];
+  rows: Array<{ dimensions: string[]; metrics: number[] }>;
+  /** Rows GA4 has in total; more than `rows` when the limit cut them. */
+  rowCount: number;
+};
+export type SearchAnalyticsDimension = "query" | "page" | "country" | "device" | "date";
+export type SearchAnalyticsRequest = {
+  startDate: string;
+  endDate: string;
+  dimensions: SearchAnalyticsDimension[];
+  filters?: Array<{
+    dimension: SearchAnalyticsDimension;
+    operator: "contains" | "equals" | "notContains" | "notEquals";
+    expression: string;
+  }>;
+  rowLimit: number;
+};
+export type SearchAnalyticsResult = {
+  rows: Array<{ keys: string[]; clicks: number; impressions: number; ctr: number; position: number }>;
+};

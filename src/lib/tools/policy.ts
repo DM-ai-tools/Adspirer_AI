@@ -23,6 +23,13 @@ const TOOL_POLICY: Record<string, ToolSafetyClass> = {
   optimize_meta_placements: "diagnose",
   detect_meta_creative_fatigue: "diagnose",
   list_competitor_ads_v2: "diagnose",
+  // Workspace data reads: GA4, Search Console and Google Ads are read-only,
+  // Meta insights and the client's categories are reads too.
+  ga4_report: "diagnose",
+  search_console_query: "diagnose",
+  google_ads_report: "diagnose",
+  meta_insights: "diagnose",
+  list_client_categories: "diagnose",
   // Strategy plan engine: reads the snapshot, recommends only.
   strategy_plan: "diagnose",
   // Settings typed in the chat: writes the client's own settings (goals,

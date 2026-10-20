@@ -2,6 +2,8 @@ import { z } from "zod";
 import { registerTool } from "@/lib/tools/registry";
 import { resolveProvider } from "@/lib/adspirer/client";
 import type { MetaAdsProvider } from "@/lib/adspirer/provider";
+// Read-only GA4 / Search Console / Google Ads / Meta insights / categories tools.
+import "./data-tools";
 
 /** Live → Meta Graph with the operator's Facebook token; demo → mock data. */
 async function adsProvider(): Promise<MetaAdsProvider> {

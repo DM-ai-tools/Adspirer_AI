@@ -1,6 +1,6 @@
 import { googleFetch } from "./http";
 import { getGoogleAccessToken } from "./oauth";
-import type { DateRange, SearchDemand } from "./types";
+import type { DateRange, SearchAnalyticsRequest, SearchAnalyticsResult, SearchDemand } from "./types";
 
 /**
  * Read-only Search Console client (API v3): the site list and Search
@@ -13,7 +13,13 @@ const TOP_QUERIES = 5;
 
 type SitesResponse = { siteEntry?: Array<{ siteUrl?: string; permissionLevel?: string }> };
 type QueryResponse = {
-  rows?: Array<{ keys?: string[]; clicks?: number | string; impressions?: number | string; position?: number | string }>;
+  rows?: Array<{
+    keys?: string[];
+    clicks?: number | string;
+    impressions?: number | string;
+    ctr?: number | string;
+    position?: number | string;
+  }>;
 };
 
 /** Search Console sites the Google user can see, with their permission level. */
@@ -79,5 +85,42 @@ export async function fetchSearchDemand(siteUrl: string, range: DateRange): Prom
           topQueries,
         };
       }),
+  };
+}
+
+/**
+ * A free-form Search Analytics query for the workspace's search_console_query
+ * tool: chosen dimensions, an AND of dimension filters and a row limit. Read-only.
+ */
+export async function querySearchAnalytics(
+  siteUrl: string,
+  request: SearchAnalyticsRequest,
+): Promise<SearchAnalyticsResult> {
+  if (!DATE.test(request.startDate) || !DATE.test(request.endDate)) {
+    throw new Error("Search Console date range must be YYYY-MM-DD.");
+  }
+  const filters = request.filters ?? [];
+  const res = await googleFetch<QueryResponse>(
+    `${GSC_BASE}/sites/${encodeURIComponent(siteUrl)}/searchAnalytics/query`,
+    {
+      method: "POST",
+      accessToken: await getGoogleAccessToken(),
+      body: {
+        startDate: request.startDate,
+        endDate: request.endDate,
+        dimensions: request.dimensions,
+        rowLimit: request.rowLimit,
+        ...(filters.length ? { dimensionFilterGroups: [{ groupType: "and", filters }] } : {}),
+      },
+    },
+  );
+  return {
+    rows: (res.rows ?? []).map((row) => ({
+      keys: row.keys ?? [],
+      clicks: num(row.clicks),
+      impressions: num(row.impressions),
+      ctr: num(row.ctr),
+      position: num(row.position),
+    })),
   };
 }

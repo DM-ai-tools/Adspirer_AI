@@ -97,6 +97,29 @@ export interface MetaInsights {
   raw?: Record<string, unknown>;
 }
 
+export interface MetaInsightsQuery {
+  level: "account" | "campaign" | "adset" | "ad";
+  fields: string[];
+  breakdowns?: string[];
+  /** YYYY-MM-DD; takes precedence over date_preset. */
+  time_range?: { since: string; until: string };
+  date_preset?: string;
+  /** Days per row (1–90), "monthly" or "all_days". */
+  time_increment?: number | "monthly" | "all_days";
+  campaign_ids?: string[];
+  adset_ids?: string[];
+  ad_ids?: string[];
+  limit: number;
+}
+
+export interface MetaInsightsReport {
+  currency: string;
+  /** Meta's rows; numbers parsed, action lists flattened to { action_type: value }. */
+  rows: Array<Record<string, unknown>>;
+  /** True when Meta had more rows than the limit. */
+  has_more: boolean;
+}
+
 export interface MetaAccountOverview {
   account_id: string;
   account_name: string;
@@ -422,6 +445,12 @@ export interface MetaAdsProvider {
     accountId: string,
     options?: { days?: number; since?: string; until?: string },
   ): Promise<MetaAuditSnapshot>;
+
+  /**
+   * A flexible insights read (the workspace's meta_insights tool): any level,
+   * fields and breakdowns Meta accepts, for a time range or preset. Read-only.
+   */
+  getInsightsReport?(accountId: string, query: MetaInsightsQuery): Promise<MetaInsightsReport>;
 
   getAdCreatives?(
     accountId: string,
