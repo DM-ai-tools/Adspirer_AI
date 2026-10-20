@@ -200,9 +200,22 @@ describe("extractChatSettings (LLM stubbed)", () => {
     ]) {
       expect(await extracted(message), message).toEqual([]);
     }
+    for (const message of ["would it work with a target ROAS of 8x", "what would happen with target ROAS 8x"]) {
+      expect(await extracted(message), message).toEqual([]);
+    }
     llm.reply = settings({ field: "gross_margin_pct", value: 40 });
+    expect(await extracted("if margin is 40% would that change things")).toEqual([]);
     expect(await extracted("should we change margin to 40%?")).toEqual([]);
     expect(await extracted("can you set margin to 40%?")).toEqual([{ field: "gross_margin_pct", value: 40 }]);
+  });
+
+  it("reads 'would like' and 'want' as statements", async () => {
+    llm.reply = settings({ field: "target_roas", value: 8 });
+    expect(await extracted("I would like the target ROAS at 8")).toEqual([{ field: "target_roas", value: 8 }]);
+    expect(await extracted("I'd like a target ROAS of 8x")).toEqual([{ field: "target_roas", value: 8 }]);
+    expect(await extracted("we would love a target ROAS of 8")).toEqual([{ field: "target_roas", value: 8 }]);
+    llm.reply = settings({ field: "gross_margin_pct", value: 40 });
+    expect(await extracted("we want a margin of 40%")).toEqual([{ field: "gross_margin_pct", value: 40 }]);
   });
 
   it("only takes a standing instruction shaped like a rule", async () => {
@@ -309,11 +322,40 @@ describe("settings typed in the chat (DEMO_MODE)", () => {
     expect(gathered.evidence).not.toContain("Saved to");
   });
 
+  it("saves the target of a goal asked as a 'how do / how can we' question", async () => {
+    let gathered = await gatherDiagnoseEvidence({
+      clientId: CT,
+      userId: ADMIN,
+      request: "How do we hit 10x ROAS on $500/day?",
+      intent: "strategy",
+    });
+    expect(ctClient().goals_profile.target_roas).toBe(10);
+    expect(gathered.evidence).toContain("Saved to ClickTrends' settings: target ROAS 10× (was 4×).");
+    gathered = await gatherDiagnoseEvidence({
+      clientId: CT,
+      userId: ADMIN,
+      request: "How can we get to 12x on $800/day?",
+      intent: "strategy",
+    });
+    expect(ctClient().goals_profile.target_roas).toBe(12);
+    expect(gathered.evidence).toContain("Saved to ClickTrends' settings: target ROAS 12× (was 10×).");
+    await gatherDiagnoseEvidence({
+      clientId: CT,
+      userId: ADMIN,
+      request: "I would like to hit 14x on $500/day",
+      intent: "strategy",
+    });
+    expect(ctClient().goals_profile.target_roas).toBe(14);
+  });
+
   it("never saves a stretch-only target, a feasibility question or a conditional ask", async () => {
     for (const request of [
       "Plan on $500/day, stretch 15x",
       "Can we do 20x on $300/day?",
       "Is 15x on $500/day realistic?",
+      "Would 12x work?",
+      "We need 12x on $800/day, is that achievable",
+      "Plan 12x on $800/day if possible",
       "If we hit 15x on $500/day what happens",
       "Assuming 15x on $500/day, plan it",
     ]) {

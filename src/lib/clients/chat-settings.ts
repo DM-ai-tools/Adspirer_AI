@@ -199,16 +199,26 @@ const ATTRIBUTION_WORDS: Record<string, RegExp> = {
 };
 /** Fields a plan or strategy ask carries that are never settings ("$500/day", "hit 10x"). */
 const PLAN_FIELDS = new Set<Field>(["target_roas", "daily_account_cap", "monthly_cap", "budget_ceiling"]);
+/**
+ * Conditionals and hypotheticals. "would" counts only in a conditional form
+ * ("would it work", "what would happen", a leading "would"); "would like",
+ * "'d like" and "would love" are statements.
+ */
 const HYPOTHETICAL =
-  /\b(?:what\s+if|if|assum\w*|were|would|suppos\w*|imagin\w*|hypothetical(?:ly)?|could\s+we)\b/i;
+  /\b(?:what\s+if|if|assum\w*|were|suppos\w*|imagin\w*|hypothetical(?:ly)?|could\s+we|what\s+would|would\s+(?:it|that|this|they|there)|would\s+happen)\b|^\s*would\b/i;
 const INJECTION = /\b(?:ignore|disregard|forget)\s+(?:that|this|the\s+above|previous|prior|all|everything|your|those|these|what)\b/i;
 const PLAN_ASK = /\b(?:plan|strategy|strategi[sz]e|hit|reach|get\s+to|how\s+(?:do|can|should|would)\s+we)\b/i;
 const SET_VERB = /\b(?:set|save|update|change|make|use)\b/i;
 /** "should we …?", "can I …?": asking for advice, not setting anything. */
 const ADVICE_QUESTION = /\b(?:should|would|could|can|shall|will|do|does|did|may|might)\s+(?:we|i)\b/i;
 const WH_QUESTION = /^\s*(?:what|which|how|why|when|who|whose|where|is|are|was)\b/i;
-/** A strategy ask phrased as a feasibility question. */
-const QUESTION_FORM = /\?\s*$|^\s*(?:can|could|is|are|would|should|will|shall|do|does|did|may|might)\b/i;
+/**
+ * A strategy ask that asks whether a target is feasible ("Can we do 20x…?",
+ * "Is 15x realistic?", "Would 12x work?"). A goal asked as a question
+ * ("How do we hit 10x on $500/day?") is not one.
+ */
+const FEASIBILITY =
+  /^\s*(?:can|could|is|are|would|should|will)\b|\b(?:realistic|possible|feasible|achievable|doable|attainable)\b/i;
 /** Asking to look at a site isn't stating the client's website. */
 const SITE_LOOKUP = /\b(?:scrape|scan|crawl|analy[sz]e|audit|check|look\s+at|visit)\b/i;
 /** Phrases with "always" / "never" that aren't rules. */
@@ -542,7 +552,7 @@ export function isWholeAccountAsk(texts: string[], categories: StrategyCategory[
   return texts.every(
     (t) =>
       !HYPOTHETICAL.test(t) &&
-      !QUESTION_FORM.test(t.trim()) &&
+      !FEASIBILITY.test(t) &&
       !scopeCategoriesFromRequest(t, categories).length &&
       !requestedCategoryPhrase(t, "strategy"),
   );
