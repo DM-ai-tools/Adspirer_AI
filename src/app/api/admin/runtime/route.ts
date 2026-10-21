@@ -9,6 +9,10 @@ export type RuntimeSettings = {
   /** Why demo mode is on: set explicitly, or Supabase isn't configured so the app fell back to it. */
   demoReason: "env" | "no_supabase" | null;
   adsExecutionMode: AdsExecutionMode;
+  /** Invite and password-reset emails go out through Resend (RESEND_API_KEY and EMAIL_FROM both set). */
+  emailConfigured: boolean;
+  /** The address they are sent from, when set. */
+  emailFrom: string | null;
   approvalExpiryHours: number;
   accessStaleDays: number;
   budgetCeilingCents: number;
@@ -26,6 +30,8 @@ export async function GET() {
       demoMode: config.isDemoMode,
       demoReason: !config.isDemoMode ? null : !config.hasSupabase ? "no_supabase" : "env",
       adsExecutionMode: config.adsExecutionMode,
+      emailConfigured: Boolean(process.env.RESEND_API_KEY && process.env.EMAIL_FROM),
+      emailFrom: process.env.EMAIL_FROM?.trim() || null,
       approvalExpiryHours: config.APPROVAL_EXPIRY_HOURS,
       accessStaleDays: config.ACCESS_REQUEST_STALE_DAYS,
       budgetCeilingCents: config.BUDGET_CEILING_DEFAULT_CENTS,

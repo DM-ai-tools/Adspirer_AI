@@ -104,6 +104,24 @@ export default function AdminSettingsPage() {
             <Separator />
             <div className="flex items-center justify-between">
               <div>
+                <p className="font-medium">Invite email</p>
+                <p className="text-xs text-muted">
+                  {runtime?.emailConfigured
+                    ? `Sent from ${runtime.emailFrom}`
+                    : "Not set up: admins get the invite link to share themselves (RESEND_API_KEY, EMAIL_FROM)"}
+                </p>
+              </div>
+              {loading ? (
+                <Badge variant="secondary">…</Badge>
+              ) : runtime ? (
+                <Badge variant={runtime.emailConfigured ? "secondary" : "warning"}>
+                  {runtime.emailConfigured ? "Ready" : "Off"}
+                </Badge>
+              ) : null}
+            </div>
+            <Separator />
+            <div className="flex items-center justify-between">
+              <div>
                 <Label htmlFor="approvals">Require approval for executes</Label>
                 <p className="text-xs text-muted">
                   Always enforced by tool safety policy
