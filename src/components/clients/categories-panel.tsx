@@ -4,7 +4,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { ClientService } from "@/types/database";
 import { apiFetch } from "@/lib/api-client";
-import { categoryPatchFromEdit, importOutcome, type CategoryFormField } from "@/lib/clients/category-form";
+import {
+  categoryPatchFromEdit,
+  filterServiceRows,
+  importOutcome,
+  type CategoryFormField,
+} from "@/lib/clients/category-form";
 import { CategoryScan } from "@/components/clients/category-scan";
 import { CategoryGoogleImport } from "@/components/clients/category-google-import";
 import { Button } from "@/components/ui/button";
@@ -100,6 +105,7 @@ export function CategoriesPanel({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [mode, setMode] = useState<"merge" | "replace">("merge");
   const [busy, setBusy] = useState(false);
+  const [query, setQuery] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -116,6 +122,8 @@ export function CategoriesPanel({
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
   }, [load]);
+
+  const shownRows = filterServiceRows(rows ?? [], query);
 
   async function patch(service: ClientService, body: Record<string, unknown>): Promise<string | null> {
     try {
@@ -211,6 +219,24 @@ export function CategoriesPanel({
         ) : rows.length === 0 ? (
           <p className="text-sm text-muted">Add your {plural} so strategies can plan per {word}.</p>
         ) : (
+          <>
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={`Search ${rows.length} ${plural}, e.g. bar stools`}
+              aria-label={`Search ${plural}`}
+              className="max-w-xs"
+            />
+            {query.trim() ? (
+              <span className="text-xs text-muted">
+                {shownRows.length} of {rows.length} shown
+              </span>
+            ) : null}
+          </div>
+          {shownRows.length === 0 ? (
+            <p className="text-sm text-muted">No {plural} match “{query.trim()}”.</p>
+          ) : (
           <Table>
             <TableHeader>
               <TableRow>
@@ -224,7 +250,7 @@ export function CategoriesPanel({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {rows.map((s) => (
+              {shownRows.map((s) => (
                 <TableRow key={s.id} className={s.is_active ? undefined : "opacity-60"}>
                   <TableCell className="min-w-40"><EditCell service={s} field="name" onSave={(p) => patch(s, p)} /></TableCell>
                   <TableCell><EditCell service={s} field="landing_page_url" placeholder="https://" onSave={(p) => patch(s, p)} /></TableCell>
@@ -241,6 +267,8 @@ export function CategoriesPanel({
               ))}
             </TableBody>
           </Table>
+          )}
+          </>
         )}
       </CardContent>
     </Card>

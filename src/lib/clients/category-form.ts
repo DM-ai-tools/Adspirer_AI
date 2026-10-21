@@ -126,6 +126,19 @@ export function filterScanCandidates<T extends ScanCandidate>(
   return { shown, matched: matching.length, selectable: shown.filter((c) => !c.alreadyAdded).map((c) => c.name) };
 }
 
+/** Search for the saved list: every typed word must appear in the name or landing page, any order, any case. */
+export function filterServiceRows<T extends { name: string; landing_page_url: string | null }>(
+  rows: T[],
+  query: string,
+): T[] {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return rows;
+  return rows.filter((r) => {
+    const text = `${r.name} ${r.landing_page_url ?? ""}`.toLowerCase();
+    return words.every((w) => text.includes(w));
+  });
+}
+
 /** Why "Import from Google" has nothing to show, in plain words for the panel. */
 export function googleImportUnavailableMessage(reason: string | undefined): string {
   switch (reason) {

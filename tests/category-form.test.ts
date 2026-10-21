@@ -5,6 +5,7 @@ import {
   importOutcome,
   marginPctFromNumber,
   filterScanCandidates,
+  filterServiceRows,
   scanUnavailableMessage,
 } from "@/lib/clients/category-form";
 import { parseCategorySheet } from "@/lib/clients/category-import";
@@ -123,5 +124,23 @@ describe("filterScanCandidates", () => {
 
   it("lists the names 'select all shown' would add, skipping ones already added", () => {
     expect(filterScanCandidates(all, "stools").selectable).toEqual(["Adjustable Bar Stools", "Counter Stools"]);
+  });
+});
+
+describe("filterServiceRows", () => {
+  const rows = [
+    { name: "Bar Stools", landing_page_url: "https://shop.example/bar-stools" },
+    { name: "Wall Storage Racks", landing_page_url: null },
+    { name: "Outdoor Chairs", landing_page_url: "https://shop.example/chairs" },
+  ];
+  it("returns every row for an empty search", () => {
+    expect(filterServiceRows(rows, "  ")).toEqual(rows);
+  });
+  it("matches every typed word in the name, any order, any case", () => {
+    expect(filterServiceRows(rows, "STORAGE wall").map((r) => r.name)).toEqual(["Wall Storage Racks"]);
+  });
+  it("also matches the landing page, and tolerates a missing one", () => {
+    expect(filterServiceRows(rows, "shop.example").map((r) => r.name)).toEqual(["Bar Stools", "Outdoor Chairs"]);
+    expect(filterServiceRows(rows, "nothing")).toEqual([]);
   });
 });

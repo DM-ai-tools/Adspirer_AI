@@ -98,6 +98,15 @@ export function CategoryScan({
                 >
                   Select all shown ({view.selectable.length})
                 </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={picked.size === 0}
+                  onClick={() => setPicked(new Set())}
+                >
+                  Deselect all ({picked.size})
+                </Button>
                 <span className="text-xs text-muted">
                   {view.matched > view.shown.length
                     ? `Showing ${view.shown.length} of ${view.matched}; search to narrow it down`
