@@ -97,7 +97,10 @@ import {
 import { buildChannelPerformance, type ChannelPerformance } from "@/lib/strategy/channels";
 import { buildStrategyPlan } from "@/lib/strategy/plan";
 import { renderCategorySpendEvidence, renderStrategyEvidence } from "@/lib/strategy/render";
-import { STRATEGY_FRAMEWORK } from "@/lib/agent/strategy-framework";
+import { buildLeadPlan } from "@/lib/strategy/lead-plan";
+import { renderLeadStrategyEvidence } from "@/lib/strategy/lead-render";
+import { buildLeadClarifyingQuestion, isLeadStrategy, resolveLeadBrief } from "@/lib/agent/lead-brief";
+import { LEAD_STRATEGY_FRAMEWORK, STRATEGY_FRAMEWORK } from "@/lib/agent/strategy-framework";
 import {
   buildStrategyClarifyingQuestion,
   resolveStrategyBrief,
@@ -343,7 +346,7 @@ export async function runAdspirerAgent(input: {
   if (briefQuestion) {
     await input.onProgress?.({
       phase: "write_report",
-      label: "Asking for budget & target ROAS…",
+      label: "Asking for the goal & budget…",
       stepId: "write_report",
       summary: briefQuestion,
       delta: briefQuestion,
@@ -622,6 +625,7 @@ function strategyBriefQuestion(input: WriterInput): string | null {
   const at = evidence.indexOf("### Strategy brief incomplete");
   if (at < 0) return null;
   const listed = evidence.slice(at).match(/^- Missing: (.*)$/m)?.[1] ?? "";
+  if (listed.split(/,\s*/).includes("leads")) return buildLeadClarifyingQuestion();
   const missing = BRIEF_FIELDS.filter((f) => listed.split(/,\s*/).includes(f));
   return buildStrategyClarifyingQuestion(missing.length ? missing : [...BRIEF_FIELDS]);
 }
@@ -643,7 +647,7 @@ function writingLabel(input: WriterInput): string {
   if (intent === "chat") return "Answering…";
   if (intent === "strategy") {
     return input.toolEvidence?.includes("### Strategy brief incomplete")
-      ? "Asking for budget & target ROAS…"
+      ? "Asking for the goal & budget…"
       : "Writing strategy…";
   }
   return REPORT_INTENTS.has(intent) ? "Writing report…" : "Writing reply…";
@@ -2480,7 +2484,64 @@ export async function gatherDiagnoseEvidence(input: {
         currentDailySpendCents,
       });
 
-      if (!parsed.brief) {
+      // Lead-gen clients plan on leads and cost per lead; ROAS never applies to them.
+      const leadAsk = isLeadStrategy(goals.business_model, strategyAskTexts(input.request, input.history));
+      const leadParsed = leadAsk ? resolveLeadBrief(input.request, input.history) : null;
+
+      if (leadParsed) {
+        if (!leadParsed.brief) {
+          strategyBriefIncomplete = true;
+          sections.push(
+            [
+              "### Strategy brief incomplete",
+              `- Missing: ${leadParsed.missing.join(", ")}`,
+              "Ask ONLY for the missing values below. Do NOT build a plan or invent numbers.",
+              "Do NOT queue optimize or execute tools.",
+              "",
+              buildLeadClarifyingQuestion(),
+            ].join("\n"),
+          );
+        } else {
+          const leadBrief = leadParsed.brief;
+          await input.onProgress?.({
+            phase: "build_plan",
+            label: "Sizing the budget for your lead goal…",
+            stepId: "build_plan",
+          });
+          const scorecard = evaluateCheckpoints(snapshot, { goals });
+          toolCalls.push({
+            name: "audit_checkpoints",
+            args: { account_id: accountId, date_start: range.dateStart, date_stop: range.dateStop },
+            rationale: `Audit checkpoints: ${scorecard.score}/100`,
+          });
+          const leadPlan = buildLeadPlan({ snapshot, goals, brief: leadBrief });
+          strategyPlanBuilt = true;
+          sections.push(
+            renderLeadStrategyEvidence(leadPlan, {
+              score: scorecard,
+              periodAssumed: leadParsed.periodAssumed,
+              warnings: snapshot.warnings,
+            }),
+          );
+          sections.push(
+            ["### Strategy framework (write the report with these headings)", LEAD_STRATEGY_FRAMEWORK].join("\n"),
+          );
+          toolCalls.push({
+            name: "strategy_plan",
+            args: {
+              account_id: accountId,
+              goal: "leads",
+              target_leads: leadBrief.targetLeads,
+              period_days: leadBrief.periodDays,
+              daily_budget_cents: leadBrief.dailyBudgetCents,
+              target_cpl_cents: leadBrief.targetCplCents,
+            },
+            rationale: `Lead strategy plan: ${
+              leadBrief.targetLeads != null ? `${leadBrief.targetLeads} leads / ${leadBrief.periodDays} days` : "budget projection"
+            }, reference cost per lead ${leadPlan.reference.cplCents ?? "unavailable"}`,
+          });
+        }
+      } else if (!parsed.brief) {
         strategyBriefIncomplete = true;
         sections.push(
           [

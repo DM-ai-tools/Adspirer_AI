@@ -1,5 +1,6 @@
 import type { AgentHistoryMessage } from "@/lib/agent/history";
 import { looksLikeAuditBriefReply, parseDateRangeFromText } from "@/lib/agent/audit-brief";
+import { looksLikeLeadBriefReply } from "@/lib/agent/lead-brief";
 import { looksLikeStrategyBriefReply, STRATEGY_BRIEF_MARKER } from "@/lib/agent/strategy-brief";
 
 export type TaskStepState =
@@ -138,6 +139,17 @@ const STRATEGY_GOAL = new RegExp(
 /** "under 2x roas", "above a roas of 3", "5x roas or better": a filter on results, not a goal. */
 const ROAS_COMPARISON =
   /\b(?:above|below|under|over|more\s+than|less\s+than|at\s+least)\s+(?:an?\s+)?(?:roas\s+(?:of\s+)?\d|\d+(?:\.\d+)?\s*[x×])|(?:\d\s*[x×]\s*(?:roas\s+)?|\broas\s+of\s+\d+(?:\.\d+)?\s*)or\s+(?:better|worse)\b/;
+/**
+ * A lead goal stated outright with a budget or plan ask: "to get 100 leads in a month what budget do I
+ * need", "how much to spend for 50 enquiries". A bare "campaigns with 100 leads" is a report.
+ */
+const LEAD_COUNT = String.raw`\d[\d,.]*\s*k?\s+(?:qualified\s+|new\s+)?(?:leads?|enquir\w+|inquir\w+|bookings?|appointments?|registrations?|sign-?ups?)\b`;
+const STRATEGY_LEAD_GOAL = new RegExp(
+  [
+    String.raw`\b(?:get|generate|hit|reach|achieve|need|want|bring\s+in)\s+(?:me\s+)?${LEAD_COUNT}[^.?!\n]{0,80}?\b(?:budget|how\s+much|spend|plan|strategy)\b`,
+    String.raw`\b(?:budget|how\s+much|spend|plan|strategy)\b[^.?!\n]{0,80}?\b(?:get|generate|hit|reach|achieve|bring\s+in)\s+(?:me\s+)?${LEAD_COUNT}`,
+  ].join("|"),
+);
 /** Words that ask for a plan; on their own they don't skip the chat check. */
 const STRATEGY_PLAN_WORDS = /\bstrategy\b|\bgame\s*plan\b|\bplan\s+to\s+(?:hit|reach|get)\b/;
 /** "target roas" counts only next to a plan / how-to signal. */
@@ -166,7 +178,9 @@ export function detectRequestIntent(request: string): RequestIntent {
   const planWords = STRATEGY_PLAN_WORDS.test(text);
   const goalAsk =
     !DEFINITION_WORDS.test(text) &&
-    (STRATEGY_EXPLICIT_GOAL.test(text) || (STRATEGY_GOAL.test(text) && !ROAS_COMPARISON.test(text)));
+    (STRATEGY_EXPLICIT_GOAL.test(text) ||
+      STRATEGY_LEAD_GOAL.test(text) ||
+      (STRATEGY_GOAL.test(text) && !ROAS_COMPARISON.test(text)));
   if (!goalAsk && isConversationalTurn(request)) {
     return "chat";
   }
@@ -302,7 +316,7 @@ export function detectRequestIntentWithHistory(
       last &&
       last.content.length < 2000 &&
       last.content.toLowerCase().includes(STRATEGY_BRIEF_MARKER) &&
-      looksLikeStrategyBriefReply(request)
+      (looksLikeStrategyBriefReply(request) || looksLikeLeadBriefReply(request))
     ) {
       return "strategy";
     }
@@ -443,7 +457,7 @@ export function planTaskSteps(
     case "strategy":
       return [
         ...base,
-        { id: "clarify_brief", label: "Confirm budget & target ROAS", state: "pending" },
+        { id: "clarify_brief", label: "Confirm the goal & budget", state: "pending" },
         { id: "fetch_overview", label: "Fetch account overview", state: "pending" },
         { id: "pull_insights", label: "Pull spend & return by category", state: "pending" },
         { id: "build_plan", label: "Build the plan", state: "pending" },

@@ -126,7 +126,7 @@ function round2(value: number): number {
  * Splits whole cents in proportion to the weights (equally when they sum to 0),
  * handing leftover cents to the largest remainders so the parts sum exactly.
  */
-function splitCents(totalCents: number, weights: number[]): number[] {
+export function splitCents(totalCents: number, weights: number[]): number[] {
   if (weights.length === 0) return [];
   const weightSum = weights.reduce((s, w) => s + w, 0);
   const shares = weights.map((w) => (weightSum > 0 ? (totalCents * w) / weightSum : totalCents / weights.length));
