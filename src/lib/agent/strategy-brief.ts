@@ -54,7 +54,7 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-function parseBudgetCents(text: string): number | null {
+export function parseBudgetCents(text: string): number | null {
   const m = BUDGET_RE.exec(text);
   if (!m) return null;
   const cents = toNumber(m[1], m[2]) * 100;
@@ -64,7 +64,7 @@ function parseBudgetCents(text: string): number | null {
 }
 
 /** Every "Nx" / "roas of N" value in the order it appears; "400%" is 4×, and values over the cap are dropped. */
-function parseRoasValues(text: string): number[] {
+export function parseRoasValues(text: string): number[] {
   return roasMatches(text).map((f) => f.value);
 }
 
@@ -109,7 +109,7 @@ function periodDaysFrom(m: RegExpExecArray | null): number | null {
 }
 
 /** The total budget in cents and its stated period, from a money-back form or "$A over N days / this month". */
-function parseTotal(text: string): { cents: number; periodDays: number | null } | null {
+export function parseTotal(text: string): { cents: number; periodDays: number | null } | null {
   const m = A_TO_B_RE.exec(text) ?? A_FOR_B_RE.exec(text) ?? TOTAL_PERIOD_RE.exec(text);
   if (!m) return null;
   const cents = Math.round(toNumber(m[1], m[2]) * 100);

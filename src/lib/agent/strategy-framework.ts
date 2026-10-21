@@ -32,3 +32,32 @@ If the evidence has "Channel data", put its notes and warnings (for example "Goo
 6. **What would make this plan better**: the missing data, for example margins not set, categories not loaded, low coverage, no GA4 or catalogue connected yet. Take these from the inputs and assumptions.
 7. **One next step**: the category, daily budget and duration from "Next test". If it says there is no test to run, say what has to change first.
 `.trim();
+
+/**
+ * The same three-level report for lead-generation clients: leads and cost per
+ * lead instead of revenue and ROAS. The numbers come from
+ * src/lib/strategy/lead-plan.ts via lead-render.ts.
+ */
+export const LEAD_STRATEGY_FRAMEWORK = `
+# Lead strategy report method
+
+This client sells leads, bookings or enquiries. Plan on leads and cost per lead only: never mention ROAS, revenue or return on ad spend, and never ask for a target ROAS.
+Use only numbers from the evidence: budgets, spend, leads, cost per lead, scores and tiers. If a number is not in the evidence, say it is not available. Never estimate one.
+Say "service" (not "category") everywhere you would name an offering.
+This is a recommendation only. Do not queue or execute anything, propose no tool JSON, and do not say anything in Meta was changed.
+
+## Required report format (these headings, in this order)
+1. **Bottom line**: answer the question asked in two or three sentences. For a lead goal: the leads wanted and the period, the recommended daily and period budget (the Expected case) and the range from the Best to the Cautious case. For a budget with no goal: the leads it should bring, as a range. If the evidence has a "Verdict on the stated budget", give it. If the evidence says no budget could be sized, say that plainly and ask for a target cost per lead.
+2. **Level 1: where you are**: the last-period spend, leads, cost per lead and daily run-rate, the previous-period comparison when given, and the campaign table with its tiers. Pass on any data warning or the "weak guide" note.
+3. **Level 2: how it compares**: the reference cost per lead and its source, the check against the target cost per lead and any "Check" lines (caps, break-even CPA). Then two routes side by side (a two-column table works):
+   - **External:** what competitors run, from the competitor brief highlights in the client context. If there are none, say so.
+   - **Internal:** the Meta capabilities marked "Not used", each with its reason (for lead clients, instant forms and a cost cap matter most).
+4. **Level 3: the plan**:
+   - The budget table (the cases with their cost per lead, daily and period budgets) and, when given, the projection table for a stated budget.
+   - The campaign allocation table: campaign, tier, cost per lead, now per day, planned per day.
+   - The ramp line, so spend rises in steps rather than in one jump.
+   - The ad strategy, built from the evidence: which campaigns to scale, test or hold and why; lead form versus landing page, given the capabilities in use; the audience and creative approach, with at least 3 new creative concepts a month for each funded service, built from the competitor patterns.
+   - What to track weekly: spend, leads and cost per lead per campaign against the reference cost per lead, plus lead quality (how many leads answer and book), which this tool does not measure.
+5. **What would make this plan better**: the missing data, for example no target cost per lead, too few leads for a firm cost per lead, no lead-quality or CRM feedback, tracking not verified. Take these from the inputs and assumptions.
+6. **One next step**: from the "Next step" section.
+`.trim();
