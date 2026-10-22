@@ -39,6 +39,32 @@ function startOfUtcDay(d: Date): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
 }
 
+/**
+ * The window a question asks for, as whole days: "last N days" ends yesterday (today is a part
+ * day, so GA4 and Meta would disagree on it), as does "this month". An explicit "today" or
+ * "yesterday" is left as asked. No stated period means the last 30 whole days.
+ */
+export function completedDaysRange(text: string): { dateStart: string; dateStop: string; dateLabel: string; days: number } {
+  const parsed = parseDateRangeFromText(text) ?? parseDateRangeFromText("last 30 days")!;
+  const today = isoDate(startOfUtcDay(new Date()));
+  const shift = (day: string, by: number) => {
+    const d = new Date(`${day}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + by);
+    return isoDate(d);
+  };
+  let { dateStart, dateStop } = parsed;
+  if (dateStop >= today && parsed.dateLabel !== "today") {
+    if (/^last /.test(parsed.dateLabel)) {
+      dateStart = shift(dateStart, -1);
+      dateStop = shift(dateStop, -1);
+    } else if (dateStart < today) {
+      dateStop = shift(today, -1);
+    }
+  }
+  const days = Math.round((Date.parse(`${dateStop}T00:00:00Z`) - Date.parse(`${dateStart}T00:00:00Z`)) / 86_400_000) + 1;
+  return { dateStart, dateStop, dateLabel: parsed.dateLabel, days };
+}
+
 /** Parse relative / absolute date ranges from operator text. */
 export function parseDateRangeFromText(text: string): {
   dateStart: string;

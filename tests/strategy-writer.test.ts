@@ -22,8 +22,9 @@ beforeEach(() => {
   process.env.ANTHROPIC_API_KEY = "test-key";
   resetConfigCache();
   streamText.mockImplementation(() => ({
-    textStream: (async function* () {
-      yield "Written by the model.";
+    fullStream: (async function* () {
+      yield { type: "start-step" };
+      yield { type: "text-delta", text: "Written by the model." };
     })(),
   }));
 });
@@ -74,5 +75,18 @@ describe("strategy writer with an LLM configured", () => {
     expect(turn).toMatch(/strategy plan can't be built/);
     expect(turn).toMatch(/Give NO tiers, allocations/);
     expect(turn).not.toMatch(/Write the strategy report using the headings/);
+  });
+
+  it("keeps text from separate model steps apart instead of running it together", async () => {
+    streamText.mockImplementation(() => ({
+      fullStream: (async function* () {
+        yield { type: "start-step" };
+        yield { type: "text-delta", text: "Let me pull the data now." };
+        yield { type: "start-step" };
+        yield { type: "text-delta", text: "Here are the results." };
+      })(),
+    }));
+    const { result } = await writeStrategy("client_modern_dental", "Plan to hit 10x ROAS on $500/day");
+    expect(result.summary).toContain("Let me pull the data now.\n\nHere are the results.");
   });
 });
