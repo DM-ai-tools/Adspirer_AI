@@ -109,7 +109,12 @@ export async function buildClientContext(
   const recentDrafts = drafts.slice(0, 3);
   const recentApprovals = loadRecentApprovals(clientId);
 
+  const today = new Date();
+  const yesterday = new Date(today.getTime() - 86_400_000);
   const sections = [
+    "## Today",
+    `- Today is ${today.toISOString().slice(0, 10)} (UTC); the latest whole day is ${yesterday.toISOString().slice(0, 10)}. "Last N days" means the N whole days ending ${yesterday.toISOString().slice(0, 10)}.`,
+    "",
     "## Meta connection",
     [
       "- Access: the operator's Facebook login → Meta Graph API",

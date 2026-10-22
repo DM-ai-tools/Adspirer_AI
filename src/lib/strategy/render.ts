@@ -172,7 +172,7 @@ function channelTable(
   rows: Array<{ categoryId: string; name: string; tier?: AllocationTier; roas?: number | null }>,
   perfById: Map<string, CategoryPerformance>,
   channels: ChannelPerformance,
-  ctx: { word: CategoryWord; days: number; money: Money; ranked: boolean; ga4Basis: boolean },
+  ctx: { word: CategoryWord; days: number; money: Money; ranked: boolean; ga4Basis: boolean; rankBy?: "revenue" | "return" },
 ): string[] {
   const { word, days, money, ranked } = ctx;
   const missing = googleMissing(channels);
@@ -193,7 +193,20 @@ function channelTable(
     return { ...r, ch, f, paid };
   });
   const revenueOf = (f: ObservedFigures) => f.ga4RevenueCents ?? f.platformRevenueCents ?? -1;
-  const ordered = ranked ? [...all].sort((a, b) => revenueOf(b.f) - revenueOf(a.f)) : all;
+  // Ranking by return: best ROAS first among categories with enough spend for it to mean something;
+  // a few cents of spend can show a huge ratio, so those and zero-spend ones follow, by revenue.
+  const totalSpend = all.reduce((acc, r) => acc + r.f.spendCents, 0);
+  const spendFloor = Math.max(1, Math.round(totalSpend * RANK_SPEND_FLOOR_SHARE));
+  const rankable = (r: (typeof all)[number]) => r.f.roas !== null && r.f.spendCents >= spendFloor;
+  const byReturn = ranked && ctx.rankBy === "return";
+  const ordered = byReturn
+    ? [
+        ...all.filter(rankable).sort((a, b) => (b.f.roas ?? 0) - (a.f.roas ?? 0)),
+        ...all.filter((r) => !rankable(r)).sort((a, b) => revenueOf(b.f) - revenueOf(a.f)),
+      ]
+    : ranked
+      ? [...all].sort((a, b) => revenueOf(b.f) - revenueOf(a.f))
+      : all;
   const shown =
     ordered.length <= MAX_FULL_ROWS
       ? ordered
@@ -209,7 +222,8 @@ function channelTable(
     const ga4All = r.ch.ga4TotalRevenueCents === null ? "—" : money(r.ch.ga4TotalRevenueCents);
     const platform = r.f.platformRevenueCents === null ? "unknown" : money(r.f.platformRevenueCents);
     const value = r.roas !== undefined ? r.roas : r.f.roas;
-    return `| ${r.name} | ${money(r.ch.meta.spendCents)} | ${google} | ${ga4} | ${ga4All} | ${platform} | ${roas(value)} | ${basis[r.f.basis]} |${withTier ? ` ${r.tier} |` : ""} ${match} |`;
+    const roasCell = byReturn && value !== null && !rankable(r) ? `${roas(value)} (spend too small to rank)` : roas(value);
+    return `| ${r.name} | ${money(r.ch.meta.spendCents)} | ${google} | ${ga4} | ${ga4All} | ${platform} | ${roasCell} | ${basis[r.f.basis]} |${withTier ? ` ${r.tier} |` : ""} ${match} |`;
   });
   const hidden = rows.length - shown.length;
   const headings = missing
@@ -224,6 +238,9 @@ function channelTable(
       : []),
   ];
 }
+
+/** Under this share of the table's total spend a category's ROAS is too noisy to rank on. */
+const RANK_SPEND_FLOOR_SHARE = 0.01;
 
 const UTM_HINT = "check the Meta ads carry UTM tags (utm_source=facebook&utm_medium=paid_social)";
 
@@ -323,6 +340,10 @@ export function renderCategorySpendEvidence(
     channelWarnings?: string[];
     /** The question names categories, so GA4 is used for them whatever share of GA4 revenue they cover. */
     scoped?: boolean;
+    /** "return" ranks by ROAS on each category's own spend (the question is about sales relative to spend). */
+    rankBy?: "revenue" | "return";
+    /** The dates the figures cover; stated in the Period line when given. */
+    period?: { since: string; until: string };
   },
 ): string {
   const word = opts.categoryWord;
@@ -338,7 +359,13 @@ export function renderCategorySpendEvidence(
   const days = opts.periodDays;
 
   const top: string[] = [];
-  if (channels) {
+  const byReturn = opts.rankBy === "return" && !!combined;
+  if (byReturn) {
+    top.push(
+      `- Ranked by: return on spend: ${ga4Basis ? "GA4 paid revenue" : "platform revenue"} ÷ that ${word}'s own ${googleMissing(combined!) ? "Meta" : "Meta + Google"} spend. ${capitalize(plural(word))} with no spend, or under ${Math.round(RANK_SPEND_FLOOR_SHARE * 100)}% of total spend, are listed after the ranked ones.`,
+      "- The question asks for sales relative to spend: answer with this ranking and show each category's own spend and ROAS. Never divide a category's revenue by total account spend.",
+    );
+  } else if (channels) {
     top.push(
       `- Ranked by: ${
         !combined
@@ -366,7 +393,7 @@ export function renderCategorySpendEvidence(
   }
 
   let table: string[];
-  if (combined) table = channelTable(rows, perfById, combined, { word, days, money, ranked: true, ga4Basis });
+  if (combined) table = channelTable(rows, perfById, combined, { word, days, money, ranked: true, ga4Basis, rankBy: opts.rankBy });
   else if (channels) {
     const revenue = (id: string) => {
       const p = perfById.get(id);
@@ -378,7 +405,9 @@ export function renderCategorySpendEvidence(
 
   return [
     `### Spend & return by ${word}`,
-    `- Period: last ${days} days. Figures only: no plan, no budget allocation.`,
+    opts.period
+      ? `- Period: ${opts.period.since} → ${opts.period.until} (${days} days, whole days; today excluded). Figures only: no plan, no budget allocation.`
+      : `- Period: last ${days} days. Figures only: no plan, no budget allocation.`,
     ...top,
     ...table,
     "",

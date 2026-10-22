@@ -112,6 +112,7 @@ import { getGoogleDataProvider } from "@/lib/google/provider";
 import { loadChannelSnapshot } from "@/lib/google/snapshot";
 import {
   asksAboutCategorySpend,
+  asksForReturnOnSpend,
   categoriesFromServices,
   scopeCategoriesFromRequest,
   type StrategyCategory,
@@ -172,6 +173,7 @@ import {
   resolveAuditBrief,
   resolveAuditCampaigns,
   applyCompetitorUrlsFromDocuments,
+  completedDaysRange,
   parseDateRangeFromText,
 } from "@/lib/agent/audit-brief";
 import {
@@ -981,7 +983,16 @@ async function streamWriterText(args: {
       summary: liveReplyPreview(text),
     });
   };
-  for await (const delta of result.textStream) {
+  // fullStream, not textStream: text from separate model steps (before and after tool calls)
+  // would otherwise run together with no gap ("…now.Here are…").
+  for await (const part of result.fullStream) {
+    let delta: string;
+    if (part.type === "start-step") {
+      if (!text || /\s$/.test(text)) continue;
+      delta = "\n\n";
+    } else if (part.type === "text-delta") {
+      delta = part.text;
+    } else continue;
     text += delta;
     pendingDelta += delta;
     // The first tokens go out immediately — time to first token matters most.
@@ -2722,13 +2733,14 @@ export async function gatherDiagnoseEvidence(input: {
         if (!provider.getAuditSnapshot) {
           throw new Error("this Meta connection can't load an account snapshot");
         }
-        const range = parseDateRangeFromText("last 30 days")!;
+        // The period the question names, in whole days, so revenue and spend cover the same dates.
+        const range = completedDaysRange(input.request);
         const snapshot = await withCatalogCategories(
           input.clientId,
           await provider.getAuditSnapshot(accountId, {
             since: range.dateStart,
             until: range.dateStop,
-            days: 30,
+            days: range.days,
           }),
         );
         const attribution = attributeSpendToCategories(snapshot, categories);
@@ -2749,6 +2761,8 @@ export async function gatherDiagnoseEvidence(input: {
             channelWarnings,
             // A question about named categories uses GA4 for them, however few are set up.
             scoped: !!requested.scoped || scopeCategoriesFromRequest(input.request, categories).length > 0,
+            rankBy: asksForReturnOnSpend(input.request) ? "return" : "revenue",
+            period: { since: snapshot.period.since, until: snapshot.period.until },
           }),
         );
       } catch (error) {
