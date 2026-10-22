@@ -1,6 +1,6 @@
 import { getConfig } from "@/lib/config";
 import { fetchAdsPerformance } from "./ads";
-import { fetchGa4CategoryRevenue, fetchGa4LandingPages, runGa4Report, type Ga4CategoryRevenueOptions } from "./ga4";
+import { fetchGa4CategoryRevenue, fetchGa4ItemCategories, fetchGa4LandingPages, runGa4Report, type Ga4CategoryRevenueOptions } from "./ga4";
 import { fetchSearchDemand, querySearchAnalytics } from "./gsc";
 import { getMockGoogleDataProvider } from "./mock-provider";
 import type {
@@ -19,6 +19,8 @@ import type {
 export interface GoogleDataProvider {
   ga4CategoryRevenue(propertyId: string, range: DateRange, opts?: Ga4CategoryRevenueOptions): Promise<Ga4CategoryRevenue>;
   ga4LandingPages(propertyId: string, range: DateRange): Promise<Ga4LandingPages>;
+  /** GA4 item category by catalog product (variant) id. */
+  ga4ItemCategories(propertyId: string, range: DateRange): Promise<Map<string, string>>;
   /** A free-form GA4 report (the workspace's ga4_report tool). */
   ga4Report(propertyId: string, request: Ga4ReportRequest): Promise<Ga4ReportResult>;
   adsPerformance(customerId: string, loginCustomerId: string | null, range: DateRange): Promise<AdsPerformance>;
@@ -30,6 +32,7 @@ export interface GoogleDataProvider {
 const liveProvider: GoogleDataProvider = {
   ga4CategoryRevenue: fetchGa4CategoryRevenue,
   ga4LandingPages: fetchGa4LandingPages,
+  ga4ItemCategories: fetchGa4ItemCategories,
   ga4Report: runGa4Report,
   adsPerformance: fetchAdsPerformance,
   searchDemand: fetchSearchDemand,

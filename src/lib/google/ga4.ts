@@ -390,6 +390,28 @@ export async function fetchGa4LandingPages(propertyId: string, range: DateRange)
   };
 }
 
+/**
+ * GA4 item category by catalog product id, for tying Meta catalog ad spend to a category.
+ * Shopify's GA4 item ids end in the variant id ("shopify_AU_<product>_<variant>"), which is
+ * the id Meta's catalog uses, so the key is the trailing digits. A product sold under
+ * several categories keeps the one with the most revenue + views. Read-only.
+ */
+export async function fetchGa4ItemCategories(propertyId: string, range: DateRange): Promise<Map<string, string>> {
+  const id = checkedPropertyId(propertyId, range);
+  const report = await runPagedReport(id, range, ["itemId", "itemCategory"], ["itemsViewed", "itemRevenue"]);
+  const best = new Map<string, { category: string; weight: number }>();
+  for (const row of report.rows) {
+    const [itemId = "", category = ""] = row.dims;
+    if (isPlaceholder(category)) continue;
+    const key = itemId.trim().match(/(\d+)$/)?.[1];
+    if (!key) continue;
+    const weight = (row.values[1] ?? 0) * 1000 + (row.values[0] ?? 0);
+    const seen = best.get(key);
+    if (!seen || weight > seen.weight) best.set(key, { category: category.trim(), weight });
+  }
+  return new Map([...best].map(([key, { category }]) => [key, category]));
+}
+
 const MATCH_TYPE: Record<Ga4StringFilter["match"], string> = {
   exact: "EXACT",
   contains: "CONTAINS",

@@ -38,6 +38,33 @@ async function activeClientServices(clientId: string): Promise<ClientService[]> 
 }
 
 /**
+ * Catalog ads' spend per product, each product tagged with its GA4 item category so the spend
+ * can go to a category. A snapshot without catalog spend is returned untouched; when GA4 isn't
+ * mapped or won't load, the products stay uncategorised and a warning says so.
+ */
+async function withCatalogCategories(clientId: string, snapshot: MetaAuditSnapshot): Promise<MetaAuditSnapshot> {
+  if (!snapshot.catalogProducts?.length) return snapshot;
+  const warn = (reason: string): MetaAuditSnapshot => ({
+    ...snapshot,
+    warnings: [...snapshot.warnings, `Catalog ad spend can't be matched to categories: ${reason}.`],
+  });
+  try {
+    const { ga4 } = await clientGoogleAssets(clientId);
+    if (!ga4) return warn("no GA4 property is connected for this client");
+    const categories = await getGoogleDataProvider().ga4ItemCategories(ga4.external_id, {
+      since: snapshot.period.since,
+      until: snapshot.period.until,
+    });
+    return {
+      ...snapshot,
+      catalogProducts: snapshot.catalogProducts.map((p) => ({ ...p, itemCategory: categories.get(p.productId) ?? null })),
+    };
+  } catch (error) {
+    return warn(`GA4 item categories didn't load (${error instanceof Error ? error.message : String(error)})`);
+  }
+}
+
+/**
  * The client's Google figures per category for the snapshot's period, read-only.
  * Nothing when no Google asset is mapped (or the mapping can't be read), so those
  * clients keep the Meta-only evidence; a Google load that fails outright becomes a
@@ -81,6 +108,7 @@ async function loadChannelPerformance(
 }
 import { scopeAuditSnapshot, type MetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
 import { clientGoogleAssets } from "@/lib/google/assets";
+import { getGoogleDataProvider } from "@/lib/google/provider";
 import { loadChannelSnapshot } from "@/lib/google/snapshot";
 import {
   asksAboutCategorySpend,
@@ -2470,11 +2498,14 @@ export async function gatherDiagnoseEvidence(input: {
         throw new Error("this Meta connection can't load an account snapshot");
       }
       const range = parseDateRangeFromText("last 30 days")!;
-      const snapshot = await provider.getAuditSnapshot(accountId, {
-        since: range.dateStart,
-        until: range.dateStop,
-        days: 30,
-      });
+      const snapshot = await withCatalogCategories(
+        input.clientId,
+        await provider.getAuditSnapshot(accountId, {
+          since: range.dateStart,
+          until: range.dateStop,
+          days: 30,
+        }),
+      );
       const goals = await turnGoals();
       const currentDailySpendCents = snapshot.totals
         ? Math.round(snapshot.totals.spendCents / snapshot.period.days)
@@ -2692,11 +2723,14 @@ export async function gatherDiagnoseEvidence(input: {
           throw new Error("this Meta connection can't load an account snapshot");
         }
         const range = parseDateRangeFromText("last 30 days")!;
-        const snapshot = await provider.getAuditSnapshot(accountId, {
-          since: range.dateStart,
-          until: range.dateStop,
-          days: 30,
-        });
+        const snapshot = await withCatalogCategories(
+          input.clientId,
+          await provider.getAuditSnapshot(accountId, {
+            since: range.dateStart,
+            until: range.dateStop,
+            days: 30,
+          }),
+        );
         const attribution = attributeSpendToCategories(snapshot, categories);
         const { channels, channelWarnings } = await loadChannelPerformance(
           input.clientId,

@@ -139,6 +139,18 @@ export type AuditAd = {
   rankings?: { quality: string | null; engagement: string | null; conversion: string | null } | null;
 };
 
+/** One catalog (product) ad's spend on one product, from Meta's product_id breakdown. */
+export type AuditCatalogProduct = {
+  adId: string;
+  /** The catalog product's id: the Shopify variant id for Shopify catalogs. */
+  productId: string;
+  spendCents: number;
+  purchaseValueCents: number;
+  results: number;
+  /** The product's GA4 item category; filled in once GA4 is read, unknown (null/absent) until then. */
+  itemCategory?: string | null;
+};
+
 export type MetaAuditSnapshot = {
   account: {
     id: string;
@@ -168,6 +180,8 @@ export type MetaAuditSnapshot = {
   campaigns: AuditCampaign[];
   adSets: AuditAdSet[];
   ads: AuditAd[];
+  /** Catalog ads' spend per product; absent when the account has none or Meta wouldn't return it. */
+  catalogProducts?: AuditCatalogProduct[];
   /** Spend by publisher platform (facebook, instagram, audience_network…). */
   placements: Array<{ platform: string; spendCents: number; results: number | null }>;
   /** Parts that failed to load — checkpoints that need them report "not checked". */
@@ -287,6 +301,47 @@ export async function pixelStats(graph: Graph, pixelId: string, days: number): P
   };
 }
 
+/** Pages of 500 product rows read; a very large catalog is cut off and said so. */
+const PRODUCT_PAGES = 12;
+
+/** Meta's purchase count or value out of an actions / action_values list. */
+function purchaseOf(list: unknown): number {
+  if (!Array.isArray(list)) return 0;
+  const rows = list as Array<{ action_type?: string; value?: string }>;
+  const pick = (type: string) => rows.find((r) => r.action_type === type);
+  return num((pick("omni_purchase") ?? pick("purchase"))?.value);
+}
+
+/** The catalog product id: Meta may return it with a "name" after a comma or as a retailer id ending in the variant id. */
+export function catalogProductId(raw: unknown): string {
+  const text = String(raw ?? "").trim();
+  const lead = text.split(",")[0]!.trim();
+  return lead.match(/(\d+)$/)?.[1] ?? lead;
+}
+
+function catalogProductsFrom(rows: Row[] | null, warnings: string[]): AuditCatalogProduct[] | undefined {
+  if (!rows) return undefined;
+  const out: AuditCatalogProduct[] = [];
+  for (const r of rows) {
+    const productId = catalogProductId(r.product_id);
+    const adId = String(r.ad_id ?? "");
+    if (!productId || !adId) continue;
+    const spendCents = major(r.spend);
+    if (spendCents <= 0) continue;
+    out.push({
+      adId,
+      productId,
+      spendCents,
+      purchaseValueCents: major(purchaseOf(r.action_values)),
+      results: purchaseOf(r.actions),
+    });
+  }
+  if (rows.length >= PRODUCT_PAGES * 500) {
+    warnings.push("Catalog product spend: more products than were read; per-category catalog spend may be understated");
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 function dayString(d: Date) {
   return d.toISOString().slice(0, 10);
 }
@@ -352,7 +407,7 @@ export async function fetchMetaAuditSnapshot(
 
   const [
     pixels, customConversions, audiences, campaigns, adSets, ads, totals, campaignIns, adSetIns, adIns, placements, adSetWeek,
-    previousTotals, previousCampaignIns, previousAdSetIns, adWeek,
+    previousTotals, previousCampaignIns, previousAdSetIns, adWeek, productIns,
   ] =
     await Promise.all([
       settle("Pixels", warnings, paged(graph, `${id}/adspixels`, {
@@ -415,6 +470,10 @@ export async function fetchMetaAuditSnapshot(
       settle("Ad frequency (7d)", warnings, paged(graph, `${id}/insights`, {
         level: "ad", date_preset: "last_7d", fields: "ad_id,frequency", limit: 200,
       }, 2)),
+      // Catalog ads have no single page or category name; their spend per product is what ties them to a category.
+      settle("Catalog product spend", warnings, paged(graph, `${id}/insights`, {
+        level: "ad", time_range: timeRange, breakdowns: "product_id", fields: "ad_id,spend,actions,action_values", limit: 500,
+      }, PRODUCT_PAGES)),
     ]);
 
   const byKey = (rows: Row[] | null, key: string) => new Map((rows ?? []).map((r) => [String(r[key] ?? ""), r]));
@@ -511,6 +570,7 @@ export async function fetchMetaAuditSnapshot(
     }
   }
 
+  const catalogProducts = catalogProductsFrom(productIns, warnings);
   const statusCode = num(account.account_status);
   const disable = num(account.disable_reason);
 
@@ -536,6 +596,7 @@ export async function fetchMetaAuditSnapshot(
         }
       : {}),
     pixels: auditPixels,
+    ...(catalogProducts ? { catalogProducts } : {}),
     customConversions: (customConversions ?? []).map((c) => ({
       id: String(c.id),
       name: String(c.name ?? c.id),
@@ -685,11 +746,17 @@ export function scopeAuditSnapshot(snap: MetaAuditSnapshot, campaignIds: string[
   const comparisonFailures = snap.comparisonFailures?.includes("campaigns")
     ? ([...new Set([...snap.comparisonFailures, "totals" as const])] as MetaAuditSnapshot["comparisonFailures"])
     : snap.comparisonFailures;
+  const scopedAdIds = new Set(snap.ads.filter((a) => ids.has(a.campaignId)).map((a) => a.id));
   return {
     ...snap,
     campaigns,
     adSets: snap.adSets.filter((a) => ids.has(a.campaignId)),
     ads: snap.ads.filter((a) => ids.has(a.campaignId)),
+    ...(snap.catalogProducts
+      ? {
+          catalogProducts: snap.catalogProducts.filter((p) => scopedAdIds.has(p.adId)),
+        }
+      : {}),
     totals: totalsOf((c) => c.performance, snap.totals),
     ...(snap.previousPeriod
       ? {

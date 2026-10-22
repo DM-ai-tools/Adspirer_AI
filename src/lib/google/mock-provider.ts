@@ -96,6 +96,7 @@ export function getMockGoogleDataProvider(): GoogleDataProvider {
       });
     },
     ga4LandingPages: async (propertyId) => structuredClone({ ...landing, currency: assetCurrency(propertyId) }),
+    ga4ItemCategories: async () => new Map<string, string>(),
     adsPerformance: async (customerId) =>
       structuredClone({ ...ads, customerId, currency: assetCurrency(customerId) }),
     searchDemand: async (siteUrl) => structuredClone({ ...gsc, siteUrl }),
