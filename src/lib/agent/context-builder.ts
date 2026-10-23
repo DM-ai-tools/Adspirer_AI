@@ -20,6 +20,7 @@ import { humanToolLabel } from "@/lib/tools/display-labels";
 import { describeGoalsForAgent } from "@/lib/clients/goals";
 import { mapClientRow } from "@/lib/clients/map-client";
 import { clientGoogleAssets } from "@/lib/google/assets";
+import { describeAgo, describeFailedSync } from "@/lib/shopify/query";
 import { buildClientBrandBlock } from "./prompts";
 
 /** Reads the turn already started, shared so they are not repeated. */
@@ -44,9 +45,52 @@ async function loadGoogleAssets(clientId: string): Promise<MappedGoogleAssets | 
  * What the read tools can reach for this client, so the model knows which
  * sources it can call (and what to tell the operator to map otherwise).
  */
+export type ShopifyContextInfo = {
+  name: string | null;
+  domain: string;
+  lastSyncAt: string | null;
+  /** Fixed text from the sync when the latest sync failed; null otherwise. */
+  lastSyncError?: string | null;
+};
+
+/**
+ * Only name, domain, sync time and (when the latest sync failed) the sync's fixed error
+ * text: nothing else from the connection reaches the model.
+ */
+async function loadShopifyInfo(clientId: string): Promise<ShopifyContextInfo | null> {
+  try {
+    const { getConnection } = await import("@/lib/shopify/store");
+    const conn = await getConnection(clientId);
+    return conn
+      ? {
+          name: conn.shop_name,
+          domain: conn.shop_domain,
+          lastSyncAt: conn.last_sync_at,
+          lastSyncError: conn.last_sync_status === "error" ? (conn.last_sync_error ?? "no reason recorded") : null,
+        }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function describeShopify(shopify: ShopifyContextInfo | null | undefined, now: Date): string {
+  if (!shopify) return "- Shopify: not connected (an admin can connect it under Admin → Connections)";
+  const ago = shopify.lastSyncAt ? describeAgo(shopify.lastSyncAt, now) : null;
+  let line = `- Shopify: ${shopify.name ?? shopify.domain} (${shopify.domain}), ${ago ? `last synced ${ago}` : "never synced"}`;
+  if (shopify.lastSyncError) {
+    line += ago
+      ? `. ${describeFailedSync(shopify.lastSyncError, ago)}`
+      : `; the latest sync failed (${shopify.lastSyncError})`;
+  }
+  return line;
+}
+
 export function describeConnectedData(
   meta: ConnectedMetaAccount[],
   google: MappedGoogleAssets | null,
+  shopify?: ShopifyContextInfo | null,
+  now: Date = new Date(),
 ): string[] {
   const primary = meta.find((m) => m.access_status === "granted");
   const line = (label: string, asset: { name: string } | null | undefined, what: string) =>
@@ -65,6 +109,7 @@ export function describeConnectedData(
           line("Google Ads", google.ads, "Google Ads account"),
         ]
       : ["- Google (GA4 / Search Console / Google Ads): the mapping couldn't be read this turn"]),
+    describeShopify(shopify, now),
   ];
 }
 
@@ -76,6 +121,7 @@ export async function buildClientContext(
   const preloaded = options?.preloaded;
   // Started first so it loads alongside the reads below.
   const googlePromise = loadGoogleAssets(clientId);
+  const shopifyPromise = loadShopifyInfo(clientId);
   // Independent reads — run them together rather than one round trip at a time.
   const [
     client,
@@ -103,6 +149,7 @@ export async function buildClientContext(
     }).catch(() => []),
   ]);
   const google = await googlePromise;
+  const shopify = await shopifyPromise;
   if (!client) {
     return `Client id ${clientId} not found.`;
   }
@@ -133,7 +180,7 @@ export async function buildClientContext(
         : "- No Meta account mapped yet — Connect Facebook + map under Connections",
     ].join("\n"),
     "",
-    ...describeConnectedData(meta, google),
+    ...describeConnectedData(meta, google, shopify),
     "",
     "## Brand context",
     buildClientBrandBlock(client),

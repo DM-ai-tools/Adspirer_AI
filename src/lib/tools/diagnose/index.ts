@@ -4,6 +4,8 @@ import { resolveProvider } from "@/lib/adspirer/client";
 import type { MetaAdsProvider } from "@/lib/adspirer/provider";
 // Read-only GA4 / Search Console / Google Ads / Meta insights / categories tools.
 import "./data-tools";
+// Read-only Shopify catalogue tools (offered only when the client has a store).
+import "./shopify-tools";
 
 /** Live → Meta Graph with the operator's Facebook token; demo → mock data. */
 async function adsProvider(): Promise<MetaAdsProvider> {

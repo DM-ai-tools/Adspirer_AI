@@ -16,6 +16,7 @@ import { EmptyState } from "@/components/shared/empty-state";
 import { ClientStatusBadge } from "@/components/clients/client-status-badge";
 import { MetaConnectButton } from "@/components/meta-connect-button";
 import { GoogleConnectCard } from "@/components/connections/google-connect-card";
+import { ShopifyConnectCard } from "@/components/connections/shopify-connect-card";
 import { googleErrorMessage } from "@/lib/google/assets-view";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -307,6 +308,10 @@ export default function ConnectionsPortalPage() {
 
       <div className="mb-6">
         <GoogleConnectCard clients={clients} />
+      </div>
+
+      <div className="mb-6">
+        <ShopifyConnectCard clients={clients} />
       </div>
 
       {accounts.length === 0 ? (

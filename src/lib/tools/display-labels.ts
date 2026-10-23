@@ -27,6 +27,9 @@ const TOOL_LABELS: Record<string, string> = {
   google_ads_report: "Google Ads report",
   meta_insights: "Meta insights",
   list_client_categories: "List categories",
+  shopify_products: "Shopify products",
+  shopify_variants: "Shopify variants / SKUs",
+  shopify_summary: "Shopify summary",
 
   // Execute
   update_adset_budget: "Update ad set budget",
@@ -71,6 +74,9 @@ const TOOL_PROGRESS_LABELS: Record<string, string> = {
   google_ads_report: "Reading Google Ads…",
   meta_insights: "Pulling Meta insights…",
   list_client_categories: "Loading categories…",
+  shopify_products: "Reading Shopify…",
+  shopify_variants: "Reading Shopify…",
+  shopify_summary: "Reading Shopify…",
   update_adset_budget: "Preparing budget update…",
   pause_campaign: "Preparing pause…",
   resume_campaign: "Preparing resume…",
