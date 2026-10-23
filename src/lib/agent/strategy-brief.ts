@@ -54,7 +54,7 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-function parseBudgetCents(text: string): number | null {
+export function parseBudgetCents(text: string): number | null {
   const m = BUDGET_RE.exec(text);
   if (!m) return null;
   const cents = toNumber(m[1], m[2]) * 100;
@@ -64,16 +64,37 @@ function parseBudgetCents(text: string): number | null {
 }
 
 /** Every "Nx" / "roas of N" value in the order it appears; "400%" is 4×, and values over the cap are dropped. */
-function parseRoasValues(text: string): number[] {
-  const found: Array<{ at: number; value: number }> = [];
+export function parseRoasValues(text: string): number[] {
+  return roasMatches(text).map((f) => f.value);
+}
+
+/**
+ * The values "stretch" governs directly: "stretch 15x", "stretch to 15x",
+ * "stretch target(s) of 12x and 15x", "stretch goal: 12x, 15x". "Stretch goals
+ * aside, plan 10x" governs none.
+ */
+const STRETCH_LIST_RE = new RegExp(
+  String.raw`\bstretch(?:\s+(?:targets?|goals?))?(?:\s*(?:of|at|to|:|=|is|are|be|around))?\s*((?:\d[\d,]*(?:\.\d+)?\s*[x×](?![a-z0-9])(?:\s*(?:,|and|or|&|\/)\s*(?=\d))?)+)`,
+  "gi",
+);
+
+/** Every ROAS value in order, each marked as a stretch target when "stretch" governs it. */
+function roasMatches(text: string): Array<{ at: number; value: number; stretch: boolean }> {
+  const stretchSpans = [...text.matchAll(STRETCH_LIST_RE)].map((m) => {
+    const start = (m.index ?? 0) + m[0].length - m[1]!.length;
+    return { start, end: (m.index ?? 0) + m[0].length };
+  });
+  const found: Array<{ at: number; value: number; stretch: boolean }> = [];
   for (const re of [MULTIPLE_RE, ROAS_OF_RE]) {
     for (const m of text.matchAll(re)) {
       const raw = Number(m[1].replace(/,/g, ""));
       const value = m[2] ? raw / 100 : raw;
-      if (value > 0 && value <= MAX_ROAS) found.push({ at: m.index ?? 0, value: round2(value) });
+      const at = m.index ?? 0;
+      const stretch = stretchSpans.some((s) => at >= s.start && at < s.end);
+      if (value > 0 && value <= MAX_ROAS) found.push({ at, value: round2(value), stretch });
     }
   }
-  return found.sort((a, b) => a.at - b.at).map((f) => f.value);
+  return found.sort((a, b) => a.at - b.at);
 }
 
 /** A period right after a total or its "to get $B (back)" clause; "in the last 90 days" never counts. */
@@ -88,7 +109,7 @@ function periodDaysFrom(m: RegExpExecArray | null): number | null {
 }
 
 /** The total budget in cents and its stated period, from a money-back form or "$A over N days / this month". */
-function parseTotal(text: string): { cents: number; periodDays: number | null } | null {
+export function parseTotal(text: string): { cents: number; periodDays: number | null } | null {
   const m = A_TO_B_RE.exec(text) ?? A_FOR_B_RE.exec(text) ?? TOTAL_PERIOD_RE.exec(text);
   if (!m) return null;
   const cents = Math.round(toNumber(m[1], m[2]) * 100);
@@ -115,18 +136,23 @@ type StatedBrief = {
   periodDays: number | null;
   targetRoas: number | null;
   stretch: number[];
+  /** The ask names Google ("using Google Ads and Meta together"). */
+  wantsGoogle: boolean;
 };
 
 function statedBrief(text: string): StatedBrief {
   const total = parseTotal(text);
-  // An explicit "Nx" wins over the "$A to get $B back" form.
-  const values = parseRoasValues(text);
+  // An explicit "Nx" wins over the "$A to get $B back" form; a value after
+  // "stretch" is only ever a stretch target.
+  const values = roasMatches(text);
+  const main = values.find((v) => !v.stretch);
   return {
     dailyBudgetCents: parseBudgetCents(text),
     totalBudgetCents: total?.cents ?? null,
     periodDays: total?.periodDays ?? null,
-    targetRoas: values.length ? values[0] : impliedRoas(text),
-    stretch: values.slice(1),
+    targetRoas: main ? main.value : impliedRoas(text),
+    stretch: values.filter((v) => v !== main).map((v) => v.value),
+    wantsGoogle: /\bgoogle\b/i.test(text),
   };
 }
 
@@ -171,6 +197,7 @@ function completeBrief(stated: StatedBrief, defaults: BriefDefaults): BriefResul
   const target = targetRoas;
   const stretchTargets = [...new Set(stated.stretch)].filter((v) => v !== target).sort((a, b) => a - b);
   const brief: StrategyBrief = { dailyBudgetCents, targetRoas: target, stretchTargets };
+  if (stated.wantsGoogle) brief.wantsGoogle = true;
   if (total != null) {
     brief.totalBudgetCents = total;
     brief.periodDays = periodDays;
@@ -226,9 +253,18 @@ export function resolveStrategyBrief(
       periodDays: now.periodDays ?? before.periodDays,
       targetRoas: now.targetRoas ?? before.targetRoas,
       stretch: [...before.stretch, ...now.stretch],
+      wantsGoogle: now.wantsGoogle || before.wantsGoogle,
     },
     defaults,
   );
+}
+
+/** The texts that make up the strategy ask: the request, plus the earlier ask when it answers the brief question. */
+export function strategyAskTexts(request: string, history: AgentHistoryMessage[] = []): string[] {
+  const at = history.findLastIndex((m) => m.role === "assistant");
+  const answersQuestion = at >= 0 && history[at].content.toLowerCase().includes(STRATEGY_BRIEF_MARKER);
+  const earlier = answersQuestion ? history.slice(0, at).findLast((m) => m.role === "user") : undefined;
+  return earlier ? [request, earlier.content] : [request];
 }
 
 /** A short reply with a money amount and/or an Nx / ROAS value. */

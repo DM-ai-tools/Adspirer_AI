@@ -1,3 +1,6 @@
+import { formatCents } from "@/lib/api-client";
+import type { GoogleCategoryCandidate } from "@/lib/google/category-candidates";
+
 export type CategoryFormField =
   | "name"
   | "landing_page_url"
@@ -82,5 +85,100 @@ export function importOutcome(httpOk: boolean, payload: unknown): ImportOutcome 
     created: body.data.created ?? 0,
     updated: body.data.updated ?? 0,
     errors: body.data.errors?.length ?? 0,
+  };
+}
+
+/** Why the website scan came back empty-handed, in plain words for the panel. */
+export function scanUnavailableMessage(reason: string | undefined, words: "categories" | "services"): string {
+  switch (reason) {
+    case "no_website":
+      return `Add the client's website in Settings, then scan again. Or add ${words} by hand or import a sheet.`;
+    case "not_configured":
+      return `Website scan isn't set up (FIRECRAWL_API_KEY is missing). Add ${words} by hand or import a sheet.`;
+    case "scan_failed":
+      return `The website scan didn't work this time. Try again in a minute, or add ${words} by hand or import a sheet.`;
+    default:
+      return `Website scan is unavailable. Add ${words} by hand or import a sheet.`;
+  }
+}
+
+export type ScanCandidate = { name: string; landing_page_url: string | null; alreadyAdded: boolean };
+
+/**
+ * Search for the scan list: every typed word must appear in the name, any
+ * order, any case. Large stores return thousands of candidates, so only the
+ * first `limit` are rendered while `matched` says how many there are.
+ * `selectable` is what "Select all shown" adds (not the ones already added).
+ */
+export function filterScanCandidates<T extends ScanCandidate>(
+  candidates: T[],
+  query: string,
+  limit = 300,
+): { shown: T[]; matched: number; selectable: string[] } {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const matching = words.length
+    ? candidates.filter((c) => {
+        const name = c.name.toLowerCase();
+        return words.every((w) => name.includes(w));
+      })
+    : candidates;
+  const shown = matching.slice(0, limit);
+  return { shown, matched: matching.length, selectable: shown.filter((c) => !c.alreadyAdded).map((c) => c.name) };
+}
+
+/** Search for the saved list: every typed word must appear in the name or landing page, any order, any case. */
+export function filterServiceRows<T extends { name: string; landing_page_url: string | null }>(
+  rows: T[],
+  query: string,
+): T[] {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return rows;
+  return rows.filter((r) => {
+    const text = `${r.name} ${r.landing_page_url ?? ""}`.toLowerCase();
+    return words.every((w) => text.includes(w));
+  });
+}
+
+/** Why "Import from Google" has nothing to show, in plain words for the panel. */
+export function googleImportUnavailableMessage(reason: string | undefined): string {
+  switch (reason) {
+    case "not_mapped":
+      return "Map a GA4 property or Search Console site to this client under Admin → Connections.";
+    case "reconnect":
+      return "Google needs reconnecting under Admin → Connections.";
+    default:
+      return "Couldn't read Google right now; try again.";
+  }
+}
+
+/** One Google row's figures: revenue (last 90 days), search clicks and order value, "est." when estimated. */
+export function googleCandidateFacts(
+  c: Pick<GoogleCategoryCandidate, "revenueCents" | "gscClicks" | "average_order_value_cents" | "aovEstimated">,
+  currency: string | null,
+): string[] {
+  const code = currency || "USD";
+  const facts: string[] = [];
+  if (c.revenueCents > 0) facts.push(`${formatCents(c.revenueCents, code)} revenue, last 90 days`);
+  if (c.gscClicks > 0) facts.push(`${c.gscClicks.toLocaleString("en-US")} search click${c.gscClicks === 1 ? "" : "s"}`);
+  if (c.average_order_value_cents != null) {
+    facts.push(`${formatCents(c.average_order_value_cents, code, { exact: true })} order value${c.aovEstimated ? " est." : ""}`);
+  }
+  return facts;
+}
+
+/** The services POST body for a Google candidate: stored as an import, with its order value and priority. */
+export function googleCandidateServiceBody(c: GoogleCategoryCandidate): {
+  name: string;
+  landing_page_url: string | null;
+  average_order_value_cents: number | null;
+  priority: number;
+  source: "import";
+} {
+  return {
+    name: c.name,
+    landing_page_url: c.landing_page_url,
+    average_order_value_cents: c.average_order_value_cents,
+    priority: c.priority,
+    source: "import",
   };
 }

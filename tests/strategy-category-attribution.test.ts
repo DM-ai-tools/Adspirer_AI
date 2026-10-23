@@ -197,6 +197,77 @@ describe("attributeSpendToCategories", () => {
   });
 });
 
+describe("attributeSpendToCategories: catalog products", () => {
+  const sheds = cat({ id: "shed", name: "Sheds" });
+  const pumps = cat({ id: "pump", name: "Irrigation Pumps" });
+  const product = (adId: string, productId: string, spendCents: number, itemCategory: string | null, purchaseValueCents = 0, results = 0) => ({
+    adId, productId, spendCents, purchaseValueCents, results, itemCategory,
+  });
+  const withProducts = (ads: AuditAd[], catalogProducts: ReturnType<typeof product>[]) => ({ ...snap(ads), catalogProducts });
+
+  it("splits a catalog ad's spend across its products' GA4 categories", () => {
+    const r = attributeSpendToCategories(
+      withProducts([ad("a1", { performance: perf(10_000, 2) })], [
+        product("a1", "1", 6_000, "Home & Garden > Storage > Sheds", 12_000, 2),
+        product("a1", "2", 4_000, "Tools > Pumps > Irrigation Pumps"),
+      ]),
+      [sheds, pumps],
+    );
+    const shed = r.byCategory.find((c) => c.categoryId === "shed")!;
+    const pump = r.byCategory.find((c) => c.categoryId === "pump")!;
+    expect(shed).toMatchObject({ spendCents: 6_000, purchaseValueCents: 12_000, roas: 2, results: 2, matchedBy: "catalog" });
+    expect(pump).toMatchObject({ spendCents: 4_000, matchedBy: "catalog" });
+    expect(r.unmatched.spendCents).toBe(0);
+    expect(r.coveragePct).toBe(100);
+  });
+
+  it("sends products without a known category to unmatched", () => {
+    const r = attributeSpendToCategories(
+      withProducts([ad("a1", { performance: perf(10_000, 2) })], [
+        product("a1", "1", 6_000, "Home & Garden > Storage > Sheds"),
+        product("a1", "2", 3_000, null),
+        product("a1", "3", 1_000, "Totally Other"),
+      ]),
+      [sheds],
+    );
+    expect(r.byCategory[0].spendCents).toBe(6_000);
+    expect(r.unmatched).toEqual({ spendCents: 4_000, adIds: ["a1"] });
+    expect(r.coveragePct).toBe(60);
+  });
+
+  it("does not count the ad's spend twice: only the part the products don't cover goes through the url/name match", () => {
+    const r = attributeSpendToCategories(
+      withProducts([ad("a1", { name: "Sheds promo", performance: perf(10_000, 1) })], [
+        product("a1", "1", 7_000, "Tools > Pumps > Irrigation Pumps"),
+      ]),
+      [sheds, pumps],
+    );
+    expect(r.byCategory.find((c) => c.categoryId === "pump")!.spendCents).toBe(7_000);
+    const shed = r.byCategory.find((c) => c.categoryId === "shed")!;
+    expect(shed.spendCents).toBe(3_000);
+    expect(shed.purchaseValueCents).toBe(3_000);
+    expect(r.coveragePct).toBe(100);
+  });
+
+  it("reports mixed when catalog and name matches both feed a category", () => {
+    const r = attributeSpendToCategories(
+      withProducts(
+        [ad("a1", { performance: perf(5_000, 1) }), ad("a2", { name: "Sheds promo" })],
+        [product("a1", "1", 5_000, "Sheds")],
+      ),
+      [sheds],
+    );
+    expect(r.byCategory[0].spendCents).toBe(15_000);
+    expect(r.byCategory[0].matchedBy).toBe("mixed");
+  });
+
+  it("leaves ads without product rows exactly as before", () => {
+    const plain = attributeSpendToCategories(snap([ad("a1", { name: "Sheds promo" })]), [sheds]);
+    const same = attributeSpendToCategories(withProducts([ad("a1", { name: "Sheds promo" })], []), [sheds]);
+    expect(same).toEqual(plain);
+  });
+});
+
 describe("categoriesFromServices", () => {
   it("keeps active services only and applies defaults", () => {
     const base = {

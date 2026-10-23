@@ -4,21 +4,15 @@ import { getCurrentUser } from "@/lib/security/auth";
 import { assertAuthenticated, assertClientAccess } from "@/lib/authz/assert";
 import type { ClientService } from "@/types";
 import { jsonOk, withApiHandler } from "@/lib/api/response";
-import { logger } from "@/lib/observability/logger";
-import {
-  discoverCategoryCandidates,
-  mapSiteUrls,
-  type CategoryCandidate,
-} from "@/lib/scraping/site-map";
+import { scanSiteCandidates } from "@/lib/scraping/site-scan";
 
 type RouteContext = { params: Promise<{ id: string }> };
-
-const unavailable = { candidates: [] as CategoryCandidate[], source: "unavailable" as const };
 
 /**
  * GET /api/clients/:id/services/discover
  * Scans the client's website for category pages. Never fails the request:
- * a missing key, missing website or Firecrawl error returns "unavailable".
+ * a missing key, missing website or Firecrawl error returns "unavailable"
+ * with the reason, so the page can say which one it was.
  */
 export async function GET(_request: Request, context: RouteContext) {
   return withApiHandler(async () => {
@@ -28,7 +22,8 @@ export async function GET(_request: Request, context: RouteContext) {
     await assertClientAccess(user.id, id);
 
     const config = getConfig();
-    if (!config.hasFirecrawl) return jsonOk(unavailable);
+    // Checked before the client is read, so an unconfigured scan costs nothing.
+    if (!config.hasFirecrawl) return jsonOk(await scanSiteCandidates({ siteUrl: null, existing: [], clientId: id }));
 
     let siteUrl: string | null = null;
     let existing: ClientService[] = [];
@@ -51,20 +46,6 @@ export async function GET(_request: Request, context: RouteContext) {
         .eq("client_id", id);
       existing = (rows ?? []) as ClientService[];
     }
-    if (!siteUrl) return jsonOk(unavailable);
-
-    try {
-      const urls = await mapSiteUrls(siteUrl);
-      return jsonOk({
-        candidates: discoverCategoryCandidates(urls, siteUrl, existing),
-        source: "firecrawl" as const,
-      });
-    } catch (error) {
-      logger.warn("Category scan: site map failed", {
-        clientId: id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return jsonOk(unavailable);
-    }
+    return jsonOk(await scanSiteCandidates({ siteUrl, existing, clientId: id }));
   });
 }

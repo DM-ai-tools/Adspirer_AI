@@ -1,6 +1,14 @@
 import { googleFetch } from "./http";
 import { getGoogleAccessToken } from "./oauth";
-import type { DateRange, Ga4CategoryRevenue, Ga4Channel } from "./types";
+import type {
+  DateRange,
+  Ga4CategoryRevenue,
+  Ga4Channel,
+  Ga4LandingPages,
+  Ga4ReportRequest,
+  Ga4ReportResult,
+  Ga4StringFilter,
+} from "./types";
 
 /**
  * Read-only GA4 client: the Admin API for property discovery and the Data API
@@ -76,10 +84,13 @@ export async function listGa4Properties(): Promise<Ga4Property[]> {
 }
 
 /** Paid default channel groups; any other group (organic, direct, email…) is "other". */
-const PAID_GROUPS = new Set(["Paid Social", "Paid Search", "Paid Shopping", "Cross-network", "Paid Other"]);
-const META_SOURCES = ["facebook", "instagram", "meta"];
-/** Too short to match inside other words ("digital"), so they must be a whole part of the source. */
-const META_SHORT_SOURCES = new Set(["fb", "ig"]);
+const PAID_GROUPS = new Set(["Paid Social", "Paid Search", "Paid Shopping", "Cross-network", "Paid Video", "Paid Other"]);
+const META_SOURCES = ["facebook", "instagram", "meta", "messenger"];
+/**
+ * Too short to match inside other words ("digital", "plan"), so they must be a whole part of
+ * the source: fb, ig, an (Audience Network), msg (Messenger).
+ */
+const META_SHORT_SOURCES = new Set(["fb", "ig", "an", "msg"]);
 
 /**
  * A paid GA4 session to the plan's channel, by its source: paid social is
@@ -127,6 +138,13 @@ function landingPath(value: string): string {
   return (value.split(/[?#]/)[0] ?? "").trim();
 }
 
+function reportRows(res: ReportResponse): ReportRow[] {
+  return (res.rows ?? []).map((row) => ({
+    dims: (row.dimensionValues ?? []).map((d) => d.value ?? ""),
+    values: (row.metricValues ?? []).map((m) => num(m.value)),
+  }));
+}
+
 async function runReport(
   propertyId: string,
   range: DateRange,
@@ -148,11 +166,111 @@ async function runReport(
     currency: res.metadata?.currencyCode ?? "",
     // Rows past the limit, or grouped into "(other)", are missing from the report.
     dataLoss: res.metadata?.dataLossFromOtherRow === true || num(String(res.rowCount ?? 0)) > REPORT_LIMIT,
-    rows: (res.rows ?? []).map((row) => ({
-      dims: (row.dimensionValues ?? []).map((d) => d.value ?? ""),
-      values: (row.metricValues ?? []).map((m) => num(m.value)),
-    })),
+    rows: reportRows(res),
   };
+}
+
+/** The order-level reports read at most this many rows each. */
+const MAX_ORDER_ROWS = 100_000;
+
+/**
+ * Every row of a report, a page of REPORT_LIMIT at a time by offset, up to MAX_ORDER_ROWS.
+ * Ordered by the first dimension so the pages don't shift between calls.
+ */
+async function runPagedReport(
+  propertyId: string,
+  range: DateRange,
+  dimensions: string[],
+  metrics: string[],
+): Promise<Report> {
+  const accessToken = await getGoogleAccessToken();
+  const rows: ReportRow[] = [];
+  let currency = "";
+  let dataLoss = false;
+  for (let offset = 0; ; ) {
+    const res = await googleFetch<ReportResponse>(`${DATA_BASE}/properties/${propertyId}:runReport`, {
+      method: "POST",
+      accessToken,
+      body: {
+        dateRanges: [{ startDate: range.since, endDate: range.until }],
+        dimensions: dimensions.map((name) => ({ name })),
+        metrics: metrics.map((name) => ({ name })),
+        orderBys: [{ dimension: { dimensionName: dimensions[0] } }],
+        limit: REPORT_LIMIT,
+        offset,
+      },
+    });
+    currency ||= res.metadata?.currencyCode ?? "";
+    if (res.metadata?.dataLossFromOtherRow === true) dataLoss = true;
+    const page = reportRows(res);
+    rows.push(...page);
+    offset += page.length;
+    const total = num(String(res.rowCount ?? 0));
+    if (page.length === 0 || offset >= total) break;
+    if (offset >= MAX_ORDER_ROWS) {
+      dataLoss = true;
+      break;
+    }
+  }
+  return { rows, currency, dataLoss };
+}
+
+const ORDER_DATA_LOSS_WARNING =
+  "GA4 has more order rows than were read (over 100,000, or grouped into (other)); per-channel category figures may be understated";
+
+/**
+ * Item revenue per item category per channel: each order's channel (from the session that
+ * placed it) joined to its items on transactionId. An order the channel report doesn't have
+ * counts as "other"; placeholder transaction ids and categories are skipped. Undefined when
+ * either report has no rows; a failed report adds a warning and leaves the rest untouched.
+ */
+async function fetchItemChannels(
+  propertyId: string,
+  range: DateRange,
+  warnings: string[],
+): Promise<Ga4CategoryRevenue["byItemChannel"]> {
+  let items: Report;
+  let orders: Report;
+  try {
+    [items, orders] = await Promise.all([
+      runPagedReport(propertyId, range, ["transactionId", "itemCategory"], ["itemRevenue"]),
+      runPagedReport(propertyId, range, ["transactionId", "sessionDefaultChannelGroup", "sessionSource"], ["purchaseRevenue"]),
+    ]);
+  } catch (error) {
+    // A revoked connection is the caller's to handle; it would fail every other call too.
+    if (error instanceof Error && error.name === "GoogleReconnectRequired") throw error;
+    warnings.push(
+      `GA4 revenue by order and channel didn't load (${error instanceof Error ? error.message : String(error)}); the per-channel split uses landing pages instead`,
+    );
+    return undefined;
+  }
+  if (items.dataLoss || orders.dataLoss) warnings.push(ORDER_DATA_LOSS_WARNING);
+  if (items.rows.length === 0 || orders.rows.length === 0) return undefined;
+
+  // One channel per order; should GA4 split an order across rows, its biggest row decides.
+  const orderChannel = new Map<string, { channel: Ga4Channel; revenue: number }>();
+  for (const row of orders.rows) {
+    const [txn = "", group = "", source = ""] = row.dims;
+    if (isPlaceholder(txn)) continue;
+    const id = txn.trim();
+    const revenue = row.values[0] ?? 0;
+    const seen = orderChannel.get(id);
+    if (!seen || revenue > seen.revenue) orderChannel.set(id, { channel: ga4ChannelOf(group, source), revenue });
+  }
+
+  const totals = new Map<string, NonNullable<Ga4CategoryRevenue["byItemChannel"]>[number]>();
+  for (const row of items.rows) {
+    const [txn = "", category = ""] = row.dims;
+    if (isPlaceholder(txn) || isPlaceholder(category)) continue;
+    const itemCategory = category.trim();
+    const channel = orderChannel.get(txn.trim())?.channel ?? "other";
+    const key = `${itemCategory}\u0000${channel}`;
+    const entry = totals.get(key) ?? { itemCategory, channel, revenueCents: 0 };
+    entry.revenueCents += unitsToCents(row.values[0] ?? 0);
+    totals.set(key, entry);
+  }
+  const joined = [...totals.values()].filter((entry) => entry.revenueCents > 0);
+  return joined.length > 0 ? joined : undefined;
 }
 
 /** Revenue rows keyed by `keyOf`, summed, keeping only keys that earned revenue. */
@@ -174,7 +292,8 @@ function revenueRows(rows: ReportRow[], keyOf: (dim: string) => string): Ga4Cate
 /**
  * Revenue by category from GA4 purchase items; without item revenue, by
  * landing page instead; with neither, method "none". byChannel always comes
- * from the session landing page, channel group and source.
+ * from the session landing page, channel group and source. With item
+ * categories, byItemChannel also credits each item to its order's channel.
  *
  * Compatibility: itemCategory is item-scoped, so it pairs only with the
  * item-scoped itemRevenue and itemsPurchased. The landing page and channel
@@ -183,12 +302,27 @@ function revenueRows(rows: ReportRow[], keyOf: (dim: string) => string): Ga4Cate
  * They group by landingPage (the path alone): with the query string, every
  * fbclid/gclid would be its own row and paid traffic would spill into "(other)".
  */
-export async function fetchGa4CategoryRevenue(propertyId: string, range: DateRange): Promise<Ga4CategoryRevenue> {
+/** The numeric property id, after checking the id and date range before anything calls Google. */
+function checkedPropertyId(propertyId: string, range: DateRange): string {
   const id = digits(propertyId);
   if (!id) throw new Error("GA4 property id must be numeric, e.g. properties/123456.");
   if (!DATE.test(range.since) || !DATE.test(range.until)) {
     throw new Error("GA4 date range must be YYYY-MM-DD.");
   }
+  return id;
+}
+
+export type Ga4CategoryRevenueOptions = {
+  /** Read the order-level reports for byItemChannel (default true); category discovery doesn't need them. */
+  byItemChannel?: boolean;
+};
+
+export async function fetchGa4CategoryRevenue(
+  propertyId: string,
+  range: DateRange,
+  opts: Ga4CategoryRevenueOptions = {},
+): Promise<Ga4CategoryRevenue> {
+  const id = checkedPropertyId(propertyId, range);
 
   const [item, channel] = await Promise.all([
     runReport(id, range, ["itemCategory"], ["itemRevenue", "itemsPurchased"]),
@@ -218,7 +352,13 @@ export async function fetchGa4CategoryRevenue(propertyId: string, range: DateRan
     if (item.dataLoss) {
       warnings.push("GA4 grouped some item categories into (other); category figures may be understated");
     }
-    return { method: "item", currency: item.currency || channel.currency, rows: itemRows, byChannel, warnings };
+    const result: Ga4CategoryRevenue = { method: "item", currency: item.currency || channel.currency, rows: itemRows, byChannel, warnings };
+    // Only item categories can be joined to orders, so only the item method reads them.
+    if (opts.byItemChannel !== false) {
+      const byItemChannel = await fetchItemChannels(id, range, warnings);
+      if (byItemChannel) result.byItemChannel = byItemChannel;
+    }
+    return result;
   }
 
   const landing = await runReport(id, range, ["landingPage"], ["purchaseRevenue", "ecommercePurchases"]);
@@ -231,4 +371,105 @@ export async function fetchGa4CategoryRevenue(propertyId: string, range: DateRan
     return { method: "landing_page", currency, rows: landingRows, byChannel, warnings };
   }
   return { method: "none", currency, rows: [], byChannel, warnings };
+}
+
+/**
+ * Purchase revenue and purchases by session landing page (the path alone),
+ * for pages that earned revenue. Same report as the landing-page fallback above.
+ */
+export async function fetchGa4LandingPages(propertyId: string, range: DateRange): Promise<Ga4LandingPages> {
+  const id = checkedPropertyId(propertyId, range);
+  const landing = await runReport(id, range, ["landingPage"], ["purchaseRevenue", "ecommercePurchases"]);
+  const warnings = landing.dataLoss
+    ? ["GA4 grouped some landing pages into (other); landing page figures may be understated"]
+    : [];
+  return {
+    currency: landing.currency,
+    rows: revenueRows(landing.rows, landingPath).map(({ key, revenueCents, purchases }) => ({ path: key, revenueCents, purchases })),
+    warnings,
+  };
+}
+
+/**
+ * GA4 item category by catalog product id, for tying Meta catalog ad spend to a category.
+ * Shopify's GA4 item ids end in the variant id ("shopify_AU_<product>_<variant>"), which is
+ * the id Meta's catalog uses, so the key is the trailing digits. A product sold under
+ * several categories keeps the one with the most revenue + views. Read-only.
+ */
+export async function fetchGa4ItemCategories(propertyId: string, range: DateRange): Promise<Map<string, string>> {
+  const id = checkedPropertyId(propertyId, range);
+  const report = await runPagedReport(id, range, ["itemId", "itemCategory"], ["itemsViewed", "itemRevenue"]);
+  const best = new Map<string, { category: string; weight: number }>();
+  for (const row of report.rows) {
+    const [itemId = "", category = ""] = row.dims;
+    if (isPlaceholder(category)) continue;
+    const key = itemId.trim().match(/(\d+)$/)?.[1];
+    if (!key) continue;
+    const weight = (row.values[1] ?? 0) * 1000 + (row.values[0] ?? 0);
+    const seen = best.get(key);
+    if (!seen || weight > seen.weight) best.set(key, { category: category.trim(), weight });
+  }
+  return new Map([...best].map(([key, { category }]) => [key, category]));
+}
+
+const MATCH_TYPE: Record<Ga4StringFilter["match"], string> = {
+  exact: "EXACT",
+  contains: "CONTAINS",
+  begins_with: "BEGINS_WITH",
+};
+
+function ga4Filter(filter: Ga4StringFilter) {
+  return {
+    filter: {
+      fieldName: filter.dimension,
+      stringFilter: { matchType: MATCH_TYPE[filter.match], value: filter.value, caseSensitive: false },
+    },
+  };
+}
+
+type FreeReportResponse = ReportResponse & {
+  dimensionHeaders?: Array<{ name?: string }>;
+  metricHeaders?: Array<{ name?: string }>;
+};
+
+/**
+ * A free-form runReport for the workspace's ga4_report tool: any dimension and
+ * metric names (GA4 checks them and its error message goes back to the model),
+ * up to two date ranges, an AND of string filters, one order and a row limit.
+ * Read-only.
+ */
+export async function runGa4Report(propertyId: string, request: Ga4ReportRequest): Promise<Ga4ReportResult> {
+  const id = digits(propertyId);
+  if (!id) throw new Error("GA4 property id must be numeric, e.g. properties/123456.");
+  const filters = request.dimensionFilter ?? [];
+  const order = request.orderBy ?? (request.metrics[0] ? { field: request.metrics[0], desc: true } : undefined);
+  const orderBys = order
+    ? request.metrics.includes(order.field)
+      ? [{ metric: { metricName: order.field }, desc: order.desc }]
+      : [{ dimension: { dimensionName: order.field }, desc: order.desc }]
+    : undefined;
+  const res = await googleFetch<FreeReportResponse>(`${DATA_BASE}/properties/${id}:runReport`, {
+    method: "POST",
+    accessToken: await getGoogleAccessToken(),
+    body: {
+      dateRanges: request.dateRanges.map((r) => ({ startDate: r.startDate, endDate: r.endDate })),
+      dimensions: request.dimensions.map((name) => ({ name })),
+      metrics: request.metrics.map((name) => ({ name })),
+      ...(filters.length === 1
+        ? { dimensionFilter: ga4Filter(filters[0]!) }
+        : filters.length > 1
+          ? { dimensionFilter: { andGroup: { expressions: filters.map(ga4Filter) } } }
+          : {}),
+      ...(orderBys ? { orderBys } : {}),
+      limit: request.limit,
+    },
+  });
+  const rows = reportRows(res);
+  return {
+    currency: res.metadata?.currencyCode ?? "",
+    dimensionHeaders: (res.dimensionHeaders ?? []).map((h) => h.name ?? ""),
+    metricHeaders: (res.metricHeaders ?? []).map((h) => h.name ?? ""),
+    rows: rows.map((row) => ({ dimensions: row.dims, metrics: row.values })),
+    rowCount: Math.max(num(String(res.rowCount ?? 0)), rows.length),
+  };
 }

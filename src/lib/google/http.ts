@@ -40,6 +40,16 @@ function describeError(
   return { message: `Google returned an unexpected response (HTTP ${status}).`, code: null };
 }
 
+/**
+ * A Cloud project with only Test access calling a real Google Ads account.
+ * Google's own message ("The caller does not have permission") doesn't say
+ * what to do, so this one does.
+ */
+const TEST_ACCESS_ONLY = "CLOUD_PROJECT_NOT_APPROVED_FOR_PRODUCTION";
+const TEST_ACCESS_MESSAGE =
+  "This Google Cloud project only has Test access to the Google Ads API, so it can't read real client accounts. " +
+  "In Google Cloud Console, open the Google Ads API page for the project that owns this OAuth client and apply for Explorer or Basic access.";
+
 /** Google's write endpoints: a mutate method after a colon or slash. This tool never calls them. */
 const WRITE_ENDPOINT = /[:/]mutate/i;
 
@@ -104,7 +114,10 @@ export async function googleFetch<T>(
       await sleep(1000 * 2 ** (attempt - 1) + Math.random() * 250);
       continue;
     }
-    const { message, code } = describeError(json as GoogleErrorBody | null, res.status);
+    const described = describeError(json as GoogleErrorBody | null, res.status);
+    const { message, code } = text.includes(TEST_ACCESS_ONLY)
+      ? { message: TEST_ACCESS_MESSAGE, code: TEST_ACCESS_ONLY }
+      : described;
     // Status and code only: never the URL's query, body or token.
     logger.warn("Google API call failed", { status: res.status, code });
     throw new GoogleApiError(message, res.status, code);

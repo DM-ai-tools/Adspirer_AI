@@ -60,8 +60,16 @@ async function discoverAds(): Promise<DiscoveredAsset[]> {
   }));
 }
 
-async function discoverGsc(): Promise<DiscoveredAsset[]> {
-  return (await listGscSites())
+async function discoverGsc(warn: (message: string) => void): Promise<DiscoveredAsset[]> {
+  const sites = await listGscSites();
+  // Unverified access returns no data, so those sites are skipped, and said so.
+  const unverified = sites.filter((s) => s.permissionLevel === "siteUnverifiedUser").map((s) => s.siteUrl);
+  if (unverified.length) {
+    warn(
+      `${unverified.length} site${unverified.length === 1 ? "" : "s"} skipped because this Google account only has unverified access (${unverified.join(", ")}). Ask the site owner to add it as a full or restricted user.`,
+    );
+  }
+  return sites
     .filter((s) => s.permissionLevel !== "siteUnverifiedUser")
     .map((s) => ({
       kind: "gsc_site",
@@ -127,9 +135,12 @@ export async function syncGoogleAssets(): Promise<{
     return { ga4: count("ga4_property"), ads: count("ads_customer"), gsc: count("gsc_site"), warnings: [] };
   }
   const warnings: string[] = [];
-  const part = async (label: string, discover: () => Promise<DiscoveredAsset[]>): Promise<number> => {
+  const part = async (
+    label: string,
+    discover: (warn: (message: string) => void) => Promise<DiscoveredAsset[]>,
+  ): Promise<number> => {
     try {
-      const assets = await discover();
+      const assets = await discover((message) => warnings.push(`${label}: ${message}`));
       await upsertAssets(assets);
       return assets.length;
     } catch (error) {
@@ -139,9 +150,7 @@ export async function syncGoogleAssets(): Promise<{
   };
 
   const ga4 = await part("GA4", discoverGa4);
-  let ads = 0;
-  if (getConfig().hasGoogleAds) ads = await part("Google Ads", discoverAds);
-  else warnings.push("Google Ads: developer token not configured");
+  const ads = await part("Google Ads", discoverAds);
   const gsc = await part("Search Console", discoverGsc);
 
   return { ga4, ads, gsc, warnings };

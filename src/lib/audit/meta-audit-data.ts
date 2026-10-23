@@ -66,6 +66,12 @@ export type PeriodPerformance = {
   /** Video: 3-second plays and ThruPlays, when the ad has video. */
   videoViews3s?: number | null;
   thruplays?: number | null;
+  /**
+   * Set on totals added up across campaigns: people overlap between
+   * campaigns, so reach (and frequency) can't be summed — `reach` and
+   * `frequency` are then not real figures and must not be shown.
+   */
+  reachSummed?: true;
 };
 
 export type AuditCampaign = {
@@ -133,6 +139,18 @@ export type AuditAd = {
   rankings?: { quality: string | null; engagement: string | null; conversion: string | null } | null;
 };
 
+/** One catalog (product) ad's spend on one product, from Meta's product_id breakdown. */
+export type AuditCatalogProduct = {
+  adId: string;
+  /** The catalog product's id: the Shopify variant id for Shopify catalogs. */
+  productId: string;
+  spendCents: number;
+  purchaseValueCents: number;
+  results: number;
+  /** The product's GA4 item category; filled in once GA4 is read, unknown (null/absent) until then. */
+  itemCategory?: string | null;
+};
+
 export type MetaAuditSnapshot = {
   account: {
     id: string;
@@ -146,8 +164,15 @@ export type MetaAuditSnapshot = {
   };
   period: { days: number; since: string; until: string };
   totals: PeriodPerformance | null;
-  /** Same-length window just before `period`, for change-over-time. Absent when not loaded. */
+  /**
+   * The comparison window: the range the operator named, or the same-length
+   * window just before `period`. Absent when no comparison part loaded.
+   */
   previousPeriod?: { since: string; until: string };
+  /** True when `previousPeriod` is a range the operator named (not the period just before). */
+  comparisonNamed?: boolean;
+  /** Comparison parts that failed to load (the rest still compare). */
+  comparisonFailures?: Array<"totals" | "campaigns" | "ad sets">;
   previousTotals?: PeriodPerformance | null;
   pixels: AuditPixel[];
   customConversions: AuditCustomConversion[];
@@ -155,6 +180,8 @@ export type MetaAuditSnapshot = {
   campaigns: AuditCampaign[];
   adSets: AuditAdSet[];
   ads: AuditAd[];
+  /** Catalog ads' spend per product; absent when the account has none or Meta wouldn't return it. */
+  catalogProducts?: AuditCatalogProduct[];
   /** Spend by publisher platform (facebook, instagram, audience_network…). */
   placements: Array<{ platform: string; spendCents: number; results: number | null }>;
   /** Parts that failed to load — checkpoints that need them report "not checked". */
@@ -274,6 +301,47 @@ export async function pixelStats(graph: Graph, pixelId: string, days: number): P
   };
 }
 
+/** Pages of 500 product rows read; a very large catalog is cut off and said so. */
+const PRODUCT_PAGES = 12;
+
+/** Meta's purchase count or value out of an actions / action_values list. */
+function purchaseOf(list: unknown): number {
+  if (!Array.isArray(list)) return 0;
+  const rows = list as Array<{ action_type?: string; value?: string }>;
+  const pick = (type: string) => rows.find((r) => r.action_type === type);
+  return num((pick("omni_purchase") ?? pick("purchase"))?.value);
+}
+
+/** The catalog product id: Meta may return it with a "name" after a comma or as a retailer id ending in the variant id. */
+export function catalogProductId(raw: unknown): string {
+  const text = String(raw ?? "").trim();
+  const lead = text.split(",")[0]!.trim();
+  return lead.match(/(\d+)$/)?.[1] ?? lead;
+}
+
+function catalogProductsFrom(rows: Row[] | null, warnings: string[]): AuditCatalogProduct[] | undefined {
+  if (!rows) return undefined;
+  const out: AuditCatalogProduct[] = [];
+  for (const r of rows) {
+    const productId = catalogProductId(r.product_id);
+    const adId = String(r.ad_id ?? "");
+    if (!productId || !adId) continue;
+    const spendCents = major(r.spend);
+    if (spendCents <= 0) continue;
+    out.push({
+      adId,
+      productId,
+      spendCents,
+      purchaseValueCents: major(purchaseOf(r.action_values)),
+      results: purchaseOf(r.actions),
+    });
+  }
+  if (rows.length >= PRODUCT_PAGES * 500) {
+    warnings.push("Catalog product spend: more products than were read; per-category catalog spend may be understated");
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 function dayString(d: Date) {
   return d.toISOString().slice(0, 10);
 }
@@ -290,10 +358,32 @@ export function previousPeriodOf(since: string, until: string): { since: string;
   };
 }
 
+export type AuditSnapshotOptions = {
+  days?: number;
+  since?: string;
+  until?: string;
+  /** A comparison range the operator named; default is the same-length period just before. */
+  compareSince?: string;
+  compareUntil?: string;
+};
+
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+/** The named comparison range when it's valid, else the period just before. */
+export function comparisonPeriodOf(
+  since: string,
+  until: string,
+  options: Pick<AuditSnapshotOptions, "compareSince" | "compareUntil"> = {},
+): { since: string; until: string; named: boolean } {
+  const { compareSince: a, compareUntil: b } = options;
+  if (a && b && ISO_DAY.test(a) && ISO_DAY.test(b) && a <= b) return { since: a, until: b, named: true };
+  return { ...previousPeriodOf(since, until), named: false };
+}
+
 export async function fetchMetaAuditSnapshot(
   graph: Graph,
   accountId: string,
-  options: { days?: number; since?: string; until?: string } = {},
+  options: AuditSnapshotOptions = {},
 ): Promise<MetaAuditSnapshot> {
   const id = accountId.startsWith("act_") ? accountId : `act_${accountId}`;
   const warnings: string[] = [];
@@ -301,8 +391,10 @@ export async function fetchMetaAuditSnapshot(
   const since = options.since ?? dayString(new Date(Date.parse(`${until}T00:00:00Z`) - ((options.days ?? 30) - 1) * DAY_MS));
   const days = Math.round((Date.parse(`${until}T00:00:00Z`) - Date.parse(`${since}T00:00:00Z`)) / DAY_MS) + 1;
   const timeRange = JSON.stringify({ since, until });
-  const previousPeriod = previousPeriodOf(since, until);
+  const comparison = comparisonPeriodOf(since, until, options);
+  const previousPeriod = { since: comparison.since, until: comparison.until };
   const previousRange = JSON.stringify(previousPeriod);
+  const comparisonLabel = `Comparison period (${previousPeriod.since} → ${previousPeriod.until})`;
 
   const account = await graph.get<Row>(id, {
     fields: "name,currency,timezone_name,account_status,disable_reason,amount_spent,spend_cap",
@@ -315,7 +407,7 @@ export async function fetchMetaAuditSnapshot(
 
   const [
     pixels, customConversions, audiences, campaigns, adSets, ads, totals, campaignIns, adSetIns, adIns, placements, adSetWeek,
-    previousTotals, previousCampaignIns, previousAdSetIns, adWeek,
+    previousTotals, previousCampaignIns, previousAdSetIns, adWeek, productIns,
   ] =
     await Promise.all([
       settle("Pixels", warnings, paged(graph, `${id}/adspixels`, {
@@ -365,19 +457,23 @@ export async function fetchMetaAuditSnapshot(
       settle("Ad set frequency (7d)", warnings, paged(graph, `${id}/insights`, {
         level: "adset", date_preset: "last_7d", fields: "adset_id,frequency", limit: 200,
       }, 2)),
-      // Same-length window just before, for change-over-time.
-      settle("Previous period account performance", warnings, graph.get<{ data?: Row[] }>(`${id}/insights`, {
+      // The comparison window (named, or the same length just before), for change-over-time.
+      settle(`${comparisonLabel} account totals`, warnings, graph.get<{ data?: Row[] }>(`${id}/insights`, {
         level: "account", time_range: previousRange, fields: insightFields,
       })),
-      settle("Previous period campaign performance", warnings, paged(graph, `${id}/insights`, {
+      settle(`${comparisonLabel} campaign performance`, warnings, paged(graph, `${id}/insights`, {
         level: "campaign", time_range: previousRange, fields: `campaign_id,${insightFields}`, limit: 200,
       }, 2)),
-      settle("Previous period ad set performance", warnings, paged(graph, `${id}/insights`, {
+      settle(`${comparisonLabel} ad set performance`, warnings, paged(graph, `${id}/insights`, {
         level: "adset", time_range: previousRange, fields: `adset_id,${insightFields}`, limit: 200,
       }, 3)),
       settle("Ad frequency (7d)", warnings, paged(graph, `${id}/insights`, {
         level: "ad", date_preset: "last_7d", fields: "ad_id,frequency", limit: 200,
       }, 2)),
+      // Catalog ads have no single page or category name; their spend per product is what ties them to a category.
+      settle("Catalog product spend", warnings, paged(graph, `${id}/insights`, {
+        level: "ad", time_range: timeRange, breakdowns: "product_id", fields: "ad_id,spend,actions,action_values", limit: 500,
+      }, PRODUCT_PAGES)),
     ]);
 
   const byKey = (rows: Row[] | null, key: string) => new Map((rows ?? []).map((r) => [String(r[key] ?? ""), r]));
@@ -388,8 +484,13 @@ export async function fetchMetaAuditSnapshot(
   const adWeekFrequency = byKey(adWeek, "ad_id");
   const previousCampaignPerf = byKey(previousCampaignIns, "campaign_id");
   const previousAdSetPerf = byKey(previousAdSetIns, "adset_id");
-  // Only compare when the previous window actually loaded.
-  const hasPrevious = previousCampaignIns != null;
+  // Compare when any part of the comparison window loaded; name the parts that didn't.
+  const comparisonFailures = [
+    ...(previousTotals == null ? (["totals"] as const) : []),
+    ...(previousCampaignIns == null ? (["campaigns"] as const) : []),
+    ...(previousAdSetIns == null ? (["ad sets"] as const) : []),
+  ];
+  const hasPrevious = comparisonFailures.length < 3;
 
   const auditAdSets: AuditAdSet[] = (adSets ?? []).map((a) => {
     const promoted = (a.promoted_object ?? {}) as Row;
@@ -423,7 +524,7 @@ export async function fetchMetaAuditSnapshot(
       countries: Array.isArray(geo.countries) ? (geo.countries as string[]) : [],
       frequency7d: weekFrequency.has(String(a.id)) ? num(weekFrequency.get(String(a.id))!.frequency) : null,
       performance: performanceFrom(adSetPerf.get(String(a.id))),
-      ...(previousAdSetIns != null ? { previousPerformance: performanceFrom(previousAdSetPerf.get(String(a.id))) } : {}),
+      ...(hasPrevious && previousAdSetIns != null ? { previousPerformance: performanceFrom(previousAdSetPerf.get(String(a.id))) } : {}),
     };
   });
 
@@ -469,6 +570,7 @@ export async function fetchMetaAuditSnapshot(
     }
   }
 
+  const catalogProducts = catalogProductsFrom(productIns, warnings);
   const statusCode = num(account.account_status);
   const disable = num(account.disable_reason);
 
@@ -485,8 +587,16 @@ export async function fetchMetaAuditSnapshot(
     },
     period: { days, since, until },
     totals: performanceFrom(totals?.data?.[0]),
-    ...(hasPrevious ? { previousPeriod, previousTotals: performanceFrom(previousTotals?.data?.[0]) } : {}),
+    ...(hasPrevious
+      ? {
+          previousPeriod,
+          ...(comparison.named ? { comparisonNamed: true } : {}),
+          ...(comparisonFailures.length ? { comparisonFailures: [...comparisonFailures] } : {}),
+          previousTotals: previousTotals ? performanceFrom(previousTotals.data?.[0]) : null,
+        }
+      : {}),
     pixels: auditPixels,
+    ...(catalogProducts ? { catalogProducts } : {}),
     customConversions: (customConversions ?? []).map((c) => ({
       id: String(c.id),
       name: String(c.name ?? c.id),
@@ -524,7 +634,7 @@ export async function fetchMetaAuditSnapshot(
       specialAdCategories: Array.isArray(c.special_ad_categories) ? (c.special_ad_categories as string[]) : [],
       createdTime: str(c.created_time),
       performance: performanceFrom(campaignPerf.get(String(c.id))),
-      ...(hasPrevious ? { previousPerformance: performanceFrom(previousCampaignPerf.get(String(c.id))) } : {}),
+      ...(hasPrevious && previousCampaignIns != null ? { previousPerformance: performanceFrom(previousCampaignPerf.get(String(c.id))) } : {}),
     })),
     adSets: auditAdSets,
     ads: (ads ?? []).map((a) => {
@@ -569,7 +679,11 @@ export async function fetchMetaAuditSnapshot(
   };
 }
 
-/** Add up period performance across rows (reach is summed, so it's an upper bound). */
+/**
+ * Add up period performance across rows. Reach can't be summed (people
+ * overlap between campaigns), so a sum of several rows is flagged
+ * `reachSummed` and its reach/frequency are not shown.
+ */
 function sumPerformance(rows: PeriodPerformance[]): PeriodPerformance | null {
   if (!rows.length) return null;
   if (rows.length === 1) return rows[0]!;
@@ -596,6 +710,7 @@ function sumPerformance(rows: PeriodPerformance[]): PeriodPerformance | null {
     impressions,
     reach,
     frequency: reach > 0 ? impressions / reach : 0,
+    reachSummed: true,
     linkCtr: impressions > 0 ? total((p) => p.linkCtr * p.impressions) / impressions : 0,
     cpmCents: impressions > 0 ? Math.round((spendCents / impressions) * 1000) : null,
     results,
@@ -615,17 +730,40 @@ function sumPerformance(rows: PeriodPerformance[]): PeriodPerformance | null {
 export function scopeAuditSnapshot(snap: MetaAuditSnapshot, campaignIds: string[]): MetaAuditSnapshot {
   const ids = new Set(campaignIds);
   const campaigns = snap.campaigns.filter((c) => ids.has(c.id));
+  const delivered = (p: PeriodPerformance | null | undefined) => Boolean(p && (p.spendCents > 0 || p.impressions > 0));
+  // When the scope holds every campaign that delivered, the account figures
+  // are the same totals — with real reach and frequency.
+  const coversAccount = (pick: (c: AuditCampaign) => PeriodPerformance | null | undefined) =>
+    snap.campaigns.every((c) => ids.has(c.id) || !delivered(pick(c)));
+  const totalsOf = (
+    pick: (c: AuditCampaign) => PeriodPerformance | null | undefined,
+    account: PeriodPerformance | null | undefined,
+  ) =>
+    account && coversAccount(pick)
+      ? account
+      : sumPerformance(campaigns.map(pick).filter((p): p is PeriodPerformance => p != null));
+  // Scoped totals come from the campaign rows, so they fail with them.
+  const comparisonFailures = snap.comparisonFailures?.includes("campaigns")
+    ? ([...new Set([...snap.comparisonFailures, "totals" as const])] as MetaAuditSnapshot["comparisonFailures"])
+    : snap.comparisonFailures;
+  const scopedAdIds = new Set(snap.ads.filter((a) => ids.has(a.campaignId)).map((a) => a.id));
   return {
     ...snap,
     campaigns,
     adSets: snap.adSets.filter((a) => ids.has(a.campaignId)),
     ads: snap.ads.filter((a) => ids.has(a.campaignId)),
-    totals: sumPerformance(campaigns.map((c) => c.performance).filter((p): p is PeriodPerformance => p != null)),
+    ...(snap.catalogProducts
+      ? {
+          catalogProducts: snap.catalogProducts.filter((p) => scopedAdIds.has(p.adId)),
+        }
+      : {}),
+    totals: totalsOf((c) => c.performance, snap.totals),
     ...(snap.previousPeriod
       ? {
-          previousTotals: sumPerformance(
-            campaigns.map((c) => c.previousPerformance).filter((p): p is PeriodPerformance => p != null),
-          ),
+          previousTotals: snap.comparisonFailures?.includes("campaigns")
+            ? null
+            : totalsOf((c) => c.previousPerformance, snap.previousTotals),
+          ...(comparisonFailures ? { comparisonFailures } : {}),
         }
       : {}),
     placements: [],
@@ -637,9 +775,21 @@ export function scopeAuditSnapshot(snap: MetaAuditSnapshot, campaignIds: string[
 export const DEMO_CLICKTRENDS_META_ACCOUNT_ID = "act_700800900";
 
 /** Deterministic sample for DEMO_MODE — exercises most checkpoints. */
-export function demoMetaAuditSnapshot(accountId: string, accountName: string, days = 30): MetaAuditSnapshot {
-  const until = dayString(new Date(Date.now() - 86_400_000));
-  const since = dayString(new Date(Date.parse(`${until}T00:00:00Z`) - (days - 1) * 86_400_000));
+export function demoMetaAuditSnapshot(
+  accountId: string,
+  accountName: string,
+  daysOrOptions: number | AuditSnapshotOptions = 30,
+): MetaAuditSnapshot {
+  const options: AuditSnapshotOptions = typeof daysOrOptions === "number" ? { days: daysOrOptions } : daysOrOptions;
+  const until = options.until && ISO_DAY.test(options.until) ? options.until : dayString(new Date(Date.now() - 86_400_000));
+  const since =
+    options.since && ISO_DAY.test(options.since) && options.since <= until
+      ? options.since
+      : dayString(new Date(Date.parse(`${until}T00:00:00Z`) - ((options.days ?? 30) - 1) * 86_400_000));
+  const days = Math.round((Date.parse(`${until}T00:00:00Z`) - Date.parse(`${since}T00:00:00Z`)) / 86_400_000) + 1;
+  const comparison = comparisonPeriodOf(since, until, options);
+  const previousPeriod = { since: comparison.since, until: comparison.until };
+  const named = comparison.named ? { comparisonNamed: true } : {};
   const resultLabel = accountId === DEMO_CLICKTRENDS_META_ACCOUNT_ID ? "Purchases" : "Leads";
   const perf = (spend: number, results: number | null, frequency: number, ctr: number, roas: number | null = null): PeriodPerformance => ({
     spendCents: spend,
@@ -702,7 +852,8 @@ export function demoMetaAuditSnapshot(accountId: string, accountName: string, da
       },
       period: { days, since, until },
       totals: perf(330_000, 40, 2.4, 1.05, 2.55),
-      previousPeriod: previousPeriodOf(since, until),
+      previousPeriod,
+      ...named,
       // The previous campaigns' sum: (190,000 × 2.9 + 110,000 × 1.7) ÷ 300,000 = 2.46.
       previousTotals: perf(300_000, 35, 2.3, 1.1, 2.46),
       pixels: [
@@ -755,7 +906,8 @@ export function demoMetaAuditSnapshot(accountId: string, accountName: string, da
     },
     period: { days, since, until },
     totals: perf(388_000, 92, 2.6, 0.92),
-    previousPeriod: previousPeriodOf(since, until),
+    previousPeriod,
+    ...named,
     previousTotals: perf(360_000, 80, 2.4, 0.95),
     pixels: [
       {

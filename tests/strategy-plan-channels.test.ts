@@ -328,10 +328,10 @@ describe("buildStrategyPlan GA4 basis: paid revenue and coverage", () => {
     expect(p.assumptions.some((a) => /^1 category has no GA4/.test(a))).toBe(true);
   });
 
-  it("uses platform revenue when GA4 matched under half its revenue to categories", () => {
+  it("uses platform revenue when GA4 landing pages matched under half its revenue in a whole-account plan", () => {
     const channels = channelPerf(
       [row("shoes", { meta: { spend: 20_000, revenue: 100_000, ga4: 30_000 }, ga4Total: 60_000 })],
-      { ga4Available: true, ga4Method: "item", ga4UnmatchedRevenueCents: 90_000 },
+      { ga4Available: true, ga4Method: "landing_page", ga4UnmatchedRevenueCents: 90_000 },
     );
     const p = plan({ snapshot, categories: [cat("Shoes")], channels });
     expect(p.revenueBasis).toBe("platform");
@@ -339,12 +339,57 @@ describe("buildStrategyPlan GA4 basis: paid revenue and coverage", () => {
     expect(p.assumptions).toContain(
       "GA4 matched only 40% of revenue to categories, so the plan uses platform-reported revenue.",
     );
+    expect(p.assumptions.some((a) => a.includes("set up cover"))).toBe(false);
     // At exactly half, GA4 is still used.
     const half = channelPerf(
       [row("shoes", { meta: { spend: 20_000, revenue: 100_000, ga4: 30_000 }, ga4Total: 60_000 })],
-      { ga4Available: true, ga4Method: "item", ga4UnmatchedRevenueCents: 60_000 },
+      { ga4Available: true, ga4Method: "landing_page", ga4UnmatchedRevenueCents: 60_000 },
     );
     expect(plan({ snapshot, categories: [cat("Shoes")], channels: half }).revenueBasis).toBe("ga4");
+  });
+
+  it("uses GA4 for the one category set up, by item, though it is 4.7% of GA4 revenue", () => {
+    const channels = channelPerf(
+      [row("shoes", { meta: { spend: 20_000, revenue: 100_000, ga4: 30_000 }, ga4Total: 47_000 })],
+      { ga4Available: true, ga4Method: "item", ga4UnmatchedRevenueCents: 953_000 },
+    );
+    for (const scopeCategoryIds of [["shoes"], undefined]) {
+      const p = plan({ snapshot, categories: [cat("Shoes")], channels, scopeCategoryIds });
+      expect(p.revenueBasis).toBe("ga4");
+      expect(p.allocations[0].observedRoas).toBe(1.5);
+      expect(p.assumptions.some((a) => a.includes("matched only"))).toBe(false);
+      expect(p.assumptions).toContain("The categories set up cover 4.7% of GA4 revenue; the rest is in categories not set up yet.");
+    }
+  });
+
+  it("uses GA4 by landing page for named categories, whatever share they cover", () => {
+    const channels = channelPerf(
+      [row("shoes", { meta: { spend: 20_000, revenue: 100_000, ga4: 30_000 }, ga4Total: 30_000 })],
+      { ga4Available: true, ga4Method: "landing_page", ga4UnmatchedRevenueCents: 70_000 },
+    );
+    const p = plan({ snapshot, categories: [cat("Shoes"), cat("Socks")], channels, scopeCategoryIds: ["shoes"] });
+    expect(p.revenueBasis).toBe("ga4");
+    expect(p.assumptions.some((a) => a.includes("matched only"))).toBe(false);
+    expect(p.assumptions).toContain("The categories set up cover 30% of GA4 revenue; the rest is in categories not set up yet.");
+    // Unscoped, the same figures fall back to platform revenue.
+    expect(plan({ snapshot, categories: [cat("Shoes"), cat("Socks")], channels }).revenueBasis).toBe("platform");
+  });
+
+  it("names services in the coverage line", () => {
+    const channels = channelPerf(
+      [row("shoes", { meta: { spend: 20_000, revenue: 100_000, ga4: 30_000 }, ga4Total: 47_000 })],
+      { ga4Available: true, ga4Method: "item", ga4UnmatchedRevenueCents: 953_000 },
+    );
+    const p = buildStrategyPlan({
+      snapshot,
+      scorecard: { score: 62, grade: "C" },
+      categories: [cat("Shoes")],
+      goals: resolveGoals({ goals_profile: { business_model: "lead_gen" } }),
+      brief: { dailyBudgetCents: 10_000, targetRoas: 4, stretchTargets: [] },
+      categoryWord: "service",
+      channels,
+    });
+    expect(p.assumptions).toContain("The services set up cover 4.7% of GA4 revenue; the rest is in services not set up yet.");
   });
 });
 
@@ -479,6 +524,30 @@ describe("buildStrategyPlan channel split", () => {
     const p = plan({ snapshot, categories: [cat("Shoes")], channels: channelPerf([shoesRow(0)]) });
     expect(p.allocations[0].channelSplit).toMatchObject({ metaCents: 10_000, googleCents: 0 });
     expect(p.allocations[0].googleCampaignTypes).toEqual([]);
+  });
+
+  it("gives Google its 20% test share when the ask names Google Ads, even with no Google history", () => {
+    // Karthik: "…using Google Ads and Meta together". During Days' Ads account is new,
+    // so Google has no spend and there's no Search Console data yet.
+    const p = plan({
+      snapshot,
+      categories: [cat("Shoes")],
+      channels: channelPerf([shoesRow(0)]),
+      brief: { wantsGoogle: true },
+    });
+    expect(p.allocations[0].channelSplit).toMatchObject({ metaCents: 8_000, googleCents: 2_000 });
+    // A Google budget always names a campaign type: Search when there's nothing else to go on.
+    expect(p.allocations[0].googleCampaignTypes.length).toBeGreaterThan(0);
+    expect(p.assumptions).toContain(
+      "Google gets a 20% test share for Shoes because the plan was asked to include Google Ads; Google has no spend or search data there yet.",
+    );
+  });
+
+  it("still leaves Google out when the ask names Google Ads but no Ads account is mapped", () => {
+    const channels = channelPerf([shoesRow(0)], { googleAdsMapped: false, ads: null });
+    const p = plan({ snapshot, categories: [cat("Shoes")], channels, brief: { wantsGoogle: true } });
+    expect(p.allocations[0].channelSplit).toMatchObject({ metaCents: 10_000, googleCents: 0 });
+    expect(p.channelNote).toBe(NO_ADS_NOTE);
   });
 
   it("puts everything on Meta, with a note, when no Google Ads account is mapped", () => {

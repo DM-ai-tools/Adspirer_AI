@@ -19,9 +19,10 @@ async function adsHeaders(loginCustomerId: string | null): Promise<{
   accessToken: string;
   headers: Record<string, string>;
 }> {
-  const developerToken = getConfig().GOOGLE_ADS_DEVELOPER_TOKEN;
-  if (!developerToken) throw new Error("Google Ads isn't configured (no developer token).");
-  const headers: Record<string, string> = { "developer-token": developerToken };
+  // No developer-token header: Google retired developer tokens on 9 Sep 2026
+  // (access now follows the OAuth client's Cloud project) and will reject them
+  // in a later API version.
+  const headers: Record<string, string> = {};
   if (loginCustomerId) headers["login-customer-id"] = digits(loginCustomerId);
   return { accessToken: await getGoogleAccessToken(), headers };
 }
@@ -105,14 +106,18 @@ export type AdsAccount = {
 export async function discoverAdsAccounts(): Promise<AdsAccount[]> {
   const preferred = getConfig().GOOGLE_ADS_LOGIN_CUSTOMER_ID ?? null;
   const ids = await listAccessibleCustomers();
+  // One unreadable account is skipped, but if nothing can be read the reason
+  // is raised: a Test-access Cloud project refuses every account, and an
+  // empty list with no explanation looks like "no accounts".
+  const failures: unknown[] = [];
 
   const roots = await Promise.all(
     ids.map(async (id) => {
       try {
         const [row] = await searchGaql<CustomerRow>(id, CUSTOMER_QUERY, null);
         return row?.customer ? { ...row.customer, id } : null;
-      } catch {
-        // A cancelled or unreadable account is skipped, not fatal.
+      } catch (error) {
+        failures.push(error);
         return null;
       }
     }),
@@ -126,8 +131,9 @@ export async function discoverAdsAccounts(): Promise<AdsAccount[]> {
         try {
           const rows = await searchGaql<CustomerClientRow>(root.id, CLIENTS_QUERY, root.id);
           return { root, rows };
-        } catch {
+        } catch (error) {
           // One manager failing must not hide the others.
+          failures.push(error);
           return null;
         }
       }),
@@ -172,6 +178,7 @@ export async function discoverAdsAccounts(): Promise<AdsAccount[]> {
   }
   managers.filter((entry) => !isPreferred(entry)).forEach(addChildren);
 
+  if (!accounts.size && failures.length) throw failures[0];
   return [...accounts.values()];
 }
 

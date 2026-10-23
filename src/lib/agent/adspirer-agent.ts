@@ -4,15 +4,20 @@ import {
   gatherDeliveryStructure,
 } from "@/lib/agent/delivery-structure";
 import { evaluateCheckpoints } from "@/lib/audit/checkpoints";
-import { resolveGoals, type ResolvedGoals } from "@/lib/clients/goals";
+import { applyChatSettings, settingsNoticeLines, type ChatSettingsTurn } from "@/lib/clients/chat-settings";
+import { resolveGoals, type GoalsProfile, type ResolvedGoals } from "@/lib/clients/goals";
 
-/** The client's goals for judging the account; defaults when it can't be loaded. */
-async function clientGoals(clientId: string): Promise<ResolvedGoals> {
+/**
+ * The client's goals for judging the account; defaults when it can't be loaded.
+ * `override` holds values stated this turn (used even when they weren't saved).
+ */
+async function clientGoals(clientId: string, override: GoalsProfile = {}): Promise<ResolvedGoals> {
   try {
     const { getClient } = await import("@/lib/approvals/service");
-    return resolveGoals(await getClient(clientId));
+    const client = await getClient(clientId);
+    return resolveGoals({ goals_profile: { ...(client.goals_profile ?? {}), ...override } });
   } catch {
-    return resolveGoals({ goals_profile: {} });
+    return resolveGoals({ goals_profile: { ...override } });
   }
 }
 
@@ -30,6 +35,33 @@ async function activeClientServices(clientId: string): Promise<ClientService[]> 
     .eq("is_active", true);
   if (error) throw new Error(error.message);
   return (data ?? []) as ClientService[];
+}
+
+/**
+ * Catalog ads' spend per product, each product tagged with its GA4 item category so the spend
+ * can go to a category. A snapshot without catalog spend is returned untouched; when GA4 isn't
+ * mapped or won't load, the products stay uncategorised and a warning says so.
+ */
+async function withCatalogCategories(clientId: string, snapshot: MetaAuditSnapshot): Promise<MetaAuditSnapshot> {
+  if (!snapshot.catalogProducts?.length) return snapshot;
+  const warn = (reason: string): MetaAuditSnapshot => ({
+    ...snapshot,
+    warnings: [...snapshot.warnings, `Catalog ad spend can't be matched to categories: ${reason}.`],
+  });
+  try {
+    const { ga4 } = await clientGoogleAssets(clientId);
+    if (!ga4) return warn("no GA4 property is connected for this client");
+    const categories = await getGoogleDataProvider().ga4ItemCategories(ga4.external_id, {
+      since: snapshot.period.since,
+      until: snapshot.period.until,
+    });
+    return {
+      ...snapshot,
+      catalogProducts: snapshot.catalogProducts.map((p) => ({ ...p, itemCategory: categories.get(p.productId) ?? null })),
+    };
+  } catch (error) {
+    return warn(`GA4 item categories didn't load (${error instanceof Error ? error.message : String(error)})`);
+  }
 }
 
 /**
@@ -76,21 +108,32 @@ async function loadChannelPerformance(
 }
 import { scopeAuditSnapshot, type MetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
 import { clientGoogleAssets } from "@/lib/google/assets";
+import { getGoogleDataProvider } from "@/lib/google/provider";
 import { loadChannelSnapshot } from "@/lib/google/snapshot";
 import {
   asksAboutCategorySpend,
+  asksForReturnOnSpend,
   categoriesFromServices,
   scopeCategoriesFromRequest,
   type StrategyCategory,
 } from "@/lib/strategy/categories";
 import { attributeSpendToCategories, type CategoryAttribution } from "@/lib/strategy/category-attribution";
+import {
+  addCategoryFromRequest,
+  categoryNoticeLine,
+  requestedCategoryPhrase,
+} from "@/lib/strategy/requested-category";
 import { buildChannelPerformance, type ChannelPerformance } from "@/lib/strategy/channels";
 import { buildStrategyPlan } from "@/lib/strategy/plan";
 import { renderCategorySpendEvidence, renderStrategyEvidence } from "@/lib/strategy/render";
-import { STRATEGY_FRAMEWORK } from "@/lib/agent/strategy-framework";
+import { buildLeadPlan } from "@/lib/strategy/lead-plan";
+import { renderLeadStrategyEvidence } from "@/lib/strategy/lead-render";
+import { buildLeadClarifyingQuestion, isLeadStrategy, resolveLeadBrief } from "@/lib/agent/lead-brief";
+import { LEAD_STRATEGY_FRAMEWORK, STRATEGY_FRAMEWORK } from "@/lib/agent/strategy-framework";
 import {
   buildStrategyClarifyingQuestion,
   resolveStrategyBrief,
+  strategyAskTexts,
 } from "@/lib/agent/strategy-brief";
 import {
   renderAdSetEvidence,
@@ -130,6 +173,7 @@ import {
   resolveAuditBrief,
   resolveAuditCampaigns,
   applyCompetitorUrlsFromDocuments,
+  completedDaysRange,
   parseDateRangeFromText,
 } from "@/lib/agent/audit-brief";
 import {
@@ -325,11 +369,14 @@ export async function runAdspirerAgent(input: {
 
   // An incomplete strategy brief gets the clarifying question verbatim, in every
   // mode: the next turn's routing keys on its wording, so no writer rephrases it.
-  const briefQuestion = strategyBriefQuestion(input);
+  const question = strategyBriefQuestion(input);
+  // Settings saved (or not) this turn are said first; routing finds the brief marker anywhere.
+  const settingsLines = settingsNoticeLines(input.toolEvidence);
+  const briefQuestion = question && settingsLines.length ? [...settingsLines, "", question].join("\n") : question;
   if (briefQuestion) {
     await input.onProgress?.({
       phase: "write_report",
-      label: "Asking for budget & target ROAS…",
+      label: "Asking for the goal & budget…",
       stepId: "write_report",
       summary: briefQuestion,
       delta: briefQuestion,
@@ -585,6 +632,22 @@ type WriterInput = {
 
 const BRIEF_FIELDS = ["budget", "target_roas"] as const;
 
+/** Writer rules: open the reply with the category notice line, then the settings lines, word for word. */
+export function writerNoticeRules(evidence: string): string[] {
+  const rules: string[] = [];
+  const categoryNotice = categoryNoticeLine(evidence);
+  if (categoryNotice) {
+    rules.push(`- Start the reply with this line, word for word, before anything else: ${categoryNotice}`);
+  }
+  const settingsLines = settingsNoticeLines(evidence);
+  if (settingsLines.length) {
+    rules.push(
+      `- ${categoryNotice ? "Right after that line" : "Start the reply"} with these client-settings lines, word for word, each on its own line: ${settingsLines.map((l) => `"${l}"`).join(" ")}`,
+    );
+  }
+  return rules;
+}
+
 /** The clarifying question for an incomplete strategy brief, rebuilt from the evidence's "Missing" line. */
 function strategyBriefQuestion(input: WriterInput): string | null {
   if (input.reportDraft || resolveWriterIntent(input) !== "strategy") return null;
@@ -592,6 +655,7 @@ function strategyBriefQuestion(input: WriterInput): string | null {
   const at = evidence.indexOf("### Strategy brief incomplete");
   if (at < 0) return null;
   const listed = evidence.slice(at).match(/^- Missing: (.*)$/m)?.[1] ?? "";
+  if (listed.split(/,\s*/).includes("leads")) return buildLeadClarifyingQuestion();
   const missing = BRIEF_FIELDS.filter((f) => listed.split(/,\s*/).includes(f));
   return buildStrategyClarifyingQuestion(missing.length ? missing : [...BRIEF_FIELDS]);
 }
@@ -613,7 +677,7 @@ function writingLabel(input: WriterInput): string {
   if (intent === "chat") return "Answering…";
   if (intent === "strategy") {
     return input.toolEvidence?.includes("### Strategy brief incomplete")
-      ? "Asking for budget & target ROAS…"
+      ? "Asking for the goal & budget…"
       : "Writing strategy…";
   }
   return REPORT_INTENTS.has(intent) ? "Writing report…" : "Writing reply…";
@@ -709,9 +773,14 @@ function buildWriterMessages(input: WriterInput): {
       : evidence.includes("### Spend & return by")
         ? [
             "- For spend or return by category / service, quote only the “Spend & return by” table and its coverage lines; if they say the figures are partial, say so.",
+            "- When it has “GA4 … revenue by platform” lines, give each one with how it was matched, and pass on any UTM-tag check it names.",
             "- Do NOT build a plan or suggest budget allocations for this question.",
           ]
         : [];
+
+  // A category added from the question (or not found, or switched off), then
+  // the settings saved this turn, are said first.
+  const categoryNoticeRules = writerNoticeRules(evidence);
 
   const optimizeRules =
     intent === "optimize"
@@ -761,8 +830,8 @@ function buildWriterMessages(input: WriterInput): {
           "- Plain prose only: no headings, tables, bullet menus, or sign-off questions like \"Anything else?\".",
           "- Use the conversation so far for follow-ups (\"why is that\", \"what does that mean\"). Do not repeat earlier reports.",
           "- For greetings or thanks, reply in one short, friendly sentence.",
-          "- If a correct answer needs live account numbers that are not in the conversation, say so in one sentence and offer to pull them. Never invent figures.",
-          "- Do NOT propose tools, JSON, or Meta changes.",
+          "- If a correct answer needs live numbers that are not in the conversation, read them with the read-only data tools (Meta, GA4, Search Console, Google Ads) and name the source. Never invent figures.",
+          "- Do NOT propose execute tools, JSON, or Meta changes.",
         ].join("\n")
       : [
         `Operator request: ${input.task.goal ?? input.task.title}`,
@@ -780,7 +849,7 @@ function buildWriterMessages(input: WriterInput): {
           ? "- This is a report: use clear headings and tables where they help. Lead with the answer (scope, period, headline numbers)."
           : "- Answer exactly what was asked, directly, in the first sentence. Keep it short — a few sentences, or a compact list/table only when listing several campaigns or numbers. No report structure, no headings unless the answer genuinely needs sections.",
         "- Quote real numbers from the evidence with their currency, and keep campaign / ad set / ad names exactly as Meta returns them.",
-        "- If a number is not in the evidence, say it is not available — never estimate or invent it.",
+        "- If a number or answer is not in the evidence, read it with the data tools (meta_insights, ga4_report, search_console_query, google_ads_report, list_client_categories, …) before saying it isn't available — never estimate or invent it. Name the source of each number (Meta, GA4, Search Console, Google Ads).",
         "- Offer at most ONE next step, and only when there is an obvious one. Never end with a menu of options or \"Anything else?\".",
         "- No emojis.",
         "- NEVER make the entire reply a JSON object/array or a wrapper like {\"message\":...}. JSON is only an optional appendix at the very end for tool proposals or pickers.",
@@ -792,6 +861,7 @@ function buildWriterMessages(input: WriterInput): {
         "- When you queue Approvals, say in one sentence what is waiting in Approvals and that nothing changes in Meta until it is approved. Never claim Meta mutations applied yet.",
         "- If they asked for Word/PDF export, deliver a complete markdown report and tell them to use Export Word / Export PDF under the message.",
         ...auditRules,
+        ...categoryNoticeRules,
         ...strategyRules,
         ...optimizeRules,
       ]
@@ -839,28 +909,28 @@ async function streamWriterText(args: {
       : m) as ModelMessage,
   );
 
-  const evidence = input.toolEvidence ?? "";
-  const auditToolsEnabled = evidence.includes("### Diagnose tools");
-
-  let tools: Awaited<ReturnType<typeof import("./diagnose-tools-ai").buildAuditDiagnoseToolSet>> | undefined;
-  if (auditToolsEnabled) {
-    const { buildAuditDiagnoseToolSet } = await import(
-      "@/lib/agent/diagnose-tools-ai"
-    );
-    tools = buildAuditDiagnoseToolSet({
-      clientId: input.task.client_id,
-      userId: input.task.created_by,
-      taskId: input.task.id,
-      conversationId: input.task.conversation_id,
-      correlationId: input.correlationId,
-    });
-  }
-
   // `textStream` only forwards text deltas — it drops error parts and ends
   // cleanly, so a failed call would otherwise look like an empty success and get
   // reported as "Done". Capture the error here and rethrow it after the loop.
   let streamError: unknown = null;
   const intent = resolveWriterIntent(input);
+
+  // Every question gets the read-only tools (Meta, GA4, Search Console, Google
+  // Ads, categories), so a question the evidence doesn't cover is answered by
+  // reading, not refused. The fixed picker flows keep their own steps.
+  const { buildWorkspaceReadToolSet, writerHasTools } = await import(
+    "@/lib/agent/diagnose-tools-ai"
+  );
+  const tools =
+    !input.reportDraft && writerHasTools(intent)
+      ? buildWorkspaceReadToolSet({
+          clientId: input.task.client_id,
+          userId: input.task.created_by,
+          taskId: input.task.id,
+          conversationId: input.task.conversation_id,
+          correlationId: input.correlationId,
+        })
+      : undefined;
   const label = writingLabel(input);
   const result = streamText({
     model,
@@ -913,7 +983,16 @@ async function streamWriterText(args: {
       summary: liveReplyPreview(text),
     });
   };
-  for await (const delta of result.textStream) {
+  // fullStream, not textStream: text from separate model steps (before and after tool calls)
+  // would otherwise run together with no gap ("…now.Here are…").
+  for await (const part of result.fullStream) {
+    let delta: string;
+    if (part.type === "start-step") {
+      if (!text || /\s$/.test(text)) continue;
+      delta = "\n\n";
+    } else if (part.type === "text-delta") {
+      delta = part.text;
+    } else continue;
     text += delta;
     pendingDelta += delta;
     // The first tokens go out immediately — time to first token matters most.
@@ -1093,7 +1172,11 @@ async function runMockAgent(input: {
     if (evidence && inputsAt >= 0) {
       const frameworkAt = evidence.indexOf("### Strategy framework", inputsAt);
       const body = evidence.slice(inputsAt, frameworkAt < 0 ? undefined : frameworkAt).trim();
+      const notice = categoryNoticeLine(evidence);
+      const settingsLines = settingsNoticeLines(evidence);
       summary = [
+        ...(notice ? [notice, ""] : []),
+        ...(settingsLines.length ? [...settingsLines, ""] : []),
         "## Strategy plan (demo)",
         "",
         body,
@@ -1224,7 +1307,7 @@ async function runMockAgent(input: {
 
   if (intent === "out_of_scope") {
     const summary = [
-      "I'm scoped to **Meta Ads operations** for the selected client — audits, delivery, budgets, and approval-gated changes.",
+      "I'm scoped to this client's ads and analytics — Meta audits, delivery, budgets and approval-gated changes, plus read-only GA4, Search Console and Google Ads data.",
       "",
       "Try: “Audit this account”, “List campaigns”, or “Propose a budget increase”.",
     ].join("\n");
@@ -1336,9 +1419,21 @@ async function runMockAgent(input: {
     const humanized = evidence
       ? humanizeAgentReply(evidence)
       : null;
-    summary = humanized?.display
+    const notice = categoryNoticeLine(evidence);
+    const settingsLines = settingsNoticeLines(evidence);
+    const opening = [...(notice ? [notice] : []), ...settingsLines];
+    // The notices open the reply, so they aren't repeated where the evidence had them.
+    const display = opening.length
+      ? humanized?.display
+          ?.split("\n")
+          .filter((line) => !opening.includes(line.trim().replace(/^[-*]\s+/, "")))
+          .join("\n")
+      : humanized?.display;
+    summary = display
       ? [
-          humanized.display,
+          ...(notice ? [notice, ""] : []),
+          ...(settingsLines.length ? [...settingsLines, ""] : []),
+          display,
           "",
           "Use **Export Word** / **Export PDF** under this message if you need a file.",
           "If you want an execute change (budget/pause/create campaign), ask me to propose it for Approvals.",
@@ -1555,6 +1650,8 @@ function formatInsightMetrics(
 /** Collect live Meta evidence before the LLM writes the report. */
 export async function gatherDiagnoseEvidence(input: {
   clientId: string;
+  /** The turn's user (the task's created_by): only an admin's stated settings are saved. */
+  userId?: string | null;
   request: string;
   conversationId?: string | null;
   history?: AgentHistoryMessage[];
@@ -1567,6 +1664,11 @@ export async function gatherDiagnoseEvidence(input: {
     selectedCreative?: Promise<CreativeDraft | null>;
   };
   onProgress?: (event: AgentProgressEvent) => void | Promise<void>;
+  /**
+   * Persists the settings save's audit record the moment it changes, so a
+   * later throw in this turn can never leave a save without its audit row.
+   */
+  onSettingsSaved?: (call: AgentToolCallProposal) => void | Promise<void>;
 }): Promise<{
   accountId: string | null;
   evidence: string;
@@ -1641,6 +1743,38 @@ export async function gatherDiagnoseEvidence(input: {
     };
   }
 
+  // Settings the message states ("our margin is 40%") are saved before any
+  // plan is built, so this turn already uses them. Reported in one section.
+  // Every step reports straight away (onChange), so a save always has its
+  // line and its audit row even if a later step throws.
+  let settingsSection = -1;
+  let settingsCall: AgentToolCallProposal | null = null;
+  const showSettings = async (turn: ChatSettingsTurn) => {
+    const text = turn.evidence();
+    if (text) {
+      if (settingsSection < 0) settingsSection = sections.push(text) - 1;
+      else sections[settingsSection] = text;
+    }
+    const call = turn.toolCall();
+    if (call) {
+      if (settingsCall) Object.assign(settingsCall, call);
+      else toolCalls.push((settingsCall = { ...call }));
+      await input.onSettingsSaved?.({ ...settingsCall });
+    }
+  };
+  const settings: ChatSettingsTurn | null =
+    intent === "chat" || intent === "out_of_scope"
+      ? null
+      : await applyChatSettings({
+          clientId: input.clientId,
+          userId: input.userId,
+          request: input.request,
+          loadServices: () => activeClientServices(input.clientId).catch(() => []),
+          onChange: showSettings,
+        });
+  /** The client's goals with this turn's stated values on top. */
+  const turnGoals = () => clientGoals(input.clientId, settings?.goalsOverride());
+
   if (
     !accountId &&
     intent !== "ad_copy" &&
@@ -1651,7 +1785,7 @@ export async function gatherDiagnoseEvidence(input: {
   ) {
     if (intent === "strategy") {
       // No account, no snapshot: say so instead of letting a generic plan through.
-      const goals = await clientGoals(input.clientId);
+      const goals = await turnGoals();
       const word = goals.business_model === "ecommerce" ? "category" : "service";
       const loaded = categoriesFromServices(await activeClientServices(input.clientId)).length;
       sections.push(
@@ -1667,7 +1801,7 @@ export async function gatherDiagnoseEvidence(input: {
     }
     return {
       accountId: null,
-      evidence: noMappedAccountMessage(),
+      evidence: [...sections, noMappedAccountMessage()].join("\n\n"),
       toolCalls,
     };
   }
@@ -1678,15 +1812,18 @@ export async function gatherDiagnoseEvidence(input: {
   } catch (error) {
     return {
       accountId,
-      evidence: `### Provider\n- Failed to resolve Meta access: ${
-        error instanceof Error ? error.message : String(error)
-      }\n- Connect Facebook in the Workspace header or under Connections, then retry.`,
+      evidence: [
+        ...sections,
+        `### Provider\n- Failed to resolve Meta access: ${
+          error instanceof Error ? error.message : String(error)
+        }\n- Connect Facebook in the Workspace header or under Connections, then retry.`,
+      ].join("\n\n"),
       toolCalls,
     };
   }
 
   if (intent === "out_of_scope") {
-    return { accountId, evidence: "Request appears out of Meta Ads scope.", toolCalls };
+    return { accountId, evidence: "Request appears outside this client's ads and analytics. If it is about the client's Meta, GA4, Search Console or Google Ads data, answer it with the read-only data tools.", toolCalls };
   }
 
   const wantsCampaignList = Boolean(
@@ -1894,6 +2031,9 @@ export async function gatherDiagnoseEvidence(input: {
                 ? `- Campaigns: ${matchedCampaigns.map((c) => `${c.name} (${c.id})`).join("; ")}`
                 : null,
               `- Period: ${dateLabel} (${dateStart} → ${dateStop})`,
+              brief.compareStart && brief.compareStop
+                ? `- Compared with: ${brief.compareLabel ?? ""} (${brief.compareStart} → ${brief.compareStop}), as the operator asked`
+                : `- Compared with: the same number of days immediately before`,
               `- Competitor LPs: ${
                 brief.competitorLanding === "skip"
                   ? "skipped"
@@ -2262,13 +2402,17 @@ export async function gatherDiagnoseEvidence(input: {
                   1,
                   Math.round((Date.parse(`${dateStop}T00:00:00Z`) - Date.parse(`${dateStart}T00:00:00Z`)) / 86_400_000) + 1,
                 ),
+                // A range the operator named to compare against ("Oct 19-20 vs Oct 17-18").
+                ...(brief.compareStart && brief.compareStop
+                  ? { compareSince: brief.compareStart, compareUntil: brief.compareStop }
+                  : {}),
               });
               // A campaign audit scores and lists only those campaigns' ad sets and ads.
               const snapshot =
                 brief.scope === "campaigns"
                   ? scopeAuditSnapshot(accountSnapshot, matchedCampaigns.map((c) => c.id))
                   : accountSnapshot;
-              const scorecard = evaluateCheckpoints(snapshot, { goals: await clientGoals(input.clientId) });
+              const scorecard = evaluateCheckpoints(snapshot, { goals: await turnGoals() });
               sections.push(renderScorecardEvidence(scorecard, snapshot));
               sections.push(renderAdSetEvidence(snapshot));
               auditAppendix = renderScorecardMarkdown(scorecard, snapshot);
@@ -2365,12 +2509,15 @@ export async function gatherDiagnoseEvidence(input: {
         throw new Error("this Meta connection can't load an account snapshot");
       }
       const range = parseDateRangeFromText("last 30 days")!;
-      const snapshot = await provider.getAuditSnapshot(accountId, {
-        since: range.dateStart,
-        until: range.dateStop,
-        days: 30,
-      });
-      const goals = await clientGoals(input.clientId);
+      const snapshot = await withCatalogCategories(
+        input.clientId,
+        await provider.getAuditSnapshot(accountId, {
+          since: range.dateStart,
+          until: range.dateStop,
+          days: 30,
+        }),
+      );
+      const goals = await turnGoals();
       const currentDailySpendCents = snapshot.totals
         ? Math.round(snapshot.totals.spendCents / snapshot.period.days)
         : null;
@@ -2379,7 +2526,64 @@ export async function gatherDiagnoseEvidence(input: {
         currentDailySpendCents,
       });
 
-      if (!parsed.brief) {
+      // Lead-gen clients plan on leads and cost per lead; ROAS never applies to them.
+      const leadAsk = isLeadStrategy(goals.business_model, strategyAskTexts(input.request, input.history));
+      const leadParsed = leadAsk ? resolveLeadBrief(input.request, input.history) : null;
+
+      if (leadParsed) {
+        if (!leadParsed.brief) {
+          strategyBriefIncomplete = true;
+          sections.push(
+            [
+              "### Strategy brief incomplete",
+              `- Missing: ${leadParsed.missing.join(", ")}`,
+              "Ask ONLY for the missing values below. Do NOT build a plan or invent numbers.",
+              "Do NOT queue optimize or execute tools.",
+              "",
+              buildLeadClarifyingQuestion(),
+            ].join("\n"),
+          );
+        } else {
+          const leadBrief = leadParsed.brief;
+          await input.onProgress?.({
+            phase: "build_plan",
+            label: "Sizing the budget for your lead goal…",
+            stepId: "build_plan",
+          });
+          const scorecard = evaluateCheckpoints(snapshot, { goals });
+          toolCalls.push({
+            name: "audit_checkpoints",
+            args: { account_id: accountId, date_start: range.dateStart, date_stop: range.dateStop },
+            rationale: `Audit checkpoints: ${scorecard.score}/100`,
+          });
+          const leadPlan = buildLeadPlan({ snapshot, goals, brief: leadBrief });
+          strategyPlanBuilt = true;
+          sections.push(
+            renderLeadStrategyEvidence(leadPlan, {
+              score: scorecard,
+              periodAssumed: leadParsed.periodAssumed,
+              warnings: snapshot.warnings,
+            }),
+          );
+          sections.push(
+            ["### Strategy framework (write the report with these headings)", LEAD_STRATEGY_FRAMEWORK].join("\n"),
+          );
+          toolCalls.push({
+            name: "strategy_plan",
+            args: {
+              account_id: accountId,
+              goal: "leads",
+              target_leads: leadBrief.targetLeads,
+              period_days: leadBrief.periodDays,
+              daily_budget_cents: leadBrief.dailyBudgetCents,
+              target_cpl_cents: leadBrief.targetCplCents,
+            },
+            rationale: `Lead strategy plan: ${
+              leadBrief.targetLeads != null ? `${leadBrief.targetLeads} leads / ${leadBrief.periodDays} days` : "budget projection"
+            }, reference cost per lead ${leadPlan.reference.cplCents ?? "unavailable"}`,
+          });
+        }
+      } else if (!parsed.brief) {
         strategyBriefIncomplete = true;
         sections.push(
           [
@@ -2394,12 +2598,30 @@ export async function gatherDiagnoseEvidence(input: {
       } else {
         const brief = parsed.brief;
         const categoryWord = goals.business_model === "ecommerce" ? "category" : "service";
+        const active = await activeClientServices(input.clientId);
+        // A whole-account ask's stated target becomes the client's target ROAS (never a stretch or a category's).
+        if (settings && !parsed.usedDefaults.includes("target_roas")) {
+          await settings.saveStrategyTarget(brief.targetRoas, {
+            texts: strategyAskTexts(input.request, input.history),
+            categories: categoriesFromServices(active),
+          });
+        }
         await input.onProgress?.({
           phase: "pull_insights",
           label: `Matching spend & return to each ${categoryWord}…`,
           stepId: "pull_insights",
         });
-        const categories = categoriesFromServices(await activeClientServices(input.clientId));
+        // A category the ask names but isn't set up yet is found on the website and added.
+        const requested = await addCategoryFromRequest({
+          clientId: input.clientId,
+          request: input.request,
+          kind: "strategy",
+          active,
+        });
+        if (requested.evidence) sections.push(requested.evidence);
+        // A margin stated for the category just added applies to it now.
+        await settings?.applyPendingCategories(requested.services);
+        const categories = categoriesFromServices(settings?.withServiceOverrides(requested.services) ?? requested.services);
         const attribution = attributeSpendToCategories(snapshot, categories);
         const scorecard = evaluateCheckpoints(snapshot, { goals });
         toolCalls.push({
@@ -2419,7 +2641,9 @@ export async function gatherDiagnoseEvidence(input: {
           categories,
           attribution,
         );
-        const scoped = scopeCategoriesFromRequest(input.request, categories);
+        const scoped = requested.scoped
+          ? categories.filter((c) => c.id === requested.scoped!.id)
+          : scopeCategoriesFromRequest(input.request, categories);
         const plan = buildStrategyPlan({
           snapshot,
           scorecard,
@@ -2479,25 +2703,46 @@ export async function gatherDiagnoseEvidence(input: {
   // "How much went into bar stools, and what did it return?": spend and return
   // per category from the snapshot. Figures only, no plan or allocation.
   if (accountId && (intent === "general" || intent === "budget")) {
-    const categories = categoriesFromServices(await activeClientServices(input.clientId).catch(() => []));
-    if (categories.length && asksAboutCategorySpend(input.request, categories)) {
-      const goals = await clientGoals(input.clientId);
-      const categoryWord = goals.business_model === "ecommerce" ? "category" : "service";
-      await input.onProgress?.({
+    const spendProgress = async (categoryWord: string) =>
+      input.onProgress?.({
         phase: "pull_insights",
         label: `Matching spend & return to each ${categoryWord}…`,
         stepId: "pull_insights",
       });
+    // The website scan below can be slow, so say what's happening first.
+    const namesCategory = requestedCategoryPhrase(input.request, "spend") != null;
+    if (namesCategory) {
+      const goals = await turnGoals();
+      await spendProgress(goals.business_model === "ecommerce" ? "category" : "service");
+    }
+    // A category the ask names but isn't set up yet is found on the website and added.
+    const requested = await addCategoryFromRequest({
+      clientId: input.clientId,
+      request: input.request,
+      kind: "spend",
+      active: await activeClientServices(input.clientId).catch(() => []),
+    });
+    if (requested.evidence) sections.push(requested.evidence);
+    await settings?.applyPendingCategories(requested.services);
+    const categories = categoriesFromServices(settings?.withServiceOverrides(requested.services) ?? requested.services);
+    if (categories.length && (requested.scoped || asksAboutCategorySpend(input.request, categories))) {
+      const goals = await turnGoals();
+      const categoryWord = goals.business_model === "ecommerce" ? "category" : "service";
+      if (!namesCategory) await spendProgress(categoryWord);
       try {
         if (!provider.getAuditSnapshot) {
           throw new Error("this Meta connection can't load an account snapshot");
         }
-        const range = parseDateRangeFromText("last 30 days")!;
-        const snapshot = await provider.getAuditSnapshot(accountId, {
-          since: range.dateStart,
-          until: range.dateStop,
-          days: 30,
-        });
+        // The period the question names, in whole days, so revenue and spend cover the same dates.
+        const range = completedDaysRange(input.request);
+        const snapshot = await withCatalogCategories(
+          input.clientId,
+          await provider.getAuditSnapshot(accountId, {
+            since: range.dateStart,
+            until: range.dateStop,
+            days: range.days,
+          }),
+        );
         const attribution = attributeSpendToCategories(snapshot, categories);
         const { channels, channelWarnings } = await loadChannelPerformance(
           input.clientId,
@@ -2514,6 +2759,10 @@ export async function gatherDiagnoseEvidence(input: {
             warnings: snapshot.warnings,
             channels,
             channelWarnings,
+            // A question about named categories uses GA4 for them, however few are set up.
+            scoped: !!requested.scoped || scopeCategoriesFromRequest(input.request, categories).length > 0,
+            rankBy: asksForReturnOnSpend(input.request) ? "return" : "revenue",
+            period: { since: snapshot.period.since, until: snapshot.period.until },
           }),
         );
       } catch (error) {
@@ -3228,7 +3477,7 @@ export async function gatherDiagnoseEvidence(input: {
         (line) => !hold.heldIds.some((id) => line.includes(id)),
       );
       if (snapshot) {
-        sections.push(renderOptimisationSignals(evaluateCheckpoints(snapshot, { goals: await clientGoals(input.clientId) })));
+        sections.push(renderOptimisationSignals(evaluateCheckpoints(snapshot, { goals: await turnGoals() })));
         toolCalls.push({
           name: "audit_checkpoints",
           args: { account_id: accountId, days: 14 },

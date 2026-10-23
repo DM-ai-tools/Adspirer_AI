@@ -44,8 +44,18 @@ export function asksAboutCategorySpend(request: string, categories: StrategyCate
   return named || (CATEGORY_WORDS.test(request) && SPEND_RETURN_WORDS.test(request));
 }
 
+/**
+ * The question judges categories by what they return for their spend ("sales with respect to
+ * spend", ROAS, efficiency), not just by sales. Tolerates typos in "with respect to".
+ */
+const RETURN_ON_SPEND =
+  /\b(?:roas|return\s+on\s+(?:ad\s+)?spend|with\s+\w+\s+to\s+(?:the\s+)?(?:ad\s+)?spend|relative\s+to\s+(?:the\s+)?(?:ad\s+)?spend|(?:vs\.?|versus|against)\s+(?:the\s+)?(?:ad\s+)?spend|(?:per|for\s+every|for\s+each)\s+(?:dollar|buck)|efficien\w*|bang\s+for|best\s+return)/i;
+export function asksForReturnOnSpend(request: string): boolean {
+  return RETURN_ON_SPEND.test(request);
+}
+
 /** Names that mean "everything" rather than one category. */
-const GENERIC_NAMES = new Set(["all", "other", "others", "general", "misc", "miscellaneous", "uncategorized", "uncategorised", "default"]);
+export const GENERIC_NAMES = new Set(["all", "other", "others", "general", "misc", "miscellaneous", "uncategorized", "uncategorised", "default"]);
 
 /**
  * The categories a request names (whole-word name or keyword, any case), in

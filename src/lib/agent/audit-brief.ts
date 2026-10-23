@@ -1,5 +1,5 @@
 import type { AgentHistoryMessage } from "@/lib/agent/history";
-import { parseNaturalDateRange } from "@/lib/agent/natural-dates";
+import { parseComparisonRanges, parseNaturalDateRange } from "@/lib/agent/natural-dates";
 import {
   extractHttpUrls,
   isCompetitorLandingSkip,
@@ -19,6 +19,10 @@ export type AuditBrief = {
   dateStart: string | null;
   dateStop: string | null;
   dateLabel: string | null;
+  /** A comparison range the operator named ("Oct 19-20 vs Oct 17-18"); null means the previous period of the same length. */
+  compareStart: string | null;
+  compareStop: string | null;
+  compareLabel: string | null;
   /** Whether competitor LPs should be compared */
   competitorLanding: CompetitorLandingChoice;
   /** Competitor landing page URLs from chat (Excel URLs merged at gather time) */
@@ -33,6 +37,32 @@ function isoDate(d: Date): string {
 
 function startOfUtcDay(d: Date): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+}
+
+/**
+ * The window a question asks for, as whole days: "last N days" ends yesterday (today is a part
+ * day, so GA4 and Meta would disagree on it), as does "this month". An explicit "today" or
+ * "yesterday" is left as asked. No stated period means the last 30 whole days.
+ */
+export function completedDaysRange(text: string): { dateStart: string; dateStop: string; dateLabel: string; days: number } {
+  const parsed = parseDateRangeFromText(text) ?? parseDateRangeFromText("last 30 days")!;
+  const today = isoDate(startOfUtcDay(new Date()));
+  const shift = (day: string, by: number) => {
+    const d = new Date(`${day}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + by);
+    return isoDate(d);
+  };
+  let { dateStart, dateStop } = parsed;
+  if (dateStop >= today && parsed.dateLabel !== "today") {
+    if (/^last /.test(parsed.dateLabel)) {
+      dateStart = shift(dateStart, -1);
+      dateStop = shift(dateStop, -1);
+    } else if (dateStart < today) {
+      dateStop = shift(today, -1);
+    }
+  }
+  const days = Math.round((Date.parse(`${dateStop}T00:00:00Z`) - Date.parse(`${dateStart}T00:00:00Z`)) / 86_400_000) + 1;
+  return { dateStart, dateStop, dateLabel: parsed.dateLabel, days };
 }
 
 /** Parse relative / absolute date ranges from operator text. */
@@ -117,7 +147,7 @@ export function parseDateRangeFromText(text: string): {
 
 /** Words and punctuation that make up a date phrase ("from 9th sept to 12th sept", "last 7 days"). */
 const DATE_WORDS =
-  /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|\d{1,4}(?:st|nd|rd|th)?|to|and|from|till|until|through|thru|of|the|for|on|between|last|this|next|past|days?|weeks?|months?|quarter|year|today|yesterday)\b|[/\-–—.,]/gi;
+  /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|\d{1,4}(?:st|nd|rd|th)?|to|and|from|till|until|through|thru|of|the|for|on|between|last|this|next|past|days?|weeks?|months?|quarter|year|today|yesterday|vs|versus|compared?|comparing|with|against|before|prior|previous|preceding|period)\b|[/\-–—.,]/gi;
 
 /**
  * "for 16th sept and 17th sept", "for last 7 days", "for the same period" are
@@ -231,6 +261,9 @@ function finalizeBrief(partial: {
   dateStart: string | null;
   dateStop: string | null;
   dateLabel: string | null;
+  compareStart: string | null;
+  compareStop: string | null;
+  compareLabel: string | null;
   competitorLanding: CompetitorLandingChoice;
   competitorUrls: string[];
 }): AuditBrief {
@@ -263,6 +296,9 @@ function mergeBriefs(parts: AuditBrief[]): AuditBrief {
   let dateStart: string | null = null;
   let dateStop: string | null = null;
   let dateLabel: string | null = null;
+  let compareStart: string | null = null;
+  let compareStop: string | null = null;
+  let compareLabel: string | null = null;
   let competitorLanding: CompetitorLandingChoice = "unset";
   const competitorUrls: string[] = [];
 
@@ -278,6 +314,10 @@ function mergeBriefs(parts: AuditBrief[]): AuditBrief {
       dateStart = part.dateStart;
       dateStop = part.dateStop;
       dateLabel = part.dateLabel;
+      // A later single range drops an earlier comparison.
+      compareStart = part.compareStart;
+      compareStop = part.compareStop;
+      compareLabel = part.compareLabel;
     }
     if (part.competitorLanding === "skip") {
       competitorLanding = "skip";
@@ -302,6 +342,9 @@ function mergeBriefs(parts: AuditBrief[]): AuditBrief {
     dateStart,
     dateStop,
     dateLabel,
+    compareStart,
+    compareStop,
+    compareLabel,
     competitorLanding,
     competitorUrls,
   });
@@ -309,7 +352,9 @@ function mergeBriefs(parts: AuditBrief[]): AuditBrief {
 
 function briefFromText(text: string): AuditBrief {
   const { scope, campaignHints, activeCampaigns } = parseScope(text);
-  const range = parseDateRangeFromText(text);
+  // "A vs B" names both ranges; otherwise one range, compared with the period before.
+  const pair = parseComparisonRanges(text);
+  const range = pair?.current ?? parseDateRangeFromText(text);
   const competitor = parseCompetitorLanding(text);
 
   return finalizeBrief({
@@ -319,6 +364,9 @@ function briefFromText(text: string): AuditBrief {
     dateStart: range?.dateStart ?? null,
     dateStop: range?.dateStop ?? null,
     dateLabel: range?.dateLabel ?? null,
+    compareStart: pair?.comparison.dateStart ?? null,
+    compareStop: pair?.comparison.dateStop ?? null,
+    compareLabel: pair?.comparison.dateLabel ?? null,
     competitorLanding: competitor.choice,
     competitorUrls: competitor.urls,
   });

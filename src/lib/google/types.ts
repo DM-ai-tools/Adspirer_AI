@@ -19,7 +19,19 @@ export type Ga4CategoryRevenue = {
   rows: Array<{ key: string; revenueCents: number; purchases: number }>;
   /** Revenue by landing page and channel, used for the per-channel split. */
   byChannel: Array<{ landingPage: string; channel: Ga4Channel; revenueCents: number }>;
+  /**
+   * Item revenue by item category and the channel of the order it was in (item and order
+   * reports joined on transactionId). Item method only; absent when either report failed or
+   * had no rows, so the split falls back to byChannel.
+   */
+  byItemChannel?: Array<{ itemCategory: string; channel: Ga4Channel; revenueCents: number }>;
   /** Plain notes on data GA4 dropped or grouped, e.g. into "(other)". */
+  warnings?: string[];
+};
+/** GA4 purchase revenue by session landing page (path only), pages with revenue only. */
+export type Ga4LandingPages = {
+  currency: string;
+  rows: Array<{ path: string; revenueCents: number; purchases: number }>;
   warnings?: string[];
 };
 export type AdsPerformance = {
@@ -37,4 +49,41 @@ export type ChannelSnapshot = {
   ga4: Ga4CategoryRevenue | null; ads: AdsPerformance | null; gsc: SearchDemand | null;
   /** "Google needs reconnecting", "Google Ads: <error>", … one per failed part. */
   warnings: string[];
+};
+/** A GA4 string filter on one dimension; several are combined with AND. */
+export type Ga4StringFilter = { dimension: string; match: "exact" | "contains" | "begins_with"; value: string };
+/** A free-form GA4 runReport: any API dimension and metric names, validated by GA4 itself. */
+export type Ga4ReportRequest = {
+  dimensions: string[];
+  metrics: string[];
+  /** YYYY-MM-DD or GA4's relative forms (today, yesterday, NdaysAgo). */
+  dateRanges: Array<{ startDate: string; endDate: string }>;
+  dimensionFilter?: Ga4StringFilter[];
+  /** A requested metric or dimension; the first metric, descending, when absent. */
+  orderBy?: { field: string; desc: boolean };
+  limit: number;
+};
+export type Ga4ReportResult = {
+  currency: string;
+  /** As GA4 returns them; two date ranges add a "dateRange" dimension. */
+  dimensionHeaders: string[];
+  metricHeaders: string[];
+  rows: Array<{ dimensions: string[]; metrics: number[] }>;
+  /** Rows GA4 has in total; more than `rows` when the limit cut them. */
+  rowCount: number;
+};
+export type SearchAnalyticsDimension = "query" | "page" | "country" | "device" | "date";
+export type SearchAnalyticsRequest = {
+  startDate: string;
+  endDate: string;
+  dimensions: SearchAnalyticsDimension[];
+  filters?: Array<{
+    dimension: SearchAnalyticsDimension;
+    operator: "contains" | "equals" | "notContains" | "notEquals";
+    expression: string;
+  }>;
+  rowLimit: number;
+};
+export type SearchAnalyticsResult = {
+  rows: Array<{ keys: string[]; clicks: number; impressions: number; ctr: number; position: number }>;
 };

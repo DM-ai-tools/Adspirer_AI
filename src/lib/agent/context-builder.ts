@@ -19,6 +19,7 @@ import {
 import { humanToolLabel } from "@/lib/tools/display-labels";
 import { describeGoalsForAgent } from "@/lib/clients/goals";
 import { mapClientRow } from "@/lib/clients/map-client";
+import { clientGoogleAssets } from "@/lib/google/assets";
 import { buildClientBrandBlock } from "./prompts";
 
 /** Reads the turn already started, shared so they are not repeated. */
@@ -28,12 +29,53 @@ export type PreloadedTurnReads = {
   selectedCreative?: Promise<CreativeDraft | null>;
 };
 
+type MappedGoogleAssets = Awaited<ReturnType<typeof clientGoogleAssets>>;
+
+/** The client's mapped Google assets; null when they can't be read (the section then says so). */
+async function loadGoogleAssets(clientId: string): Promise<MappedGoogleAssets | null> {
+  try {
+    return await clientGoogleAssets(clientId);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * What the read tools can reach for this client, so the model knows which
+ * sources it can call (and what to tell the operator to map otherwise).
+ */
+export function describeConnectedData(
+  meta: ConnectedMetaAccount[],
+  google: MappedGoogleAssets | null,
+): string[] {
+  const primary = meta.find((m) => m.access_status === "granted");
+  const line = (label: string, asset: { name: string } | null | undefined, what: string) =>
+    asset
+      ? `- ${label}: ${asset.name} (mapped; read-only)`
+      : `- ${label}: not mapped (map a ${what} under Admin → Connections to read it)`;
+  return [
+    "## Connected data (read with the data tools; ids are resolved for you)",
+    primary
+      ? `- Meta: ${primary.meta_account_name} (${primary.meta_account_id})`
+      : "- Meta: not mapped (map the Meta ad account under Admin → Connections)",
+    ...(google
+      ? [
+          line("GA4", google.ga4, "GA4 property"),
+          line("Search Console", google.gsc, "Search Console site"),
+          line("Google Ads", google.ads, "Google Ads account"),
+        ]
+      : ["- Google (GA4 / Search Console / Google Ads): the mapping couldn't be read this turn"]),
+  ];
+}
+
 export async function buildClientContext(
   clientId: string,
   options?: { conversationId?: string | null; preloaded?: PreloadedTurnReads },
 ): Promise<string> {
   const conversationId = options?.conversationId ?? null;
   const preloaded = options?.preloaded;
+  // Started first so it loads alongside the reads below.
+  const googlePromise = loadGoogleAssets(clientId);
   // Independent reads — run them together rather than one round trip at a time.
   const [
     client,
@@ -60,13 +102,19 @@ export async function buildClientContext(
       conversationId: conversationId ?? undefined,
     }).catch(() => []),
   ]);
+  const google = await googlePromise;
   if (!client) {
     return `Client id ${clientId} not found.`;
   }
   const recentDrafts = drafts.slice(0, 3);
   const recentApprovals = loadRecentApprovals(clientId);
 
+  const today = new Date();
+  const yesterday = new Date(today.getTime() - 86_400_000);
   const sections = [
+    "## Today",
+    `- Today is ${today.toISOString().slice(0, 10)} (UTC); the latest whole day is ${yesterday.toISOString().slice(0, 10)}. "Last N days" means the N whole days ending ${yesterday.toISOString().slice(0, 10)}.`,
+    "",
     "## Meta connection",
     [
       "- Access: the operator's Facebook login → Meta Graph API",
@@ -84,6 +132,8 @@ export async function buildClientContext(
           ].join("\n")
         : "- No Meta account mapped yet — Connect Facebook + map under Connections",
     ].join("\n"),
+    "",
+    ...describeConnectedData(meta, google),
     "",
     "## Brand context",
     buildClientBrandBlock(client),

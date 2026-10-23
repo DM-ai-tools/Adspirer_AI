@@ -30,7 +30,6 @@ export async function GET() {
     // DEMO_MODE runs on the mock Google provider, so Google counts as configured there.
     return jsonOk({
       configured: config.isDemoMode || config.hasGoogle,
-      adsConfigured: config.isDemoMode || config.hasGoogleAds,
       connected: Boolean(connection),
       email: connection?.google_email ?? null,
       needsReconnect,

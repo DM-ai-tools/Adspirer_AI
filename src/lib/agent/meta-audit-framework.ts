@@ -52,7 +52,10 @@ Cite live evidence (spend, results, cost per result, CTR, frequency, statuses) i
 ## Required report format (keep these headings, in this order)
 # Meta Ads Account Audit — <account name>
 1. **Executive Summary** — 3–5 bullets in plain business language for a non-specialist: overall score from the scorecard, the single biggest money leak (with the spend at stake), and the first fix.
-2. **Account Snapshot** — period, total spend, results, cost per result (and ROAS if purchases), active vs paused campaigns, and the change against the previous period of the same length (spend, results, cost per result — from "Totals vs previous period"; say "not available" if it is missing).
+2. **Account Snapshot** — period, total spend, results, cost per result (and ROAS if purchases), active vs paused campaigns, and the change against the comparison period, from the "Totals vs previous period" / "Totals vs comparison period" line: spend, impressions, reach, frequency, CPM, link clicks, link CTR, results, cost per result, and ROAS / purchase value / landing page views when listed, each as before → after (±%).
+   - Head the two columns with exactly the Current and Comparison dates in the evidence's "Current: … ; Comparison: …" line — never work out, shift or round the dates yourself.
+   - Never write "not available" for a metric that is in a comparison line. If a comparison part "failed to load", say that part failed to load; if there is no comparison line at all, say the comparison wasn't loaded.
+   - If the evidence says the periods differ in length, say the totals aren't like-for-like and compare the daily averages too.
 3. **Tracking & Measurement** — what is and isn't being measured, from the T-checkpoints, in plain words.
 4. **Active Campaigns** — table: campaign, status, budget, spend, results, cost per result, CTR, frequency. Then, for each audited campaign, a "### Ad sets in <campaign name>" sub-section (no IDs in that heading):
    - table (these 9 columns only, so it fits a printed page): Ad set | Status | Learning | Spend | Results | Cost per result | CTR | Freq (7d) | Live ads

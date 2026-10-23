@@ -172,7 +172,7 @@ function channelTable(
   rows: Array<{ categoryId: string; name: string; tier?: AllocationTier; roas?: number | null }>,
   perfById: Map<string, CategoryPerformance>,
   channels: ChannelPerformance,
-  ctx: { word: CategoryWord; days: number; money: Money; ranked: boolean },
+  ctx: { word: CategoryWord; days: number; money: Money; ranked: boolean; ga4Basis: boolean; rankBy?: "revenue" | "return" },
 ): string[] {
   const { word, days, money, ranked } = ctx;
   const missing = googleMissing(channels);
@@ -182,7 +182,7 @@ function channelTable(
     const perf = perfById.get(r.categoryId);
     const ch = chById.get(r.categoryId) ?? metaOnlyRow(r.categoryId, perf);
     const f = observedCategoryFigures(ch, perf?.roas ?? null, {
-      ga4Available: ga4RevenueBasis(channels),
+      ga4Available: ctx.ga4Basis,
       googleLoaded: !missing,
     });
     // GA4's paid revenue is shown even when GA4 isn't the basis (it matched too little).
@@ -193,7 +193,20 @@ function channelTable(
     return { ...r, ch, f, paid };
   });
   const revenueOf = (f: ObservedFigures) => f.ga4RevenueCents ?? f.platformRevenueCents ?? -1;
-  const ordered = ranked ? [...all].sort((a, b) => revenueOf(b.f) - revenueOf(a.f)) : all;
+  // Ranking by return: best ROAS first among categories with enough spend for it to mean something;
+  // a few cents of spend can show a huge ratio, so those and zero-spend ones follow, by revenue.
+  const totalSpend = all.reduce((acc, r) => acc + r.f.spendCents, 0);
+  const spendFloor = Math.max(1, Math.round(totalSpend * RANK_SPEND_FLOOR_SHARE));
+  const rankable = (r: (typeof all)[number]) => r.f.roas !== null && r.f.spendCents >= spendFloor;
+  const byReturn = ranked && ctx.rankBy === "return";
+  const ordered = byReturn
+    ? [
+        ...all.filter(rankable).sort((a, b) => (b.f.roas ?? 0) - (a.f.roas ?? 0)),
+        ...all.filter((r) => !rankable(r)).sort((a, b) => revenueOf(b.f) - revenueOf(a.f)),
+      ]
+    : ranked
+      ? [...all].sort((a, b) => revenueOf(b.f) - revenueOf(a.f))
+      : all;
   const shown =
     ordered.length <= MAX_FULL_ROWS
       ? ordered
@@ -209,7 +222,8 @@ function channelTable(
     const ga4All = r.ch.ga4TotalRevenueCents === null ? "—" : money(r.ch.ga4TotalRevenueCents);
     const platform = r.f.platformRevenueCents === null ? "unknown" : money(r.f.platformRevenueCents);
     const value = r.roas !== undefined ? r.roas : r.f.roas;
-    return `| ${r.name} | ${money(r.ch.meta.spendCents)} | ${google} | ${ga4} | ${ga4All} | ${platform} | ${roas(value)} | ${basis[r.f.basis]} |${withTier ? ` ${r.tier} |` : ""} ${match} |`;
+    const roasCell = byReturn && value !== null && !rankable(r) ? `${roas(value)} (spend too small to rank)` : roas(value);
+    return `| ${r.name} | ${money(r.ch.meta.spendCents)} | ${google} | ${ga4} | ${ga4All} | ${platform} | ${roasCell} | ${basis[r.f.basis]} |${withTier ? ` ${r.tier} |` : ""} ${match} |`;
   });
   const hidden = rows.length - shown.length;
   const headings = missing
@@ -225,24 +239,71 @@ function channelTable(
   ];
 }
 
+/** Under this share of the table's total spend a category's ROAS is too noisy to rank on. */
+const RANK_SPEND_FLOOR_SHARE = 0.01;
+
+const UTM_HINT = "check the Meta ads carry UTM tags (utm_source=facebook&utm_medium=paid_social)";
+
+/**
+ * Per category, GA4's revenue by platform: Meta's and Google's shares and every other channel,
+ * and how the split was made. When Meta spent on a category and reports sales for it but GA4
+ * credits Meta nothing, the likely cause is untagged Meta ads, so the line says to check them.
+ */
+function ga4PlatformLines(
+  rows: Array<{ categoryId: string; name: string }>,
+  channels: ChannelPerformance,
+  ctx: { days: number; money: Money },
+): string[] {
+  const { days, money } = ctx;
+  const chById = new Map(channels.byCategory.map((c) => [c.categoryId, c]));
+  const split = rows
+    .map((r) => ({ name: r.name, ch: chById.get(r.categoryId) }))
+    .filter((r): r is { name: string; ch: CategoryChannels } => !!r.ch?.ga4SplitBy && r.ch.meta.ga4RevenueCents !== null);
+  const shown = split.slice(0, TRUNCATED_ROWS);
+  const lines: string[] = [];
+  for (const { name, ch } of shown) {
+    const how = ch.ga4SplitBy === "order" ? "Matched by order." : "Matched by landing page (an estimate).";
+    lines.push(
+      `- GA4 ${name} revenue by platform (last ${days} days): Meta ${money(ch.meta.ga4RevenueCents ?? 0)} · Google ${money(ch.google.ga4RevenueCents ?? 0)} · other channels ${money(ch.ga4OtherRevenueCents ?? 0)} (organic, direct, email). ${how}`,
+    );
+    if (ch.meta.spendCents > 0 && ch.meta.platformRevenueCents > 0 && ch.meta.ga4RevenueCents === 0) {
+      lines.push(`- GA4 credits no ${name} sales to Meta: ${UTM_HINT}.`);
+    }
+  }
+  if (split.length > shown.length) {
+    lines.push(`- …and ${split.length - shown.length} more with GA4 revenue by platform (first ${TRUNCATED_ROWS} shown).`);
+  }
+  return lines;
+}
+
 /**
  * Under the channel table: how GA4 revenue was matched, GA4 revenue no category took (and
- * whether that left too little to use), and Google spend no category took.
+ * what share the categories cover, or that it was too little to use), each category's GA4
+ * revenue by platform, and Google spend no category took.
  */
-function channelLevel1Lines(channels: ChannelPerformance, word: CategoryWord, money: Money): string[] {
+function channelLevel1Lines(
+  channels: ChannelPerformance,
+  word: CategoryWord,
+  money: Money,
+  ctx: { ga4Basis: boolean; rows: Array<{ categoryId: string; name: string }>; days: number },
+): string[] {
   const ga4: string[] = [];
   const matchedPct = ga4MatchedPct(channels);
   if (matchedPct !== null && channels.ga4UnmatchedRevenueCents > 0) {
     const total = channels.ga4UnmatchedRevenueCents + channels.byCategory.reduce((s, c) => s + (c.ga4TotalRevenueCents ?? 0), 0);
     const pct = Math.round((channels.ga4UnmatchedRevenueCents / total) * 1000) / 10;
     ga4.push(`- GA4 revenue not matched to any ${word}: ${money(channels.ga4UnmatchedRevenueCents)} (${pct}% of GA4 revenue)`);
+    if (ctx.ga4Basis && matchedPct < 100) {
+      ga4.push(`- The ${plural(word)} set up cover ${matchedPct}% of GA4 revenue; the rest is in ${plural(word)} not set up yet.`);
+    }
   }
-  if (matchedPct !== null && !ga4RevenueBasis(channels)) {
+  if (matchedPct !== null && !ctx.ga4Basis && channels.ga4Available) {
     ga4.push(`- GA4 matched only ${matchedPct}% of revenue to ${plural(word)}, so the figures use platform-reported revenue.`);
   }
   return [
     `- GA4 method: ${GA4_METHOD[channels.ga4Method]}`,
     ...ga4,
+    ...ga4PlatformLines(ctx.rows, channels, { days: ctx.days, money }),
     channels.ads
       ? `- Google Ads unmatched spend: ${money(channels.googleUnmatchedSpendCents)} (not attributed to any ${word})`
       : channels.googleAdsMapped
@@ -277,6 +338,12 @@ export function renderCategorySpendEvidence(
     channels?: ChannelPerformance;
     /** Google load warnings from outside the channel data, e.g. a load that failed outright. */
     channelWarnings?: string[];
+    /** The question names categories, so GA4 is used for them whatever share of GA4 revenue they cover. */
+    scoped?: boolean;
+    /** "return" ranks by ROAS on each category's own spend (the question is about sales relative to spend). */
+    rankBy?: "revenue" | "return";
+    /** The dates the figures cover; stated in the Period line when given. */
+    period?: { since: string; until: string };
   },
 ): string {
   const word = opts.categoryWord;
@@ -287,20 +354,27 @@ export function renderCategorySpendEvidence(
   const extra = opts.channelWarnings ?? [];
   // Currencies that differ are never combined: the table stays Meta's own.
   const combined = channels && !channels.currencyMismatch ? channels : null;
+  const ga4Basis = !!combined && ga4RevenueBasis(combined, { scoped: opts.scoped });
   const rows = categories.map((c) => ({ categoryId: c.id, name: c.name }));
   const days = opts.periodDays;
 
   const top: string[] = [];
-  if (channels) {
+  const byReturn = opts.rankBy === "return" && !!combined;
+  if (byReturn) {
+    top.push(
+      `- Ranked by: return on spend: ${ga4Basis ? "GA4 paid revenue" : "platform revenue"} ÷ that ${word}'s own ${googleMissing(combined!) ? "Meta" : "Meta + Google"} spend. ${capitalize(plural(word))} with no spend, or under ${Math.round(RANK_SPEND_FLOOR_SHARE * 100)}% of total spend, are listed after the ranked ones.`,
+      "- The question asks for sales relative to spend: answer with this ranking and show each category's own spend and ROAS. Never divide a category's revenue by total account spend.",
+    );
+  } else if (channels) {
     top.push(
       `- Ranked by: ${
         !combined
           ? "Meta-reported revenue"
           : googleMissing(combined)
-            ? ga4RevenueBasis(combined)
+            ? ga4Basis
               ? "GA4 paid-social revenue"
               : "Meta-reported revenue"
-            : ga4RevenueBasis(combined)
+            : ga4Basis
               ? "GA4 revenue"
               : "combined platform revenue"
       }`,
@@ -319,7 +393,7 @@ export function renderCategorySpendEvidence(
   }
 
   let table: string[];
-  if (combined) table = channelTable(rows, perfById, combined, { word, days, money, ranked: true });
+  if (combined) table = channelTable(rows, perfById, combined, { word, days, money, ranked: true, ga4Basis, rankBy: opts.rankBy });
   else if (channels) {
     const revenue = (id: string) => {
       const p = perfById.get(id);
@@ -331,11 +405,13 @@ export function renderCategorySpendEvidence(
 
   return [
     `### Spend & return by ${word}`,
-    `- Period: last ${days} days. Figures only: no plan, no budget allocation.`,
+    opts.period
+      ? `- Period: ${opts.period.since} → ${opts.period.until} (${days} days, whole days; today excluded). Figures only: no plan, no budget allocation.`
+      : `- Period: last ${days} days. Figures only: no plan, no budget allocation.`,
     ...top,
     ...table,
     "",
-    ...(combined ? channelLevel1Lines(combined, word, money) : []),
+    ...(combined ? channelLevel1Lines(combined, word, money, { ga4Basis, rows, days }) : []),
     ...unmatchedLines(attribution, word, money, !!combined),
     ...coverage.lines,
   ].join("\n");
@@ -374,6 +450,9 @@ export function renderStrategyEvidence(
   const channelWarnings = opts.channelWarnings ?? [];
   // Currencies that differ are never combined: Level 1 stays Meta's own.
   const combined = channels && !channels.currencyMismatch ? channels : null;
+  // The plan decided whether GA4 is the basis (a scoped plan uses GA4 whatever its coverage).
+  const ga4Basis = plan.revenueBasis === "ga4";
+  const level1Rows = allocations.map((a) => ({ categoryId: a.categoryId, name: a.name }));
   // A brief given as a total over a period; the engine plans its daily share.
   const total =
     brief.totalBudgetCents != null && brief.totalBudgetCents > 0 && brief.periodDays != null && brief.periodDays > 0
@@ -427,12 +506,12 @@ export function renderStrategyEvidence(
                 allocations.map((a) => ({ categoryId: a.categoryId, name: a.name, tier: a.tier, roas: a.observedRoas })),
                 perfById,
                 combined,
-                { word, days, money, ranked: false },
+                { word, days, money, ranked: false, ga4Basis },
               ),
               "",
             ]
           : [...spendTable(allocations, perfById, { word, days, money }), ""]),
-      ...(combined ? channelLevel1Lines(combined, word, money) : []),
+      ...(combined ? channelLevel1Lines(combined, word, money, { ga4Basis, rows: level1Rows, days }) : []),
       ...unmatchedLines(attribution, word, money, !!combined),
       ...coverage.lines,
     ].join("\n"),
@@ -512,8 +591,14 @@ export function renderStrategyEvidence(
       );
     } else {
       const { metaReportedCents: meta, ga4PaidSocialCents: ga4 } = gap;
+      // The categories compared are the ones with a GA4 paid-social figure.
+      const compared = channels.byCategory.filter((c) => c.meta.ga4RevenueCents !== null);
+      const matchedBy =
+        compared.length > 0 && compared.every((c) => c.ga4SplitBy === "order")
+          ? "matched by order"
+          : "matched by landing page, an estimate";
       level2.push(
-        `- Meta-reported revenue: ${money(meta)} · GA4 revenue from Facebook/Instagram paid sessions on the same ${words} (matched by landing page, an estimate): ${money(ga4)}`,
+        `- Meta-reported revenue: ${money(meta)} · GA4 revenue from Facebook/Instagram paid sessions on the same ${words} (${matchedBy}): ${money(ga4)}`,
       );
       if (ga4 === 0) {
         level2.push(`- GA4 credits no revenue from Facebook/Instagram paid sessions to these ${words}, so the gap can't be given as a %.`);

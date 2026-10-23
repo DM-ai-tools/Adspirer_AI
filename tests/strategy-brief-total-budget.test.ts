@@ -131,3 +131,15 @@ describe("scopeCategoriesFromRequest", () => {
     expect(scopeCategoriesFromRequest("all of it, other channels too", cats)).toEqual([]);
   });
 });
+
+describe("asking for Google Ads", () => {
+  const defaults = { goals: {} as never, currentDailySpendCents: null };
+  it("notes when the ask names Google", () => {
+    const r = parseStrategyBrief("How do we spend $4k and get $40k back on bar stools using Google Ads and Meta together?", defaults);
+    expect(r.brief?.wantsGoogle).toBe(true);
+  });
+  it("doesn't when it only names Meta", () => {
+    const r = parseStrategyBrief("Plan to hit 10x ROAS on $500/day on Meta", defaults);
+    expect(r.brief?.wantsGoogle).toBeFalsy();
+  });
+});

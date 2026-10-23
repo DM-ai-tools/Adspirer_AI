@@ -53,6 +53,10 @@ const sites = () => [
   { siteUrl: "https://unverified.example/", permissionLevel: "siteUnverifiedUser" },
 ];
 
+/** The fixture's one unverified Search Console site is skipped, and said so. */
+const UNVERIFIED_WARNING =
+  "Search Console: 1 site skipped because this Google account only has unverified access (https://unverified.example/). Ask the site owner to add it as a full or restricted user.";
+
 const byExternal = (externalId: string) => getDemoStore().googleAssets.find((a) => a.external_id === externalId);
 
 beforeEach(() => {
@@ -61,7 +65,6 @@ beforeEach(() => {
   process.env.DEMO_MODE = "false";
   process.env.GOOGLE_OAUTH_CLIENT_ID = "cid";
   process.env.GOOGLE_OAUTH_CLIENT_SECRET = "csecret";
-  process.env.GOOGLE_ADS_DEVELOPER_TOKEN = "devtoken";
   resetConfigCache();
   vi.mocked(listGa4Properties).mockReset().mockResolvedValue(ga4());
   vi.mocked(discoverAdsAccounts).mockReset().mockResolvedValue(ads());
@@ -72,13 +75,12 @@ afterEach(() => {
   process.env.DEMO_MODE = "true";
   delete process.env.GOOGLE_OAUTH_CLIENT_ID;
   delete process.env.GOOGLE_OAUTH_CLIENT_SECRET;
-  delete process.env.GOOGLE_ADS_DEVELOPER_TOKEN;
   resetConfigCache();
 });
 
 describe("syncGoogleAssets", () => {
   it("upserts all three kinds and a second sync keeps a mapping", async () => {
-    expect(await syncGoogleAssets()).toEqual({ ga4: 1, ads: 1, gsc: 2, warnings: [] });
+    expect(await syncGoogleAssets()).toEqual({ ga4: 1, ads: 1, gsc: 2, warnings: [UNVERIFIED_WARNING] });
 
     const property = byExternal("properties/123")!;
     expect(property).toMatchObject({
@@ -111,17 +113,22 @@ describe("syncGoogleAssets", () => {
   it("still syncs GA4 and Search Console when Google Ads fails, with a warning", async () => {
     vi.mocked(discoverAdsAccounts).mockRejectedValue(new Error("quota exceeded"));
     const result = await syncGoogleAssets();
-    expect(result).toEqual({ ga4: 1, ads: 0, gsc: 2, warnings: ["Google Ads: quota exceeded"] });
+    expect(result).toEqual({ ga4: 1, ads: 0, gsc: 2, warnings: ["Google Ads: quota exceeded", UNVERIFIED_WARNING] });
     expect(byExternal("properties/123")).toBeDefined();
     expect(byExternal("https://shop.example/")).toBeDefined();
   });
 
-  it("skips Google Ads when no developer token is configured", async () => {
-    delete process.env.GOOGLE_ADS_DEVELOPER_TOKEN;
-    resetConfigCache();
+  it("says when Search Console sites are skipped for unverified access", async () => {
     const result = await syncGoogleAssets();
-    expect(result).toEqual({ ga4: 1, ads: 0, gsc: 2, warnings: ["Google Ads: developer token not configured"] });
-    expect(discoverAdsAccounts).not.toHaveBeenCalled();
+    expect(result.gsc).toBe(2);
+    expect(result.warnings).toContain(UNVERIFIED_WARNING);
+  });
+
+  it("syncs Google Ads with only the OAuth client set (no developer token)", async () => {
+    const result = await syncGoogleAssets();
+    expect(result.warnings.filter((w) => w.startsWith("Google Ads"))).toEqual([]);
+    expect(result.ads).toBeGreaterThan(0);
+    expect(discoverAdsAccounts).toHaveBeenCalled();
   });
 });
 
@@ -194,7 +201,7 @@ describe("admin Google asset routes", () => {
     const sync = await import("@/app/api/admin/google/sync/route");
     const syncRes = await sync.POST();
     expect(syncRes.status).toBe(200);
-    expect((await syncRes.json()).data).toEqual({ ga4: 1, ads: 1, gsc: 2, warnings: [] });
+    expect((await syncRes.json()).data).toEqual({ ga4: 1, ads: 1, gsc: 2, warnings: [UNVERIFIED_WARNING] });
 
     const list = await import("@/app/api/admin/google/assets/route");
     const listed = (await (await list.GET()).json()).data.assets as Array<Record<string, unknown>>;

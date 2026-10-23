@@ -1,5 +1,6 @@
 import type { AgentHistoryMessage } from "@/lib/agent/history";
 import { looksLikeAuditBriefReply, parseDateRangeFromText } from "@/lib/agent/audit-brief";
+import { looksLikeLeadBriefReply } from "@/lib/agent/lead-brief";
 import { looksLikeStrategyBriefReply, STRATEGY_BRIEF_MARKER } from "@/lib/agent/strategy-brief";
 
 export type TaskStepState =
@@ -63,6 +64,14 @@ const DEFINITIONAL_QUESTION =
 const ACCOUNT_DATA_REFERENCE =
   /\b(?:my|our|this|these|those|the|current|their)\s+(?:account|ad\s*accounts?|campaigns?|ad\s*sets?|adsets?|ads|spend|budgets?|performance|results|numbers|metrics|cpa|cpm|cpc|ctr|roas|conversions?|leads|pixel|landing\s*pages?|audiences?|creatives?|approvals?|status|destination|website)\b|\b(?:last|past|this)\s+(?:\d+\s+)?(?:days?|week|month|quarter|year)\b|\byesterday\b|\btoday\b|\bact_\d+|\b\d{10,}\b|https?:\/\/|www\./i;
 
+/**
+ * Questions about sales, products, traffic or search data, or a ranking ("best
+ * selling", "top products"): answered from GA4 / Search Console / Meta through
+ * the read tools, never as a quick definition.
+ */
+const DATA_TOPIC_REFERENCE =
+  /\b(?:products?|items?|skus?|sales|revenue|orders?|purchases?|traffic|sessions?|visitors?|users?|queries|search\s+terms?|keywords?|landing\s*pages?|sources?|channels?|ga4|google\s+analytics|analytics|search\s+console|google\s+ads|best[\s-]*sell\w*|top\s+(?:\d+\s+)?\w+|most\s+\w+|worst\s+\w+)\b/i;
+
 const ACTION_REQUEST =
   /\b(?:create|launch|build|generate|write|draft|pause|resume|queue|approve|apply|increase|decrease|raise|lower|scale|optimi[sz]e|audit|diagnos\w*|export|download|pdf|docx?|report|scrape|list|show|pull|fetch|check|compare|send)\b/i;
 
@@ -77,6 +86,7 @@ export function isConversationalTurn(request: string): boolean {
   if (GREETING_ONLY.test(text) || THANKS_OR_UNDERSTOOD.test(text)) return true;
   if (!DEFINITIONAL_QUESTION.test(text)) return false;
   if (ACCOUNT_DATA_REFERENCE.test(text)) return false;
+  if (DATA_TOPIC_REFERENCE.test(text)) return false;
   if (ACTION_REQUEST.test(text)) return false;
   return true;
 }
@@ -129,6 +139,17 @@ const STRATEGY_GOAL = new RegExp(
 /** "under 2x roas", "above a roas of 3", "5x roas or better": a filter on results, not a goal. */
 const ROAS_COMPARISON =
   /\b(?:above|below|under|over|more\s+than|less\s+than|at\s+least)\s+(?:an?\s+)?(?:roas\s+(?:of\s+)?\d|\d+(?:\.\d+)?\s*[x×])|(?:\d\s*[x×]\s*(?:roas\s+)?|\broas\s+of\s+\d+(?:\.\d+)?\s*)or\s+(?:better|worse)\b/;
+/**
+ * A lead goal stated outright with a budget or plan ask: "to get 100 leads in a month what budget do I
+ * need", "how much to spend for 50 enquiries". A bare "campaigns with 100 leads" is a report.
+ */
+const LEAD_COUNT = String.raw`\d[\d,.]*\s*k?\s+(?:qualified\s+|new\s+)?(?:leads?|enquir\w+|inquir\w+|bookings?|appointments?|registrations?|sign-?ups?)\b`;
+const STRATEGY_LEAD_GOAL = new RegExp(
+  [
+    String.raw`\b(?:get|generate|hit|reach|achieve|need|want|bring\s+in)\s+(?:me\s+)?${LEAD_COUNT}[^.?!\n]{0,80}?\b(?:budget|how\s+much|spend|plan|strategy)\b`,
+    String.raw`\b(?:budget|how\s+much|spend|plan|strategy)\b[^.?!\n]{0,80}?\b(?:get|generate|hit|reach|achieve|bring\s+in)\s+(?:me\s+)?${LEAD_COUNT}`,
+  ].join("|"),
+);
 /** Words that ask for a plan; on their own they don't skip the chat check. */
 const STRATEGY_PLAN_WORDS = /\bstrategy\b|\bgame\s*plan\b|\bplan\s+to\s+(?:hit|reach|get)\b/;
 /** "target roas" counts only next to a plan / how-to signal. */
@@ -142,7 +163,8 @@ const DEFINITION_WORDS = /\b(?:mean|means|define|definition)\b/;
 export function detectRequestIntent(request: string): RequestIntent {
   const text = request.toLowerCase();
   if (
-    /weather|recipe|code|python|javascript|write a poem|joke|crypto|stock|linkedin|tiktok|google ads(?!.*meta)/i.test(
+    // Google Ads, GA4 and Search Console are read through the data tools, so they're in scope.
+    /weather|recipe|code|python|javascript|write a poem|joke|crypto|stock|linkedin|tiktok/i.test(
       text,
     ) &&
     !/meta|facebook|instagram|campaign|ad\s?set|budget|audit|ads|create|website|scrape|service|copy|headline|optimiz/.test(
@@ -156,7 +178,9 @@ export function detectRequestIntent(request: string): RequestIntent {
   const planWords = STRATEGY_PLAN_WORDS.test(text);
   const goalAsk =
     !DEFINITION_WORDS.test(text) &&
-    (STRATEGY_EXPLICIT_GOAL.test(text) || (STRATEGY_GOAL.test(text) && !ROAS_COMPARISON.test(text)));
+    (STRATEGY_EXPLICIT_GOAL.test(text) ||
+      STRATEGY_LEAD_GOAL.test(text) ||
+      (STRATEGY_GOAL.test(text) && !ROAS_COMPARISON.test(text)));
   if (!goalAsk && isConversationalTurn(request)) {
     return "chat";
   }
@@ -292,7 +316,7 @@ export function detectRequestIntentWithHistory(
       last &&
       last.content.length < 2000 &&
       last.content.toLowerCase().includes(STRATEGY_BRIEF_MARKER) &&
-      looksLikeStrategyBriefReply(request)
+      (looksLikeStrategyBriefReply(request) || looksLikeLeadBriefReply(request))
     ) {
       return "strategy";
     }
@@ -433,7 +457,7 @@ export function planTaskSteps(
     case "strategy":
       return [
         ...base,
-        { id: "clarify_brief", label: "Confirm budget & target ROAS", state: "pending" },
+        { id: "clarify_brief", label: "Confirm the goal & budget", state: "pending" },
         { id: "fetch_overview", label: "Fetch account overview", state: "pending" },
         { id: "pull_insights", label: "Pull spend & return by category", state: "pending" },
         { id: "build_plan", label: "Build the plan", state: "pending" },

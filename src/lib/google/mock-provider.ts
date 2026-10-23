@@ -1,6 +1,7 @@
 import { getDemoStore } from "@/lib/demo/store";
+import { mockGa4Report, mockSearchAnalytics } from "./mock-reports";
 import type { GoogleDataProvider } from "./provider";
-import type { AdsPerformance, Ga4CategoryRevenue, SearchDemand } from "./types";
+import type { AdsPerformance, Ga4CategoryRevenue, Ga4LandingPages, SearchDemand } from "./types";
 
 /**
  * Demo Google data for ClickTrends (Bar stools and Sofas). Sized against the
@@ -34,6 +35,26 @@ const ga4: Omit<Ga4CategoryRevenue, "currency"> = {
     { landingPage: SOFAS_PATH, channel: "paid_search", revenueCents: 105_000 },
     { landingPage: SOFAS_PATH, channel: "other", revenueCents: 30_000 },
   ],
+  // By order: each category's item revenue in the same channel shares as its landing pages
+  // above, so the demo figures are the same either way.
+  byItemChannel: [
+    { itemCategory: "Bar Stools", channel: "paid_social", revenueCents: 403_030 },
+    { itemCategory: "Bar Stools", channel: "paid_search", revenueCents: 233_333 },
+    { itemCategory: "Bar Stools", channel: "other", revenueCents: 63_637 },
+    { itemCategory: "Sofas", channel: "paid_social", revenueCents: 163_158 },
+    { itemCategory: "Sofas", channel: "paid_search", revenueCents: 114_211 },
+    { itemCategory: "Sofas", channel: "other", revenueCents: 32_631 },
+  ],
+};
+
+/** Session landing pages: the byChannel totals per page; the product page counts toward its collection. */
+const landing: Omit<Ga4LandingPages, "currency"> = {
+  rows: [
+    { path: BAR_PATH, revenueCents: 620_000, purchases: 82 },
+    { path: `${BAR_PATH}/products/oak-counter-stool`, revenueCents: 40_000, purchases: 5 },
+    { path: SOFAS_PATH, revenueCents: 285_000, purchases: 19 },
+    { path: "/", revenueCents: 45_000, purchases: 4 },
+  ],
 };
 
 const ads: Omit<AdsPerformance, "currency"> = {
@@ -66,9 +87,20 @@ const gsc: Omit<SearchDemand, "siteUrl"> = {
 
 export function getMockGoogleDataProvider(): GoogleDataProvider {
   return {
-    ga4CategoryRevenue: async (propertyId) => structuredClone({ ...ga4, currency: assetCurrency(propertyId) }),
+    ga4CategoryRevenue: async (propertyId, _range, opts) => {
+      const { byItemChannel, ...rest } = ga4;
+      return structuredClone({
+        ...rest,
+        ...(opts?.byItemChannel === false ? {} : { byItemChannel }),
+        currency: assetCurrency(propertyId),
+      });
+    },
+    ga4LandingPages: async (propertyId) => structuredClone({ ...landing, currency: assetCurrency(propertyId) }),
+    ga4ItemCategories: async () => new Map<string, string>(),
     adsPerformance: async (customerId) =>
       structuredClone({ ...ads, customerId, currency: assetCurrency(customerId) }),
     searchDemand: async (siteUrl) => structuredClone({ ...gsc, siteUrl }),
+    ga4Report: async (propertyId, request) => mockGa4Report(request, assetCurrency(propertyId)),
+    searchAnalytics: async (_siteUrl, request) => mockSearchAnalytics(request),
   };
 }

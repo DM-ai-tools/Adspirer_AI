@@ -27,6 +27,8 @@ export type StrategyBrief = {
   /** The brief's total budget and period, when it was given that way; dailyBudgetCents is what the engine uses. */
   totalBudgetCents?: number | null;
   periodDays?: number | null;
+  /** The ask names Google ("…using Google Ads and Meta together"): Google gets its test share even with no history. */
+  wantsGoogle?: boolean;
 };
 export type AllocationTier = "proven" | "promising" | "test" | "hold";
 export type CategoryAllocation = {
@@ -111,6 +113,11 @@ const STRUCTURE: Record<AllocationTier, MetaCapabilityId[]> = {
 
 const FUNDED_TIERS = ["proven", "promising", "test"] as const;
 
+/** A Google budget always names a campaign type: Search when nothing else applies. */
+function withFallbackType(types: GoogleCapabilityId[]): GoogleCapabilityId[] {
+  return types.length ? types : ["google_search"];
+}
+
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
@@ -119,7 +126,7 @@ function round2(value: number): number {
  * Splits whole cents in proportion to the weights (equally when they sum to 0),
  * handing leftover cents to the largest remainders so the parts sum exactly.
  */
-function splitCents(totalCents: number, weights: number[]): number[] {
+export function splitCents(totalCents: number, weights: number[]): number[] {
   if (weights.length === 0) return [];
   const weightSum = weights.reduce((s, w) => s + w, 0);
   const shares = weights.map((w) => (weightSum > 0 ? (totalCents * w) / weightSum : totalCents / weights.length));
@@ -195,9 +202,16 @@ export function buildStrategyPlan(input: {
 
   // A currency mismatch rules out every combined figure, so it is checked before any is read.
   const channels = input.channels && !input.channels.currencyMismatch ? input.channels : null;
-  // GA4 that matched under half its revenue to categories would judge most of the account on nothing.
-  const revenueBasis: StrategyPlan["revenueBasis"] = channels && ga4RevenueBasis(channels) ? "ga4" : "platform";
+  const scopeIds = new Set(input.scopeCategoryIds ?? []);
+  const scoped = categories.filter((c) => scopeIds.has(c.id));
+  // GA4 is used for item categories and for named categories, whatever share of GA4 revenue they
+  // cover; only a whole-account landing-page match under half falls back to platform revenue.
+  const revenueBasis: StrategyPlan["revenueBasis"] =
+    channels && ga4RevenueBasis(channels, { scoped: scoped.length > 0 }) ? "ga4" : "platform";
   const ga4LowMatchPct = channels?.ga4Available && revenueBasis === "platform" ? ga4MatchedPct(channels) : null;
+  // With GA4 the basis, how much of its revenue the categories cover is information, not a reason to drop it.
+  const ga4CoveragePct =
+    channels && revenueBasis === "ga4" && channels.ga4UnmatchedRevenueCents > 0 ? ga4MatchedPct(channels) : null;
   // Google Ads mapped but not loaded this time: Google is left out rather than read as no spend.
   const googleMissing = !!channels && channels.googleAdsMapped && !channels.googleAdsLoaded;
   const googleMapped = (channels?.googleAdsMapped ?? false) && !googleMissing;
@@ -258,8 +272,6 @@ export function buildStrategyPlan(input: {
   }
   const testRoas = accountRoas ?? BENCHMARKS.prospectingRoas;
 
-  const scopeIds = new Set(input.scopeCategoryIds ?? []);
-  const scoped = categories.filter((c) => scopeIds.has(c.id));
   const planned = scoped.length > 0 ? scoped : categories;
 
   const money = (cents: number) => {
@@ -288,6 +300,9 @@ export function buildStrategyPlan(input: {
    * test share when it shows demand (Google: search impressions; Meta: a landing page); with no
    * Google Ads account mapped, or no data on either channel, it all stays on Meta.
    */
+  /** Categories whose Google share comes only from the ask naming Google. */
+  const askedGoogleOnly = new Set<string>();
+
   function splitChannels(
     category: StrategyCategory,
     tier: AllocationTier,
@@ -302,7 +317,12 @@ export function buildStrategyPlan(input: {
     let weights: [number, number];
     if (metaSpends && googleSpends) weights = [weight(meta), weight(google)];
     else if (googleSpends) weights = category.landingPageUrl?.trim() ? [share, 1 - share] : [0, 1];
-    else weights = googleMapped && ch.searchImpressions > 0 ? [1 - share, share] : [1, 0];
+    else if (googleMapped && ch.searchImpressions > 0) weights = [1 - share, share];
+    else if (googleMapped && brief.wantsGoogle) {
+      // Asked for Google, but it has no spend or search data here yet: a test share, said so.
+      askedGoogleOnly.add(category.name);
+      weights = [1 - share, share];
+    } else weights = [1, 0];
     const [metaCents, googleCents] = splitCents(budget, weights);
 
     // The basis is GA4 only when every channel ROAS behind the funded shares came from GA4.
@@ -396,11 +416,13 @@ export function buildStrategyPlan(input: {
         channelSplit,
         googleCampaignTypes:
           channelSplit && channelSplit.googleCents > 0
-            ? recommendGoogleCampaignTypes({
-                tier: setupTier,
-                merchantCenterLinked: channels?.ads?.merchantCenterLinked ?? false,
-                searchImpressions: observed.channel?.searchImpressions ?? 0,
-              })
+            ? withFallbackType(
+                recommendGoogleCampaignTypes({
+                  tier: setupTier,
+                  merchantCenterLinked: channels?.ads?.merchantCenterLinked ?? false,
+                  searchImpressions: observed.channel?.searchImpressions ?? 0,
+                }),
+              )
             : [],
       };
     });
@@ -546,9 +568,20 @@ export function buildStrategyPlan(input: {
   } else if (channels) {
     assumptions.push(`Revenue is what Meta and Google Ads report for each ${word}, since GA4 isn't available; spend is Meta + Google.`);
   }
+  if (ga4CoveragePct !== null && ga4CoveragePct < 100) {
+    assumptions.push(`The ${words} set up cover ${ga4CoveragePct}% of GA4 revenue; the rest is in ${words} not set up yet.`);
+  }
   if (channels && googleMapped) {
     assumptions.push(
       `Within each funded ${word}, budget splits between Meta and Google by each channel's ROAS; a channel with no spend gets a ${pct(C.minChannelTestShare)} test share when it shows demand (Google: search impressions; Meta: a landing page) and is assumed to return ${pct(C.testDiscount)} of the account ROAS. The Google share is a recommendation for the Google Ads account — this tool doesn't change Google.`,
+    );
+  }
+  const asked = main.allocations
+    .filter((a) => askedGoogleOnly.has(a.name) && (a.channelSplit?.googleCents ?? 0) > 0)
+    .map((a) => a.name);
+  if (asked.length) {
+    assumptions.push(
+      `Google gets a ${pct(C.minChannelTestShare)} test share for ${asked.join(", ")} because the plan was asked to include Google Ads; Google has no spend or search data there yet.`,
     );
   }
   if (input.channels && channelNote) assumptions.push(channelNote);

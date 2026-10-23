@@ -84,6 +84,8 @@ async function clickTrends(
     google?: (s: ChannelSnapshot) => ChannelSnapshot;
     channels?: (c: ChannelPerformance) => ChannelPerformance;
     channelWarnings?: string[];
+    /** The spend question names categories. */
+    spendScoped?: boolean;
   } = {},
 ) {
   const services = getDemoStore().clientServices.filter((s) => s.client_id === "client_clicktrends");
@@ -124,6 +126,7 @@ async function clickTrends(
     warnings: snapshot.warnings,
     channels,
     channelWarnings: opts.channelWarnings,
+    scoped: opts.spendScoped,
   });
   return { categories, snapshot, attribution, channels, plan, text, spend };
 }
@@ -195,12 +198,12 @@ describe("renderStrategyEvidence with channels", () => {
     expect(plan.revenueBasis).toBe("ga4");
   });
 
-  it("uses platform revenue, and says why, when GA4 matched under half its revenue", async () => {
+  it("uses platform revenue, and says why, when GA4 landing pages matched under half its revenue for the whole account", async () => {
     const lamps = (s: ChannelSnapshot): ChannelSnapshot => ({
       ...s,
       ga4: { ...s.ga4!, rows: [...s.ga4!.rows, { key: "Lamps", revenueCents: 2_000_000, purchases: 30 }] },
     });
-    const { text, spend, plan } = await clickTrends({ google: lamps });
+    const { text, spend, plan } = await clickTrends({ google: lamps, channels: (c) => ({ ...c, ga4Method: "landing_page" }) });
     expect(plan.revenueBasis).toBe("platform");
     const note = "GA4 matched only 33.6% of revenue to categories, so the plan uses platform-reported revenue.";
     expect(plan.assumptions).toContain(note);
@@ -208,6 +211,88 @@ describe("renderStrategyEvidence with channels", () => {
     expect(section(text, "### Level 1")).toMatch(/\| Bar stools \|(?: [^|]+ \|){6} platform \|/);
     expect(spend).toContain("- Ranked by: combined platform revenue");
     expect(spend).toContain("- GA4 matched only 33.6% of revenue to categories, so the figures use platform-reported revenue.");
+    expect(spend).not.toContain("set up cover");
+  });
+
+  it("keeps GA4 for item categories that cover a third of GA4 revenue, and says what they cover", async () => {
+    const lamps = (s: ChannelSnapshot): ChannelSnapshot => ({
+      ...s,
+      ga4: { ...s.ga4!, rows: [...s.ga4!.rows, { key: "Lamps", revenueCents: 2_000_000, purchases: 30 }] },
+    });
+    const { text, spend, plan } = await clickTrends({ google: lamps });
+    expect(plan.revenueBasis).toBe("ga4");
+    const cover = "The categories set up cover 33.6% of GA4 revenue; the rest is in categories not set up yet.";
+    expect(plan.assumptions).toContain(cover);
+    expect(section(text, "### Level 1")).toContain(`- ${cover}`);
+    expect(section(text, "### Level 1")).toMatch(/\| Bar stools \|(?: [^|]+ \|){6} GA4 \|/);
+    expect(spend).toContain("- Ranked by: GA4 revenue");
+    expect(spend).toContain(`- ${cover}`);
+    expect(`${text}\n${spend}`).not.toContain("matched only");
+  });
+
+  it("keeps GA4 by landing page for a question about named categories, whatever share they cover", async () => {
+    const lamps = (s: ChannelSnapshot): ChannelSnapshot => ({
+      ...s,
+      ga4: { ...s.ga4!, rows: [...s.ga4!.rows, { key: "Lamps", revenueCents: 2_000_000, purchases: 30 }] },
+    });
+    const landing = (c: ChannelPerformance): ChannelPerformance => ({ ...c, ga4Method: "landing_page" });
+    const { text, spend, plan } = await clickTrends({
+      google: lamps,
+      channels: landing,
+      scopeCategoryIds: ["svc_ct_bar_stools"],
+      spendScoped: true,
+    });
+    expect(plan.revenueBasis).toBe("ga4");
+    const cover = "The categories set up cover 33.6% of GA4 revenue; the rest is in categories not set up yet.";
+    expect(section(text, "### Level 1")).toContain(`- ${cover}`);
+    expect(section(text, "### Level 1")).toMatch(/\| Bar stools \|(?: [^|]+ \|){6} GA4 \|/);
+    expect(spend).toContain("- Ranked by: GA4 revenue");
+    expect(spend).toContain(`- ${cover}`);
+    expect(`${text}\n${spend}`).not.toContain("matched only");
+  });
+
+  it("gives each category's GA4 revenue by platform, matched by order", async () => {
+    const { text, spend } = await clickTrends();
+    const bar =
+      "- GA4 Bar stools revenue by platform (last 30 days): Meta $4,030.30 · Google $2,333.33 · other channels $636.37 (organic, direct, email). Matched by order.";
+    expect(section(text, "### Level 1")).toContain(bar);
+    expect(spend).toContain(bar);
+    expect(spend).toContain("- GA4 Sofas revenue by platform (last 30 days): Meta $1,631.58 · Google $1,142.11 · other channels $326.31 (organic, direct, email). Matched by order.");
+    expect(spend).not.toContain("UTM tags");
+    expect(section(text, "### Level 2: GA4 vs platform-reported")).toContain("(matched by order)");
+  });
+
+  it("says a landing-page split is an estimate", async () => {
+    const noOrders = (s: ChannelSnapshot): ChannelSnapshot => ({ ...s, ga4: { ...s.ga4!, byItemChannel: undefined } });
+    const { text, spend } = await clickTrends({ google: noOrders });
+    const bar =
+      "- GA4 Bar stools revenue by platform (last 30 days): Meta $4,030.30 · Google $2,333.33 · other channels $636.37 (organic, direct, email). Matched by landing page (an estimate).";
+    expect(section(text, "### Level 1")).toContain(bar);
+    expect(spend).toContain(bar);
+    expect(section(text, "### Level 2: GA4 vs platform-reported")).toContain("(matched by landing page, an estimate)");
+  });
+
+  it("asks for UTM tags when GA4 credits Meta nothing for a category Meta spent on and reports sales for", async () => {
+    const noMeta = (s: ChannelSnapshot): ChannelSnapshot => ({
+      ...s,
+      ga4: {
+        ...s.ga4!,
+        byItemChannel: [
+          { itemCategory: "Bar Stools", channel: "paid_search", revenueCents: 300_000 },
+          { itemCategory: "Bar Stools", channel: "other", revenueCents: 400_000 },
+          { itemCategory: "Sofas", channel: "paid_social", revenueCents: 310_000 },
+        ],
+      },
+    });
+    const { text, spend } = await clickTrends({ google: noMeta });
+    const hint =
+      "- GA4 credits no Bar stools sales to Meta: check the Meta ads carry UTM tags (utm_source=facebook&utm_medium=paid_social).";
+    expect(section(text, "### Level 1")).toContain(hint);
+    expect(spend).toContain(
+      "- GA4 Bar stools revenue by platform (last 30 days): Meta $0.00 · Google $3,000.00 · other channels $4,000.00 (organic, direct, email). Matched by order.",
+    );
+    expect(spend).toContain(hint);
+    expect(spend).not.toContain("GA4 credits no Sofas");
   });
 
   it("names the landing-page method as an estimate", async () => {

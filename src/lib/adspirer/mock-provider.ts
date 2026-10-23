@@ -1,4 +1,4 @@
-import { DEMO_CLICKTRENDS_META_ACCOUNT_ID, demoMetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
+import { DEMO_CLICKTRENDS_META_ACCOUNT_ID, demoMetaAuditSnapshot, type AuditSnapshotOptions } from "@/lib/audit/meta-audit-data";
 import type {
   CreateAdInput,
   CreateAdSetInput,
@@ -10,10 +10,14 @@ import type {
   MetaAdsProvider,
   MetaCampaign,
   MetaInsights,
+  MetaInsightsQuery,
+  MetaInsightsReport,
   MetaAccountOverview,
   UpdateAdSetBudgetInput,
   UpdateCampaignBudgetInput,
 } from "./provider";
+
+import { mockInsightsReport } from "./mock-insights";
 
 const MDC_ACCOUNT = "act_100200300";
 const TR_ACCOUNT = "act_400500600";
@@ -312,9 +316,9 @@ export class MockMetaAdsProvider implements MetaAdsProvider {
     };
   }
 
-  async getAuditSnapshot(accountId: string, options?: { days?: number }) {
+  async getAuditSnapshot(accountId: string, options?: AuditSnapshotOptions) {
     const overview = await this.getAccountOverview(accountId);
-    return demoMetaAuditSnapshot(accountId, overview.account_name, options?.days ?? 30);
+    return demoMetaAuditSnapshot(accountId, overview.account_name, { days: 30, ...options });
   }
 
   async getAccountOverview(accountId: string): Promise<MetaAccountOverview> {
@@ -723,6 +727,27 @@ export class MockMetaAdsProvider implements MetaAdsProvider {
   /** Demo: no Meta frame — the card draws its own mock-up from the ad's copy and image. */
   async previewAd(_input: unknown, formats: string[]) {
     return formats.map((format) => ({ format, iframeSrc: null }));
+  }
+
+  async getInsightsReport(accountId: string, query: MetaInsightsQuery): Promise<MetaInsightsReport> {
+    const state = getState();
+    const overview = await this.getAccountOverview(accountId);
+    const campaigns = await this.listCampaigns(accountId);
+    const figures = new Map<string, Awaited<ReturnType<MockMetaAdsProvider["getCampaignInsights"]>>>();
+    for (const c of campaigns) figures.set(c.id, await this.getCampaignInsights(accountId, c.id, "", ""));
+    return mockInsightsReport({
+      accountId,
+      accountName: overview.account_name,
+      currency: overview.currency,
+      query,
+      campaigns,
+      adsets: state.adsets.filter((a) => a.account_id === accountId),
+      ads: state.ads.filter((a) => a.account_id === accountId),
+      figures: (c) => {
+        const row = figures.get(c.id)!;
+        return { spend: row.spend, impressions: row.impressions, clicks: row.clicks, conversions: row.conversions ?? 0 };
+      },
+    });
   }
 
   async getAdCreatives(accountId: string) {
