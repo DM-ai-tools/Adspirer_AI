@@ -261,10 +261,18 @@ function ClientRow({ client }: { client: Client }) {
                   <Button
                     size="sm"
                     variant="secondary"
-                    disabled={busy || running}
+                    disabled={busy}
                     onClick={() => void runSync()}
                   >
-                    {running ? "Syncing…" : "Sync now"}
+                    {syncing ? "Syncing…" : "Sync now"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={busy}
+                    onClick={() => void load()}
+                  >
+                    Refresh
                   </Button>
                   <Button
                     size="sm"
