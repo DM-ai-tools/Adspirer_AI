@@ -43,6 +43,7 @@ const envSchema = z.object({
   // Digits only; dashes and spaces are stripped when read.
   GOOGLE_ADS_LOGIN_CUSTOMER_ID: z.string().optional(),
   GOOGLE_ADS_API_VERSION: z.string().optional(),
+  SHOPIFY_API_VERSION: z.string().optional(),
   WORKSPACE_V2_ENABLED: boolFromEnv.default(false),
   R2_BUCKET: z.string().optional(),
   R2_ENDPOINT: z.string().optional(),
@@ -103,6 +104,7 @@ function readRawEnv(): Record<string, string | undefined> {
     GOOGLE_ADS_LOGIN_CUSTOMER_ID:
       process.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID?.replace(/\D/g, "") || undefined,
     GOOGLE_ADS_API_VERSION: process.env.GOOGLE_ADS_API_VERSION,
+    SHOPIFY_API_VERSION: process.env.SHOPIFY_API_VERSION,
     WORKSPACE_V2_ENABLED: process.env.WORKSPACE_V2_ENABLED,
     R2_BUCKET: process.env.R2_BUCKET,
     R2_ENDPOINT: process.env.R2_ENDPOINT,

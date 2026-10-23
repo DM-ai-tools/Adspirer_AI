@@ -22,6 +22,12 @@ import type {
   WorkspaceDocument,
 } from "@/types";
 import type { GoogleAsset, GoogleConnection } from "@/lib/google/types";
+import type {
+  ShopifyCollection,
+  ShopifyConnection,
+  ShopifyProduct,
+  ShopifyVariant,
+} from "@/lib/shopify/types";
 import { encryptToken } from "@/lib/security/token-vault";
 import { addDaysIso, addHoursIso, nowIso } from "@/lib/utils";
 
@@ -52,6 +58,11 @@ export interface DemoStore {
   /** The agency read-only Google connection (admin-connected). */
   googleConnection: GoogleConnection | null;
   googleAssets: GoogleAsset[];
+  /** Read-only Shopify stores (one per client) and their synced catalogue. */
+  shopifyConnections: ShopifyConnection[];
+  shopifyCollections: ShopifyCollection[];
+  shopifyProducts: ShopifyProduct[];
+  shopifyVariants: ShopifyVariant[];
 }
 
 type GlobalDemo = typeof globalThis & {
@@ -680,6 +691,10 @@ function seedStore(): DemoStore {
       updated_at: ts,
     },
     googleAssets,
+    shopifyConnections: [],
+    shopifyCollections: [],
+    shopifyProducts: [],
+    shopifyVariants: [],
   };
 }
 
