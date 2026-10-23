@@ -22,6 +22,7 @@ const COLLECTIONS = "shopify_collections";
 const PRODUCTS = "shopify_products";
 const VARIANTS = "shopify_variants";
 const CHUNK = 500;
+const PAGE = 1000;
 
 export type ShopifyCatalog = {
   collections: ShopifyCollection[];
@@ -190,9 +191,20 @@ export async function loadCatalog(clientId: string): Promise<ShopifyCatalog> {
   }
   const db = createAdminClient();
   const read = async <T>(table: string): Promise<T[]> => {
-    const { data, error } = await db.from(table).select("*").eq("client_id", clientId);
-    if (error) throw new Error(error.message);
-    return (data as T[] | null) ?? [];
+    // PostgREST caps a response at 1000 rows, so page until a short page comes back.
+    const out: T[] = [];
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await db
+        .from(table)
+        .select("*")
+        .eq("client_id", clientId)
+        .order("gid")
+        .range(from, from + PAGE - 1);
+      if (error) throw new Error(error.message);
+      const page = (data as T[] | null) ?? [];
+      out.push(...page);
+      if (page.length < PAGE) return out;
+    }
   };
   const [collections, products, variants] = await Promise.all([
     read<ShopifyCollection>(COLLECTIONS),
