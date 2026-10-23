@@ -113,16 +113,48 @@ function cleanText(text: string | undefined): string | undefined {
   return out || undefined;
 }
 
+const MAX_SEARCH_TOKENS = 8;
+const MAX_TOKEN_CHARS = 50;
+/** Anything but letters, digits, combining marks and the inner punctuation `- . _` splits words. */
+const NOT_WORD_CHAR = /[^\p{L}\p{N}\p{M}._-]+/gu;
+const CONNECTIVES = new Set(["OR", "AND", "NOT"]);
+
 /**
- * One quoted Shopify search value. Shopify's search syntax: "Special characters ... need to be
- * escaped with a backslash" (`: \ ( )`), and a double-quoted group of words is one phrase. The
- * text is wrapped in double quotes with `\`, `"`, `:`, `(` and `)` backslash-escaped, so it can
- * never close the phrase, add a `field:` filter, an operator (OR/AND/NOT/-) or a group. Control
- * characters become spaces.
+ * The words of free search text, safe to send unquoted. Every character outside letters,
+ * digits, combining marks and `- . _` becomes a separator (so `" \ : ( ) * '` and backticks never
+ * survive), a leading `-` (negation) is stripped, bare connectives OR/AND/NOT are dropped, words
+ * without a letter or digit are dropped, and at most 8 words of 50 characters are kept.
+ */
+function searchTokens(text: string): string[] {
+  return String(text)
+    .replace(NOT_WORD_CHAR, " ")
+    .split(" ")
+    .map((w) => w.replace(/^-+/, "").slice(0, MAX_TOKEN_CHARS))
+    .filter((w) => /[\p{L}\p{N}]/u.test(w) && !CONNECTIVES.has(w))
+    .slice(0, MAX_SEARCH_TOKENS);
+}
+
+/**
+ * Free search text as Shopify search terms: one unquoted word per term, joined by spaces
+ * ("When a connective is not specified between two terms, AND is implied"), with `*` on the last
+ * word for a prefix match (search syntax: "`query=norm*` matches terms beginning with norm").
+ * No character that ends a phrase, starts a field filter, groups terms or negates can survive,
+ * so the text cannot add a filter or an operator. Returns "" when no searchable word is left.
  */
 export function escapeShopifySearch(text: string): string {
-  const clean = String(text).replace(CONTROL_CHARS, " ");
-  return `"${clean.replace(/[\\":()]/g, "\\$&")}"`;
+  const tokens = searchTokens(text);
+  return tokens.map((t, i) => (i === tokens.length - 1 ? `${t}*` : t)).join(" ");
+}
+
+/**
+ * One quoted filter value (vendor, product type, SKU, collection title). The characters that
+ * could end the phrase, escape, start a filter or group terms (`" \ : ( )`) are replaced with
+ * spaces rather than backslash-escaped, since Shopify does not document escapes inside quotes.
+ * Returns null when nothing is left.
+ */
+function quoteShopifyValue(text: string): string | null {
+  const clean = String(text).replace(CONTROL_CHARS, " ").replace(/[\\":()]/g, " ").replace(/\s+/g, " ").trim();
+  return clean ? `"${clean}"` : null;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -290,6 +322,38 @@ function unknownCollectionNote(wanted: string, close: string[]): string {
     : `No collection is titled "${wanted}", and none has a similar title.`;
 }
 
+/** Adds `field:"value"`; a value with nothing searchable left is ignored and noted. */
+function addValue(terms: string[], notes: string[], field: string, value: string | undefined): void {
+  if (!value) return;
+  const quoted = quoteShopifyValue(value);
+  if (quoted) terms.push(`${field}:${quoted}`);
+  else notes.push(`${field} "${value}" has no searchable characters and was ignored.`);
+}
+
+/** Adds the free-text terms; true when any were added. */
+function addSearch(terms: string[], notes: string[], search: string | undefined): boolean {
+  if (!search) return false;
+  const text = escapeShopifySearch(search);
+  if (text) terms.push(text);
+  else notes.push(`search "${search}" has no searchable words and was ignored.`);
+  return Boolean(text);
+}
+
+/**
+ * Rows whose SKU equals `sku` after trimming, ignoring case (all of them when several differ
+ * only by case, with a note). Notes when there is none.
+ */
+function exactSkuMatches<T extends { sku: string | null }>(rows: T[], sku: string, notes: string[]): T[] {
+  const want = sku.trim().toLowerCase();
+  const exact = rows.filter((r) => (r.sku ?? "").trim().toLowerCase() === want);
+  const spellings = [...new Set(exact.map((r) => (r.sku ?? "").trim()))];
+  if (exact.length === 0) notes.push(`No variant has the exact SKU "${sku}" (ignoring case).`);
+  else if (spellings.length > 1) {
+    notes.push(`Several variants have this SKU in different letter case (${spellings.join(", ")}); all are shown.`);
+  }
+  return exact;
+}
+
 const SORT_KEYS: Record<Exclude<LiveProductSort, "best_selling">, string> = {
   title: "TITLE",
   inventory: "INVENTORY_TOTAL",
@@ -449,9 +513,14 @@ export async function liveFindProducts(clientId: string, args: LiveFindProductsA
   try {
     const terms: string[] = [];
     if (collection) {
+      const title = quoteShopifyValue(collection);
+      if (!title) {
+        notes.push(unknownCollectionNote(collection, []));
+        return { ...meta(live.currency, false, notes), rows: [] };
+      }
       const data = await shopifyGraphql<CollectionsData>(live.shop, live.token, COLLECTIONS_QUERY, {
         first: COLLECTION_CANDIDATES,
-        query: `title:${escapeShopifySearch(collection)}`,
+        query: `title:${title}`,
       });
       const candidates = data.collections?.nodes ?? [];
       const wanted = collection.toLowerCase();
@@ -463,12 +532,12 @@ export async function liveFindProducts(clientId: string, args: LiveFindProductsA
       }
       terms.push(`collection_id:${numericId}`);
     }
-    if (search) terms.push(escapeShopifySearch(search));
-    if (vendor) terms.push(`vendor:${escapeShopifySearch(vendor)}`);
-    if (productType) terms.push(`product_type:${escapeShopifySearch(productType)}`);
+    const hasSearch = addSearch(terms, notes, search);
+    addValue(terms, notes, "vendor", vendor);
+    addValue(terms, notes, "product_type", productType);
     if (status) terms.push(`status:${status.toLowerCase()}`);
 
-    const { sortKey, reverse } = chooseSort(args, Boolean(search), notes);
+    const { sortKey, reverse } = chooseSort(args, hasSearch, notes);
     const variantsFirst = variantsPageFor(first);
     const data = await shopifyGraphql<ProductsData>(live.shop, live.token, PRODUCTS_QUERY, {
       first,
@@ -512,7 +581,7 @@ function variantRow(v: VariantsData["productVariants"]["nodes"][number], withCos
 /**
  * Variants by exact SKU, or by search text / vendor, live from Shopify. Shopify documents the
  * `sku:` filter only as "Filter by the product variant sku field" (not as exact), so a SKU
- * lookup reads up to 25 candidates and keeps exact, case-sensitive matches only.
+ * lookup reads up to 25 candidates and keeps SKUs equal after trimming, ignoring case.
  */
 export async function liveLookupVariants(clientId: string, args: LiveLookupVariantsArgs): Promise<LiveVariantsResult> {
   const notes: string[] = [];
@@ -530,9 +599,9 @@ export async function liveLookupVariants(clientId: string, args: LiveLookupVaria
 
   const live = await openConnection(clientId);
   const terms: string[] = [];
-  if (sku) terms.push(`sku:${escapeShopifySearch(sku)}`);
-  if (search) terms.push(escapeShopifySearch(search));
-  if (vendor) terms.push(`vendor:${escapeShopifySearch(vendor)}`);
+  addValue(terms, notes, "sku", sku);
+  addSearch(terms, notes, search);
+  addValue(terms, notes, "vendor", vendor);
   const variables = { first: sku ? LIVE_MAX_LIMIT : limit, query: terms.length ? terms.join(" ") : null };
 
   let withCost = true;
@@ -555,15 +624,13 @@ export async function liveLookupVariants(clientId: string, args: LiveLookupVaria
   let hasMore = Boolean(data.productVariants?.pageInfo?.hasNextPage);
   let rows = nodes.map((v) => variantRow(v, withCost));
   if (sku) {
-    const exact = rows.filter((r) => r.sku === sku);
     notes.push(
-      "Shopify's sku: search filter is not documented as an exact match, so only variants whose SKU equals the requested SKU exactly (case-sensitive) are shown.",
+      "Shopify's sku: search filter is not documented as an exact match, so only variants whose SKU equals the requested SKU (trimmed, ignoring case) are shown.",
     );
+    const exact = exactSkuMatches(rows, sku, notes);
     if (exact.length === 0 && rows.length > 0) {
       const close = [...new Set(rows.map((r) => r.sku).filter((s): s is string => !!s))].slice(0, 5);
-      notes.push(`No variant has the exact SKU "${sku}". Close SKUs: ${close.join(", ")}.`);
-    } else if (exact.length === 0) {
-      notes.push(`No variant has the exact SKU "${sku}".`);
+      notes.push(`Close SKUs: ${close.join(", ")}.`);
     }
     hasMore = exact.length > limit;
     rows = exact.slice(0, limit);
@@ -580,6 +647,18 @@ export async function liveLookupVariants(clientId: string, args: LiveLookupVaria
 // Demo mode: ClickTrends mock catalogue, no network.
 
 const lc = (s: string | null | undefined) => (s ?? "").toLowerCase();
+
+/** The same words the live search would send (and the same note when none is left). */
+function demoSearchTokens(search: string | undefined, notes: string[]): string[] {
+  addSearch([], notes, search);
+  return search ? searchTokens(search).map(lc) : [];
+}
+
+/** Every word appears in one of the fields (AND of words, like the live search). */
+function demoSearchMatch(fields: Array<string | null | undefined>, tokens: string[]): boolean {
+  const text = lc(fields.filter(Boolean).join(" "));
+  return tokens.every((t) => text.includes(t));
+}
 
 async function demoProducts(
   clientId: string,
@@ -606,7 +685,8 @@ async function demoProducts(
     }
     list = list.filter((p) => p.collection_gids.includes(hit.gid));
   }
-  if (o.search) list = list.filter((p) => lc(p.title).includes(lc(o.search)) || lc(p.vendor).includes(lc(o.search)));
+  const tokens = demoSearchTokens(o.search, o.notes);
+  list = list.filter((p) => demoSearchMatch([p.title, p.vendor, p.product_type, p.handle], tokens));
   if (o.vendor) list = list.filter((p) => lc(p.vendor) === lc(o.vendor));
   if (o.productType) list = list.filter((p) => lc(p.product_type) === lc(o.productType));
   if (o.status) list = list.filter((p) => p.status === o.status);
@@ -628,7 +708,7 @@ async function demoProducts(
       price_max: prices.length ? major(Math.max(...prices)) : null,
     };
   });
-  const { sortKey, reverse } = chooseSort(o.args, Boolean(o.search), o.notes);
+  const { sortKey, reverse } = chooseSort(o.args, tokens.length > 0, o.notes);
   if (sortKey === "INVENTORY_TOTAL") rows.sort((a, b) => (a.stock_units ?? 0) - (b.stock_units ?? 0));
   else if (sortKey !== "RELEVANCE") rows.sort((a, b) => a.title.localeCompare(b.title));
   if (reverse) rows.reverse();
@@ -647,30 +727,30 @@ async function demoVariants(
   const currency = await demoCurrency(clientId);
   const { products, variants } = mockShopifyCatalog(clientId);
   const byGid = new Map(products.map((p) => [p.gid, p]));
-  const matches = variants
+  const tokens = demoSearchTokens(o.search, o.notes);
+  let matches = variants
     .map((v) => ({ v, p: byGid.get(v.product_gid) }))
     .filter(({ v, p }) => {
       if (!p) return false;
-      if (o.sku && v.sku !== o.sku) return false;
       if (o.vendor && lc(p.vendor) !== lc(o.vendor)) return false;
-      if (o.search && ![p.title, v.title, v.sku].some((t) => lc(t).includes(lc(o.search)))) return false;
-      return true;
-    });
-  const rows = matches.slice(0, o.limit).map(
-    ({ v, p }): LiveVariantRow => ({
-      product: p!.title,
-      variant: v.title,
-      sku: v.sku,
-      vendor: p!.vendor,
-      price: major(v.price_cents),
-      cost: major(v.cost_cents),
-      margin_pct: marginPct(v.price_cents, v.cost_cents),
-      stock: v.inventory_quantity === null ? null : Math.max(0, v.inventory_quantity),
-    }),
-  );
+      return demoSearchMatch([p.title, p.vendor, v.title, v.sku], tokens);
+    })
+    .map(
+      ({ v, p }): LiveVariantRow => ({
+        product: p!.title,
+        variant: v.title,
+        sku: v.sku,
+        vendor: p!.vendor,
+        price: major(v.price_cents),
+        cost: major(v.cost_cents),
+        margin_pct: marginPct(v.price_cents, v.cost_cents),
+        stock: v.inventory_quantity === null ? null : Math.max(0, v.inventory_quantity),
+      }),
+    );
+  if (o.sku) matches = exactSkuMatches(matches, o.sku, o.notes);
+  const rows = matches.slice(0, o.limit);
   const hasMore = matches.length > rows.length;
-  if (o.sku && rows.length === 0) o.notes.push(`No variant has the exact SKU "${o.sku}".`);
-  else if (rows.length === 0) o.notes.push(emptyNote("variants", o.used));
+  if (!o.sku && rows.length === 0) o.notes.push(emptyNote("variants", o.used));
   if (hasMore) o.notes.push(`More variants match; showing the first ${rows.length}. Narrow the filters to see others.`);
   if (rows.some((r) => r.stock === null)) o.notes.push(STOCK_NOTE);
   o.notes.push(COST_NOTE);

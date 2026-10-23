@@ -208,11 +208,51 @@ afterEach(() => {
   resetConfigCache();
 });
 
+/** Free-text output must be plain words (optionally one trailing `*`): nothing else survives. */
+function expectSafeTerms(out: string, input: string) {
+  expect(unquotedFilters(out), input).toEqual([]);
+  expect(unquotedOperators(out), input).toEqual([]);
+  expect(out, input).not.toMatch(/["\\:()'`]/);
+  for (const word of out.split(" ").filter(Boolean)) {
+    expect(word, input).toMatch(/^[\p{L}\p{N}\p{M}._][\p{L}\p{N}\p{M}._-]*\*?$/u);
+    expect(["OR", "AND", "NOT"], input).not.toContain(word.replace(/\*$/, ""));
+  }
+  expect((out.match(/\*/g) ?? []).length, input).toBeLessThanOrEqual(1);
+}
+
 describe("escapeShopifySearch", () => {
-  it("quotes the text and escapes quotes, backslashes, colons and parentheses", () => {
-    expect(escapeShopifySearch("oak stool")).toBe('"oak stool"');
-    expect(escapeShopifySearch('a" OR vendor:x')).toBe('"a\\" OR vendor\\:x"');
-    expect(escapeShopifySearch("a\\b (c)")).toBe('"a\\\\b \\(c\\)"');
+  it("sends one AND term per word, with a prefix wildcard on the last word", () => {
+    expect(escapeShopifySearch("oak bar stool")).toBe("oak bar stool*");
+    expect(escapeShopifySearch("  stool   oak ")).toBe("stool oak*");
+    expect(escapeShopifySearch("oak")).toBe("oak*");
+  });
+
+  it("drops special characters, connectives and negation instead of escaping them", () => {
+    expect(escapeShopifySearch('a" OR vendor:x')).toBe("a vendor x*");
+    expect(escapeShopifySearch("sku:123")).toBe("sku 123*");
+    expect(escapeShopifySearch("-title:x")).toBe("title x*");
+    expect(escapeShopifySearch("(a OR b)")).toBe("a b*");
+    expect(escapeShopifySearch("NOT oak AND pine")).toBe("oak pine*");
+    expect(escapeShopifySearch("end\\")).toBe("end*");
+    expect(escapeShopifySearch("it's `oak` *")).toBe("it s oak*");
+    expect(escapeShopifySearch("one\ntwo\" sku:1")).toBe("one two sku 1*");
+    expect(escapeShopifySearch("BS-OAK-65 1.5m")).toBe("BS-OAK-65 1.5m*");
+  });
+
+  it("keeps unicode letters and drops symbols", () => {
+    expect(escapeShopifySearch("Café crème ☕ 北欧")).toBe("Café crème 北欧*");
+  });
+
+  it("caps very long input at 8 words of 50 characters", () => {
+    const out = escapeShopifySearch(`${"x".repeat(300)} ${Array.from({ length: 40 }, (_, i) => `w${i}`).join(" ")}`);
+    const words = out.split(" ");
+    expect(words).toHaveLength(8);
+    expect(words[0]).toBe("x".repeat(50));
+    expect(words[7]).toBe("w6*");
+  });
+
+  it("returns an empty string when no searchable word is left", () => {
+    expect(escapeShopifySearch('" : () \\ * OR -')).toBe("");
   });
 
   it("cannot add a filter or an operator", () => {
@@ -222,17 +262,19 @@ describe("escapeShopifySearch", () => {
       "\\\" OR tag:y",
       ") OR (vendor:z",
       "-title:foo",
-      'end\\',
-      'one\ntwo" sku:1',
+      "--x",
+      "sku:123",
+      "(a OR b)",
+      "end\\",
+      "one\ntwo\" sku:1",
+      "a*:b",
+      "vendor:'x' `y`",
+      "title:>5 created_at:<now",
+      "Café ☕ :(",
+      "x".repeat(1000),
     ]) {
-      const out = escapeShopifySearch(evil);
-      expect(unquotedFilters(out), evil).toEqual([]);
-      expect(unquotedOperators(out), evil).toEqual([]);
+      expectSafeTerms(escapeShopifySearch(evil), evil);
     }
-  });
-
-  it("removes control characters", () => {
-    expect(escapeShopifySearch("a\nb\tc\u0000d")).toBe('"a b c d"');
   });
 });
 
@@ -250,7 +292,7 @@ describe("liveFindProducts", () => {
           }),
         ]),
     });
-    const out = await liveFindProducts(CLIENT, { search: "oak" });
+    const out = await liveFindProducts(CLIENT, { search: "oak bar stool" });
     expect(bodies).toHaveLength(1);
     expect(bodies[0].query).toContain("query LiveProducts");
     expect(bodies[0].query).toMatch(/products\(first: \$first, query: \$query, sortKey: \$sortKey, reverse: \$reverse\)/);
@@ -258,7 +300,7 @@ describe("liveFindProducts", () => {
     expect(bodies[0].variables).toEqual({
       first: LIVE_DEFAULT_LIMIT,
       variantsFirst: 25,
-      query: '"oak"',
+      query: "oak bar stool*",
       sortKey: "RELEVANCE",
       reverse: false,
     });
@@ -304,10 +346,32 @@ describe("liveFindProducts", () => {
       sort_by: "title",
     });
     const q = String(bodies[0].variables.query);
-    expect(q).toBe('vendor:"Nordic\\" OR vendor\\:x" product_type:"Bar Stool" status:draft');
+    expect(q).toBe('vendor:"Nordic OR vendor x" product_type:"Bar Stool" status:draft');
     expect(unquotedFilters(q)).toEqual(["vendor", "product_type", "status"]);
     expect(unquotedOperators(q)).toEqual([]);
     expect(bodies[0].variables).toMatchObject({ sortKey: "TITLE", reverse: false });
+  });
+
+  it("drops (never backslash-escapes) quote, backslash, colon and parentheses inside quoted values", async () => {
+    await connect();
+    const { bodies } = installFetch({ products: () => productsReply([]) });
+    await liveFindProducts(CLIENT, { vendor: "Loft\\", product_type: '(Sofa): "big"', search: "oak" });
+    const q = String(bodies[0].variables.query);
+    expect(q).toBe('oak* vendor:"Loft" product_type:"Sofa big"');
+    expect(q).not.toContain("\\");
+    expect(unquotedFilters(q)).toEqual(["vendor", "product_type"]);
+    // A value with nothing left is ignored, with a note, rather than sent as an empty phrase.
+    const out = await liveFindProducts(CLIENT, { vendor: '":()' });
+    expect(bodies[1].variables.query).toBeNull();
+    expect(out.note).toMatch(/vendor .* no searchable characters/);
+  });
+
+  it("search text with no searchable word is ignored with a note", async () => {
+    await connect();
+    const { bodies } = installFetch({ products: () => productsReply([]) });
+    const out = await liveFindProducts(CLIENT, { search: '" OR ()' });
+    expect(bodies[0].variables).toMatchObject({ query: null, sortKey: "TITLE" });
+    expect(out.note).toMatch(/search .* no searchable words/);
   });
 
   it("resolves a collection first, then searches products by collection_id (2 requests)", async () => {
@@ -466,8 +530,38 @@ describe("liveLookupVariants", () => {
     installFetch({ variants: () => variantsReply([variantNode({ sku: "BS-OAK-650" })]) });
     const out = await liveLookupVariants(CLIENT, { sku: "BS-OAK-65" });
     expect(out.rows).toEqual([]);
-    expect(out.note).toContain('No variant has the exact SKU "BS-OAK-65"');
+    expect(out.note).toContain('No variant has the exact SKU "BS-OAK-65" (ignoring case)');
     expect(out.note).toContain("BS-OAK-650");
+  });
+
+  it("matches the SKU trimmed and ignoring case, and returns every case variant with a note", async () => {
+    await connect();
+    const { bodies } = installFetch({
+      variants: () =>
+        variantsReply([
+          variantNode({ sku: "BS-OAK-65", q: 1 }),
+          variantNode({ sku: " bs-oak-65 ", q: 2 }),
+          variantNode({ sku: "BS-OAK-650", q: 3 }),
+        ]),
+    });
+    const out = await liveLookupVariants(CLIENT, { sku: "  Bs-Oak-65 " });
+    expect(bodies[0].variables).toEqual({ first: 25, query: 'sku:"Bs-Oak-65"' });
+    expect(out.rows.map((r) => [r.sku, r.stock])).toEqual([
+      ["BS-OAK-65", 1],
+      [" bs-oak-65 ", 2],
+    ]);
+    expect(out.note).toMatch(/ignoring case/);
+    expect(out.note).toMatch(/different letter case \(BS-OAK-65, bs-oak-65\)/);
+  });
+
+  it("a hostile SKU stays one quoted sku value", async () => {
+    await connect();
+    const { bodies } = installFetch({ variants: () => variantsReply([]) });
+    await liveLookupVariants(CLIENT, { sku: 'A1" OR vendor:(x)\\' });
+    const q = String(bodies[0].variables.query);
+    expect(q).toBe('sku:"A1 OR vendor x"');
+    expect(unquotedFilters(q)).toEqual(["sku"]);
+    expect(unquotedOperators(q)).toEqual([]);
   });
 
   it("null unitCost gives null cost and margin; untracked/CONTINUE stock is null, negative is 0", async () => {
@@ -496,7 +590,7 @@ describe("liveLookupVariants", () => {
     await connect();
     const { bodies } = installFetch({ variants: () => variantsReply([]) });
     const out = await liveLookupVariants(CLIENT, { search: 'oak") OR sku:(x', vendor: "Loft Living", limit: 99 });
-    expect(bodies[0].variables).toEqual({ first: 25, query: '"oak\\"\\) OR sku\\:\\(x" vendor:"Loft Living"' });
+    expect(bodies[0].variables).toEqual({ first: 25, query: 'oak sku x* vendor:"Loft Living"' });
     expect(unquotedFilters(String(bodies[0].variables.query))).toEqual(["vendor"]);
     expect(out.note).toMatch(/limit 99 .*25/);
     expect(estimateCost(bodies[0].query, bodies[0].variables)).toBe(variantsQueryCost(25, true));
@@ -663,6 +757,23 @@ describe("demo mode", () => {
     ]);
     const corner = await liveLookupVariants(CLIENT, { sku: "SF-CORNER-1" });
     expect(corner.rows[0].stock).toBeNull();
+  });
+
+  it("matches the same way as the live path: SKU ignoring case, words ANDed with a prefix", async () => {
+    const { fn } = installFetch({});
+    const sku = await liveLookupVariants(CLIENT, { sku: " bs-wal-01 " });
+    expect(sku.rows.map((r) => r.sku)).toEqual(["BS-WAL-01"]);
+    const none = await liveLookupVariants(CLIENT, { sku: "bs-wal-0" });
+    expect(none.rows).toEqual([]);
+    expect(none.note).toContain('No variant has the exact SKU "bs-wal-0" (ignoring case)');
+    // Word order does not matter; the last word is a prefix.
+    const words = await liveFindProducts(CLIENT, { search: "stool oak" });
+    expect(words.rows.map((r) => r.title)).toEqual(["Oak Counter Stool"]);
+    const prefix = await liveFindProducts(CLIENT, { search: "swiv" });
+    expect(prefix.rows.map((r) => r.title)).toEqual(["Walnut Swivel Stool"]);
+    const hostile = await liveFindProducts(CLIENT, { search: 'oak" OR vendor:x' });
+    expect(hostile.rows).toEqual([]);
+    expect(fn).not.toHaveBeenCalled();
   });
 
   it("an unknown demo collection lists the mock collection titles", async () => {
