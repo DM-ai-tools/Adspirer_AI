@@ -6,7 +6,14 @@ import { normalizeShopDomain } from "./domain";
 export const DEFAULT_SHOPIFY_API_VERSION = "2026-10";
 
 const SHOPIFY_TIMEOUT_MS = 25_000;
-const DOWNLOAD_TIMEOUT_MS = 120_000;
+/** Bulk result download: per-attempt wait for headers. */
+const DOWNLOAD_CONNECT_TIMEOUT_MS = 30_000;
+/** Bulk result download: longest gap between body chunks before the transfer counts as stalled. */
+const DOWNLOAD_IDLE_TIMEOUT_MS = 120_000;
+/** Bulk result download: generous cap on the whole transfer (a result can be several GB). */
+const DOWNLOAD_MAX_MS = 60 * 60_000;
+/** Longest single JSON Lines record accepted (a bulk record is a few KB at most). */
+const MAX_JSONL_LINE_CHARS = 16 * 1024 * 1024;
 const MAX_ATTEMPTS = 3;
 
 /** The only mutation this tool may ever send. */
@@ -333,23 +340,81 @@ export async function waitForBulkQuery(
   }
 }
 
-/** Downloads a bulk result file (JSON Lines) from Shopify's signed link. No token is sent. */
-export async function downloadJsonl(url: string): Promise<Array<Record<string, unknown>>> {
+/** Running totals of a bulk download, for the sync's info log (counts only). */
+export type JsonlStreamStats = { bytes: number; lines: number };
+
+export type StreamJsonlOptions = {
+  /** Per attempt: how long to wait for the response headers. */
+  connectTimeoutMs?: number;
+  /** Fails the download if no bytes arrive for this long (a stalled transfer). */
+  idleTimeoutMs?: number;
+  /** Hard cap on the whole download, however steadily the bytes arrive. */
+  maxMs?: number;
+  /** Updated as the stream is read. */
+  stats?: JsonlStreamStats;
+};
+
+const BAD_JSONL_MESSAGE = "The Shopify bulk result was not valid JSON Lines.";
+const DOWNLOAD_FAILED_MESSAGE = "Could not download the Shopify bulk result.";
+
+function badJsonl(): ShopifyApiError {
+  return new ShopifyApiError(BAD_JSONL_MESSAGE, 200, "BAD_JSONL");
+}
+
+/** One JSON Lines record: a JSON object, or null for a blank line. */
+function parseJsonlLine(line: string): Record<string, unknown> | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(trimmed);
+  } catch {
+    throw badJsonl();
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw badJsonl();
+  return value as Record<string, unknown>;
+}
+
+/**
+ * Streams a bulk result file (JSON Lines) from Shopify's signed link, one object at a time.
+ * The file can be far larger than the biggest string V8 can hold, so it is never read whole:
+ * bytes are decoded incrementally and split on newlines across chunk boundaries. No token is
+ * sent. Connect errors, 429 and 5xx are retried (3 attempts) before the first body byte is
+ * read; after that any failure is final. Timeouts: `connectTimeoutMs` per attempt for the
+ * headers, then `idleTimeoutMs` per read while waiting on the network (time the consumer
+ * spends between objects does not count), and `maxMs` for the whole download.
+ */
+export async function* streamJsonl(
+  url: string,
+  opts: StreamJsonlOptions = {},
+): AsyncGenerator<Record<string, unknown>, void, undefined> {
   if (!/^https:\/\//i.test(url)) {
     throw new ShopifyApiError("Refusing to download a bulk result over a non-https link.", 0, "INVALID_URL");
   }
+  const connectMs = opts.connectTimeoutMs ?? DOWNLOAD_CONNECT_TIMEOUT_MS;
+  const idleMs = opts.idleTimeoutMs ?? DOWNLOAD_IDLE_TIMEOUT_MS;
+  const maxMs = opts.maxMs ?? DOWNLOAD_MAX_MS;
+  const stats = opts.stats ?? { bytes: 0, lines: 0 };
+  const started = Date.now();
+
+  let res: Response;
+  let controller: AbortController;
   for (let attempt = 1; ; attempt += 1) {
-    let res: Response;
+    controller = new AbortController();
+    const connectTimer = setTimeout(() => controller.abort(), connectMs);
     try {
-      res = await fetch(url, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
+      res = await fetch(url, { signal: controller.signal });
     } catch {
       if (attempt < MAX_ATTEMPTS) {
         await sleep(500 * 2 ** (attempt - 1));
         continue;
       }
-      throw new ShopifyApiError("Could not download the Shopify bulk result.", 0, null);
+      throw new ShopifyApiError(DOWNLOAD_FAILED_MESSAGE, 0, null, "no response from the bulk result link");
+    } finally {
+      clearTimeout(connectTimer);
     }
     if (!res.ok) {
+      await res.body?.cancel().catch(() => undefined);
       if (attempt < MAX_ATTEMPTS && (res.status === 429 || res.status >= 500)) {
         await sleep(1000 * 2 ** (attempt - 1));
         continue;
@@ -357,17 +422,86 @@ export async function downloadJsonl(url: string): Promise<Array<Record<string, u
       logger.warn("Shopify bulk download failed", { status: res.status, code: null });
       throw new ShopifyApiError(`Could not download the Shopify bulk result (HTTP ${res.status}).`, res.status, null);
     }
-    const text = await res.text();
-    const rows: Array<Record<string, unknown>> = [];
-    for (const line of text.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      try {
-        rows.push(JSON.parse(trimmed) as Record<string, unknown>);
-      } catch {
-        throw new ShopifyApiError("The Shopify bulk result was not valid JSON Lines.", 200, "BAD_JSONL");
-      }
-    }
-    return rows;
+    break;
   }
+
+  if (!res.body) return;
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  // Fixed text for the log; the underlying error (which may echo the signed link) is dropped.
+  const failed = (why: string) =>
+    new ShopifyApiError(DOWNLOAD_FAILED_MESSAGE, 0, null, `${why} after ${stats.bytes} bytes, ${stats.lines} lines`);
+
+  let stop!: (reason: string) => void;
+  const stopped = new Promise<never>((_, reject) => {
+    stop = (reason) => {
+      controller.abort();
+      reject(failed(reason));
+    };
+  });
+  stopped.catch(() => undefined);
+  const capTimer = setTimeout(
+    () => stop(`download exceeded ${Math.round(maxMs / 1000)}s`),
+    Math.max(0, maxMs - (Date.now() - started)),
+  );
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  let done = false;
+
+  try {
+    let buffer = "";
+    for (;;) {
+      idleTimer = setTimeout(() => stop(`no data for ${Math.round(idleMs / 1000)}s`), idleMs);
+      let chunk: ReadableStreamReadResult<Uint8Array>;
+      try {
+        chunk = await Promise.race([reader.read(), stopped]);
+      } catch (error) {
+        throw error instanceof ShopifyApiError ? error : failed("download stream failed");
+      } finally {
+        clearTimeout(idleTimer);
+      }
+      if (chunk.done) {
+        done = true;
+        break;
+      }
+      stats.bytes += chunk.value.byteLength;
+      buffer += decoder.decode(chunk.value, { stream: true });
+      let start = 0;
+      for (let nl = buffer.indexOf("\n"); nl !== -1; nl = buffer.indexOf("\n", start)) {
+        const row = parseJsonlLine(buffer.slice(start, nl));
+        start = nl + 1;
+        if (row) {
+          stats.lines += 1;
+          yield row;
+        }
+      }
+      if (start > 0) buffer = buffer.slice(start);
+      // One record should never come near this; refuse rather than grow without bound.
+      if (buffer.length > MAX_JSONL_LINE_CHARS) throw badJsonl();
+    }
+    // The last line may have no trailing newline.
+    const row = parseJsonlLine(buffer + decoder.decode());
+    if (row) {
+      stats.lines += 1;
+      yield row;
+    }
+  } finally {
+    clearTimeout(capTimer);
+    clearTimeout(idleTimer);
+    if (!done) await reader.cancel().catch(() => undefined);
+    try {
+      reader.releaseLock();
+    } catch {
+      // A read still pending after cancel; the stream is finished either way.
+    }
+  }
+}
+
+/**
+ * Downloads a whole bulk result file into an array. For small results and tests only: the
+ * sync streams with streamJsonl instead.
+ */
+export async function downloadJsonl(url: string): Promise<Array<Record<string, unknown>>> {
+  const rows: Array<Record<string, unknown>> = [];
+  for await (const row of streamJsonl(url)) rows.push(row);
+  return rows;
 }
