@@ -35,6 +35,10 @@ describe("00013_shopify_connection.sql", () => {
     expect(sql).toContain("on public.shopify_variants (client_id, product_gid)");
   });
 
+  it("allows every product status the sync can store", () => {
+    expect(sql).toContain("check (status in ('active', 'draft', 'archived', 'unlisted', 'unknown'))");
+  });
+
   it("stores no customer personal data columns", () => {
     expect(sql).not.toMatch(/\b[a-z_]*(email|phone|address|customer)[a-z_]*\s+(text|uuid|jsonb|integer|bigint|numeric)/);
   });

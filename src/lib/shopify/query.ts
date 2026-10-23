@@ -1,5 +1,11 @@
 import { getConnection, loadCatalog } from "./store";
-import { SHOPIFY_STALE_HOURS, type ShopifyCollection, type ShopifyProduct, type ShopifyVariant } from "./types";
+import {
+  SHOPIFY_STALE_HOURS,
+  type ShopifyCollection,
+  type ShopifyProduct,
+  type ShopifyProductStatus,
+  type ShopifyVariant,
+} from "./types";
 
 /**
  * Pure read functions over the synced Shopify catalogue (backs the chat tools).
@@ -7,7 +13,9 @@ import { SHOPIFY_STALE_HOURS, type ShopifyCollection, type ShopifyProduct, type 
  */
 
 export const SALES_NOTE =
-  "Sales are gross of refunds and exclude cancelled and test orders; windows are the last 30 and 60 days.";
+  "Sales are line revenue after product and code discounts, before order-level discounts, shipping and tax; " +
+  "gross of refunds (refunded and removed units still count); cancelled and test orders are excluded; " +
+  "windows are the rolling 30 and 60 days up to the sync time.";
 
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
@@ -38,6 +46,11 @@ export function describeAgo(iso: string, now: Date): string {
   return `${Math.round(hours / 24)} days ago`;
 }
 
+/** Said wherever synced data is shown while the latest sync failed. */
+export function describeFailedSync(error: string, syncedAgo: string): string {
+  return `The latest sync failed (${error}); data is from the last successful sync ${syncedAgo}.`;
+}
+
 function clampLimit(limit: number | undefined): number {
   if (limit === undefined || !Number.isFinite(limit)) return DEFAULT_LIMIT;
   return Math.min(MAX_LIMIT, Math.max(1, Math.floor(limit)));
@@ -55,19 +68,25 @@ async function load(clientId: string, now: Date): Promise<Loaded | ShopifyUnavai
   if (!conn) {
     return { connected: false, message: "No Shopify store is connected for this client." };
   }
+  // last_sync_error is fixed text written by the sync (never raw Shopify output).
+  const failed = conn.last_sync_status === "error" ? (conn.last_sync_error ?? "no reason recorded") : null;
   if (!conn.last_sync_at) {
     return {
       connected: true,
       synced_at: null,
-      message: "The Shopify store is connected but not synced yet. Ask an admin to run a sync.",
+      message: failed
+        ? `The Shopify store is connected but not synced yet: the latest sync failed (${failed}). Ask an admin to check the connection and run a sync.`
+        : "The Shopify store is connected but not synced yet. Ask an admin to run a sync.",
     };
   }
   const ageHours = (now.getTime() - new Date(conn.last_sync_at).getTime()) / 3_600_000;
   const stale = ageHours > SHOPIFY_STALE_HOURS;
   const synced_ago = describeAgo(conn.last_sync_at, now);
-  const note = stale
-    ? `${SALES_NOTE} Data is stale: last synced ${synced_ago} (older than ${SHOPIFY_STALE_HOURS} hours), so numbers may not reflect the store now.`
-    : SALES_NOTE;
+  let note = SALES_NOTE;
+  if (stale) {
+    note += ` Data is stale: last synced ${synced_ago} (older than ${SHOPIFY_STALE_HOURS} hours), so numbers may not reflect the store now.`;
+  }
+  if (failed) note += ` ${describeFailedSync(failed, synced_ago)}`;
   const catalog = await loadCatalog(clientId);
   return {
     meta: { synced_at: conn.last_sync_at, synced_ago, stale, currency: conn.currency, note },
@@ -169,7 +188,7 @@ export async function queryProducts(
     collection?: string;
     vendor?: string;
     product_type?: string;
-    status?: "ACTIVE" | "DRAFT" | "ARCHIVED";
+    status?: ShopifyProductStatus;
     sort_by?: "units_30d" | "revenue_30d" | "units_60d" | "revenue_60d" | "stock" | "title";
     desc?: boolean;
     limit?: number;
@@ -361,6 +380,8 @@ export type SummaryRow = {
   cost_coverage: string;
 };
 
+const NO_COLLECTION = "(no collection)";
+
 export async function summarizeCatalog(
   clientId: string,
   args: { group_by: "vendor" | "product_type" | "collection" },
@@ -380,7 +401,12 @@ export async function summarizeCatalog(
   };
   for (const p of products) {
     if (args.group_by === "collection") {
-      for (const g of new Set(p.collection_gids)) add(titleByGid.get(g) ?? g, p);
+      // Unknown collection gids are skipped (a raw gid is never shown as a group name).
+      const titles = new Set(
+        p.collection_gids.map((g) => titleByGid.get(g)).filter((t): t is string => t !== undefined),
+      );
+      if (titles.size === 0) add(NO_COLLECTION, p);
+      for (const t of titles) add(t || "(untitled collection)", p);
     } else {
       add((args.group_by === "vendor" ? p.vendor : p.product_type) || "(none)", p);
     }
@@ -411,7 +437,7 @@ export async function summarizeCatalog(
   rows.sort((a, b) => b.revenue_60d - a.revenue_60d);
   let note = `${meta.note} margin_pct uses the 60-day window over variants with a recorded cost; stock_units counts tracked variants only (null if none are tracked); untracked variants have unlimited stock and are counted in untracked_variants.`;
   if (args.group_by === "collection") {
-    note += " A product in several collections is counted in each collection, so totals across groups can exceed the catalogue total.";
+    note += ` A product in several collections is counted in each collection, so totals across groups can exceed the catalogue total. Products in no collection are grouped under "${NO_COLLECTION}".`;
   }
   return { ...meta, note, rows };
 }

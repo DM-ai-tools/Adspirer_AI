@@ -151,6 +151,27 @@ describe("prompt and context", () => {
     expect(ct).not.toMatch(/SECRET-CIPHERTEXT|access_token/);
   });
 
+  it("context says when the latest sync failed and how old the shown data is", async () => {
+    const row = getDemoStore().shopifyConnections[0];
+    row.last_sync_at = new Date(Date.now() - 30 * 3_600_000).toISOString();
+    row.last_sync_status = "error";
+    row.last_sync_error = "Shopify is busy, try again in a few minutes";
+    const ct = await buildClientContext(CT);
+    expect(ct).toContain(
+      `- Shopify: ${MOCK_SHOP.name} (${MOCK_SHOP.domain}), last synced 30 hours ago. The latest sync failed (Shopify is busy, try again in a few minutes); data is from the last successful sync 30 hours ago.`,
+    );
+  });
+
+  it("context says when the first sync failed", async () => {
+    await seed(true, null);
+    const row = getDemoStore().shopifyConnections[0];
+    row.last_sync_status = "error";
+    row.last_sync_error = "Shopify rejected the token: reconnect the store";
+    expect(await buildClientContext(CT)).toContain(
+      "never synced; the latest sync failed (Shopify rejected the token: reconnect the store)",
+    );
+  });
+
   it("context says never synced", async () => {
     await seed(true, null);
     expect(await buildClientContext(CT)).toMatch(/Shopify: .*never synced/);

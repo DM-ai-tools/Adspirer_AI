@@ -36,6 +36,13 @@ export type ShopifyCollection = {
   products_count: number;
 };
 
+/**
+ * Shopify's ProductStatus values in API 2026-10, plus UNKNOWN for any value this code
+ * does not know (stored as UNKNOWN rather than guessed as ACTIVE).
+ */
+export const SHOPIFY_PRODUCT_STATUSES = ["ACTIVE", "DRAFT", "ARCHIVED", "UNLISTED", "UNKNOWN"] as const;
+export type ShopifyProductStatus = (typeof SHOPIFY_PRODUCT_STATUSES)[number];
+
 export type ShopifyProduct = {
   client_id: string;
   gid: string;
@@ -43,7 +50,7 @@ export type ShopifyProduct = {
   handle: string;
   vendor: string;
   product_type: string;
-  status: "ACTIVE" | "DRAFT" | "ARCHIVED";
+  status: ShopifyProductStatus;
   collection_gids: string[];
 };
 

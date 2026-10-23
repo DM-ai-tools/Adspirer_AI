@@ -20,7 +20,7 @@ import { humanToolLabel } from "@/lib/tools/display-labels";
 import { describeGoalsForAgent } from "@/lib/clients/goals";
 import { mapClientRow } from "@/lib/clients/map-client";
 import { clientGoogleAssets } from "@/lib/google/assets";
-import { describeAgo } from "@/lib/shopify/query";
+import { describeAgo, describeFailedSync } from "@/lib/shopify/query";
 import { buildClientBrandBlock } from "./prompts";
 
 /** Reads the turn already started, shared so they are not repeated. */
@@ -45,14 +45,30 @@ async function loadGoogleAssets(clientId: string): Promise<MappedGoogleAssets | 
  * What the read tools can reach for this client, so the model knows which
  * sources it can call (and what to tell the operator to map otherwise).
  */
-export type ShopifyContextInfo = { name: string | null; domain: string; lastSyncAt: string | null };
+export type ShopifyContextInfo = {
+  name: string | null;
+  domain: string;
+  lastSyncAt: string | null;
+  /** Fixed text from the sync when the latest sync failed; null otherwise. */
+  lastSyncError?: string | null;
+};
 
-/** Only name, domain and sync time: nothing else from the connection reaches the model. */
+/**
+ * Only name, domain, sync time and (when the latest sync failed) the sync's fixed error
+ * text: nothing else from the connection reaches the model.
+ */
 async function loadShopifyInfo(clientId: string): Promise<ShopifyContextInfo | null> {
   try {
     const { getConnection } = await import("@/lib/shopify/store");
     const conn = await getConnection(clientId);
-    return conn ? { name: conn.shop_name, domain: conn.shop_domain, lastSyncAt: conn.last_sync_at } : null;
+    return conn
+      ? {
+          name: conn.shop_name,
+          domain: conn.shop_domain,
+          lastSyncAt: conn.last_sync_at,
+          lastSyncError: conn.last_sync_status === "error" ? (conn.last_sync_error ?? "no reason recorded") : null,
+        }
+      : null;
   } catch {
     return null;
   }
@@ -60,8 +76,14 @@ async function loadShopifyInfo(clientId: string): Promise<ShopifyContextInfo | n
 
 function describeShopify(shopify: ShopifyContextInfo | null | undefined, now: Date): string {
   if (!shopify) return "- Shopify: not connected (an admin can connect it under Admin → Connections)";
-  const ago = shopify.lastSyncAt ? `last synced ${describeAgo(shopify.lastSyncAt, now)}` : "never synced";
-  return `- Shopify: ${shopify.name ?? shopify.domain} (${shopify.domain}), ${ago}`;
+  const ago = shopify.lastSyncAt ? describeAgo(shopify.lastSyncAt, now) : null;
+  let line = `- Shopify: ${shopify.name ?? shopify.domain} (${shopify.domain}), ${ago ? `last synced ${ago}` : "never synced"}`;
+  if (shopify.lastSyncError) {
+    line += ago
+      ? `. ${describeFailedSync(shopify.lastSyncError, ago)}`
+      : `; the latest sync failed (${shopify.lastSyncError})`;
+  }
+  return line;
 }
 
 export function describeConnectedData(

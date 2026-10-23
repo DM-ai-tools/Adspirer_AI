@@ -36,7 +36,6 @@ const shopReply = (scopes = SCOPES) =>
   });
 
 const CATALOG_JSONL = [
-  { id: "gid://shopify/Collection/1", handle: "stools", title: "Stools", productsCount: { count: 1 } },
   {
     id: "gid://shopify/Product/1",
     title: "Stool",
@@ -45,7 +44,7 @@ const CATALOG_JSONL = [
     productType: "Bar Stool",
     status: "ACTIVE",
   },
-  { id: "gid://shopify/Collection/1", __parentId: "gid://shopify/Product/1" },
+  { id: "gid://shopify/Collection/1", handle: "stools", title: "Stools", __parentId: "gid://shopify/Product/1" },
   {
     id: "gid://shopify/ProductVariant/1",
     __parentId: "gid://shopify/Product/1",
@@ -240,7 +239,7 @@ describe("syncShopify", () => {
       .map((c) => (c[1]?.body ? JSON.parse(String(c[1].body)) : null))
       .filter(Boolean);
     const orders = bodies.find((b) => b.variables?.query?.includes("orders("));
-    expect(orders.variables.query).toContain("created_at:>=2026-08-24T12:00:00.000Z");
+    expect(orders.variables.query).toContain(`created_at:>='2026-08-24T12:00:00.000Z'`);
   });
 
   it("keeps the previous catalogue when a bulk operation FAILED", async () => {

@@ -51,7 +51,7 @@ create table if not exists public.shopify_products (
   handle text not null,
   vendor text not null default '',
   product_type text not null default '',
-  status text not null check (status in ('ACTIVE', 'DRAFT', 'ARCHIVED')),
+  status text not null check (status in ('ACTIVE', 'DRAFT', 'ARCHIVED', 'UNLISTED', 'UNKNOWN')),
   collection_gids text[] not null default '{}',
   synced_run uuid not null,
   updated_at timestamptz not null default now(),

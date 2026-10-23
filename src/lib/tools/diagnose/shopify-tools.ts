@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { registerTool } from "@/lib/tools/registry";
 import { queryProducts, queryVariants, summarizeCatalog } from "@/lib/shopify/query";
+import { SHOPIFY_PRODUCT_STATUSES } from "@/lib/shopify/types";
 
 /**
  * Read-only tools over the client's synced Shopify catalogue. The client is
@@ -11,7 +12,7 @@ import { queryProducts, queryVariants, summarizeCatalog } from "@/lib/shopify/qu
 
 const text = z.string().trim().min(1).max(200);
 const limit = z.number().int().min(1).max(100).default(25);
-const STATUS = z.enum(["ACTIVE", "DRAFT", "ARCHIVED"]);
+const STATUS = z.enum(SHOPIFY_PRODUCT_STATUSES);
 
 function failed(error: unknown) {
   return { error: true as const, source: "Shopify", message: error instanceof Error ? error.message : String(error) };
@@ -21,8 +22,8 @@ export const shopifyProductsTool = registerTool({
   name: "shopify_products",
   description: [
     "Read the client's synced Shopify products (read-only; the store is already connected, never pass an id).",
-    "One row per product: vendor, type, status, collections, variant count, stock, price range, and units and revenue sold in the last 30 and 60 days (gross of refunds). stock_units null means stock isn't tracked, not zero.",
-    "Filter by search (title or handle), collection, vendor, product_type or status; sort by units_30d, revenue_30d, units_60d, revenue_60d, stock or title.",
+    "One row per product: vendor, type, status, collections, variant count, stock, price range, and units and revenue sold in the last 30 and 60 days (line revenue after product and code discounts, before order-level discounts, shipping and tax; gross of refunds). stock_units null means stock isn't tracked, not zero.",
+    "Filter by search (title or handle), collection, vendor, product_type or status (ACTIVE, DRAFT, ARCHIVED, UNLISTED; UNKNOWN is a status this tool did not recognise); sort by units_30d, revenue_30d, units_60d, revenue_60d, stock or title.",
     "Every result carries synced_ago: say how fresh the data is.",
   ].join(" "),
   inputSchema: z.object({
