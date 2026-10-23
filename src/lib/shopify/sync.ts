@@ -4,15 +4,15 @@ import { logger } from "@/lib/observability/logger";
 import { decryptToken, encryptToken } from "@/lib/security/token-vault";
 import {
   ShopifyApiError,
-  downloadJsonl,
   shopifyGraphql,
   startBulkQuery,
+  streamJsonl,
   waitForBulkQuery,
 } from "./client";
 import { normalizeShopDomain } from "./domain";
 import { ShopifyUpstreamError } from "./sync-errors";
 import { MOCK_SHOP, mockShopifyCatalog } from "./mock";
-import { CATALOG_BULK_QUERY, ORDERS_BULK_QUERY, aggregateSales, parseCatalog } from "./parse";
+import { CATALOG_BULK_QUERY, ORDERS_BULK_QUERY, createCatalogBuilder, createSalesAggregator } from "./parse";
 import {
   deleteConnection,
   getConnection,
@@ -37,6 +37,22 @@ const ACCESS_DENIED_MESSAGE =
 /** A "running" status older than this is a crashed run and may be restarted. */
 const STALE_RUNNING_MS = 15 * 60_000;
 const DAY_MS = 24 * 3600 * 1000;
+/** While a bulk result streams, heartbeat at most this often (well inside STALE_RUNNING_MS). */
+const STREAM_HEARTBEAT_MS = 60_000;
+/**
+ * Largest bulk result (Shopify's objectCount) the sync will download. Every catalogue row is
+ * held in memory until it is saved, so a bigger store is refused before the download starts.
+ */
+export const MAX_BULK_OBJECTS = 3_000_000;
+const CATALOGUE_STAGE = "catalogue bulk read";
+const ORDERS_STAGE = "orders bulk read";
+
+function tooLargeMessage(stage: string, objectCount: number): string {
+  const n = objectCount.toLocaleString("en-US");
+  return stage === ORDERS_STAGE
+    ? `This store has too many recent orders to sync (${n} records). Contact support.`
+    : `This store's catalogue is too large to sync (${n} records). Contact support.`;
+}
 
 /** An error whose message is fixed text, safe to store and show. */
 class SyncError extends Error {
@@ -59,12 +75,13 @@ function failureLog(
   clientId: string,
   error: unknown,
   message: string,
-  extra: { stage?: string; token?: string } = {},
+  extra: { stage?: string; token?: string; objectCount?: number | null } = {},
 ): Record<string, unknown> {
   return {
     clientId,
     message,
     ...(extra.stage ? { stage: extra.stage } : {}),
+    ...(extra.objectCount != null ? { objectCount: extra.objectCount } : {}),
     status: error instanceof ShopifyApiError ? error.status : null,
     code: error instanceof ShopifyApiError ? error.code : null,
     detail: error instanceof ShopifyApiError ? error.detail : plainErrorText(error, extra.token),
@@ -172,15 +189,51 @@ export async function connectShopify(input: {
   return { shopName, currency };
 }
 
-async function readBulk(
-  host: string,
-  token: string,
-  query: string,
-  poll: { intervalMs?: number; onPoll: () => Promise<void> },
-): Promise<Array<Record<string, unknown>>> {
-  const op = await startBulkQuery(host, token, query);
-  const done = await waitForBulkQuery(host, token, op, poll);
-  return done.url ? downloadJsonl(done.url) : [];
+/**
+ * Runs one bulk query and streams its result into `push` one line at a time: the file is never
+ * held whole, and no array of its lines is built. Refuses (before downloading) a result over
+ * MAX_BULK_OBJECTS. Heartbeats at most every `heartbeatMs` while the result streams, so a long
+ * download is not mistaken for a crashed run. Logs counts only (no data) when done.
+ */
+async function readBulk(input: {
+  clientId: string;
+  host: string;
+  token: string;
+  query: string;
+  stage: string;
+  poll: { intervalMs?: number; onPoll: () => Promise<void> };
+  heartbeatMs: number;
+  push: (line: Record<string, unknown>) => void;
+  onObjectCount: (n: number) => void;
+}): Promise<void> {
+  const { clientId, stage } = input;
+  const op = await startBulkQuery(input.host, input.token, input.query);
+  const done = await waitForBulkQuery(input.host, input.token, op, input.poll);
+  input.onObjectCount(done.objectCount);
+  if (done.objectCount > MAX_BULK_OBJECTS) {
+    logger.warn("Shopify bulk result too large", { clientId, stage, objectCount: done.objectCount });
+    throw new SyncError(tooLargeMessage(stage, done.objectCount));
+  }
+  const started = Date.now();
+  const stats = { bytes: 0, lines: 0 };
+  if (done.url) {
+    let lastBeat = Date.now();
+    for await (const line of streamJsonl(done.url, { stats })) {
+      input.push(line);
+      if (Date.now() - lastBeat >= input.heartbeatMs) {
+        await heartbeat(clientId);
+        lastBeat = Date.now();
+      }
+    }
+  }
+  logger.info("Shopify bulk read complete", {
+    clientId,
+    stage,
+    objectCount: done.objectCount,
+    bytes: stats.bytes,
+    lines: stats.lines,
+    ms: Date.now() - started,
+  });
 }
 
 /**
@@ -193,7 +246,7 @@ async function heartbeat(clientId: string): Promise<void> {
 
 export async function syncShopify(
   clientId: string,
-  opts: { now?: Date; pollIntervalMs?: number } = {},
+  opts: { now?: Date; pollIntervalMs?: number; heartbeatIntervalMs?: number } = {},
 ): Promise<ShopifySyncCounts> {
   const now = opts.now ?? new Date();
   const connection = await getConnection(clientId);
@@ -210,6 +263,8 @@ export async function syncShopify(
   // Which phase was running when a failure happened, for the log (never shown to users).
   let stage = "starting";
   let token = "";
+  // Shopify's objectCount for the bulk read in progress, for the failure log.
+  let objectCount: number | null = null;
   try {
     let catalog: ShopifyCatalog;
     let orders = 0;
@@ -222,28 +277,38 @@ export async function syncShopify(
       token = decryptToken(connection.access_token_encrypted);
       const host = connection.shop_domain;
       const poll = { intervalMs: opts.pollIntervalMs, onPoll: () => heartbeat(clientId) };
+      const read = { clientId, host, token, poll, heartbeatMs: opts.heartbeatIntervalMs ?? STREAM_HEARTBEAT_MS };
+      const onObjectCount = (n: number) => {
+        objectCount = n;
+      };
+      // Each result is folded into its builder as it streams in.
+      const catalogBuilder = createCatalogBuilder(clientId);
+      const salesAggregator = createSalesAggregator(now);
       // Run one after the other (older API versions allow one bulk query per shop at a time).
-      stage = "catalogue bulk read";
-      const catalogLines = await readBulk(host, token, CATALOG_BULK_QUERY, poll);
+      stage = CATALOGUE_STAGE;
+      await readBulk({ ...read, query: CATALOG_BULK_QUERY, stage, push: catalogBuilder.push, onObjectCount });
       await heartbeat(clientId);
       const since = new Date(now.getTime() - 60 * DAY_MS).toISOString();
-      stage = "orders bulk read";
-      const orderLines = await readBulk(host, token, ORDERS_BULK_QUERY(since), poll);
+      stage = ORDERS_STAGE;
+      objectCount = null;
+      await readBulk({ ...read, query: ORDERS_BULK_QUERY(since), stage, push: salesAggregator.push, onObjectCount });
       await heartbeat(clientId);
 
       stage = "parsing";
-      const parsed = parseCatalog(clientId, catalogLines);
-      const sales = aggregateSales(orderLines, now);
+      objectCount = null;
+      const parsed = catalogBuilder.finish();
+      const sales = salesAggregator.finish();
       orders = sales.orders;
       skipped = sales.skippedLineItems;
-      const variants: ShopifyVariant[] = parsed.variants.map((v) => ({
-        ...v,
-        units_30d: 0,
-        revenue_30d_cents: 0,
-        units_60d: 0,
-        revenue_60d_cents: 0,
-        ...(sales.byVariant.get(v.gid) ?? {}),
-      }));
+      // Sales are merged into the parsed rows in place: no second copy of every variant.
+      const variants = parsed.variants as ShopifyVariant[];
+      for (const v of variants) {
+        const s = sales.byVariant.get(v.gid);
+        v.units_30d = s?.units_30d ?? 0;
+        v.revenue_30d_cents = s?.revenue_30d_cents ?? 0;
+        v.units_60d = s?.units_60d ?? 0;
+        v.revenue_60d_cents = s?.revenue_60d_cents ?? 0;
+      }
       catalog = { collections: parsed.collections, products: parsed.products, variants };
     }
 
@@ -268,7 +333,7 @@ export async function syncShopify(
     return counts;
   } catch (error) {
     const message = safeMessage(error);
-    logger.warn("Shopify sync failed", failureLog(clientId, error, message, { stage, token }));
+    logger.warn("Shopify sync failed", failureLog(clientId, error, message, { stage, token, objectCount }));
     try {
       await setSyncStatus(clientId, { status: "error", error: message });
     } catch {
