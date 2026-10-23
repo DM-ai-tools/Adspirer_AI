@@ -30,6 +30,9 @@ const TOOL_POLICY: Record<string, ToolSafetyClass> = {
   google_ads_report: "diagnose",
   meta_insights: "diagnose",
   list_client_categories: "diagnose",
+  shopify_products: "diagnose",
+  shopify_variants: "diagnose",
+  shopify_summary: "diagnose",
   // Strategy plan engine: reads the snapshot, recommends only.
   strategy_plan: "diagnose",
   // Settings typed in the chat: writes the client's own settings (goals,

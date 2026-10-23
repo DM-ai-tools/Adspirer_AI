@@ -77,10 +77,13 @@ async function metaAccountRefusal(args: unknown, ctx: ToolContext): Promise<stri
   }.`;
 }
 
-export function buildWorkspaceReadToolSet(ctx: ToolContext): ToolSet {
+/** Offered only when the client has a connected Shopify store. */
+const SHOPIFY_TOOLS = ["shopify_products", "shopify_variants", "shopify_summary"] as const;
+
+function buildToolSet(ctx: ToolContext, names: readonly string[]): ToolSet {
   const tools: ToolSet = {};
 
-  for (const name of WORKSPACE_READ_ALLOWLIST) {
+  for (const name of names) {
     if (classify(name) !== "diagnose") continue;
     const registered = getTool(name);
     if (!registered) continue;
@@ -106,6 +109,26 @@ export function buildWorkspaceReadToolSet(ctx: ToolContext): ToolSet {
   }
 
   return tools;
+}
+
+export function buildWorkspaceReadToolSet(ctx: ToolContext): ToolSet {
+  return buildToolSet(ctx, WORKSPACE_READ_ALLOWLIST);
+}
+
+/**
+ * The base read set plus the Shopify tools when the client has a connected
+ * store. If the connection can't be read the Shopify tools are left out.
+ */
+export async function buildWorkspaceReadToolSetForClient(ctx: ToolContext): Promise<ToolSet> {
+  const base = buildWorkspaceReadToolSet(ctx);
+  let connected = false;
+  try {
+    const { getConnection } = await import("@/lib/shopify/store");
+    connected = (await getConnection(ctx.clientId)) !== null;
+  } catch {
+    connected = false;
+  }
+  return connected ? { ...base, ...buildToolSet(ctx, SHOPIFY_TOOLS) } : base;
 }
 
 export function workspaceReadToolNames(): string[] {

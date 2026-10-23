@@ -918,12 +918,12 @@ async function streamWriterText(args: {
   // Every question gets the read-only tools (Meta, GA4, Search Console, Google
   // Ads, categories), so a question the evidence doesn't cover is answered by
   // reading, not refused. The fixed picker flows keep their own steps.
-  const { buildWorkspaceReadToolSet, writerHasTools } = await import(
+  const { buildWorkspaceReadToolSetForClient, writerHasTools } = await import(
     "@/lib/agent/diagnose-tools-ai"
   );
   const tools =
     !input.reportDraft && writerHasTools(intent)
-      ? buildWorkspaceReadToolSet({
+      ? await buildWorkspaceReadToolSetForClient({
           clientId: input.task.client_id,
           userId: input.task.created_by,
           taskId: input.task.id,
