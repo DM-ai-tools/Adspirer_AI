@@ -145,6 +145,15 @@ describe("prompt and context", () => {
     expect(p).toMatch(/Admin → Connections/);
   });
 
+  it("system prompt names Shopify as a source and the record for product sales when connected", () => {
+    const p = buildStaticSystemPromptV2();
+    expect(p).toContain("Name the source of every number: Meta, GA4, Search Console, Google Ads or Shopify.");
+    expect(p).toContain("When Shopify is connected it is the record for units sold, stock, SKUs, vendors");
+    expect(p).not.toMatch(/Prefer GA4 for sales, revenue, orders and products/);
+    expect(p).toContain("after product and code discounts, before order-level discounts, shipping and tax");
+    expect(p).toContain("**Spend & return**");
+  });
+
   it("context says when Shopify is connected, with no secrets", async () => {
     const ct = await buildClientContext(CT);
     expect(ct).toContain(`- Shopify: ${MOCK_SHOP.name} (${MOCK_SHOP.domain}), last synced 3 hours ago`);

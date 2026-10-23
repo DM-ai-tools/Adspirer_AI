@@ -201,12 +201,13 @@ function ClientRow({ client }: { client: Client }) {
               }}
             >
               <p className="text-xs text-muted">
-                Create a custom app in the store&apos;s Shopify admin and paste its Admin
-                API access token. The token only needs read-only scopes:{" "}
-                <span className="font-mono">read_products</span>,{" "}
+                Paste the Admin API access token (starts with{" "}
+                <span className="font-mono">shpat_</span>) of an app installed on this store
+                with read-only <span className="font-mono">read_products</span>,{" "}
                 <span className="font-mono">read_inventory</span> and{" "}
-                <span className="font-mono">read_orders</span>. It is stored encrypted and
-                never shown again.
+                <span className="font-mono">read_orders</span> access. Apps made in the Dev
+                Dashboard may also need protected customer data access approved before
+                order data can be read. The token is stored encrypted and never shown again.
               </p>
               <Input
                 type="text"
