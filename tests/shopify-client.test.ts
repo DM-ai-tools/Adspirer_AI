@@ -127,6 +127,14 @@ describe("shopifyGraphql: read-only guard", () => {
     "  # bulkOperationRunQuery\n mutation { productDelete(input: {}) { id } }",
     "mutation { ...F } fragment F on Mutation { productDelete(input: {}) { id } }",
     "subscription { foo }",
+    // Quotes inside comments must not pair up and hide real code.
+    '# "\nmutation\n# "\n{ productDelete(input: {id: "gid://shopify/Product/1"}) { deletedProductId } }',
+    '# """\nmutation\n# """\n{ productDelete(input: {id: "x"}) { deletedProductId } }',
+    '{ a(q: """x \\""" y""") { id } }\n# "\nmutation\n# "\n{ productDelete(input: {}) { id } }',
+    'query { a(q: """ \\""" """) { id } } mutation { productDelete(input: {}) { id } }',
+    'mutation { productDelete(input: {id: "unterminated}) { id } }',
+    'query { a(q: "line\nbreak") { id } }',
+    'query { a(q: """never closed) { id } }',
     "mutation",
     "",
     "just text",
@@ -140,7 +148,9 @@ describe("shopifyGraphql: read-only guard", () => {
     fetchMock.mockImplementation(async () => json({ data: {} }));
     await shopifyGraphql(SHOP, TOKEN, '{ products(first: 1, query: "mutation { productDelete }") { nodes { id } } }');
     await shopifyGraphql(SHOP, TOKEN, "# mutation\nquery Q($id: ID!) { node(id: $id) { id } }", { id: "x" });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await shopifyGraphql(SHOP, TOKEN, '# say "hi\nquery Q2 { shop { name } } # "bye');
+    await shopifyGraphql(SHOP, TOKEN, '{ a(q: """ok \\""" still""") { id } }');
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
   it("allows the bulkOperationRunQuery mutation only", async () => {

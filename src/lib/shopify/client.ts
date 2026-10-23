@@ -35,16 +35,49 @@ function redact(text: string, token: string): string {
  * Throws READ_ONLY unless the document holds only `query` operations (or
  * shorthand `{ ... }`), fragments, and mutations whose every top-level field
  * is in SHOPIFY_READ_ONLY_MUTATIONS. Subscriptions are refused. Strings and
- * comments are blanked first so they cannot hide or fake a keyword.
+ * comments are blanked first (by one lexer) so they cannot hide or fake a keyword.
  */
 export function assertReadOnlyDocument(document: string): void {
   const refuse = (why: string): never => {
     throw new ShopifyApiError(`Shopify is read-only in this tool: ${why}`, 0, "READ_ONLY");
   };
-  const src = document
-    .replace(/"""[\s\S]*?"""/g, '""')
-    .replace(/"(?:\\.|[^"\\])*"/g, '""')
-    .replace(/#[^\n\r]*/g, " ");
+  // Single left-to-right lexer: comments, block strings and strings are blanked
+  // in one pass so a quote inside a comment can never pair with a later quote.
+  let src = "";
+  for (let i = 0; i < document.length; ) {
+    const ch = document[i];
+    if (ch === "#") {
+      while (i < document.length && document[i] !== "\n" && document[i] !== "\r") i += 1;
+      src += " ";
+    } else if (document.startsWith('"""', i)) {
+      let j = i + 3;
+      for (;;) {
+        if (j >= document.length) refuse("unterminated block string.");
+        if (document.startsWith('\\"""', j)) j += 4;
+        else if (document.startsWith('"""', j)) break;
+        else j += 1;
+      }
+      i = j + 3;
+      src += '""';
+    } else if (ch === '"') {
+      let j = i + 1;
+      for (;;) {
+        const c = document[j];
+        if (c === undefined || c === "\n" || c === "\r") refuse("unterminated string.");
+        if (c === "\\") {
+          const n = document[j + 1];
+          if (n === undefined || n === "\n" || n === "\r") refuse("unterminated string.");
+          j += 2;
+        } else if (c === '"') break;
+        else j += 1;
+      }
+      i = j + 1;
+      src += '""';
+    } else {
+      src += ch;
+      i += 1;
+    }
+  }
 
   let brace = 0;
   let paren = 0;
