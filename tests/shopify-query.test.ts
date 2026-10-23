@@ -161,3 +161,57 @@ describe("summarizeCatalog", () => {
     expect(out.note).toContain("each collection");
   });
 });
+
+describe("review fixes", () => {
+  it("summarizeCatalog: all-untracked group has null stock_units and counts untracked variants", async () => {
+    for (const v of getDemoStore().shopifyVariants) v.inventory_quantity = null;
+    const out = (await summarizeCatalog(A, { group_by: "vendor" }, NOW)) as any;
+    const nordic = out.rows.find((r: any) => r.group === "Nordic Woodworks");
+    expect(nordic.stock_units).toBeNull();
+    expect(nordic.untracked_variants).toBe(3);
+  });
+
+  it("summarizeCatalog: mixed group sums tracked only", async () => {
+    const out = (await summarizeCatalog(A, { group_by: "vendor" }, NOW)) as any;
+    const loft = out.rows.find((r: any) => r.group === "Loft Living");
+    expect(loft.stock_units).toBe(6);
+    expect(loft.untracked_variants).toBe(1);
+  });
+
+  it("vendor miss lists available vendors", async () => {
+    const out = (await queryProducts(A, { vendor: "Acme" }, NOW)) as any;
+    expect(out.total_matches).toBe(0);
+    expect(out.note).toContain("No rows matched");
+    expect(out.note).toContain("vendor");
+    expect(out.note).toContain("Nordic Woodworks");
+    expect(out.note).toContain("Loft Living");
+  });
+
+  it("product_type miss lists available product types", async () => {
+    const out = (await queryVariants(A, { search: "zzz" }, NOW)) as any;
+    expect(out.note).toContain("No rows matched");
+    const p = (await queryProducts(A, { product_type: "Lamp" }, NOW)) as any;
+    expect(p.note).toContain("Bar Stool");
+  });
+
+  it("sku miss says no variant has that exact SKU and suggests search", async () => {
+    const out = (await queryVariants(A, { sku: "BS-OAK" }, NOW)) as any;
+    expect(out.note).toContain("No variant has the exact SKU");
+    expect(out.note).toContain("search");
+  });
+
+  it("invalid sort_by is reported", async () => {
+    const out = (await queryProducts(A, { sort_by: "bogus" as any }, NOW)) as any;
+    expect(out.note).toContain("Unknown sort_by 'bogus', used units_30d");
+    const v = (await queryVariants(A, { sort_by: "nope" as any }, NOW)) as any;
+    expect(v.note).toContain("Unknown sort_by 'nope', used units_30d");
+  });
+
+  it("stock sort notes untracked listed last", async () => {
+    const p = (await queryProducts(A, { sort_by: "stock" }, NOW)) as any;
+    expect(p.note).toContain("untracked stock is listed last");
+    const v = (await queryVariants(A, { sort_by: "stock" }, NOW)) as any;
+    expect(v.note).toContain("untracked stock is listed last");
+    expect(v.rows[v.rows.length - 1].stock).toBeNull();
+  });
+});

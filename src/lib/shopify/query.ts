@@ -105,6 +105,36 @@ function sortRows<T>(rows: T[], key: (r: T) => number | string | null, desc: boo
   });
 }
 
+
+const LIST_CAP = 30;
+
+function distinctSorted(values: Array<string | null | undefined>): string[] {
+  return [...new Set(values.filter((v): v is string => !!v))].sort((a, b) => a.localeCompare(b)).slice(0, LIST_CAP);
+}
+
+/** Note appended when a filtered query matches nothing, so an empty result is explained. */
+function missNote(
+  applied: Array<[string, string | undefined]>,
+  options: { vendors: string[]; types: string[]; sku?: string },
+): string {
+  const used = applied.filter(([, v]) => v !== undefined && v !== "");
+  if (used.length === 0) return "";
+  let note = ` No rows matched ${used.map(([k, v]) => `${k}="${v}"`).join(", ")}.`;
+  if (used.some(([k]) => k === "vendor")) note += ` Available vendors: ${options.vendors.join(", ") || "none"}.`;
+  if (used.some(([k]) => k === "product_type")) note += ` Available product types: ${options.types.join(", ") || "none"}.`;
+  if (options.sku) note += ` No variant has the exact SKU "${options.sku}"; try search for a partial match.`;
+  return note;
+}
+
+function sortNote(requested: string | undefined, used: string, valid: string[]): string {
+  let note = "";
+  if (requested !== undefined && !valid.includes(requested)) {
+    note += ` Unknown sort_by '${requested}', used ${used}.`;
+  }
+  if (used === "stock") note += " Sorted by stock: untracked stock is listed last.";
+  return note;
+}
+
 function variantsByProduct(variants: ShopifyVariant[]): Map<string, ShopifyVariant[]> {
   const m = new Map<string, ShopifyVariant[]>();
   for (const v of variants) {
@@ -197,8 +227,21 @@ export async function queryProducts(
     stock: (r) => r.stock_units,
     title: (r) => r.title,
   };
-  const desc = args.desc ?? sortBy !== "title";
-  const sorted = sortRows(rows, key[sortBy] ?? key.units_30d, desc);
+  const usedSort = key[sortBy] ? sortBy : "units_30d";
+  const desc = args.desc ?? usedSort !== "title";
+  const sorted = sortRows(rows, key[usedSort], desc);
+  note += sortNote(args.sort_by, usedSort, Object.keys(key));
+  if (sorted.length === 0) {
+    note += missNote(
+      [
+        ["search", args.search],
+        ["vendor", args.vendor],
+        ["product_type", args.product_type],
+        ["status", args.status],
+      ],
+      { vendors: distinctSorted(products.map((p) => p.vendor)), types: distinctSorted(products.map((p) => p.product_type)) },
+    );
+  }
   if (rows.some((r) => r.untracked_variants > 0)) {
     note +=
       " stock_units counts tracked variants only (null if none are tracked); untracked variants have unlimited stock and are shown in untracked_variants.";
@@ -283,8 +326,24 @@ export async function queryVariants(
     stock: (r) => r.stock,
     price: (r) => r.price,
   };
-  const sorted = sortRows(rows, key[sortBy] ?? key.units_30d, args.desc ?? true);
-  const note = `${meta.note} stock null means untracked (unlimited); cost null means no cost recorded.`;
+  const usedSort = key[sortBy] ? sortBy : "units_30d";
+  const sorted = sortRows(rows, key[usedSort], args.desc ?? true);
+  let note = `${meta.note} stock null means untracked (unlimited); cost null means no cost recorded.`;
+  note += sortNote(args.sort_by, usedSort, Object.keys(key));
+  if (sorted.length === 0) {
+    note += missNote(
+      [
+        ["sku", args.sku],
+        ["search", args.search],
+        ["vendor", args.vendor],
+      ],
+      {
+        vendors: distinctSorted(products.map((p) => p.vendor)),
+        types: [],
+        sku: args.sku?.trim() ? args.sku.trim() : undefined,
+      },
+    );
+  }
   return { ...meta, note, rows: sorted.slice(0, clampLimit(args.limit)), total_matches: sorted.length };
 }
 
@@ -292,7 +351,8 @@ export type SummaryRow = {
   group: string;
   products: number;
   variants: number;
-  stock_units: number;
+  stock_units: number | null;
+  untracked_variants: number;
   units_30d: number;
   revenue_30d: number;
   units_60d: number;
@@ -328,6 +388,7 @@ export async function summarizeCatalog(
 
   const rows = [...groups.entries()].map(([group, ps]): SummaryRow => {
     const vs = ps.flatMap((p) => byProduct.get(p.gid) ?? []);
+    const trackedVs = vs.filter((v) => v.inventory_quantity !== null);
     const sold = vs.filter((v) => v.units_60d > 0);
     const costed = sold.filter((v) => v.cost_cents !== null && v.revenue_60d_cents > 0);
     const rev = costed.reduce((s, v) => s + v.revenue_60d_cents, 0);
@@ -336,7 +397,8 @@ export async function summarizeCatalog(
       group,
       products: ps.length,
       variants: vs.length,
-      stock_units: vs.reduce((s, v) => s + (v.inventory_quantity ?? 0), 0),
+      stock_units: trackedVs.length ? trackedVs.reduce((s, v) => s + (v.inventory_quantity ?? 0), 0) : null,
+      untracked_variants: vs.length - trackedVs.length,
       units_30d: vs.reduce((s, v) => s + v.units_30d, 0),
       revenue_30d: money(vs.reduce((s, v) => s + v.revenue_30d_cents, 0)),
       units_60d: vs.reduce((s, v) => s + v.units_60d, 0),
@@ -347,7 +409,7 @@ export async function summarizeCatalog(
   });
 
   rows.sort((a, b) => b.revenue_60d - a.revenue_60d);
-  let note = `${meta.note} margin_pct uses the 60-day window over variants with a recorded cost; stock_units counts tracked variants only (untracked = unlimited, not summed).`;
+  let note = `${meta.note} margin_pct uses the 60-day window over variants with a recorded cost; stock_units counts tracked variants only (null if none are tracked); untracked variants have unlimited stock and are counted in untracked_variants.`;
   if (args.group_by === "collection") {
     note += " A product in several collections is counted in each collection, so totals across groups can exceed the catalogue total.";
   }
