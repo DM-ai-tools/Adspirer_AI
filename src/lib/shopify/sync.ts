@@ -55,15 +55,31 @@ function isDemo(): boolean {
  * validation text (userErrors / GraphQL errors with field paths, bulk errorCode) already
  * redacted in client.ts. Never the token or a response body; no customer data.
  */
-function failureLog(clientId: string, error: unknown, message: string): Record<string, unknown> {
+function failureLog(
+  clientId: string,
+  error: unknown,
+  message: string,
+  extra: { stage?: string; token?: string } = {},
+): Record<string, unknown> {
   return {
     clientId,
     message,
+    ...(extra.stage ? { stage: extra.stage } : {}),
     status: error instanceof ShopifyApiError ? error.status : null,
     code: error instanceof ShopifyApiError ? error.code : null,
-    detail: error instanceof ShopifyApiError ? error.detail : null,
+    detail: error instanceof ShopifyApiError ? error.detail : plainErrorText(error, extra.token),
     error: error instanceof Error ? error.name : typeof error,
   };
+}
+
+/**
+ * The text of an error that did not come from Shopify (a database or parsing failure), for the
+ * log only: capped, with the token removed. It is never stored or returned to a client.
+ */
+function plainErrorText(error: unknown, token = ""): string | null {
+  if (!(error instanceof Error) || !error.message) return null;
+  const text = token ? error.message.split(token).join("[redacted]") : error.message;
+  return text.slice(0, 300);
 }
 
 /**
@@ -191,6 +207,9 @@ export async function syncShopify(
   }
 
   await setSyncStatus(clientId, { status: "running" });
+  // Which phase was running when a failure happened, for the log (never shown to users).
+  let stage = "starting";
+  let token = "";
   try {
     let catalog: ShopifyCatalog;
     let orders = 0;
@@ -199,16 +218,20 @@ export async function syncShopify(
     if (isDemo()) {
       catalog = mockShopifyCatalog(clientId);
     } else {
-      const token = decryptToken(connection.access_token_encrypted);
+      stage = "reading the token";
+      token = decryptToken(connection.access_token_encrypted);
       const host = connection.shop_domain;
       const poll = { intervalMs: opts.pollIntervalMs, onPoll: () => heartbeat(clientId) };
       // Run one after the other (older API versions allow one bulk query per shop at a time).
+      stage = "catalogue bulk read";
       const catalogLines = await readBulk(host, token, CATALOG_BULK_QUERY, poll);
       await heartbeat(clientId);
       const since = new Date(now.getTime() - 60 * DAY_MS).toISOString();
+      stage = "orders bulk read";
       const orderLines = await readBulk(host, token, ORDERS_BULK_QUERY(since), poll);
       await heartbeat(clientId);
 
+      stage = "parsing";
       const parsed = parseCatalog(clientId, catalogLines);
       const sales = aggregateSales(orderLines, now);
       orders = sales.orders;
@@ -231,6 +254,7 @@ export async function syncShopify(
       throw new SyncError(NO_PRODUCTS_MESSAGE);
     }
 
+    stage = "saving";
     await heartbeat(clientId);
     await replaceCatalog(clientId, catalog);
     const counts: ShopifySyncCounts = {
@@ -244,7 +268,7 @@ export async function syncShopify(
     return counts;
   } catch (error) {
     const message = safeMessage(error);
-    logger.warn("Shopify sync failed", failureLog(clientId, error, message));
+    logger.warn("Shopify sync failed", failureLog(clientId, error, message, { stage, token }));
     try {
       await setSyncStatus(clientId, { status: "error", error: message });
     } catch {

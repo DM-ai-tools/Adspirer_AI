@@ -331,6 +331,36 @@ describe("syncShopify", () => {
     expect(JSON.stringify(warnCalls())).not.toContain(TOKEN);
   });
 
+  it("logs the stage and the text of a non-Shopify failure (token redacted), but stores only fixed text", async () => {
+    installFetch();
+    await connect();
+    installFetch();
+    // A failure that did not come from Shopify, thrown while the catalogue is being saved.
+    const store = getDemoStore();
+    const original = store.shopifyVariants;
+    Object.defineProperty(store, "shopifyVariants", {
+      configurable: true,
+      get: () => original,
+      set: () => {
+        throw new Error(`column "price_cents" is broken ${TOKEN}`);
+      },
+    });
+    try {
+      await expect(syncShopify(CLIENT, { now: NOW })).rejects.toThrow(
+        "The Shopify sync failed. Try again, and reconnect the store if it keeps failing.",
+      );
+    } finally {
+      Object.defineProperty(store, "shopifyVariants", { configurable: true, writable: true, value: original });
+    }
+    const log = warnCalls().find(([m]) => m === "Shopify sync failed")?.[1];
+    expect(log).toMatchObject({ clientId: CLIENT, stage: "saving", status: null, code: null });
+    expect(String(log?.detail)).toContain('column "price_cents" is broken [redacted]');
+    expect(JSON.stringify(warnCalls())).not.toContain(TOKEN);
+    expect((await getConnection(CLIENT))?.last_sync_error).toBe(
+      "The Shopify sync failed. Try again, and reconnect the store if it keeps failing.",
+    );
+  });
+
   it("never stores raw Shopify error text", async () => {
     installFetch();
     await connect();
