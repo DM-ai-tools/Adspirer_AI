@@ -15,6 +15,8 @@ export const META_AUDIT_FRAMEWORK = `
 
 Cite live evidence (spend, results, cost per result, CTR, frequency, statuses) in the account currency. Never invent metrics — if something wasn't measured, say "not verified" and what to check.
 
+Report only what the operator asked for — add comparisons, trends or extra periods only when asked.
+
 ## Order of work
 1. **Tracking first.** If the "Audit checkpoint scorecard" shows tracking failures (T-codes), state up front that performance numbers can't be trusted until they're fixed: a conversion that isn't recorded doesn't just lose data, it teaches Meta's algorithm to find the wrong people.
 2. **Structure and delivery** — is anything able to deliver (campaign on, ad set on, approved ads), learning phase, budget concentration.
@@ -52,14 +54,16 @@ Cite live evidence (spend, results, cost per result, CTR, frequency, statuses) i
 ## Required report format (keep these headings, in this order)
 # Meta Ads Account Audit — <account name>
 1. **Executive Summary** — 3–5 bullets in plain business language for a non-specialist: overall score from the scorecard, the single biggest money leak (with the spend at stake), and the first fix.
-2. **Account Snapshot** — period, total spend, results, cost per result (and ROAS if purchases), active vs paused campaigns, and the change against the comparison period, from the "Totals vs previous period" / "Totals vs comparison period" line: spend, impressions, reach, frequency, CPM, link clicks, link CTR, results, cost per result, and ROAS / purchase value / landing page views when listed, each as before → after (±%).
-   - Head the two columns with exactly the Current and Comparison dates in the evidence's "Current: … ; Comparison: …" line — never work out, shift or round the dates yourself.
-   - Never write "not available" for a metric that is in a comparison line. If a comparison part "failed to load", say that part failed to load; if there is no comparison line at all, say the comparison wasn't loaded.
-   - If the evidence says the periods differ in length, say the totals aren't like-for-like and compare the daily averages too.
+2. **Account Snapshot** — period, total spend, results, cost per result (and ROAS if purchases), active vs paused campaigns.
+   - **When the evidence says "Comparison: not requested"** (the operator didn't ask for one): give one set of numbers for the audited period from the "Totals:" line. No "vs previous" columns, no before → after, no trend / improved / declined / week-over-week language, and no "previous period" anywhere in the report; the "Period:" line shows only the audited period.
+   - **When the evidence has a "Totals vs previous period" / "Totals vs comparison period" line** (the operator asked to compare): add the change against the comparison period: spend, impressions, reach, frequency, CPM, link clicks, link CTR, results, cost per result, and ROAS / purchase value / landing page views when listed, each as before → after (±%).
+     - Head the two columns with exactly the Current and Comparison dates in the evidence's "Current: … ; Comparison: …" line — never work out, shift or round the dates yourself.
+     - Never write "not available" for a metric that is in a comparison line. If a comparison part "failed to load", say that part failed to load.
+     - If the evidence says the periods differ in length, say the totals aren't like-for-like and compare the daily averages too.
 3. **Tracking & Measurement** — what is and isn't being measured, from the T-checkpoints, in plain words.
 4. **Active Campaigns** — table: campaign, status, budget, spend, results, cost per result, CTR, frequency. Then, for each audited campaign, a "### Ad sets in <campaign name>" sub-section (no IDs in that heading):
    - table (these 9 columns only, so it fits a printed page): Ad set | Status | Learning | Spend | Results | Cost per result | CTR | Freq (7d) | Live ads
-   - one verdict per ad set — **Scale / Keep / Fix / Pause** — as a bullet: "**<ad set name>** (ID <id>) · <budget> · optimises for <event in plain words, e.g. Complete registration> — <verdict>: <reason>", with the numbers behind it (share of campaign spend, cost per result vs the campaign, trend vs the previous period, learning limited, frequency over benchmark, too few live ads, setup gaps such as no exclusions or restricted placements).
+   - one verdict per ad set — **Scale / Keep / Fix / Pause** — as a bullet: "**<ad set name>** (ID <id>) · <budget> · optimises for <event in plain words, e.g. Complete registration> — <verdict>: <reason>", with the numbers behind it (share of campaign spend, cost per result vs the campaign, learning limited, frequency over benchmark, too few live ads, setup gaps such as no exclusions or restricted placements). Mention a trend against the comparison period only when the evidence has comparison lines ("vs previous period" / "vs comparison period").
 5. **What's Working** — strengths with evidence.
 6. **Risks & Issues** — table: Severity | Issue | Evidence | Fix | Spend at stake. Most severe first.
 7. **Landing Pages** — own destinations (+ competitor pages if provided): score, message match, top fixes.
