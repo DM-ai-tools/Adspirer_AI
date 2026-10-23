@@ -142,6 +142,14 @@ async function readBulk(host: string, token: string, query: string): Promise<Arr
   return done.url ? downloadJsonl(done.url) : [];
 }
 
+/**
+ * Bumps updated_at so the running-sync guard sees the run is alive. Each phase (one bulk
+ * read, which may wait up to 10 minutes) stays inside the 15-minute stale window.
+ */
+async function heartbeat(clientId: string): Promise<void> {
+  await setSyncStatus(clientId, { status: "running" });
+}
+
 export async function syncShopify(clientId: string, opts: { now?: Date } = {}): Promise<ShopifySyncCounts> {
   const now = opts.now ?? new Date();
   const connection = await getConnection(clientId);
@@ -167,8 +175,10 @@ export async function syncShopify(clientId: string, opts: { now?: Date } = {}): 
       const host = connection.shop_domain;
       // Shopify allows one bulk query at a time per shop, so these run sequentially.
       const catalogLines = await readBulk(host, token, CATALOG_BULK_QUERY);
+      await heartbeat(clientId);
       const since = new Date(now.getTime() - 60 * DAY_MS).toISOString();
       const orderLines = await readBulk(host, token, ORDERS_BULK_QUERY(since));
+      await heartbeat(clientId);
 
       const parsed = parseCatalog(clientId, catalogLines);
       const sales = aggregateSales(orderLines, now);
@@ -191,6 +201,7 @@ export async function syncShopify(clientId: string, opts: { now?: Date } = {}): 
       throw new SyncError(NO_PRODUCTS_MESSAGE);
     }
 
+    await heartbeat(clientId);
     await replaceCatalog(clientId, catalog);
     const counts: ShopifySyncCounts = {
       collections: catalog.collections.length,

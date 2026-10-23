@@ -128,6 +128,8 @@ export async function setSyncStatus(
   const fields: Record<string, unknown> = {
     last_sync_status: patch.status,
     last_sync_error: patch.error ?? null,
+    // Explicit so a repeat "running" write still changes the row (heartbeat) on Supabase.
+    updated_at: now,
   };
   if (patch.status === "ok") fields.last_sync_at = now;
   if (patch.counts) fields.last_sync_counts = patch.counts;

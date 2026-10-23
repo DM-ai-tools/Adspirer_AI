@@ -83,6 +83,7 @@ type Opts = {
   pollStatus?: string;
   status?: number;
   startReply?: unknown;
+  onPoll?: (kind: string) => Promise<void> | void;
 };
 
 /** Routes Shopify calls by content. */
@@ -110,6 +111,7 @@ function installFetch(o: Opts = {}) {
     }
     if (q.includes("PollBulk")) {
       const kind = String(body.variables.id).endsWith("orders") ? "orders" : "catalog";
+      await o.onPoll?.(kind);
       return json({
         data: {
           node: {
@@ -308,6 +310,35 @@ describe("syncShopify", () => {
     await setSyncStatus(CLIENT, { status: "running" });
     getDemoStore().shopifyConnections[0].updated_at = new Date(Date.now() - 16 * 60_000).toISOString();
     await expect(syncShopify(CLIENT)).resolves.toBeDefined();
+  });
+
+  it("heartbeats between phases so a long healthy sync is still refused at minute 20", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-10-23T12:00:00.000Z"));
+      installFetch();
+      await connect();
+      let second: unknown = "not run";
+      // Each bulk phase takes 9 minutes: the whole sync runs ~18+ minutes, past the 15-minute window.
+      const { fn } = installFetch({
+        onPoll: async (kind) => {
+          vi.setSystemTime(new Date(Date.now() + 9 * 60_000));
+          if (kind === "orders" && second === "not run") {
+            second = "running";
+            // Minute 18: the catalogue-phase heartbeat was at minute 9, so the run is still live.
+            second = await syncShopify(CLIENT).catch((e) => e);
+          }
+        },
+      });
+      await syncShopify(CLIENT);
+      expect(second).toBeInstanceOf(Error);
+      expect((second as Error).message).toBe("A sync is already running for this store");
+      // The refused second call made no Shopify request of its own: only the first sync's 2 starts + 2 polls + 2 downloads.
+      expect(fn).toHaveBeenCalledTimes(6);
+      expect((await getConnection(CLIENT))?.last_sync_status).toBe("ok");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("treats an empty products result as a failure and keeps old data", async () => {
