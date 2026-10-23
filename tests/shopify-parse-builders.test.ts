@@ -148,7 +148,7 @@ describe("createSalesAggregator", () => {
   it("keeps the current semantics", () => {
     const x = createSalesAggregator(now);
     for (const l of salesFixtures.excluded) x.push(l);
-    expect(x.finish()).toEqual({ byVariant: new Map(), orders: 0, skippedLineItems: 0 });
+    expect(x.finish()).toEqual({ byVariant: new Map(), rows: [], orders: 0, skippedLineItems: 0 });
     const a = createSalesAggregator(now);
     for (const l of salesFixtures.windows) a.push(l);
     const r = a.finish();

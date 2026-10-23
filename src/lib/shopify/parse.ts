@@ -8,6 +8,7 @@ import {
   type ShopifyCollection,
   type ShopifyProduct,
   type ShopifyProductStatus,
+  type ShopifySalesRow,
   type ShopifyVariant,
 } from "./types";
 
@@ -61,8 +62,9 @@ export function ORDERS_BULK_QUERY(sinceIso: string): string {
         lineItems {
           edges {
             node {
-              id quantity
+              id quantity title variantTitle sku vendor
               variant { id }
+              product { id productType }
               discountedTotalSet(withCodeDiscounts: true) { shopMoney { amount } }
             }
           }
@@ -82,7 +84,14 @@ function productStatus(value: string): ShopifyProductStatus {
 }
 
 export type ParsedCatalog = { collections: ShopifyCollection[]; products: ShopifyProduct[]; variants: CatalogVariant[] };
-export type SalesSummary = { byVariant: Map<string, Sales>; orders: number; skippedLineItems: number };
+export type SalesRows = Omit<ShopifySalesRow, "client_id">[];
+/** byVariant (real variant gids only) is kept for the catalogue sync until it is removed. */
+export type SalesSummary = {
+  byVariant: Map<string, Sales>;
+  rows: SalesRows;
+  orders: number;
+  skippedLineItems: number;
+};
 
 /**
  * Single-pass catalogue builder for a bulk result streamed one line at a time. Shopify writes
@@ -181,6 +190,7 @@ export function createSalesAggregator(now: Date): { push: (line: Line) => void; 
   const t30 = now.getTime() - 30 * DAY;
   const t60 = now.getTime() - 60 * DAY;
   const byVariant = new Map<string, Sales>();
+  const byKey = new Map<string, SalesRows[number]>();
   // order gid -> counts in 30d (true) or only 60d (false); excluded orders are absent
   const valid = new Map<string, boolean>();
   let skippedLineItems = 0;
@@ -198,29 +208,71 @@ export function createSalesAggregator(now: Date): { push: (line: Line) => void; 
     const in30 = valid.get(l.__parentId);
     if (in30 === undefined) return;
     const variantId = isObj(l.variant) ? str(l.variant.id) : "";
-    if (!variantId) {
-      skippedLineItems += 1;
-      return;
+    const productId = isObj(l.product) ? str(l.product.id) : "";
+    const sku = str(l.sku) || null;
+    const title = str(l.title);
+    let key = variantId;
+    if (!key) {
+      const label = sku ?? title;
+      if (!productId || !label) {
+        skippedLineItems += 1;
+        return;
+      }
+      key = `product:${productId}:${label}`;
     }
     const qty = typeof l.quantity === "number" ? Math.max(0, l.quantity) : 0;
     const money = isObj(l.discountedTotalSet) && isObj(l.discountedTotalSet.shopMoney)
       ? l.discountedTotalSet.shopMoney.amount
       : null;
     const cents = toCents(money as string | null) ?? 0;
-    let s = byVariant.get(variantId);
-    if (!s) {
-      s = { units_30d: 0, revenue_30d_cents: 0, units_60d: 0, revenue_60d_cents: 0 };
-      byVariant.set(variantId, s);
+    let row = byKey.get(key);
+    if (!row) {
+      row = {
+        variant_key: key,
+        variant_gid: variantId || null,
+        product_gid: productId || null,
+        product_title: title,
+        variant_title: str(l.variantTitle) || null,
+        sku,
+        vendor: str(l.vendor),
+        product_type: isObj(l.product) ? str(l.product.productType) : "",
+        units_30d: 0,
+        revenue_30d_cents: 0,
+        units_60d: 0,
+        revenue_60d_cents: 0,
+      };
+      byKey.set(key, row);
+    } else {
+      // Fill gaps from later lines; the first non-empty value wins.
+      row.product_title ||= title;
+      row.variant_title ??= str(l.variantTitle) || null;
+      row.sku ??= sku;
+      row.vendor ||= str(l.vendor);
+      if (!row.product_type && isObj(l.product)) row.product_type = str(l.product.productType);
+      row.product_gid ??= productId || null;
     }
-    s.units_60d += qty;
-    s.revenue_60d_cents += cents;
+    row.units_60d += qty;
+    row.revenue_60d_cents += cents;
     if (in30) {
-      s.units_30d += qty;
-      s.revenue_30d_cents += cents;
+      row.units_30d += qty;
+      row.revenue_30d_cents += cents;
+    }
+    if (variantId) {
+      let s = byVariant.get(variantId);
+      if (!s) {
+        s = { units_30d: 0, revenue_30d_cents: 0, units_60d: 0, revenue_60d_cents: 0 };
+        byVariant.set(variantId, s);
+      }
+      s.units_60d += qty;
+      s.revenue_60d_cents += cents;
+      if (in30) {
+        s.units_30d += qty;
+        s.revenue_30d_cents += cents;
+      }
     }
   };
 
-  return { push, finish: () => ({ byVariant, orders: valid.size, skippedLineItems }) };
+  return { push, finish: () => ({ byVariant, rows: [...byKey.values()], orders: valid.size, skippedLineItems }) };
 }
 
 export function aggregateSales(lines: Line[], now: Date): SalesSummary {

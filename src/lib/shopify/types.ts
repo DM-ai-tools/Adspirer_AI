@@ -71,5 +71,23 @@ export type ShopifyVariant = {
   revenue_60d_cents: number;
 };
 
+/** Per-variant sales from order lines (no catalogue needed). No customer data. */
+export type ShopifySalesRow = {
+  client_id: string;
+  /** Variant gid, else `product:<product gid>:<sku or title>` for a deleted variant. */
+  variant_key: string;
+  variant_gid: string | null;
+  product_gid: string | null;
+  product_title: string;
+  variant_title: string | null;
+  sku: string | null;
+  vendor: string;
+  product_type: string;
+  units_30d: number;
+  revenue_30d_cents: number;
+  units_60d: number;
+  revenue_60d_cents: number;
+};
+
 /** Synced data older than this is flagged as stale. */
 export const SHOPIFY_STALE_HOURS = 72;

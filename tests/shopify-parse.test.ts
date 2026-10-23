@@ -166,6 +166,51 @@ describe("aggregateSales", () => {
     expect(r.byVariant.get(V1)?.units_30d).toBe(1);
   });
 
+  it("rows: metadata comes through, same variant adds up per window", () => {
+    const P = "gid://shopify/Product/9";
+    const meta = { title: "Tee", variantTitle: "Red / M", sku: "TEE-R", vendor: "Acme", product: { id: P, productType: "Shirt" } };
+    const lines = [
+      order("1", 5), { ...item("1", "1", 1, "7.00"), ...meta },
+      order("2", 30), { ...item("2", "1", 2, "14.00"), ...meta },
+      order("3", 31), { ...item("3", "1", 1, "5.00"), ...meta },
+    ];
+    const r = aggregateSales(lines, now);
+    expect(r.rows).toEqual([{
+      variant_key: V1, variant_gid: V1, product_gid: P, product_title: "Tee", variant_title: "Red / M",
+      sku: "TEE-R", vendor: "Acme", product_type: "Shirt",
+      units_30d: 3, revenue_30d_cents: 2100, units_60d: 4, revenue_60d_cents: 2600,
+    }]);
+  });
+
+  it("rows: a line without a variant but with a product id gets a synthetic key", () => {
+    const P = "gid://shopify/Product/9";
+    const base = { ...item("1", null, 2, "10.00"), title: "Gone", product: { id: P, productType: "" }, vendor: null, variantTitle: null };
+    const withSku = { ...base, sku: "S1" };
+    const noSku = { ...item("1", null, 1, "3.00"), title: "Gone", product: { id: P } };
+    const r = aggregateSales([order("1", 5), withSku, noSku], now);
+    expect(r.skippedLineItems).toBe(0);
+    expect(r.rows.map((x) => x.variant_key).sort()).toEqual([`product:${P}:Gone`, `product:${P}:S1`]);
+    const row = r.rows.find((x) => x.sku === "S1");
+    expect(row).toMatchObject({ variant_gid: null, product_gid: P, vendor: "", product_type: "", variant_title: null, units_30d: 2 });
+  });
+
+  it("rows: a line with neither variant nor product is skipped and counted", () => {
+    const r = aggregateSales([order("1", 5), item("1", null, 1, "5.00")], now);
+    expect(r.rows).toEqual([]);
+    expect(r.skippedLineItems).toBe(1);
+  });
+
+  it("rows: cancelled and test orders add nothing, 30-day boundary is inclusive", () => {
+    const lines = [
+      order("1", 5, { cancelledAt: daysAgo(4) }), item("1", "1", 1, "5.00"),
+      order("2", 5, { test: true }), item("2", "1", 1, "5.00"),
+      order("3", 30), item("3", "1", 1, "4.00"),
+    ];
+    const r = aggregateSales(lines, now);
+    expect(r.rows).toHaveLength(1);
+    expect(r.rows[0]).toMatchObject({ units_30d: 1, revenue_30d_cents: 400, units_60d: 1 });
+  });
+
   it("adds up two line items for the same variant", () => {
     const lines = [order("1", 5), item("1", "1", 1, "7.00"), item("1", "1", 2, "14.00")];
     expect(aggregateSales(lines, now).byVariant.get(V1)).toMatchObject({
@@ -234,6 +279,12 @@ describe("bulk queries", () => {
   });
 
   const forbidden = ["customer", "email", "phone", "shippingAddress", "billingAddress"];
+  it("orders query selects line metadata as plain objects, no extra connections", () => {
+    const q = ORDERS_BULK_QUERY("2026-08-24T00:00:00Z");
+    for (const f of ["title", "variantTitle", "sku", "vendor", "variant { id }", "product { id productType }"]) {
+      expect(q).toContain(f);
+    }
+  });
   it("never select personal data", () => {
     for (const q of [CATALOG_BULK_QUERY, ORDERS_BULK_QUERY("2026-08-24T00:00:00Z")]) {
       for (const word of forbidden) expect(q.toLowerCase()).not.toContain(word.toLowerCase());
