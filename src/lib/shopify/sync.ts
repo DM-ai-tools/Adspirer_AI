@@ -1,5 +1,5 @@
 import { getConfig } from "@/lib/config";
-import { ValidationError } from "@/lib/errors";
+import { ConflictError, NotFoundError, ValidationError } from "@/lib/errors";
 import { logger } from "@/lib/observability/logger";
 import { decryptToken, encryptToken } from "@/lib/security/token-vault";
 import {
@@ -10,6 +10,7 @@ import {
   waitForBulkQuery,
 } from "./client";
 import { normalizeShopDomain } from "./domain";
+import { ShopifyUpstreamError } from "./sync-errors";
 import { MOCK_SHOP, mockShopifyCatalog } from "./mock";
 import { CATALOG_BULK_QUERY, ORDERS_BULK_QUERY, aggregateSales, parseCatalog } from "./parse";
 import {
@@ -153,13 +154,13 @@ async function heartbeat(clientId: string): Promise<void> {
 export async function syncShopify(clientId: string, opts: { now?: Date } = {}): Promise<ShopifySyncCounts> {
   const now = opts.now ?? new Date();
   const connection = await getConnection(clientId);
-  if (!connection) throw new SyncError("This client has no Shopify store connected.");
+  if (!connection) throw new NotFoundError("This client has no Shopify store connected.");
 
   // Overlapping syncs delete each other's rows, so refuse while a recent run is in flight.
   // Thrown before status is touched so the running sync's status is left alone.
   if (connection.last_sync_status === "running") {
     const age = now.getTime() - Date.parse(connection.updated_at);
-    if (!(age >= STALE_RUNNING_MS)) throw new SyncError(ALREADY_RUNNING_MESSAGE);
+    if (!(age >= STALE_RUNNING_MS)) throw new ConflictError(ALREADY_RUNNING_MESSAGE);
   }
 
   await setSyncStatus(clientId, { status: "running" });
@@ -224,7 +225,7 @@ export async function syncShopify(clientId: string, opts: { now?: Date } = {}): 
       // The original failure matters more than a failed status write.
     }
     // Rethrow fixed text only, never the original error (it may carry Shopify text).
-    throw new Error(message);
+    throw new ShopifyUpstreamError(message);
   }
 }
 
