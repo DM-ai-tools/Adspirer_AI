@@ -42,7 +42,7 @@ vi.mock("@/lib/supabase/admin", () => ({
   }),
 }));
 
-import { loadCatalog } from "@/lib/shopify/store";
+import { loadCatalog, loadSales } from "@/lib/shopify/store";
 
 const CLIENT = "6f1c2b9e-0d4a-4c5e-9b8a-2f3e4d5c6b7a";
 const pad = (i: number) => String(i).padStart(5, "0");
@@ -84,5 +84,34 @@ describe("loadCatalog paging", () => {
     db.tables.shopify_variants = Array.from({ length: 2350 }, (_, i) => ({ gid: `v${pad(i)}` }));
     db.failAt = { table: "shopify_variants", request: 2 };
     await expect(loadCatalog(CLIENT)).rejects.toThrow("page failed");
+  });
+});
+
+describe("loadSales paging", () => {
+  it("returns all 2,350 rows ordered by variant_key via 3 requests", async () => {
+    db.tables.shopify_sales = Array.from({ length: 2350 }, (_, i) => ({
+      variant_key: `v${pad(2349 - i)}`,
+      client_id: CLIENT,
+    }));
+    const rows = await loadSales(CLIENT);
+    expect(rows.map((r) => r.variant_key)).toEqual(Array.from({ length: 2350 }, (_, i) => `v${pad(i)}`));
+    expect(db.ranges.filter(([t]) => t === "shopify_sales")).toEqual([
+      ["shopify_sales", 0, 999],
+      ["shopify_sales", 1000, 1999],
+      ["shopify_sales", 2000, 2999],
+    ]);
+    expect(db.orders.filter(([t]) => t === "shopify_sales").every(([, c]) => c === "variant_key")).toBe(true);
+  });
+
+  it("makes one request when under a page", async () => {
+    db.tables.shopify_sales = [{ variant_key: "a" }];
+    expect(await loadSales(CLIENT)).toHaveLength(1);
+    expect(db.counts.shopify_sales).toBe(1);
+  });
+
+  it("propagates a page error instead of returning partial data", async () => {
+    db.tables.shopify_sales = Array.from({ length: 2350 }, (_, i) => ({ variant_key: `v${pad(i)}` }));
+    db.failAt = { table: "shopify_sales", request: 2 };
+    await expect(loadSales(CLIENT)).rejects.toThrow("page failed");
   });
 });

@@ -1,4 +1,4 @@
-import type { ShopifyCollection, ShopifyProduct, ShopifyVariant } from "./types";
+import type { ShopifyCollection, ShopifyProduct, ShopifySalesRow, ShopifyVariant } from "./types";
 
 /** Demo-mode Shopify data for ClickTrends. No network call is ever made for it. */
 export const MOCK_SHOP = {
@@ -88,4 +88,53 @@ export function mockShopifyCatalog(clientId: string): {
   }));
 
   return { collections, products, variants };
+}
+
+/** Orders (last 60 days) the demo sync reports. */
+export const MOCK_SALES_ORDERS = 37;
+
+/** Demo sales for ClickTrends: sold variants as an orders-only sync would produce them. */
+export function mockShopifySales(clientId: string): ShopifySalesRow[] {
+  const products = new Map<number, { title: string; vendor: string; type: string }>([
+    [1, { title: "Oak Counter Stool", vendor: "Nordic Woodworks", type: "Bar Stool" }],
+    [2, { title: "Industrial Iron Stool", vendor: "Forge & Co", type: "Bar Stool" }],
+    [3, { title: "Walnut Swivel Stool", vendor: "Nordic Woodworks", type: "Bar Stool" }],
+    [4, { title: "Velvet Three Seater Sofa", vendor: "Loft Living", type: "Sofa" }],
+    [5, { title: "Modular Corner Sofa", vendor: "Loft Living", type: "Sofa" }],
+  ]);
+  const rows: ShopifySalesRow[] = VARIANTS.filter((v) => v.product <= 5).map((v) => {
+    const p = products.get(v.product)!;
+    return {
+      client_id: clientId,
+      variant_key: V(v.id),
+      variant_gid: V(v.id),
+      product_gid: P(v.product),
+      product_title: p.title,
+      variant_title: v.title,
+      sku: v.sku,
+      vendor: p.vendor,
+      product_type: p.type,
+      units_30d: v.u30,
+      revenue_30d_cents: v.u30 * v.price,
+      units_60d: v.u60,
+      revenue_60d_cents: v.u60 * v.price,
+    };
+  });
+  // A variant deleted from the store after it sold: no variant id, so a synthetic key.
+  rows.push({
+    client_id: clientId,
+    variant_key: `product:${P(9)}:BS-DISC-01`,
+    variant_gid: null,
+    product_gid: P(9),
+    product_title: "Discontinued Pine Stool",
+    variant_title: null,
+    sku: "BS-DISC-01",
+    vendor: "Nordic Woodworks",
+    product_type: "Bar Stool",
+    units_30d: 0,
+    revenue_30d_cents: 0,
+    units_60d: 4,
+    revenue_60d_cents: 4 * 9900,
+  });
+  return rows;
 }

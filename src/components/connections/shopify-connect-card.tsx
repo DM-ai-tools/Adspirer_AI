@@ -10,11 +10,9 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 type ShopifyCounts = {
-  collections: number;
-  products: number;
-  variants: number;
-  orders?: number;
-  skipped_line_items?: number;
+  orders: number;
+  sales_variants: number;
+  skipped_line_items: number;
 };
 
 type ShopifyStatus = {
@@ -28,8 +26,11 @@ type ShopifyStatus = {
   counts: ShopifyCounts | null;
 };
 
-function describeCounts(c: ShopifyCounts): string {
-  return `${c.collections} collections, ${c.products} products, ${c.variants} variants`;
+function describeCounts(c: Partial<ShopifyCounts>): string | null {
+  // Counts saved by the old catalogue sync have no sales_variants: show nothing for them.
+  if (typeof c.sales_variants !== "number" || typeof c.orders !== "number") return null;
+  const variants = `${c.sales_variants} sold variant${c.sales_variants === 1 ? "" : "s"}`;
+  return `${variants} from ${c.orders} order${c.orders === 1 ? "" : "s"} (last 60 days)`;
 }
 
 function ClientRow({ client }: { client: Client }) {
@@ -76,7 +77,7 @@ function ClientRow({ client }: { client: Client }) {
         method: "POST",
         body: JSON.stringify({ clientId: client.id }),
       });
-      toast.success(`Synced ${client.name}: ${describeCounts(counts)}`);
+      toast.success(`Synced ${client.name}: ${describeCounts(counts) ?? "done"}`);
       return true;
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Sync failed");
@@ -187,8 +188,13 @@ function ClientRow({ client }: { client: Client }) {
           {status.connected && status.last_sync_status === "error" && status.last_sync_error ? (
             <p className="text-xs text-danger">{status.last_sync_error}</p>
           ) : null}
-          {status.connected && status.counts ? (
+          {status.connected && status.counts && describeCounts(status.counts) ? (
             <p className="text-xs text-muted">{describeCounts(status.counts)}</p>
+          ) : null}
+          {status.connected ? (
+            <p className="text-xs text-muted">
+              The catalogue (products, stock, prices) is read live from Shopify when you ask in chat.
+            </p>
           ) : null}
 
           {formOpen ? (

@@ -3,10 +3,10 @@
 export type ShopifySyncStatus = "never" | "running" | "ok" | "error";
 
 export type ShopifySyncCounts = {
-  collections: number;
-  products: number;
-  variants: number;
+  /** Orders counted in the last 60 days. */
   orders: number;
+  /** Distinct sold variants (rows in shopify_sales). */
+  sales_variants: number;
   skipped_line_items: number;
 };
 

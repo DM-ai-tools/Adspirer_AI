@@ -26,6 +26,7 @@ import type {
   ShopifyCollection,
   ShopifyConnection,
   ShopifyProduct,
+  ShopifySalesRow,
   ShopifyVariant,
 } from "@/lib/shopify/types";
 import { encryptToken } from "@/lib/security/token-vault";
@@ -63,6 +64,8 @@ export interface DemoStore {
   shopifyCollections: ShopifyCollection[];
   shopifyProducts: ShopifyProduct[];
   shopifyVariants: ShopifyVariant[];
+  /** Per-variant sales from the orders-only sync. */
+  shopifySales: ShopifySalesRow[];
 }
 
 type GlobalDemo = typeof globalThis & {
@@ -70,7 +73,7 @@ type GlobalDemo = typeof globalThis & {
   __adspirerDemoStoreVersion?: number;
 };
 
-const DEMO_STORE_VERSION = 11;
+const DEMO_STORE_VERSION = 12;
 
 function id(prefix: string): string {
   return `${prefix}_${nanoid(10)}`;
@@ -695,6 +698,7 @@ function seedStore(): DemoStore {
     shopifyCollections: [],
     shopifyProducts: [],
     shopifyVariants: [],
+    shopifySales: [],
   };
 }
 

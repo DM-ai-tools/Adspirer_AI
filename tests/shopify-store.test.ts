@@ -1,11 +1,14 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import type { ShopifySalesRow } from "@/lib/shopify/types";
 import { getDemoStore } from "@/lib/demo/store";
-import { MOCK_SHOP, mockShopifyCatalog } from "@/lib/shopify/mock";
+import { MOCK_SHOP, mockShopifyCatalog, mockShopifySales } from "@/lib/shopify/mock";
 import {
   deleteConnection,
   getConnection,
   loadCatalog,
+  loadSales,
   replaceCatalog,
+  replaceSales,
   saveConnection,
   setSyncStatus,
 } from "@/lib/shopify/store";
@@ -29,6 +32,7 @@ beforeEach(() => {
   s.shopifyCollections.length = 0;
   s.shopifyProducts.length = 0;
   s.shopifyVariants.length = 0;
+  s.shopifySales.length = 0;
 });
 
 describe("shopify demo store", () => {
@@ -45,7 +49,7 @@ describe("shopify demo store", () => {
   it("reconnecting the same store keeps its sync status and catalogue", async () => {
     await saveConnection(input(A));
     await replaceCatalog(A, mockShopifyCatalog(A));
-    const counts = { collections: 2, products: 6, variants: 8, orders: 3, skipped_line_items: 0 };
+    const counts = { orders: 3, sales_variants: 2, skipped_line_items: 0 };
     await setSyncStatus(A, { status: "ok", counts });
     await saveConnection({ ...input(A), accessTokenEncrypted: "v1:new" });
     const c = (await getConnection(A))!;
@@ -62,7 +66,7 @@ describe("shopify demo store", () => {
     await replaceCatalog(B, mockShopifyCatalog(B));
     await setSyncStatus(A, {
       status: "ok",
-      counts: { collections: 2, products: 6, variants: 8, orders: 3, skipped_line_items: 0 },
+      counts: { orders: 3, sales_variants: 8, skipped_line_items: 0 },
     });
     await setSyncStatus(A, { status: "error", error: "Shopify is busy, try again in a few minutes" });
     const saved = await saveConnection({ ...input(A), shopDomain: "other-store.myshopify.com", shopName: "Other" });
@@ -92,7 +96,7 @@ describe("shopify demo store", () => {
     await saveConnection(input(A));
     await setSyncStatus(A, { status: "running" });
     expect((await getConnection(A))?.last_sync_at).toBeNull();
-    const counts = { collections: 2, products: 6, variants: 8, orders: 3, skipped_line_items: 1 };
+    const counts = { orders: 3, sales_variants: 2, skipped_line_items: 1 };
     await setSyncStatus(A, { status: "ok", counts });
     const c = (await getConnection(A))!;
     expect(c.last_sync_status).toBe("ok");
@@ -143,7 +147,93 @@ describe("shopify demo store", () => {
   it("bumps the demo store version so shopify arrays exist after hot reload", () => {
     const s = getDemoStore();
     expect(Array.isArray(s.shopifyVariants)).toBe(true);
-    expect((globalThis as { __adspirerDemoStoreVersion?: number }).__adspirerDemoStoreVersion).toBe(11);
+    expect((globalThis as { __adspirerDemoStoreVersion?: number }).__adspirerDemoStoreVersion).toBe(12);
+  });
+});
+
+const strip = (c: string): Omit<ShopifySalesRow, "client_id">[] => mockShopifySales(c);
+
+describe("demo sales", () => {
+  it("replaceSales replaces the client's rows and leaves other clients alone", async () => {
+    await replaceSales(A, strip(A));
+    await replaceSales(B, strip(B));
+    await replaceSales(A, strip(A).slice(0, 2));
+    expect((await loadSales(A)).map((r) => r.variant_key)).toEqual(strip(A).slice(0, 2).map((r) => r.variant_key));
+    expect((await loadSales(A)).every((r) => r.client_id === A)).toBe(true);
+    expect(await loadSales(B)).toHaveLength(8);
+  });
+
+  it("replaceSales with no rows clears the client's sales (an empty sync is valid)", async () => {
+    await replaceSales(A, strip(A));
+    await replaceSales(A, []);
+    expect(await loadSales(A)).toEqual([]);
+  });
+
+  it("loadSales returns copies", async () => {
+    await replaceSales(A, strip(A));
+    (await loadSales(A))[0].product_title = "mutated";
+    expect((await loadSales(A))[0].product_title).not.toBe("mutated");
+  });
+
+  it("connecting a different store clears that client's sales, not another client's", async () => {
+    await saveConnection(input(A));
+    await saveConnection(input(B));
+    await replaceSales(A, strip(A));
+    await replaceSales(B, strip(B));
+    await saveConnection({ ...input(A), shopDomain: "other-store.myshopify.com" });
+    expect(await loadSales(A)).toHaveLength(0);
+    expect(await loadSales(B)).toHaveLength(8);
+  });
+
+  it("reconnecting the same store keeps its sales", async () => {
+    await saveConnection(input(A));
+    await replaceSales(A, strip(A));
+    await saveConnection(input(A));
+    expect(await loadSales(A)).toHaveLength(8);
+  });
+
+  it("deleteConnection clears that client's sales only", async () => {
+    await saveConnection(input(A));
+    await saveConnection(input(B));
+    await replaceSales(A, strip(A));
+    await replaceSales(B, strip(B));
+    await deleteConnection(A);
+    expect(await loadSales(A)).toHaveLength(0);
+    expect(await loadSales(B)).toHaveLength(8);
+  });
+
+  it("calls onChunk after each 500-row chunk, and a throwing onChunk keeps the old rows", async () => {
+    await replaceSales(A, strip(A));
+    const base = strip(A)[0];
+    const many = Array.from({ length: 1201 }, (_, i) => ({ ...base, variant_key: `k${i}` }));
+    let n = 0;
+    await replaceSales(B, many, async () => {
+      n += 1;
+    });
+    expect(n).toBe(3);
+    await expect(
+      replaceSales(A, many, async () => {
+        throw new Error("heartbeat failed");
+      }),
+    ).rejects.toThrow("heartbeat failed");
+    expect(await loadSales(A)).toHaveLength(8);
+  });
+});
+
+describe("mockShopifySales", () => {
+  it("has 8 ClickTrends variants with mixed windows and one synthetic key", () => {
+    const rows = mockShopifySales(A);
+    expect(rows).toHaveLength(8);
+    expect(rows.filter((r) => r.variant_key.startsWith("product:"))).toHaveLength(1);
+    expect(rows.some((r) => r.units_30d === 0)).toBe(true);
+    expect(rows.some((r) => r.units_30d > 0)).toBe(true);
+    expect(new Set(rows.map((r) => r.variant_key)).size).toBe(rows.length);
+    for (const r of rows) {
+      expect(r.client_id).toBe(A);
+      expect(r.product_title && r.vendor && r.product_type && r.sku).toBeTruthy();
+      expect(r.units_60d).toBeGreaterThanOrEqual(r.units_30d);
+      expect(r.revenue_60d_cents).toBeGreaterThanOrEqual(r.revenue_30d_cents);
+    }
   });
 });
 

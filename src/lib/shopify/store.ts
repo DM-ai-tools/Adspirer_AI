@@ -7,6 +7,7 @@ import type {
   ShopifyCollection,
   ShopifyConnection,
   ShopifyProduct,
+  ShopifySalesRow,
   ShopifySyncCounts,
   ShopifyVariant,
 } from "./types";
@@ -21,6 +22,7 @@ const CONNECTION = "shopify_connection";
 const COLLECTIONS = "shopify_collections";
 const PRODUCTS = "shopify_products";
 const VARIANTS = "shopify_variants";
+const SALES = "shopify_sales";
 const CHUNK = 500;
 const PAGE = 1000;
 
@@ -100,6 +102,7 @@ export async function saveConnection(input: {
         store.shopifyCollections = other(store.shopifyCollections);
         store.shopifyProducts = other(store.shopifyProducts);
         store.shopifyVariants = other(store.shopifyVariants);
+        store.shopifySales = other(store.shopifySales);
       }
       return copyConnection(existing);
     }
@@ -145,6 +148,7 @@ export async function saveConnection(input: {
     // After the status reset, so a failed delete leaves old rows under a "never synced"
     // status (chat reads nothing) rather than the old store's data under the new name.
     await deleteCatalogRows(input.clientId);
+    await deleteSalesRows(input.clientId);
   }
   return data as ShopifyConnection;
 }
@@ -253,6 +257,70 @@ export async function listConnectedClientIds(): Promise<string[]> {
   return ((data as Array<{ client_id: string }> | null) ?? []).map((r) => r.client_id);
 }
 
+async function deleteSalesRows(clientId: string): Promise<void> {
+  const { error } = await createAdminClient().from(SALES).delete().eq("client_id", clientId);
+  if (error) throw new Error(error.message);
+}
+
+type SalesInput = Omit<ShopifySalesRow, "client_id">;
+
+/**
+ * Write the client's sales, then drop rows this run did not touch. Each chunk is tagged with
+ * a fresh synced_run as it is written (no second copy of all rows); if any upsert (or the
+ * onChunk callback) throws, nothing is deleted and the old rows stay. `onChunk` runs after
+ * each written chunk, for the sync's heartbeat.
+ */
+export async function replaceSales(
+  clientId: string,
+  rows: SalesInput[],
+  onChunk?: () => Promise<void>,
+): Promise<void> {
+  if (inDemoStore()) {
+    // Built apart and swapped in at the end, so a throwing onChunk leaves the old rows.
+    const next: ShopifySalesRow[] = [];
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      for (const r of rows.slice(i, i + CHUNK)) next.push({ ...r, client_id: clientId });
+      if (onChunk) await onChunk();
+    }
+    const store = getDemoStore();
+    store.shopifySales = [...store.shopifySales.filter((r) => r.client_id !== clientId), ...next];
+    return;
+  }
+
+  const db = createAdminClient();
+  const run = randomUUID();
+  const now = nowIso();
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    const chunk = rows.slice(i, i + CHUNK).map((r) => ({ ...r, client_id: clientId, synced_run: run, updated_at: now }));
+    const { error } = await db.from(SALES).upsert(chunk, { onConflict: "client_id,variant_key" });
+    if (error) throw new Error(error.message);
+    if (onChunk) await onChunk();
+  }
+  const { error } = await db.from(SALES).delete().eq("client_id", clientId).neq("synced_run", run);
+  if (error) throw new Error(error.message);
+}
+
+export async function loadSales(clientId: string): Promise<ShopifySalesRow[]> {
+  if (inDemoStore()) {
+    return getDemoStore().shopifySales.filter((r) => r.client_id === clientId).map((r) => ({ ...r }));
+  }
+  const db = createAdminClient();
+  const out: ShopifySalesRow[] = [];
+  // PostgREST caps a response at 1000 rows, so page until a short page comes back.
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await db
+      .from(SALES)
+      .select("*")
+      .eq("client_id", clientId)
+      .order("variant_key")
+      .range(from, from + PAGE - 1);
+    if (error) throw new Error(error.message);
+    const page = (data as ShopifySalesRow[] | null) ?? [];
+    out.push(...page);
+    if (page.length < PAGE) return out;
+  }
+}
+
 async function deleteCatalogRows(clientId: string): Promise<void> {
   const db = createAdminClient();
   for (const table of [VARIANTS, PRODUCTS, COLLECTIONS]) {
@@ -268,10 +336,11 @@ export async function deleteConnection(clientId: string): Promise<void> {
     store.shopifyCollections = store.shopifyCollections.filter((r) => r.client_id !== clientId);
     store.shopifyProducts = store.shopifyProducts.filter((r) => r.client_id !== clientId);
     store.shopifyVariants = store.shopifyVariants.filter((r) => r.client_id !== clientId);
+    store.shopifySales = store.shopifySales.filter((r) => r.client_id !== clientId);
     return;
   }
   const db = createAdminClient();
-  for (const table of [VARIANTS, PRODUCTS, COLLECTIONS, CONNECTION]) {
+  for (const table of [SALES, VARIANTS, PRODUCTS, COLLECTIONS, CONNECTION]) {
     const { error } = await db.from(table).delete().eq("client_id", clientId);
     if (error) throw new Error(error.message);
   }

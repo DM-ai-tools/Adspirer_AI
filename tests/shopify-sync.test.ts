@@ -9,8 +9,8 @@ import { logger } from "@/lib/observability/logger";
 import { ValidationError } from "@/lib/errors";
 import { getDemoStore } from "@/lib/demo/store";
 import { decryptToken } from "@/lib/security/token-vault";
-import { MOCK_SHOP } from "@/lib/shopify/mock";
-import { getConnection, loadCatalog, replaceCatalog, setSyncStatus } from "@/lib/shopify/store";
+import { MOCK_SHOP, MOCK_SALES_ORDERS } from "@/lib/shopify/mock";
+import { getConnection, loadCatalog, loadSales, setSyncStatus } from "@/lib/shopify/store";
 import {
   connectShopify,
   disconnectShopify,
@@ -36,34 +36,18 @@ const shopReply = (scopes = SCOPES) =>
     },
   });
 
-const CATALOG_JSONL = [
-  {
-    id: "gid://shopify/Product/1",
-    title: "Stool",
-    handle: "stool",
-    vendor: "V",
-    productType: "Bar Stool",
-    status: "ACTIVE",
-  },
-  { id: "gid://shopify/Collection/1", handle: "stools", title: "Stools", __parentId: "gid://shopify/Product/1" },
-  {
-    id: "gid://shopify/ProductVariant/1",
-    __parentId: "gid://shopify/Product/1",
-    title: "Oak",
-    sku: "S1",
-    price: "10.50",
-    inventoryPolicy: "DENY",
-    inventoryQuantity: 5,
-    inventoryItem: { tracked: true, unitCost: { amount: "4.00" } },
-  },
-];
 const ORDERS_JSONL = [
   { id: "gid://shopify/Order/1", createdAt: "2026-10-20T10:00:00Z", cancelledAt: null, test: false },
   {
     id: "gid://shopify/LineItem/1",
     __parentId: "gid://shopify/Order/1",
     quantity: 2,
+    title: "Stool",
+    variantTitle: "Oak",
+    sku: "S1",
+    vendor: "V",
     variant: { id: "gid://shopify/ProductVariant/1" },
+    product: { id: "gid://shopify/Product/1", productType: "Bar Stool" },
     discountedTotalSet: { shopMoney: { amount: "21.00" } },
   },
   {
@@ -78,7 +62,6 @@ const jsonl = (rows: unknown[]) => new Response(rows.map((r) => JSON.stringify(r
 
 type Opts = {
   scopes?: string[];
-  catalog?: unknown[];
   orders?: unknown[];
   pollStatus?: string;
   pollErrorCode?: string;
@@ -95,7 +78,7 @@ function installFetch(o: Opts = {}) {
   const polls: Record<string, number> = {};
   const fn = vi.fn(async (url: string, init?: RequestInit) => {
     if (url.startsWith("https://files.example/")) {
-      return jsonl(url.endsWith("catalog") ? (o.catalog ?? CATALOG_JSONL) : (o.orders ?? ORDERS_JSONL));
+      return jsonl(o.orders ?? ORDERS_JSONL);
     }
     if (o.status) return json({ errors: "nope" }, o.status);
     const body = JSON.parse(String(init?.body));
@@ -104,7 +87,8 @@ function installFetch(o: Opts = {}) {
     if (q.includes("StartBulk")) {
       if (o.startReply) return json(o.startReply);
       const inner: string = body.variables.query;
-      const kind = inner.includes("orders(") ? "orders" : "catalog";
+      // The only bulk operation a sync may start is the orders read.
+      const kind = inner.includes("orders(") && !inner.includes("products") ? "orders" : "unexpected";
       o.onStart?.(kind);
       return json({
         data: {
@@ -116,7 +100,7 @@ function installFetch(o: Opts = {}) {
       });
     }
     if (q.includes("PollBulk")) {
-      const kind = String(body.variables.id).endsWith("orders") ? "orders" : "catalog";
+      const kind = String(body.variables.id).endsWith("orders") ? "orders" : "unexpected";
       polls[kind] = (polls[kind] ?? 0) + 1;
       await o.onPoll?.(kind);
       return json({
@@ -217,34 +201,63 @@ describe("connectShopify", () => {
 });
 
 describe("syncShopify", () => {
-  it("stores merged variants with sales and counts skipped line items", async () => {
+  it("writes per-variant sales and counts, with exactly one bulk operation and no catalogue query", async () => {
     installFetch();
     await connect();
+    const { fn } = installFetch();
     const counts = await syncShopify(CLIENT, { now: NOW });
-    expect(counts).toEqual({ collections: 1, products: 1, variants: 1, orders: 1, skipped_line_items: 1 });
-    const cat = await loadCatalog(CLIENT);
-    expect(cat.variants[0]).toMatchObject({
-      price_cents: 1050,
-      cost_cents: 400,
-      units_30d: 2,
-      revenue_30d_cents: 2100,
-      units_60d: 2,
-    });
+    expect(counts).toEqual({ orders: 1, sales_variants: 1, skipped_line_items: 1 });
+    const sales = await loadSales(CLIENT);
+    expect(sales).toEqual([
+      {
+        client_id: CLIENT,
+        variant_key: "gid://shopify/ProductVariant/1",
+        variant_gid: "gid://shopify/ProductVariant/1",
+        product_gid: "gid://shopify/Product/1",
+        product_title: "Stool",
+        variant_title: "Oak",
+        sku: "S1",
+        vendor: "V",
+        product_type: "Bar Stool",
+        units_30d: 2,
+        revenue_30d_cents: 2100,
+        units_60d: 2,
+        revenue_60d_cents: 2100,
+      },
+    ]);
+    const graphql = fn.mock.calls
+      .filter((c) => !String(c[0]).startsWith("https://files.example/"))
+      .map((c) => JSON.parse(String(c[1]?.body)));
+    const starts = graphql.filter((b) => b.query.includes("StartBulk"));
+    expect(starts).toHaveLength(1);
+    expect(starts[0].variables.query).toContain("orders(");
+    expect(JSON.stringify(graphql)).not.toMatch(/products\s*[({]|ProductVariant\s*\{|collections/);
+    // One orders download, nothing else.
+    expect(fn.mock.calls.filter((c) => String(c[0]).startsWith("https://files.example/"))).toHaveLength(1);
     const row = await getConnection(CLIENT);
     expect(row?.last_sync_status).toBe("ok");
-    expect(row?.last_sync_counts?.skipped_line_items).toBe(1);
+    expect(row?.last_sync_counts).toEqual({ orders: 1, sales_variants: 1, skipped_line_items: 1 });
+    // No catalogue rows are written.
+    const cat = await loadCatalog(CLIENT);
+    expect(cat.products).toHaveLength(0);
+    expect(cat.variants).toHaveLength(0);
   });
 
-  it("gives variants with no sales zeros", async () => {
-    installFetch({ orders: [] });
+  it("an empty orders result is a valid sync with 0 sales variants, and clears old sales", async () => {
+    installFetch();
     await connect();
     await syncShopify(CLIENT, { now: NOW });
-    expect((await loadCatalog(CLIENT)).variants[0]).toMatchObject({
-      units_30d: 0,
-      revenue_30d_cents: 0,
-      units_60d: 0,
-      revenue_60d_cents: 0,
+    expect(await loadSales(CLIENT)).toHaveLength(1);
+    installFetch({ orders: [] });
+    await expect(syncShopify(CLIENT, { now: NOW })).resolves.toEqual({
+      orders: 0,
+      sales_variants: 0,
+      skipped_line_items: 0,
     });
+    expect(await loadSales(CLIENT)).toEqual([]);
+    const row = await getConnection(CLIENT);
+    expect(row?.last_sync_status).toBe("ok");
+    expect(row?.last_sync_at).toBeTruthy();
   });
 
   it("asks for the 60-day window as a UTC ISO string", async () => {
@@ -258,7 +271,7 @@ describe("syncShopify", () => {
     expect(orders.variables.query).toContain(`created_at:>='2026-08-24T12:00:00.000Z'`);
   });
 
-  it("keeps the previous catalogue when a bulk operation FAILED", async () => {
+  it("keeps the previous sales when a bulk operation FAILED", async () => {
     installFetch();
     await connect();
     await syncShopify(CLIENT, { now: NOW });
@@ -268,7 +281,7 @@ describe("syncShopify", () => {
     expect(row?.last_sync_status).toBe("error");
     expect(row?.last_sync_error).toBeTruthy();
     expect(row?.last_sync_error).not.toContain(TOKEN);
-    expect((await loadCatalog(CLIENT)).variants).toHaveLength(1);
+    expect(await loadSales(CLIENT)).toHaveLength(1);
   });
 
   it("maps a 401 to the reconnect message", async () => {
@@ -335,10 +348,10 @@ describe("syncShopify", () => {
     installFetch();
     await connect();
     installFetch();
-    // A failure that did not come from Shopify, thrown while the catalogue is being saved.
+    // A failure that did not come from Shopify, thrown while the sales are being saved.
     const store = getDemoStore();
-    const original = store.shopifyVariants;
-    Object.defineProperty(store, "shopifyVariants", {
+    const original = store.shopifySales;
+    Object.defineProperty(store, "shopifySales", {
       configurable: true,
       get: () => original,
       set: () => {
@@ -350,7 +363,7 @@ describe("syncShopify", () => {
         "The Shopify sync failed. Try again, and reconnect the store if it keeps failing.",
       );
     } finally {
-      Object.defineProperty(store, "shopifyVariants", { configurable: true, writable: true, value: original });
+      Object.defineProperty(store, "shopifySales", { configurable: true, writable: true, value: original });
     }
     const log = warnCalls().find(([m]) => m === "Shopify sync failed")?.[1];
     expect(log).toMatchObject({ clientId: CLIENT, stage: "saving", status: null, code: null });
@@ -392,36 +405,27 @@ describe("syncShopify", () => {
     await expect(syncShopify(CLIENT)).resolves.toBeDefined();
   });
 
-  it("heartbeats between phases so a long healthy sync is still refused at minute 20", async () => {
+  it("heartbeats before saving so a slow poll phase does not look stale", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       vi.setSystemTime(new Date("2026-10-23T12:00:00.000Z"));
       installFetch();
       await connect();
-      let second: unknown = "not run";
-      // Each bulk phase takes 9 minutes: the whole sync runs ~18+ minutes, past the 15-minute window.
       const { fn } = installFetch({
-        onPoll: async (kind) => {
+        onPoll: async () => {
           vi.setSystemTime(new Date(Date.now() + 9 * 60_000));
-          if (kind === "orders" && second === "not run") {
-            second = "running";
-            // Minute 18: the catalogue-phase heartbeat was at minute 9, so the run is still live.
-            second = await syncShopify(CLIENT).catch((e) => e);
-          }
         },
       });
       await syncShopify(CLIENT);
-      expect(second).toBeInstanceOf(Error);
-      expect((second as Error).message).toBe("A sync is already running for this store");
-      // The refused second call made no Shopify request of its own: only the first sync's 2 starts + 2 polls + 2 downloads.
-      expect(fn).toHaveBeenCalledTimes(6);
+      // One start, one poll and one download: the sync makes no other Shopify request.
+      expect(fn).toHaveBeenCalledTimes(3);
       expect((await getConnection(CLIENT))?.last_sync_status).toBe("ok");
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("heartbeats on every bulk poll so a long catalogue phase is still refused at minute 17", async () => {
+  it("heartbeats on every bulk poll so a long orders phase is still refused at minute 17", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       vi.setSystemTime(new Date("2026-10-23T12:00:00.000Z"));
@@ -433,11 +437,11 @@ describe("syncShopify", () => {
       // minutes old. Without poll heartbeats the last one would be at minute 0 (stale).
       installFetch({
         onStart: (kind) => {
-          if (kind === "catalog") vi.setSystemTime(new Date(Date.now() + 8 * 60_000));
+          if (kind === "orders") vi.setSystemTime(new Date(Date.now() + 8 * 60_000));
         },
-        pollStatusFor: (kind, n) => (kind === "catalog" && n < 4 ? "RUNNING" : "COMPLETED"),
+        pollStatusFor: (kind, n) => (kind === "orders" && n < 4 ? "RUNNING" : "COMPLETED"),
         onPoll: async (kind) => {
-          if (kind !== "catalog") return;
+          if (kind !== "orders") return;
           // The heartbeat was written just before this poll.
           heartbeatAtPoll.push(getDemoStore().shopifyConnections[0].updated_at === new Date().toISOString());
           vi.setSystemTime(new Date(Date.now() + 3 * 60_000));
@@ -454,41 +458,7 @@ describe("syncShopify", () => {
     }
   });
 
-  it("accepts an empty store on its first sync and records 0 products", async () => {
-    installFetch({ catalog: [], orders: [] });
-    await connect();
-    await expect(syncShopify(CLIENT, { now: NOW })).resolves.toMatchObject({ products: 0, variants: 0 });
-    const row = await getConnection(CLIENT);
-    expect(row?.last_sync_status).toBe("ok");
-    expect(row?.last_sync_counts?.products).toBe(0);
-    expect(row?.last_sync_at).toBeTruthy();
-  });
-
-  it("treats an empty products result as a failure and keeps old data", async () => {
-    installFetch();
-    await connect();
-    await syncShopify(CLIENT, { now: NOW });
-    installFetch({ catalog: [] });
-    await expect(syncShopify(CLIENT, { now: NOW })).rejects.toThrow(
-      "Shopify returned no products; keeping the existing data",
-    );
-    expect((await getConnection(CLIENT))?.last_sync_status).toBe("error");
-    expect((await loadCatalog(CLIENT)).variants).toHaveLength(1);
-  });
-
-  it("accepts an empty result when the last good sync also had 0 products", async () => {
-    installFetch({ catalog: [] });
-    await connect();
-    await setSyncStatus(CLIENT, {
-      status: "ok",
-      counts: { collections: 0, products: 0, variants: 0, orders: 0, skipped_line_items: 0 },
-    });
-    await replaceCatalog(CLIENT, { collections: [], products: [], variants: [] });
-    await expect(syncShopify(CLIENT, { now: NOW })).resolves.toMatchObject({ products: 0 });
-    expect((await getConnection(CLIENT))?.last_sync_status).toBe("ok");
-  });
-
-  it("demo mode syncs the mock catalogue with no network", async () => {
+  it("demo mode syncs the mock sales with no network and no catalogue writes", async () => {
     vi.stubEnv("DEMO_MODE", "true");
     resetConfigCache();
     const { fn } = installFetch();
@@ -500,8 +470,10 @@ describe("syncShopify", () => {
     });
     const counts = await syncShopify(CLIENT);
     expect(fn).not.toHaveBeenCalled();
-    expect(counts.products).toBeGreaterThan(0);
-    expect((await loadCatalog(CLIENT)).variants.length).toBe(counts.variants);
+    expect(counts).toEqual({ orders: MOCK_SALES_ORDERS, sales_variants: 8, skipped_line_items: 0 });
+    expect(await loadSales(CLIENT)).toHaveLength(8);
+    expect((await loadCatalog(CLIENT)).products).toHaveLength(0);
+    expect((await getConnection(CLIENT))?.last_sync_counts).toEqual(counts);
   });
 
   it("fails clearly when the store is not connected", async () => {
@@ -527,7 +499,7 @@ describe("getShopifyStatus / disconnect / syncAll", () => {
       currency: "GBP",
       last_sync_status: "ok",
     });
-    expect(status.counts?.skipped_line_items).toBe(1);
+    expect(status.counts).toEqual({ orders: 1, sales_variants: 1, skipped_line_items: 1 });
   });
 
   it("reports not connected", async () => {
@@ -545,7 +517,7 @@ describe("getShopifyStatus / disconnect / syncAll", () => {
     await syncShopify(CLIENT, { now: NOW });
     await disconnectShopify(CLIENT);
     expect(await getConnection(CLIENT)).toBeNull();
-    expect((await loadCatalog(CLIENT)).variants).toHaveLength(0);
+    expect(await loadSales(CLIENT)).toHaveLength(0);
   });
 
   it("syncAll continues past a failing store", async () => {

@@ -11,18 +11,17 @@ import {
 } from "./client";
 import { normalizeShopDomain } from "./domain";
 import { ShopifyUpstreamError } from "./sync-errors";
-import { MOCK_SHOP, mockShopifyCatalog } from "./mock";
-import { CATALOG_BULK_QUERY, ORDERS_BULK_QUERY, createCatalogBuilder, createSalesAggregator } from "./parse";
+import { MOCK_SALES_ORDERS, MOCK_SHOP, mockShopifySales } from "./mock";
+import { ORDERS_BULK_QUERY, createSalesAggregator } from "./parse";
 import {
   deleteConnection,
   getConnection,
   listConnectedClientIds,
-  replaceCatalog,
+  replaceSales,
   saveConnection,
   setSyncStatus,
 } from "./store";
-import type { ShopifyCatalog } from "./store";
-import type { ShopifySyncCounts, ShopifyVariant } from "./types";
+import type { ShopifySalesRow, ShopifySyncCounts } from "./types";
 
 /** Read-only connector: connect (token paste), sync, disconnect and status. */
 
@@ -30,7 +29,6 @@ export const REQUIRED_SCOPES = ["read_products", "read_inventory", "read_orders"
 const RECONNECT_MESSAGE = "Shopify rejected the token: reconnect the store";
 const BUSY_MESSAGE = "Shopify is busy, try again in a few minutes";
 const GENERIC_SYNC_MESSAGE = "The Shopify sync failed. Try again, and reconnect the store if it keeps failing.";
-const NO_PRODUCTS_MESSAGE = "Shopify returned no products; keeping the existing data";
 const ALREADY_RUNNING_MESSAGE = "A sync is already running for this store";
 const ACCESS_DENIED_MESSAGE =
   "Shopify refused access to the store's orders or products. Check the app's read_products, read_inventory and read_orders access and its protected customer data settings.";
@@ -40,18 +38,14 @@ const DAY_MS = 24 * 3600 * 1000;
 /** While a bulk result streams, heartbeat at most this often (well inside STALE_RUNNING_MS). */
 const STREAM_HEARTBEAT_MS = 60_000;
 /**
- * Largest bulk result (Shopify's objectCount) the sync will download. Every catalogue row is
- * held in memory until it is saved, so a bigger store is refused before the download starts.
+ * Largest bulk result (Shopify's objectCount) the sync will download. The sales rows are held
+ * in memory until they are saved, so a bigger store is refused before the download starts.
  */
 export const MAX_BULK_OBJECTS = 3_000_000;
-const CATALOGUE_STAGE = "catalogue bulk read";
 const ORDERS_STAGE = "orders bulk read";
 
-function tooLargeMessage(stage: string, objectCount: number): string {
-  const n = objectCount.toLocaleString("en-US");
-  return stage === ORDERS_STAGE
-    ? `This store has too many recent orders to sync (${n} records). Contact support.`
-    : `This store's catalogue is too large to sync (${n} records). Contact support.`;
+function tooLargeMessage(objectCount: number): string {
+  return `This store has too many recent orders to sync (${objectCount.toLocaleString("en-US")} records). Contact support.`;
 }
 
 /** An error whose message is fixed text, safe to store and show. */
@@ -212,7 +206,7 @@ async function readBulk(input: {
   input.onObjectCount(done.objectCount);
   if (done.objectCount > MAX_BULK_OBJECTS) {
     logger.warn("Shopify bulk result too large", { clientId, stage, objectCount: done.objectCount });
-    throw new SyncError(tooLargeMessage(stage, done.objectCount));
+    throw new SyncError(tooLargeMessage(done.objectCount));
   }
   const started = Date.now();
   const stats = { bytes: 0, lines: 0 };
@@ -266,67 +260,47 @@ export async function syncShopify(
   // Shopify's objectCount for the bulk read in progress, for the failure log.
   let objectCount: number | null = null;
   try {
-    let catalog: ShopifyCatalog;
-    let orders = 0;
+    let rows: Omit<ShopifySalesRow, "client_id">[];
+    let orders: number;
     let skipped = 0;
 
     if (isDemo()) {
-      catalog = mockShopifyCatalog(clientId);
+      rows = mockShopifySales(clientId);
+      orders = MOCK_SALES_ORDERS;
     } else {
       stage = "reading the token";
       token = decryptToken(connection.access_token_encrypted);
-      const host = connection.shop_domain;
-      const poll = { intervalMs: opts.pollIntervalMs, onPoll: () => heartbeat(clientId) };
-      const read = { clientId, host, token, poll, heartbeatMs: opts.heartbeatIntervalMs ?? STREAM_HEARTBEAT_MS };
-      const onObjectCount = (n: number) => {
-        objectCount = n;
-      };
-      // Each result is folded into its builder as it streams in.
-      const catalogBuilder = createCatalogBuilder(clientId);
+      // The result is folded into the aggregator as it streams in; no catalogue is read.
       const salesAggregator = createSalesAggregator(now);
-      // Run one after the other (older API versions allow one bulk query per shop at a time).
-      stage = CATALOGUE_STAGE;
-      await readBulk({ ...read, query: CATALOG_BULK_QUERY, stage, push: catalogBuilder.push, onObjectCount });
-      await heartbeat(clientId);
       const since = new Date(now.getTime() - 60 * DAY_MS).toISOString();
       stage = ORDERS_STAGE;
-      objectCount = null;
-      await readBulk({ ...read, query: ORDERS_BULK_QUERY(since), stage, push: salesAggregator.push, onObjectCount });
-      await heartbeat(clientId);
-
-      stage = "parsing";
-      objectCount = null;
-      const parsed = catalogBuilder.finish();
+      await readBulk({
+        clientId,
+        host: connection.shop_domain,
+        token,
+        poll: { intervalMs: opts.pollIntervalMs, onPoll: () => heartbeat(clientId) },
+        heartbeatMs: opts.heartbeatIntervalMs ?? STREAM_HEARTBEAT_MS,
+        query: ORDERS_BULK_QUERY(since),
+        stage,
+        push: salesAggregator.push,
+        onObjectCount: (n) => {
+          objectCount = n;
+        },
+      });
       const sales = salesAggregator.finish();
+      rows = sales.rows;
       orders = sales.orders;
       skipped = sales.skippedLineItems;
-      // Sales are merged into the parsed rows in place: no second copy of every variant.
-      const variants = parsed.variants as ShopifyVariant[];
-      for (const v of variants) {
-        const s = sales.byVariant.get(v.gid);
-        v.units_30d = s?.units_30d ?? 0;
-        v.revenue_30d_cents = s?.revenue_30d_cents ?? 0;
-        v.units_60d = s?.units_60d ?? 0;
-        v.revenue_60d_cents = s?.revenue_60d_cents ?? 0;
-      }
-      catalog = { collections: parsed.collections, products: parsed.products, variants };
-    }
-
-    // replaceCatalog with nothing deletes everything, so an empty read is a failure when
-    // the last good sync had products. With no previous good sync (a new or empty store)
-    // it is accepted and recorded as 0 products.
-    if (catalog.products.length === 0 && (connection.last_sync_counts?.products ?? 0) > 0) {
-      throw new SyncError(NO_PRODUCTS_MESSAGE);
     }
 
     stage = "saving";
+    objectCount = null;
     await heartbeat(clientId);
-    await replaceCatalog(clientId, catalog);
+    // An empty result is a valid sync (the store had no sales): it clears the old rows.
+    await replaceSales(clientId, rows, () => heartbeat(clientId));
     const counts: ShopifySyncCounts = {
-      collections: catalog.collections.length,
-      products: catalog.products.length,
-      variants: catalog.variants.length,
       orders,
+      sales_variants: rows.length,
       skipped_line_items: skipped,
     };
     await setSyncStatus(clientId, { status: "ok", counts });
