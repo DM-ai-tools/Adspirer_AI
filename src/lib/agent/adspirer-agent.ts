@@ -2031,9 +2031,11 @@ export async function gatherDiagnoseEvidence(input: {
                 ? `- Campaigns: ${matchedCampaigns.map((c) => `${c.name} (${c.id})`).join("; ")}`
                 : null,
               `- Period: ${dateLabel} (${dateStart} → ${dateStop})`,
-              brief.compareStart && brief.compareStop
-                ? `- Compared with: ${brief.compareLabel ?? ""} (${brief.compareStart} → ${brief.compareStop}), as the operator asked`
-                : `- Compared with: the same number of days immediately before`,
+              !brief.compare
+                ? `- Compared with: nothing — not requested; report the audited period only`
+                : brief.compareStart && brief.compareStop
+                  ? `- Compared with: ${brief.compareLabel ?? ""} (${brief.compareStart} → ${brief.compareStop}), as the operator asked`
+                  : `- Compared with: the same number of days immediately before (as asked)`,
               `- Competitor LPs: ${
                 brief.competitorLanding === "skip"
                   ? "skipped"
@@ -2402,8 +2404,9 @@ export async function gatherDiagnoseEvidence(input: {
                   1,
                   Math.round((Date.parse(`${dateStop}T00:00:00Z`) - Date.parse(`${dateStart}T00:00:00Z`)) / 86_400_000) + 1,
                 ),
-                // A range the operator named to compare against ("Oct 19-20 vs Oct 17-18").
-                ...(brief.compareStart && brief.compareStop
+                // Compare only when the operator asked; then a range they named ("Oct 19-20 vs Oct 17-18").
+                compare: brief.compare,
+                ...(brief.compare && brief.compareStart && brief.compareStop
                   ? { compareSince: brief.compareStart, compareUntil: brief.compareStop }
                   : {}),
               });

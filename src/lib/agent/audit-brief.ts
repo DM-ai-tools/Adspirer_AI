@@ -19,7 +19,13 @@ export type AuditBrief = {
   dateStart: string | null;
   dateStop: string | null;
   dateLabel: string | null;
-  /** A comparison range the operator named ("Oct 19-20 vs Oct 17-18"); null means the previous period of the same length. */
+  /**
+   * The operator asked for a comparison (named two ranges, or asked in words:
+   * "compare with the previous period", "trend", "week over week"). False
+   * means the audit reports the audited period alone.
+   */
+  compare: boolean;
+  /** A comparison range the operator named ("Oct 19-20 vs Oct 17-18"); null with `compare` means the previous period of the same length. */
   compareStart: string | null;
   compareStop: string | null;
   compareLabel: string | null;
@@ -261,6 +267,7 @@ function finalizeBrief(partial: {
   dateStart: string | null;
   dateStop: string | null;
   dateLabel: string | null;
+  compare: boolean;
   compareStart: string | null;
   compareStop: string | null;
   compareLabel: string | null;
@@ -296,6 +303,7 @@ function mergeBriefs(parts: AuditBrief[]): AuditBrief {
   let dateStart: string | null = null;
   let dateStop: string | null = null;
   let dateLabel: string | null = null;
+  let compare = false;
   let compareStart: string | null = null;
   let compareStop: string | null = null;
   let compareLabel: string | null = null;
@@ -314,10 +322,14 @@ function mergeBriefs(parts: AuditBrief[]): AuditBrief {
       dateStart = part.dateStart;
       dateStop = part.dateStop;
       dateLabel = part.dateLabel;
-      // A later single range drops an earlier comparison.
+      // A later range decides the comparison: one range without a comparison ask drops an earlier one.
+      compare = part.compare;
       compareStart = part.compareStart;
       compareStop = part.compareStop;
       compareLabel = part.compareLabel;
+    } else if (part.compare) {
+      // "also compare with the previous period" — asked for the range already given.
+      compare = true;
     }
     if (part.competitorLanding === "skip") {
       competitorLanding = "skip";
@@ -342,6 +354,7 @@ function mergeBriefs(parts: AuditBrief[]): AuditBrief {
     dateStart,
     dateStop,
     dateLabel,
+    compare,
     compareStart,
     compareStop,
     compareLabel,
@@ -350,11 +363,53 @@ function mergeBriefs(parts: AuditBrief[]): AuditBrief {
   });
 }
 
+const PERIOD_WORD =
+  "(?:\\b(?:previous|prior|preceding|earlier|before|last|period|weeks?|months?|years?|quarters?|days?|yesterday|fortnight|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\b|\\d)";
+const PERIOD_NOUN = "(?:period|weeks?|months?|years?|quarters?|days?|fortnight|time)";
+const RELATIVE = "(?:previous|prior|preceding|last|earlier|same)";
+
+/** "no comparison", "don't compare", "without the trend" — asked not to. */
+const COMPARISON_DECLINED = /\b(?:no|don'?t|do\s+not|without|skip)\s+(?:a\s+|any\s+|the\s+)?(?:compar\w*|trend\w*)/i;
+
+/** Phrasings that ask to compare periods without naming the second range. */
+const COMPARISON_ASKS: RegExp[] = [
+  // "compare with the previous period", "compared to last week", "a comparison with August".
+  // Not "compare our landing pages with competitors", "competitor comparison" or "compare campaign A vs B".
+  new RegExp(
+    `(?<!\\b(?:competitors?|competitor\\s+lps?|lps?|landing\\s+pages?)\\s+)\\bcompar(?:e|ed|es|ing|ison|isons)\\b(?:(?!\\b(?:competitors?|landing|lps?|pages?|campaigns?|ad\\s*sets?|ads?|creatives?)\\b)[^.,;?!\\n]){0,40}?${PERIOD_WORD}`,
+    "i",
+  ),
+  // "vs previous period", "against the prior month", "versus the 7 days before".
+  new RegExp(`\\b(?:vs\\.?|versus|against)\\s+(?:the\\s+)?${RELATIVE}\\s+(?:\\d{1,3}\\s+)?${PERIOD_NOUN}\\b`, "i"),
+  new RegExp(`\\b(?:vs\\.?|versus|against)\\s+(?:the\\s+)?(?:\\d{1,3}\\s+)?${PERIOD_NOUN}\\s+before\\b`, "i"),
+  // "higher than last week".
+  new RegExp(`\\bthan\\s+(?:the\\s+)?${RELATIVE}\\s+(?:\\d{1,3}\\s+)?${PERIOD_NOUN}\\b`, "i"),
+  // "the previous period" on its own — but not "previous" alone ("Previous video").
+  /\b(?:previous|prior|preceding)\s+period\b/i,
+  /\btrend(?:s|ed|ing)?\b/i,
+  /\b(?:day|week|month|quarter|year|period)[- ]over[- ](?:day|week|month|quarter|year|period)\b/i,
+  // "how has it changed", "how have the results changed".
+  /\bhow\s+(?:has|have|did|does|do|is|are)\s+(?:[\w']+\s+){0,3}?(?:changed|changing|shifted|moved|evolved)\b/i,
+  // "has CPL improved since…", "declined since last month".
+  /\b(?:improved|improving|declined|declining|dropped|grown|grew|increased|decreased|fallen|fell|worsened|got\s+(?:worse|better))\s+since\b/i,
+];
+
+/**
+ * Whether the text asks for a comparison over time. Conservative: an
+ * ambiguous ask doesn't compare — the operator can ask for it.
+ */
+export function asksForComparison(text: string): boolean {
+  if (COMPARISON_DECLINED.test(text)) return false;
+  if (parseComparisonRanges(text)) return true;
+  return COMPARISON_ASKS.some((re) => re.test(text));
+}
+
 function briefFromText(text: string): AuditBrief {
   const { scope, campaignHints, activeCampaigns } = parseScope(text);
-  // "A vs B" names both ranges; otherwise one range, compared with the period before.
+  // "A vs B" names both ranges; otherwise one range, compared only when the text asks for it.
   const pair = parseComparisonRanges(text);
   const range = pair?.current ?? parseDateRangeFromText(text);
+  const compare = asksForComparison(text);
   const competitor = parseCompetitorLanding(text);
 
   return finalizeBrief({
@@ -364,9 +419,10 @@ function briefFromText(text: string): AuditBrief {
     dateStart: range?.dateStart ?? null,
     dateStop: range?.dateStop ?? null,
     dateLabel: range?.dateLabel ?? null,
-    compareStart: pair?.comparison.dateStart ?? null,
-    compareStop: pair?.comparison.dateStop ?? null,
-    compareLabel: pair?.comparison.dateLabel ?? null,
+    compare,
+    compareStart: (compare && pair?.comparison.dateStart) || null,
+    compareStop: (compare && pair?.comparison.dateStop) || null,
+    compareLabel: (compare && pair?.comparison.dateLabel) || null,
     competitorLanding: competitor.choice,
     competitorUrls: competitor.urls,
   });
