@@ -81,41 +81,49 @@ function productStatus(value: string): ShopifyProductStatus {
   return (SHOPIFY_PRODUCT_STATUSES as readonly string[]).includes(value) ? (value as ShopifyProductStatus) : "UNKNOWN";
 }
 
-export function parseCatalog(
-  clientId: string,
-  lines: Line[],
-): { collections: ShopifyCollection[]; products: ShopifyProduct[]; variants: CatalogVariant[] } {
+export type ParsedCatalog = { collections: ShopifyCollection[]; products: ShopifyProduct[]; variants: CatalogVariant[] };
+export type SalesSummary = { byVariant: Map<string, Sales>; orders: number; skippedLineItems: number };
+
+/**
+ * Single-pass catalogue builder for a bulk result streamed one line at a time. Shopify writes
+ * every nested connection's objects after their parent ("all nested connections appear after
+ * their parents in the file", bulk-operations/queries guide), so a child is attached when it
+ * arrives; a child whose product was never seen is ignored. Only the rows to be saved are
+ * kept, never the raw lines.
+ */
+export function createCatalogBuilder(clientId: string): {
+  push: (line: Line) => void;
+  finish: () => ParsedCatalog;
+} {
   const products: ShopifyProduct[] = [];
   const variants: CatalogVariant[] = [];
   const productByGid = new Map<string, ShopifyProduct>();
   // Collections come only as children of products: gid -> row plus the products seen in it.
   const collectionByGid = new Map<string, { row: ShopifyCollection; products: Set<string> }>();
 
-  // Parents precede children in bulk output, but index products first so order never matters.
-  for (const l of lines) {
+  const push = (l: Line): void => {
     const id = str(l.id);
-    if (l.__parentId === undefined && id.startsWith("gid://shopify/Product/")) {
-      const p: ShopifyProduct = {
-        client_id: clientId,
-        gid: id,
-        title: str(l.title),
-        handle: str(l.handle),
-        vendor: str(l.vendor),
-        product_type: str(l.productType),
-        status: productStatus(str(l.status)),
-        collection_gids: [],
-      };
-      products.push(p);
-      productByGid.set(id, p);
+    if (l.__parentId === undefined) {
+      if (id.startsWith("gid://shopify/Product/")) {
+        const p: ShopifyProduct = {
+          client_id: clientId,
+          gid: id,
+          title: str(l.title),
+          handle: str(l.handle),
+          vendor: str(l.vendor),
+          product_type: str(l.productType),
+          status: productStatus(str(l.status)),
+          collection_gids: [],
+        };
+        products.push(p);
+        productByGid.set(id, p);
+      }
+      return;
     }
-  }
-
-  for (const l of lines) {
-    const id = str(l.id);
     const parent = typeof l.__parentId === "string" ? l.__parentId : null;
-    if (parent === null) continue;
+    if (parent === null) return;
     const product = productByGid.get(parent);
-    if (!product) continue;
+    if (!product) return;
     if (id.startsWith("gid://shopify/Collection/")) {
       if (!product.collection_gids.includes(id)) product.collection_gids.push(id);
       let c = collectionByGid.get(id);
@@ -144,18 +152,31 @@ export function parseCatalog(
         inventory_quantity: unlimited || qty === null ? null : Math.max(0, qty),
       });
     }
-  }
-  const collections = [...collectionByGid.values()].map(({ row, products: seen }) => ({
-    ...row,
-    products_count: seen.size,
-  }));
-  return { collections, products, variants };
+  };
+
+  const finish = (): ParsedCatalog => {
+    const collections = [...collectionByGid.values()].map(({ row, products: seen }) => ({
+      ...row,
+      products_count: seen.size,
+    }));
+    return { collections, products, variants };
+  };
+  return { push, finish };
 }
 
-export function aggregateSales(
-  lines: Line[],
-  now: Date,
-): { byVariant: Map<string, Sales>; orders: number; skippedLineItems: number } {
+export function parseCatalog(clientId: string, lines: Line[]): ParsedCatalog {
+  const builder = createCatalogBuilder(clientId);
+  for (const l of lines) builder.push(l);
+  return builder.finish();
+}
+
+/**
+ * Single-pass sales aggregator for an orders bulk result streamed one line at a time (line
+ * items come after their order, as for the catalogue). Keeps one entry per counted order
+ * (in the 30-day window or only the 60-day one) and the per-variant sums; line items are
+ * folded in as they arrive and never kept.
+ */
+export function createSalesAggregator(now: Date): { push: (line: Line) => void; finish: () => SalesSummary } {
   const DAY = 86_400_000;
   const t30 = now.getTime() - 30 * DAY;
   const t60 = now.getTime() - 60 * DAY;
@@ -164,36 +185,46 @@ export function aggregateSales(
   const valid = new Map<string, boolean>();
   let skippedLineItems = 0;
 
-  for (const l of lines) {
-    if (l.__parentId !== undefined || !str(l.id).startsWith("gid://shopify/Order/")) continue;
-    if (l.cancelledAt || l.test === true) continue;
-    const t = Date.parse(str(l.createdAt));
-    if (!Number.isFinite(t) || t < t60) continue;
-    valid.set(str(l.id), t >= t30);
-  }
-
-  for (const l of lines) {
-    if (typeof l.__parentId !== "string") continue;
+  const push = (l: Line): void => {
+    if (l.__parentId === undefined) {
+      if (!str(l.id).startsWith("gid://shopify/Order/")) return;
+      if (l.cancelledAt || l.test === true) return;
+      const t = Date.parse(str(l.createdAt));
+      if (!Number.isFinite(t) || t < t60) return;
+      valid.set(str(l.id), t >= t30);
+      return;
+    }
+    if (typeof l.__parentId !== "string") return;
     const in30 = valid.get(l.__parentId);
-    if (in30 === undefined) continue;
+    if (in30 === undefined) return;
     const variantId = isObj(l.variant) ? str(l.variant.id) : "";
     if (!variantId) {
       skippedLineItems += 1;
-      continue;
+      return;
     }
     const qty = typeof l.quantity === "number" ? Math.max(0, l.quantity) : 0;
     const money = isObj(l.discountedTotalSet) && isObj(l.discountedTotalSet.shopMoney)
       ? l.discountedTotalSet.shopMoney.amount
       : null;
     const cents = toCents(money as string | null) ?? 0;
-    const s = byVariant.get(variantId) ?? { units_30d: 0, revenue_30d_cents: 0, units_60d: 0, revenue_60d_cents: 0 };
+    let s = byVariant.get(variantId);
+    if (!s) {
+      s = { units_30d: 0, revenue_30d_cents: 0, units_60d: 0, revenue_60d_cents: 0 };
+      byVariant.set(variantId, s);
+    }
     s.units_60d += qty;
     s.revenue_60d_cents += cents;
     if (in30) {
       s.units_30d += qty;
       s.revenue_30d_cents += cents;
     }
-    byVariant.set(variantId, s);
-  }
-  return { byVariant, orders: valid.size, skippedLineItems };
+  };
+
+  return { push, finish: () => ({ byVariant, orders: valid.size, skippedLineItems }) };
+}
+
+export function aggregateSales(lines: Line[], now: Date): SalesSummary {
+  const aggregator = createSalesAggregator(now);
+  for (const l of lines) aggregator.push(l);
+  return aggregator.finish();
 }
