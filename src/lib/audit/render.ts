@@ -412,7 +412,10 @@ export function renderAdSetEvidence(snap: MetaAuditSnapshot, maxAdSets = 40): st
       scoped
         ? "- No ad sets found in the audited campaign(s) — the campaign cannot deliver without one. Say so; do not invent ad set numbers."
         : "- No ad sets are live or spent in the period.",
-    ].join("\n");
+      snap.comparisonNotRequested ? "Comparison: not requested — report this period only." : null,
+    ]
+      .filter((l) => l != null)
+      .join("\n");
   }
   const bySpend = (x: AuditAdSet, y: AuditAdSet) => (y.performance?.spendCents ?? 0) - (x.performance?.spendCents ?? 0);
   const campaignOrder = [...snap.campaigns].sort(
@@ -440,6 +443,8 @@ export function renderAdSetEvidence(snap: MetaAuditSnapshot, maxAdSets = 40): st
         `Daily averages (the periods differ in length, ${dayCount(days)} vs ${dayCount(previousDays)}, so totals are not like-for-like): ${dailyLine(snap.totals, snap.previousTotals, days, previousDays, money)}`,
       );
     }
+  } else if (snap.comparisonNotRequested) {
+    lines.push(`Totals: ${periodLine(snap.totals, money)}`, "Comparison: not requested — report this period only.");
   }
   let shown = 0;
   for (const c of campaignOrder) {

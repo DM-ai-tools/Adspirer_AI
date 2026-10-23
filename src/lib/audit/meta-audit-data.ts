@@ -174,6 +174,8 @@ export type MetaAuditSnapshot = {
   /** Comparison parts that failed to load (the rest still compare). */
   comparisonFailures?: Array<"totals" | "campaigns" | "ad sets">;
   previousTotals?: PeriodPerformance | null;
+  /** Set when no comparison was asked for: nothing before the period was loaded, and nothing failed. */
+  comparisonNotRequested?: true;
   pixels: AuditPixel[];
   customConversions: AuditCustomConversion[];
   audiences: AuditAudience[];
@@ -362,10 +364,35 @@ export type AuditSnapshotOptions = {
   days?: number;
   since?: string;
   until?: string;
+  /**
+   * Load a comparison window at all. Default true (monitoring compares with
+   * the period just before); false loads the audited period alone.
+   */
+  compare?: boolean;
   /** A comparison range the operator named; default is the same-length period just before. */
   compareSince?: string;
   compareUntil?: string;
 };
+
+/** The snapshot without any comparison data, marked as not requested. */
+function withoutComparison(snap: MetaAuditSnapshot): MetaAuditSnapshot {
+  const dropPrevious = <T extends { previousPerformance?: PeriodPerformance | null }>(row: T): T => {
+    const copy = { ...row };
+    delete copy.previousPerformance;
+    return copy;
+  };
+  const out: MetaAuditSnapshot = {
+    ...snap,
+    comparisonNotRequested: true,
+    campaigns: snap.campaigns.map(dropPrevious),
+    adSets: snap.adSets.map(dropPrevious),
+  };
+  delete out.previousPeriod;
+  delete out.comparisonNamed;
+  delete out.comparisonFailures;
+  delete out.previousTotals;
+  return out;
+}
 
 const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -391,6 +418,8 @@ export async function fetchMetaAuditSnapshot(
   const since = options.since ?? dayString(new Date(Date.parse(`${until}T00:00:00Z`) - ((options.days ?? 30) - 1) * DAY_MS));
   const days = Math.round((Date.parse(`${until}T00:00:00Z`) - Date.parse(`${since}T00:00:00Z`)) / DAY_MS) + 1;
   const timeRange = JSON.stringify({ since, until });
+  // No comparison asked for: nothing before the period is fetched.
+  const compare = options.compare !== false;
   const comparison = comparisonPeriodOf(since, until, options);
   const previousPeriod = { since: comparison.since, until: comparison.until };
   const previousRange = JSON.stringify(previousPeriod);
@@ -458,15 +487,21 @@ export async function fetchMetaAuditSnapshot(
         level: "adset", date_preset: "last_7d", fields: "adset_id,frequency", limit: 200,
       }, 2)),
       // The comparison window (named, or the same length just before), for change-over-time.
-      settle(`${comparisonLabel} account totals`, warnings, graph.get<{ data?: Row[] }>(`${id}/insights`, {
-        level: "account", time_range: previousRange, fields: insightFields,
-      })),
-      settle(`${comparisonLabel} campaign performance`, warnings, paged(graph, `${id}/insights`, {
-        level: "campaign", time_range: previousRange, fields: `campaign_id,${insightFields}`, limit: 200,
-      }, 2)),
-      settle(`${comparisonLabel} ad set performance`, warnings, paged(graph, `${id}/insights`, {
-        level: "adset", time_range: previousRange, fields: `adset_id,${insightFields}`, limit: 200,
-      }, 3)),
+      compare
+        ? settle(`${comparisonLabel} account totals`, warnings, graph.get<{ data?: Row[] }>(`${id}/insights`, {
+            level: "account", time_range: previousRange, fields: insightFields,
+          }))
+        : null,
+      compare
+        ? settle(`${comparisonLabel} campaign performance`, warnings, paged(graph, `${id}/insights`, {
+            level: "campaign", time_range: previousRange, fields: `campaign_id,${insightFields}`, limit: 200,
+          }, 2))
+        : null,
+      compare
+        ? settle(`${comparisonLabel} ad set performance`, warnings, paged(graph, `${id}/insights`, {
+            level: "adset", time_range: previousRange, fields: `adset_id,${insightFields}`, limit: 200,
+          }, 3))
+        : null,
       settle("Ad frequency (7d)", warnings, paged(graph, `${id}/insights`, {
         level: "ad", date_preset: "last_7d", fields: "ad_id,frequency", limit: 200,
       }, 2)),
@@ -490,7 +525,7 @@ export async function fetchMetaAuditSnapshot(
     ...(previousCampaignIns == null ? (["campaigns"] as const) : []),
     ...(previousAdSetIns == null ? (["ad sets"] as const) : []),
   ];
-  const hasPrevious = comparisonFailures.length < 3;
+  const hasPrevious = compare && comparisonFailures.length < 3;
 
   const auditAdSets: AuditAdSet[] = (adSets ?? []).map((a) => {
     const promoted = (a.promoted_object ?? {}) as Row;
@@ -595,6 +630,7 @@ export async function fetchMetaAuditSnapshot(
           previousTotals: previousTotals ? performanceFrom(previousTotals.data?.[0]) : null,
         }
       : {}),
+    ...(compare ? {} : { comparisonNotRequested: true as const }),
     pixels: auditPixels,
     ...(catalogProducts ? { catalogProducts } : {}),
     customConversions: (customConversions ?? []).map((c) => ({
@@ -781,6 +817,15 @@ export function demoMetaAuditSnapshot(
   daysOrOptions: number | AuditSnapshotOptions = 30,
 ): MetaAuditSnapshot {
   const options: AuditSnapshotOptions = typeof daysOrOptions === "number" ? { days: daysOrOptions } : daysOrOptions;
+  const snap = demoSnapshotWithComparison(accountId, accountName, options);
+  return options.compare === false ? withoutComparison(snap) : snap;
+}
+
+function demoSnapshotWithComparison(
+  accountId: string,
+  accountName: string,
+  options: AuditSnapshotOptions,
+): MetaAuditSnapshot {
   const until = options.until && ISO_DAY.test(options.until) ? options.until : dayString(new Date(Date.now() - 86_400_000));
   const since =
     options.since && ISO_DAY.test(options.since) && options.since <= until
