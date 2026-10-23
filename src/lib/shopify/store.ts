@@ -214,6 +214,14 @@ export async function loadCatalog(clientId: string): Promise<ShopifyCatalog> {
   return { collections, products, variants };
 }
 
+/** Client ids that have a Shopify connection (for the cron sync). */
+export async function listConnectedClientIds(): Promise<string[]> {
+  if (inDemoStore()) return getDemoStore().shopifyConnections.map((c) => c.client_id);
+  const { data, error } = await createAdminClient().from(CONNECTION).select("client_id");
+  if (error) throw new Error(error.message);
+  return ((data as Array<{ client_id: string }> | null) ?? []).map((r) => r.client_id);
+}
+
 export async function deleteConnection(clientId: string): Promise<void> {
   if (inDemoStore()) {
     const store = getDemoStore();
