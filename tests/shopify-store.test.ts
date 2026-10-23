@@ -1,13 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { ShopifySalesRow } from "@/lib/shopify/types";
 import { getDemoStore } from "@/lib/demo/store";
-import { MOCK_SHOP, mockShopifyCatalog, mockShopifySales } from "@/lib/shopify/mock";
+import { MOCK_SHOP, mockLiveCatalog, mockShopifySales } from "@/lib/shopify/mock";
 import {
   deleteConnection,
   getConnection,
-  loadCatalog,
   loadSales,
-  replaceCatalog,
   replaceSales,
   saveConnection,
   setSyncStatus,
@@ -29,9 +27,6 @@ const input = (clientId: string) => ({
 beforeEach(() => {
   const s = getDemoStore();
   s.shopifyConnections.length = 0;
-  s.shopifyCollections.length = 0;
-  s.shopifyProducts.length = 0;
-  s.shopifyVariants.length = 0;
   s.shopifySales.length = 0;
 });
 
@@ -46,9 +41,8 @@ describe("shopify demo store", () => {
     expect(getDemoStore().shopifyConnections).toHaveLength(1);
   });
 
-  it("reconnecting the same store keeps its sync status and catalogue", async () => {
+  it("reconnecting the same store keeps its sync status", async () => {
     await saveConnection(input(A));
-    await replaceCatalog(A, mockShopifyCatalog(A));
     const counts = { orders: 3, sales_variants: 2, skipped_line_items: 0 };
     await setSyncStatus(A, { status: "ok", counts });
     await saveConnection({ ...input(A), accessTokenEncrypted: "v1:new" });
@@ -56,14 +50,11 @@ describe("shopify demo store", () => {
     expect(c.last_sync_status).toBe("ok");
     expect(c.last_sync_at).toBeTruthy();
     expect(c.last_sync_counts).toEqual(counts);
-    expect((await loadCatalog(A)).products).toHaveLength(6);
   });
 
-  it("connecting a different store drops the old catalogue and resets the sync status", async () => {
+  it("connecting a different store resets the sync status", async () => {
     await saveConnection(input(A));
     await saveConnection(input(B));
-    await replaceCatalog(A, mockShopifyCatalog(A));
-    await replaceCatalog(B, mockShopifyCatalog(B));
     await setSyncStatus(A, {
       status: "ok",
       counts: { orders: 3, sales_variants: 8, skipped_line_items: 0 },
@@ -78,11 +69,6 @@ describe("shopify demo store", () => {
       last_sync_error: null,
       last_sync_counts: null,
     });
-    const loaded = await loadCatalog(A);
-    expect(loaded.collections).toHaveLength(0);
-    expect(loaded.products).toHaveLength(0);
-    expect(loaded.variants).toHaveLength(0);
-    expect((await loadCatalog(B)).products).toHaveLength(6);
   });
 
   it("returns copies, not stored state", async () => {
@@ -108,45 +94,19 @@ describe("shopify demo store", () => {
     expect(e.last_sync_counts).toEqual(counts);
   });
 
-  it("replaceCatalog removes rows missing from the new set, leaving other clients alone", async () => {
-    const a = mockShopifyCatalog(A);
-    await replaceCatalog(A, a);
-    await replaceCatalog(B, mockShopifyCatalog(B));
-    const dropped = a.products[0].gid;
-    await replaceCatalog(A, {
-      collections: a.collections,
-      products: a.products.slice(1),
-      variants: a.variants.filter((v) => v.product_gid !== dropped),
-    });
-    const loaded = await loadCatalog(A);
-    expect(loaded.products.map((p) => p.gid)).not.toContain(dropped);
-    expect(loaded.products).toHaveLength(a.products.length - 1);
-    expect(loaded.variants.some((v) => v.product_gid === dropped)).toBe(false);
-    expect((await loadCatalog(B)).products).toHaveLength(a.products.length);
-  });
-
-  it("loadCatalog returns copies", async () => {
-    await replaceCatalog(A, mockShopifyCatalog(A));
-    (await loadCatalog(A)).products[0].title = "mutated";
-    expect((await loadCatalog(A)).products[0].title).not.toBe("mutated");
-  });
-
-  it("deleteConnection removes the connection and synced rows for that client only", async () => {
+  it("deleteConnection removes the connection for that client only", async () => {
     await saveConnection(input(A));
     await saveConnection(input(B));
-    await replaceCatalog(A, mockShopifyCatalog(A));
-    await replaceCatalog(B, mockShopifyCatalog(B));
     await deleteConnection(A);
     expect(await getConnection(A)).toBeNull();
-    expect((await loadCatalog(A)).products).toHaveLength(0);
-    expect((await loadCatalog(A)).collections).toHaveLength(0);
     expect(await getConnection(B)).not.toBeNull();
-    expect((await loadCatalog(B)).products.length).toBeGreaterThan(0);
   });
 
   it("bumps the demo store version so shopify arrays exist after hot reload", () => {
     const s = getDemoStore();
-    expect(Array.isArray(s.shopifyVariants)).toBe(true);
+    expect(Array.isArray(s.shopifySales)).toBe(true);
+    // The old catalogue arrays are gone: the catalogue is read live, never stored.
+    expect(s).not.toHaveProperty("shopifyProducts");
     expect((globalThis as { __adspirerDemoStoreVersion?: number }).__adspirerDemoStoreVersion).toBe(12);
   });
 });
@@ -237,19 +197,21 @@ describe("mockShopifySales", () => {
   });
 });
 
-describe("mockShopifyCatalog", () => {
-  it("has the ClickTrends shape", () => {
-    const c = mockShopifyCatalog(A);
+describe("mockLiveCatalog", () => {
+  it("has the ClickTrends shape the live demo lookups read, and no sales fields", () => {
+    const c = mockLiveCatalog();
     expect(c.collections.map((x) => x.title).sort()).toEqual(["Bar stools", "Sofas"]);
     expect(c.products).toHaveLength(6);
     expect(c.variants.some((v) => v.inventory_quantity === null)).toBe(true);
     expect(c.variants.some((v) => v.inventory_quantity === 0)).toBe(true);
     expect(c.variants.some((v) => v.cost_cents === null)).toBe(true);
     for (const v of c.variants) {
-      expect(v.client_id).toBe(A);
-      expect(v.units_60d).toBeGreaterThanOrEqual(v.units_30d);
-      expect(v.revenue_60d_cents).toBeGreaterThanOrEqual(v.revenue_30d_cents);
+      expect(v).not.toHaveProperty("units_30d");
+      expect(v).not.toHaveProperty("client_id");
       expect(c.products.some((p) => p.gid === v.product_gid)).toBe(true);
     }
+    // Fresh copies on every call.
+    c.products[0].title = "mutated";
+    expect(mockLiveCatalog().products[0].title).toBe("Oak Counter Stool");
   });
 });

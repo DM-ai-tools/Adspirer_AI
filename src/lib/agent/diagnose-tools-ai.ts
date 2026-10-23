@@ -77,8 +77,8 @@ async function metaAccountRefusal(args: unknown, ctx: ToolContext): Promise<stri
   }.`;
 }
 
-/** Offered only when the client has a connected Shopify store. */
-const SHOPIFY_TOOLS = ["shopify_products", "shopify_variants", "shopify_summary"] as const;
+/** Offered only when the client has a connected Shopify store (products and variants live, sales synced). */
+const SHOPIFY_TOOLS = ["shopify_products", "shopify_variants", "shopify_sales"] as const;
 
 function buildToolSet(ctx: ToolContext, names: readonly string[]): ToolSet {
   const tools: ToolSet = {};

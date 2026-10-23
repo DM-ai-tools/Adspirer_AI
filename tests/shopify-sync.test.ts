@@ -10,7 +10,7 @@ import { ValidationError } from "@/lib/errors";
 import { getDemoStore } from "@/lib/demo/store";
 import { decryptToken } from "@/lib/security/token-vault";
 import { MOCK_SHOP, MOCK_SALES_ORDERS } from "@/lib/shopify/mock";
-import { getConnection, loadCatalog, loadSales, setSyncStatus } from "@/lib/shopify/store";
+import { getConnection, loadSales, setSyncStatus } from "@/lib/shopify/store";
 import {
   connectShopify,
   disconnectShopify,
@@ -237,10 +237,6 @@ describe("syncShopify", () => {
     const row = await getConnection(CLIENT);
     expect(row?.last_sync_status).toBe("ok");
     expect(row?.last_sync_counts).toEqual({ orders: 1, sales_variants: 1, skipped_line_items: 1 });
-    // No catalogue rows are written.
-    const cat = await loadCatalog(CLIENT);
-    expect(cat.products).toHaveLength(0);
-    expect(cat.variants).toHaveLength(0);
   });
 
   it("an empty orders result is a valid sync with 0 sales variants, and clears old sales", async () => {
@@ -472,7 +468,6 @@ describe("syncShopify", () => {
     expect(fn).not.toHaveBeenCalled();
     expect(counts).toEqual({ orders: MOCK_SALES_ORDERS, sales_variants: 8, skipped_line_items: 0 });
     expect(await loadSales(CLIENT)).toHaveLength(8);
-    expect((await loadCatalog(CLIENT)).products).toHaveLength(0);
     expect((await getConnection(CLIENT))?.last_sync_counts).toEqual(counts);
   });
 

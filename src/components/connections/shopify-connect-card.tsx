@@ -193,7 +193,8 @@ function ClientRow({ client }: { client: Client }) {
           ) : null}
           {status.connected ? (
             <p className="text-xs text-muted">
-              The catalogue (products, stock, prices) is read live from Shopify when you ask in chat.
+              The catalogue (products, stock, prices) is read live from Shopify when you ask in chat;
+              sales for the last 30 and 60 days come from the latest sync.
             </p>
           ) : null}
 

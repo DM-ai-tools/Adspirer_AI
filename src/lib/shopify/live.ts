@@ -3,7 +3,7 @@ import { logger } from "@/lib/observability/logger";
 import { decryptToken } from "@/lib/security/token-vault";
 import { ShopifyApiError, shopifyGraphql } from "./client";
 import { toCents } from "./domain";
-import { MOCK_SHOP, mockShopifyCatalog } from "./mock";
+import { MOCK_SHOP, mockLiveCatalog } from "./mock";
 import { getConnection } from "./store";
 
 /**
@@ -675,7 +675,7 @@ async function demoProducts(
   },
 ): Promise<LiveProductsResult> {
   const currency = await demoCurrency(clientId);
-  const { collections, products, variants } = mockShopifyCatalog(clientId);
+  const { collections, products, variants } = mockLiveCatalog();
   let list = products;
   if (o.collection) {
     const hit = collections.find((c) => lc(c.title) === lc(o.collection) || lc(c.handle) === lc(o.collection));
@@ -725,7 +725,7 @@ async function demoVariants(
   o: { limit: number; sku?: string; search?: string; vendor?: string; notes: string[]; used: string },
 ): Promise<LiveVariantsResult> {
   const currency = await demoCurrency(clientId);
-  const { products, variants } = mockShopifyCatalog(clientId);
+  const { products, variants } = mockLiveCatalog();
   const byGid = new Map(products.map((p) => [p.gid, p]));
   const tokens = demoSearchTokens(o.search, o.notes);
   let matches = variants

@@ -1,4 +1,4 @@
-/** Read-only Shopify connection and synced catalogue. No customer personal data. */
+/** Read-only Shopify connection and synced sales. No customer personal data. */
 
 export type ShopifySyncStatus = "never" | "running" | "ok" | "error";
 
@@ -26,49 +26,6 @@ export type ShopifyConnection = {
   last_sync_counts: ShopifySyncCounts | null;
   created_at: string;
   updated_at: string;
-};
-
-export type ShopifyCollection = {
-  client_id: string;
-  gid: string;
-  handle: string;
-  title: string;
-  products_count: number;
-};
-
-/**
- * Shopify's ProductStatus values in API 2026-10, plus UNKNOWN for any value this code
- * does not know (stored as UNKNOWN rather than guessed as ACTIVE).
- */
-export const SHOPIFY_PRODUCT_STATUSES = ["ACTIVE", "DRAFT", "ARCHIVED", "UNLISTED", "UNKNOWN"] as const;
-export type ShopifyProductStatus = (typeof SHOPIFY_PRODUCT_STATUSES)[number];
-
-export type ShopifyProduct = {
-  client_id: string;
-  gid: string;
-  title: string;
-  handle: string;
-  vendor: string;
-  product_type: string;
-  status: ShopifyProductStatus;
-  collection_gids: string[];
-};
-
-export type ShopifyVariant = {
-  client_id: string;
-  gid: string;
-  product_gid: string;
-  title: string;
-  sku: string | null;
-  price_cents: number;
-  /** null = no cost recorded (not zero). */
-  cost_cents: number | null;
-  /** null = untracked / sells at zero stock (unlimited), never 0. */
-  inventory_quantity: number | null;
-  units_30d: number;
-  revenue_30d_cents: number;
-  units_60d: number;
-  revenue_60d_cents: number;
 };
 
 /** Per-variant sales from order lines (no catalogue needed). No customer data. */

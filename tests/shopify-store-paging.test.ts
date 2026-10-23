@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// loadCatalog against a fake that caps every response at 1000 rows, like PostgREST.
+// loadSales against a fake that caps every response at 1000 rows, like PostgREST.
 const db = vi.hoisted(() => ({
   tables: {} as Record<string, Array<Record<string, unknown>>>,
   ranges: [] as Array<[string, number, number]>,
   orders: [] as Array<[string, string]>,
   failAt: null as { table: string; request: number } | null,
   counts: {} as Record<string, number>,
+  selects: [] as Array<[string, string]>,
 }));
 
 vi.mock("@/lib/config", () => ({
@@ -31,7 +32,7 @@ vi.mock("@/lib/supabase/admin", () => ({
         return { data: rows, error: null };
       };
       const q: Record<string, unknown> = {
-        select: () => q,
+        select: (cols: string) => (db.selects.push([table, cols]), q),
         eq: () => q,
         order: (col: string) => ((orderBy = col), db.orders.push([table, col]), q),
         range: (a: number, b: number) => ((from = a), (to = b), db.ranges.push([table, a, b]), q),
@@ -42,7 +43,7 @@ vi.mock("@/lib/supabase/admin", () => ({
   }),
 }));
 
-import { loadCatalog, loadSales } from "@/lib/shopify/store";
+import { loadSales } from "@/lib/shopify/store";
 
 const CLIENT = "6f1c2b9e-0d4a-4c5e-9b8a-2f3e4d5c6b7a";
 const pad = (i: number) => String(i).padStart(5, "0");
@@ -53,38 +54,7 @@ beforeEach(() => {
   db.orders = [];
   db.failAt = null;
   db.counts = {};
-});
-
-describe("loadCatalog paging", () => {
-  it("returns all 2,350 variants in gid order via 3 requests", async () => {
-    // Inserted in reverse so ordering must come from the query.
-    db.tables.shopify_variants = Array.from({ length: 2350 }, (_, i) => ({ gid: `v${pad(2349 - i)}`, client_id: CLIENT }));
-    const { variants } = await loadCatalog(CLIENT);
-    expect(variants).toHaveLength(2350);
-    expect(variants.map((v) => v.gid)).toEqual(Array.from({ length: 2350 }, (_, i) => `v${pad(i)}`));
-    expect(db.ranges.filter(([t]) => t === "shopify_variants")).toEqual([
-      ["shopify_variants", 0, 999],
-      ["shopify_variants", 1000, 1999],
-      ["shopify_variants", 2000, 2999],
-    ]);
-    expect(db.orders.filter(([t]) => t === "shopify_variants").every(([, c]) => c === "gid")).toBe(true);
-  });
-
-  it("orders and pages every table, with one request when under a page", async () => {
-    db.tables.shopify_collections = [{ gid: "c1" }];
-    const cat = await loadCatalog(CLIENT);
-    expect(cat.collections).toHaveLength(1);
-    expect(db.counts.shopify_collections).toBe(1);
-    expect(new Set(db.orders.map(([t]) => t))).toEqual(
-      new Set(["shopify_collections", "shopify_products", "shopify_variants"]),
-    );
-  });
-
-  it("propagates a page error instead of returning partial data", async () => {
-    db.tables.shopify_variants = Array.from({ length: 2350 }, (_, i) => ({ gid: `v${pad(i)}` }));
-    db.failAt = { table: "shopify_variants", request: 2 };
-    await expect(loadCatalog(CLIENT)).rejects.toThrow("page failed");
-  });
+  db.selects = [];
 });
 
 describe("loadSales paging", () => {
@@ -113,5 +83,37 @@ describe("loadSales paging", () => {
     db.tables.shopify_sales = Array.from({ length: 2350 }, (_, i) => ({ variant_key: `v${pad(i)}` }));
     db.failAt = { table: "shopify_sales", request: 2 };
     await expect(loadSales(CLIENT)).rejects.toThrow("page failed");
+  });
+});
+
+describe("loadSales columns", () => {
+  const STORED = {
+    client_id: CLIENT,
+    variant_key: "gid://shopify/ProductVariant/1",
+    variant_gid: "gid://shopify/ProductVariant/1",
+    product_gid: "gid://shopify/Product/1",
+    product_title: "Oak Counter Stool",
+    variant_title: "Oak / 65cm",
+    sku: "BS-OAK-65",
+    vendor: "Nordic Woodworks",
+    product_type: "Bar Stool",
+    units_30d: 18,
+    revenue_30d_cents: 268200,
+    units_60d: 31,
+    revenue_60d_cents: 461900,
+  };
+
+  it("selects explicit columns, never *", async () => {
+    db.tables.shopify_sales = [STORED];
+    await loadSales(CLIENT);
+    const [[table, cols]] = db.selects;
+    expect(table).toBe("shopify_sales");
+    expect(cols).not.toContain("*");
+    expect(cols.split(",").map((c) => c.trim()).sort()).toEqual(Object.keys(STORED).sort());
+  });
+
+  it("returns only the sales fields even when the row carries synced_run and updated_at", async () => {
+    db.tables.shopify_sales = [{ ...STORED, synced_run: "run-1", updated_at: "2026-10-23T00:00:00Z" }];
+    expect(await loadSales(CLIENT)).toEqual([STORED]);
   });
 });

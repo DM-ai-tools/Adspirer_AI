@@ -3,19 +3,13 @@ import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { nowIso } from "@/lib/utils";
-import type {
-  ShopifyCollection,
-  ShopifyConnection,
-  ShopifyProduct,
-  ShopifySalesRow,
-  ShopifySyncCounts,
-  ShopifyVariant,
-} from "./types";
+import type { ShopifyConnection, ShopifySalesRow, ShopifySyncCounts } from "./types";
 
 /**
- * Persistence for the Shopify connection and its synced catalogue (demo store or
- * Supabase). The connection row holds only the encrypted token: never log it or
- * pass it to a browser-facing response.
+ * Persistence for the Shopify connection and its synced sales (demo store or Supabase).
+ * The connection row holds only the encrypted token: never log it or pass it to a
+ * browser-facing response. The catalogue is read live (live.ts) and never stored; the
+ * old catalogue tables (00013) are only ever cleared here, never written or read.
  */
 
 const CONNECTION = "shopify_connection";
@@ -25,12 +19,6 @@ const VARIANTS = "shopify_variants";
 const SALES = "shopify_sales";
 const CHUNK = 500;
 const PAGE = 1000;
-
-export type ShopifyCatalog = {
-  collections: ShopifyCollection[];
-  products: ShopifyProduct[];
-  variants: ShopifyVariant[];
-};
 
 function inDemoStore(): boolean {
   const config = getConfig();
@@ -43,10 +31,6 @@ function copyConnection(row: ShopifyConnection): ShopifyConnection {
     scopes: [...row.scopes],
     last_sync_counts: row.last_sync_counts ? { ...row.last_sync_counts } : null,
   };
-}
-
-function copyProduct(row: ShopifyProduct): ShopifyProduct {
-  return { ...row, collection_gids: [...row.collection_gids] };
 }
 
 export async function getConnection(clientId: string): Promise<ShopifyConnection | null> {
@@ -69,8 +53,8 @@ const NEVER_SYNCED = {
 
 /**
  * Saves (or replaces) the client's connection. Reconnecting the same store keeps its
- * sync status and catalogue; connecting a different store drops the old store's
- * catalogue rows and resets the sync status to "never".
+ * sync status and sales; connecting a different store drops the old store's sales
+ * (and any leftover rows of the old catalogue sync) and resets the sync status to "never".
  */
 export async function saveConnection(input: {
   clientId: string;
@@ -97,13 +81,7 @@ export async function saveConnection(input: {
     if (existing) {
       const storeChanged = existing.shop_domain !== input.shopDomain;
       Object.assign(existing, fields, { connected_at: now }, storeChanged ? NEVER_SYNCED : {});
-      if (storeChanged) {
-        const other = <T extends { client_id: string }>(rows: T[]) => rows.filter((r) => r.client_id !== input.clientId);
-        store.shopifyCollections = other(store.shopifyCollections);
-        store.shopifyProducts = other(store.shopifyProducts);
-        store.shopifyVariants = other(store.shopifyVariants);
-        store.shopifySales = other(store.shopifySales);
-      }
+      if (storeChanged) store.shopifySales = store.shopifySales.filter((r) => r.client_id !== input.clientId);
       return copyConnection(existing);
     }
     const row: ShopifyConnection = {
@@ -177,78 +155,6 @@ export async function setSyncStatus(
   if (error) throw new Error(error.message);
 }
 
-async function upsertChunks(table: string, rows: Array<Record<string, unknown>>): Promise<void> {
-  const db = createAdminClient();
-  for (let i = 0; i < rows.length; i += CHUNK) {
-    const { error } = await db.from(table).upsert(rows.slice(i, i + CHUNK), { onConflict: "client_id,gid" });
-    if (error) throw new Error(error.message);
-  }
-}
-
-/**
- * Write the new catalogue, then drop rows the sync did not touch. Rows are tagged with a
- * fresh synced_run; if any upsert fails nothing is deleted and the old data stays.
- */
-export async function replaceCatalog(clientId: string, data: ShopifyCatalog): Promise<void> {
-  if (inDemoStore()) {
-    const store = getDemoStore();
-    const keep = <T extends { client_id: string }>(rows: T[]) => rows.filter((r) => r.client_id !== clientId);
-    store.shopifyCollections = [...keep(store.shopifyCollections), ...data.collections.map((r) => ({ ...r, client_id: clientId }))];
-    store.shopifyProducts = [...keep(store.shopifyProducts), ...data.products.map((r) => ({ ...copyProduct(r), client_id: clientId }))];
-    store.shopifyVariants = [...keep(store.shopifyVariants), ...data.variants.map((r) => ({ ...r, client_id: clientId }))];
-    return;
-  }
-
-  const run = randomUUID();
-  const now = nowIso();
-  const tag = <T extends object>(rows: T[]) =>
-    rows.map((r) => ({ ...r, client_id: clientId, synced_run: run, updated_at: now }));
-
-  await upsertChunks(COLLECTIONS, tag(data.collections));
-  await upsertChunks(PRODUCTS, tag(data.products));
-  await upsertChunks(VARIANTS, tag(data.variants));
-
-  const db = createAdminClient();
-  for (const table of [COLLECTIONS, PRODUCTS, VARIANTS]) {
-    const { error } = await db.from(table).delete().eq("client_id", clientId).neq("synced_run", run);
-    if (error) throw new Error(error.message);
-  }
-}
-
-export async function loadCatalog(clientId: string): Promise<ShopifyCatalog> {
-  if (inDemoStore()) {
-    const store = getDemoStore();
-    return {
-      collections: store.shopifyCollections.filter((r) => r.client_id === clientId).map((r) => ({ ...r })),
-      products: store.shopifyProducts.filter((r) => r.client_id === clientId).map(copyProduct),
-      variants: store.shopifyVariants.filter((r) => r.client_id === clientId).map((r) => ({ ...r })),
-    };
-  }
-  const db = createAdminClient();
-  const read = async <T>(table: string): Promise<T[]> => {
-    // PostgREST caps a response at 1000 rows, so page until a short page comes back.
-    const out: T[] = [];
-    for (let from = 0; ; from += PAGE) {
-      const { data, error } = await db
-        .from(table)
-        .select("*")
-        .eq("client_id", clientId)
-        .order("gid")
-        .range(from, from + PAGE - 1);
-      if (error) throw new Error(error.message);
-      const page = (data as T[] | null) ?? [];
-      out.push(...page);
-      if (page.length < PAGE) return out;
-    }
-  };
-  const [collections, products, variants] = await Promise.all([
-    read<ShopifyCollection>(COLLECTIONS),
-    read<ShopifyProduct>(PRODUCTS),
-    read<ShopifyVariant>(VARIANTS),
-  ]);
-  return { collections, products, variants };
-}
-
 /** Client ids that have a Shopify connection (for the cron sync). */
 export async function listConnectedClientIds(): Promise<string[]> {
   if (inDemoStore()) return getDemoStore().shopifyConnections.map((c) => c.client_id);
@@ -300,9 +206,45 @@ export async function replaceSales(
   if (error) throw new Error(error.message);
 }
 
+/** The columns loadSales reads: the same fields on both backends (no synced_run / updated_at). */
+const SALES_COLUMNS = [
+  "client_id",
+  "variant_key",
+  "variant_gid",
+  "product_gid",
+  "product_title",
+  "variant_title",
+  "sku",
+  "vendor",
+  "product_type",
+  "units_30d",
+  "revenue_30d_cents",
+  "units_60d",
+  "revenue_60d_cents",
+] as const satisfies ReadonlyArray<keyof ShopifySalesRow>;
+
+/** A fresh row holding exactly the ShopifySalesRow fields (anything else is dropped). */
+function pickSales(row: ShopifySalesRow): ShopifySalesRow {
+  return {
+    client_id: row.client_id,
+    variant_key: row.variant_key,
+    variant_gid: row.variant_gid,
+    product_gid: row.product_gid,
+    product_title: row.product_title,
+    variant_title: row.variant_title,
+    sku: row.sku,
+    vendor: row.vendor,
+    product_type: row.product_type,
+    units_30d: row.units_30d,
+    revenue_30d_cents: row.revenue_30d_cents,
+    units_60d: row.units_60d,
+    revenue_60d_cents: row.revenue_60d_cents,
+  };
+}
+
 export async function loadSales(clientId: string): Promise<ShopifySalesRow[]> {
   if (inDemoStore()) {
-    return getDemoStore().shopifySales.filter((r) => r.client_id === clientId).map((r) => ({ ...r }));
+    return getDemoStore().shopifySales.filter((r) => r.client_id === clientId).map(pickSales);
   }
   const db = createAdminClient();
   const out: ShopifySalesRow[] = [];
@@ -310,17 +252,18 @@ export async function loadSales(clientId: string): Promise<ShopifySalesRow[]> {
   for (let from = 0; ; from += PAGE) {
     const { data, error } = await db
       .from(SALES)
-      .select("*")
+      .select(SALES_COLUMNS.join(","))
       .eq("client_id", clientId)
       .order("variant_key")
       .range(from, from + PAGE - 1);
     if (error) throw new Error(error.message);
-    const page = (data as ShopifySalesRow[] | null) ?? [];
-    out.push(...page);
+    const page = (data as unknown as ShopifySalesRow[] | null) ?? [];
+    out.push(...page.map(pickSales));
     if (page.length < PAGE) return out;
   }
 }
 
+/** Clears leftover rows of the old catalogue sync (tables from 00013, no longer written). */
 async function deleteCatalogRows(clientId: string): Promise<void> {
   const db = createAdminClient();
   for (const table of [VARIANTS, PRODUCTS, COLLECTIONS]) {
@@ -333,9 +276,6 @@ export async function deleteConnection(clientId: string): Promise<void> {
   if (inDemoStore()) {
     const store = getDemoStore();
     store.shopifyConnections = store.shopifyConnections.filter((r) => r.client_id !== clientId);
-    store.shopifyCollections = store.shopifyCollections.filter((r) => r.client_id !== clientId);
-    store.shopifyProducts = store.shopifyProducts.filter((r) => r.client_id !== clientId);
-    store.shopifyVariants = store.shopifyVariants.filter((r) => r.client_id !== clientId);
     store.shopifySales = store.shopifySales.filter((r) => r.client_id !== clientId);
     return;
   }
