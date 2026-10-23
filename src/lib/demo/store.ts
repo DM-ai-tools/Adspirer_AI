@@ -70,7 +70,7 @@ type GlobalDemo = typeof globalThis & {
   __adspirerDemoStoreVersion?: number;
 };
 
-const DEMO_STORE_VERSION = 10;
+const DEMO_STORE_VERSION = 11;
 
 function id(prefix: string): string {
   return `${prefix}_${nanoid(10)}`;
