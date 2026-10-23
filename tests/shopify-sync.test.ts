@@ -5,6 +5,7 @@ vi.mock("@/lib/observability/logger", () => ({
 }));
 
 import { resetConfigCache } from "@/lib/config";
+import { logger } from "@/lib/observability/logger";
 import { ValidationError } from "@/lib/errors";
 import { getDemoStore } from "@/lib/demo/store";
 import { decryptToken } from "@/lib/security/token-vault";
@@ -80,13 +81,18 @@ type Opts = {
   catalog?: unknown[];
   orders?: unknown[];
   pollStatus?: string;
+  pollErrorCode?: string;
+  /** Status for the n-th poll (1-based) of a phase; overrides pollStatus. */
+  pollStatusFor?: (kind: string, n: number) => string;
   status?: number;
   startReply?: unknown;
   onPoll?: (kind: string) => Promise<void> | void;
+  onStart?: (kind: string) => void;
 };
 
 /** Routes Shopify calls by content. */
 function installFetch(o: Opts = {}) {
+  const polls: Record<string, number> = {};
   const fn = vi.fn(async (url: string, init?: RequestInit) => {
     if (url.startsWith("https://files.example/")) {
       return jsonl(url.endsWith("catalog") ? (o.catalog ?? CATALOG_JSONL) : (o.orders ?? ORDERS_JSONL));
@@ -99,6 +105,7 @@ function installFetch(o: Opts = {}) {
       if (o.startReply) return json(o.startReply);
       const inner: string = body.variables.query;
       const kind = inner.includes("orders(") ? "orders" : "catalog";
+      o.onStart?.(kind);
       return json({
         data: {
           bulkOperationRunQuery: {
@@ -110,13 +117,14 @@ function installFetch(o: Opts = {}) {
     }
     if (q.includes("PollBulk")) {
       const kind = String(body.variables.id).endsWith("orders") ? "orders" : "catalog";
+      polls[kind] = (polls[kind] ?? 0) + 1;
       await o.onPoll?.(kind);
       return json({
         data: {
           node: {
             id: body.variables.id,
-            status: o.pollStatus ?? "COMPLETED",
-            errorCode: null,
+            status: o.pollStatusFor?.(kind, polls[kind]) ?? o.pollStatus ?? "COMPLETED",
+            errorCode: o.pollErrorCode ?? null,
             objectCount: "3",
             url: `https://files.example/${kind}`,
           },
@@ -129,7 +137,10 @@ function installFetch(o: Opts = {}) {
   return { fn };
 }
 
+const warnCalls = () => vi.mocked(logger.warn).mock.calls as Array<[string, Record<string, unknown>?]>;
+
 beforeEach(() => {
+  vi.mocked(logger.warn).mockClear();
   vi.stubEnv("DEMO_MODE", "false");
   resetConfigCache();
 });
@@ -163,6 +174,11 @@ describe("connectShopify", () => {
     installFetch({ scopes: ["read_products", "read_inventory"] });
     await expect(connect()).rejects.toThrow(/read_orders/);
     expect(await getConnection(CLIENT)).toBeNull();
+  });
+
+  it("accepts write scopes as covering the matching read scopes", async () => {
+    installFetch({ scopes: ["write_products", "write_inventory", "read_orders"] });
+    await expect(connect()).resolves.toEqual({ shopName: "During Days", currency: "GBP" });
   });
 
   it("saves ciphertext that decrypts back to the token", async () => {
@@ -280,6 +296,41 @@ describe("syncShopify", () => {
     expect((await getConnection(CLIENT))?.last_sync_error).toBe("Shopify is busy, try again in a few minutes");
   });
 
+  it("maps a bulk operation ACCESS_DENIED (HTTP 200) to the access message", async () => {
+    installFetch();
+    await connect();
+    installFetch({ pollStatus: "FAILED", pollErrorCode: "ACCESS_DENIED" });
+    const access =
+      "Shopify refused access to the store's orders or products. Check the app's read_products, read_inventory and read_orders access and its protected customer data settings.";
+    await expect(syncShopify(CLIENT, { now: NOW })).rejects.toThrow(access);
+    expect((await getConnection(CLIENT))?.last_sync_error).toBe(access);
+    const log = warnCalls().find(([m]) => m === "Shopify sync failed")?.[1];
+    expect(log).toMatchObject({ clientId: CLIENT, code: "ACCESS_DENIED", detail: "bulk operation FAILED, errorCode ACCESS_DENIED" });
+  });
+
+  it("logs the client and Shopify's userErrors (redacted), but stores only fixed text", async () => {
+    installFetch();
+    await connect();
+    installFetch({
+      startReply: {
+        data: {
+          bulkOperationRunQuery: {
+            bulkOperation: null,
+            userErrors: [{ field: ["query"], message: `Bulk queries cannot contain more than 1 top-level field ${TOKEN}`, code: "INVALID" }],
+          },
+        },
+      },
+    });
+    await expect(syncShopify(CLIENT, { now: NOW })).rejects.toThrow();
+    const stored = (await getConnection(CLIENT))?.last_sync_error ?? "";
+    expect(stored).not.toContain("top-level");
+    expect(stored).not.toContain(TOKEN);
+    const log = warnCalls().find(([m]) => m === "Shopify sync failed")?.[1];
+    expect(log).toMatchObject({ clientId: CLIENT, status: 200, code: "INVALID" });
+    expect(String(log?.detail)).toContain("query: Bulk queries cannot contain more than 1 top-level field");
+    expect(JSON.stringify(warnCalls())).not.toContain(TOKEN);
+  });
+
   it("never stores raw Shopify error text", async () => {
     installFetch();
     await connect();
@@ -338,6 +389,49 @@ describe("syncShopify", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("heartbeats on every bulk poll so a long catalogue phase is still refused at minute 17", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-10-23T12:00:00.000Z"));
+      installFetch();
+      await connect();
+      let second: unknown = "not run";
+      const heartbeatAtPoll: boolean[] = [];
+      // A slow start (8 minutes), then polls 3 minutes apart: by the 3rd poll the run is 17
+      // minutes old. Without poll heartbeats the last one would be at minute 0 (stale).
+      installFetch({
+        onStart: (kind) => {
+          if (kind === "catalog") vi.setSystemTime(new Date(Date.now() + 8 * 60_000));
+        },
+        pollStatusFor: (kind, n) => (kind === "catalog" && n < 4 ? "RUNNING" : "COMPLETED"),
+        onPoll: async (kind) => {
+          if (kind !== "catalog") return;
+          // The heartbeat was written just before this poll.
+          heartbeatAtPoll.push(getDemoStore().shopifyConnections[0].updated_at === new Date().toISOString());
+          vi.setSystemTime(new Date(Date.now() + 3 * 60_000));
+          if (heartbeatAtPoll.length === 3) second = await syncShopify(CLIENT).catch((e) => e);
+        },
+      });
+      await syncShopify(CLIENT, { pollIntervalMs: 1 });
+      expect(heartbeatAtPoll).toEqual([true, true, true, true]);
+      expect(second).toBeInstanceOf(Error);
+      expect((second as Error).message).toBe("A sync is already running for this store");
+      expect((await getConnection(CLIENT))?.last_sync_status).toBe("ok");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("accepts an empty store on its first sync and records 0 products", async () => {
+    installFetch({ catalog: [], orders: [] });
+    await connect();
+    await expect(syncShopify(CLIENT, { now: NOW })).resolves.toMatchObject({ products: 0, variants: 0 });
+    const row = await getConnection(CLIENT);
+    expect(row?.last_sync_status).toBe("ok");
+    expect(row?.last_sync_counts?.products).toBe(0);
+    expect(row?.last_sync_at).toBeTruthy();
   });
 
   it("treats an empty products result as a failure and keeps old data", async () => {
@@ -431,5 +525,11 @@ describe("getShopifyStatus / disconnect / syncAll", () => {
     getDemoStore().shopifyConnections.find((c) => c.client_id === "client_b")!.access_token_encrypted = "garbage";
     const result = await syncAllShopify();
     expect(result).toEqual({ synced: 1, failed: 1 });
+    const log = warnCalls().find(([m]) => m === "Shopify scheduled sync failed")?.[1];
+    expect(log).toMatchObject({
+      clientId: "client_b",
+      message: "The Shopify sync failed. Try again, and reconnect the store if it keeps failing.",
+    });
+    expect(warnCalls().find(([m]) => m === "Shopify sync failed")?.[1]).toMatchObject({ clientId: "client_b" });
   });
 });

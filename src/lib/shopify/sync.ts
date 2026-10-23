@@ -1,5 +1,5 @@
 import { getConfig } from "@/lib/config";
-import { ConflictError, NotFoundError, ValidationError } from "@/lib/errors";
+import { AppError, ConflictError, NotFoundError, ValidationError } from "@/lib/errors";
 import { logger } from "@/lib/observability/logger";
 import { decryptToken, encryptToken } from "@/lib/security/token-vault";
 import {
@@ -32,6 +32,8 @@ const BUSY_MESSAGE = "Shopify is busy, try again in a few minutes";
 const GENERIC_SYNC_MESSAGE = "The Shopify sync failed. Try again, and reconnect the store if it keeps failing.";
 const NO_PRODUCTS_MESSAGE = "Shopify returned no products; keeping the existing data";
 const ALREADY_RUNNING_MESSAGE = "A sync is already running for this store";
+const ACCESS_DENIED_MESSAGE =
+  "Shopify refused access to the store's orders or products. Check the app's read_products, read_inventory and read_orders access and its protected customer data settings.";
 /** A "running" status older than this is a crashed run and may be restarted. */
 const STALE_RUNNING_MS = 15 * 60_000;
 const DAY_MS = 24 * 3600 * 1000;
@@ -49,12 +51,30 @@ function isDemo(): boolean {
 }
 
 /**
+ * Fields for a failure log line: the client, Shopify's status and code, and Shopify's
+ * validation text (userErrors / GraphQL errors with field paths, bulk errorCode) already
+ * redacted in client.ts. Never the token or a response body; no customer data.
+ */
+function failureLog(clientId: string, error: unknown, message: string): Record<string, unknown> {
+  return {
+    clientId,
+    message,
+    status: error instanceof ShopifyApiError ? error.status : null,
+    code: error instanceof ShopifyApiError ? error.code : null,
+    detail: error instanceof ShopifyApiError ? error.detail : null,
+    error: error instanceof Error ? error.name : typeof error,
+  };
+}
+
+/**
  * Fixed, plain text for a failure. Shopify's own error text and response bodies are never
  * passed through: only the status and code are looked at.
  */
 function safeMessage(error: unknown): string {
   if (error instanceof SyncError) return error.message;
   if (error instanceof ShopifyApiError) {
+    // A bulk operation that fails for missing access reports errorCode ACCESS_DENIED with HTTP 200.
+    if (error.code === "ACCESS_DENIED") return ACCESS_DENIED_MESSAGE;
     if (error.status === 401 || error.status === 403 || error.code === "UNAUTHORIZED") return RECONNECT_MESSAGE;
     if (error.status === 429 || error.code === "THROTTLED" || error.code === "BULK_OPERATION_RUNNING") {
       return BUSY_MESSAGE;
@@ -106,17 +126,16 @@ export async function connectShopify(input: {
       "{ shop { name currencyCode } currentAppInstallation { accessScopes { handle } } }",
     );
   } catch (error) {
-    if (error instanceof ShopifyApiError) {
-      logger.warn("Shopify connect failed", { status: error.status, code: error.code });
-    }
     const message = safeMessage(error);
+    logger.warn("Shopify connect failed", failureLog(input.clientId, error, message));
     throw new ValidationError(
       message === GENERIC_SYNC_MESSAGE ? "Shopify could not verify the store. Try again." : message,
     );
   }
 
   const granted = (data.currentAppInstallation?.accessScopes ?? []).map((s) => s.handle);
-  const missing = REQUIRED_SCOPES.filter((s) => !granted.includes(s));
+  // A write scope also grants read access to the same resource.
+  const missing = REQUIRED_SCOPES.filter((s) => !granted.includes(s) && !granted.includes(s.replace(/^read_/, "write_")));
   if (missing.length) {
     throw new ValidationError(
       `The token is missing Shopify permissions: ${missing.join(", ")}. Add them to the app and copy the new token.`,
@@ -137,21 +156,29 @@ export async function connectShopify(input: {
   return { shopName, currency };
 }
 
-async function readBulk(host: string, token: string, query: string): Promise<Array<Record<string, unknown>>> {
+async function readBulk(
+  host: string,
+  token: string,
+  query: string,
+  poll: { intervalMs?: number; onPoll: () => Promise<void> },
+): Promise<Array<Record<string, unknown>>> {
   const op = await startBulkQuery(host, token, query);
-  const done = await waitForBulkQuery(host, token, op);
+  const done = await waitForBulkQuery(host, token, op, poll);
   return done.url ? downloadJsonl(done.url) : [];
 }
 
 /**
- * Bumps updated_at so the running-sync guard sees the run is alive. Each phase (one bulk
- * read, which may wait up to 10 minutes) stays inside the 15-minute stale window.
+ * Bumps updated_at so the running-sync guard sees the run is alive. Sent before every
+ * bulk poll and between phases, so a long healthy run never looks stale (15 minutes).
  */
 async function heartbeat(clientId: string): Promise<void> {
   await setSyncStatus(clientId, { status: "running" });
 }
 
-export async function syncShopify(clientId: string, opts: { now?: Date } = {}): Promise<ShopifySyncCounts> {
+export async function syncShopify(
+  clientId: string,
+  opts: { now?: Date; pollIntervalMs?: number } = {},
+): Promise<ShopifySyncCounts> {
   const now = opts.now ?? new Date();
   const connection = await getConnection(clientId);
   if (!connection) throw new NotFoundError("This client has no Shopify store connected.");
@@ -174,11 +201,12 @@ export async function syncShopify(clientId: string, opts: { now?: Date } = {}): 
     } else {
       const token = decryptToken(connection.access_token_encrypted);
       const host = connection.shop_domain;
-      // Shopify allows one bulk query at a time per shop, so these run sequentially.
-      const catalogLines = await readBulk(host, token, CATALOG_BULK_QUERY);
+      const poll = { intervalMs: opts.pollIntervalMs, onPoll: () => heartbeat(clientId) };
+      // Run one after the other (older API versions allow one bulk query per shop at a time).
+      const catalogLines = await readBulk(host, token, CATALOG_BULK_QUERY, poll);
       await heartbeat(clientId);
       const since = new Date(now.getTime() - 60 * DAY_MS).toISOString();
-      const orderLines = await readBulk(host, token, ORDERS_BULK_QUERY(since));
+      const orderLines = await readBulk(host, token, ORDERS_BULK_QUERY(since), poll);
       await heartbeat(clientId);
 
       const parsed = parseCatalog(clientId, catalogLines);
@@ -196,9 +224,10 @@ export async function syncShopify(clientId: string, opts: { now?: Date } = {}): 
       catalog = { collections: parsed.collections, products: parsed.products, variants };
     }
 
-    // replaceCatalog with nothing deletes everything, so an empty read is a failure
-    // unless the last good sync also found no products.
-    if (catalog.products.length === 0 && connection.last_sync_counts?.products !== 0) {
+    // replaceCatalog with nothing deletes everything, so an empty read is a failure when
+    // the last good sync had products. With no previous good sync (a new or empty store)
+    // it is accepted and recorded as 0 products.
+    if (catalog.products.length === 0 && (connection.last_sync_counts?.products ?? 0) > 0) {
       throw new SyncError(NO_PRODUCTS_MESSAGE);
     }
 
@@ -215,10 +244,7 @@ export async function syncShopify(clientId: string, opts: { now?: Date } = {}): 
     return counts;
   } catch (error) {
     const message = safeMessage(error);
-    logger.warn("Shopify sync failed", {
-      status: error instanceof ShopifyApiError ? error.status : null,
-      code: error instanceof ShopifyApiError ? error.code : null,
-    });
+    logger.warn("Shopify sync failed", failureLog(clientId, error, message));
     try {
       await setSyncStatus(clientId, { status: "error", error: message });
     } catch {
@@ -276,8 +302,14 @@ export async function syncAllShopify(): Promise<{ synced: number; failed: number
     try {
       await syncShopify(clientId);
       synced += 1;
-    } catch {
+    } catch (error) {
       failed += 1;
+      // AppError messages here are fixed text (ShopifyUpstreamError, NotFound, Conflict).
+      logger.warn("Shopify scheduled sync failed", {
+        clientId,
+        message: error instanceof AppError ? error.message : "unexpected error",
+        error: error instanceof Error ? error.name : typeof error,
+      });
     }
   }
   return { synced, failed };

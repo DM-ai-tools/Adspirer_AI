@@ -42,6 +42,45 @@ describe("shopify demo store", () => {
     expect(getDemoStore().shopifyConnections).toHaveLength(1);
   });
 
+  it("reconnecting the same store keeps its sync status and catalogue", async () => {
+    await saveConnection(input(A));
+    await replaceCatalog(A, mockShopifyCatalog(A));
+    const counts = { collections: 2, products: 6, variants: 8, orders: 3, skipped_line_items: 0 };
+    await setSyncStatus(A, { status: "ok", counts });
+    await saveConnection({ ...input(A), accessTokenEncrypted: "v1:new" });
+    const c = (await getConnection(A))!;
+    expect(c.last_sync_status).toBe("ok");
+    expect(c.last_sync_at).toBeTruthy();
+    expect(c.last_sync_counts).toEqual(counts);
+    expect((await loadCatalog(A)).products).toHaveLength(6);
+  });
+
+  it("connecting a different store drops the old catalogue and resets the sync status", async () => {
+    await saveConnection(input(A));
+    await saveConnection(input(B));
+    await replaceCatalog(A, mockShopifyCatalog(A));
+    await replaceCatalog(B, mockShopifyCatalog(B));
+    await setSyncStatus(A, {
+      status: "ok",
+      counts: { collections: 2, products: 6, variants: 8, orders: 3, skipped_line_items: 0 },
+    });
+    await setSyncStatus(A, { status: "error", error: "Shopify is busy, try again in a few minutes" });
+    const saved = await saveConnection({ ...input(A), shopDomain: "other-store.myshopify.com", shopName: "Other" });
+    expect(saved).toMatchObject({
+      shop_domain: "other-store.myshopify.com",
+      shop_name: "Other",
+      last_sync_at: null,
+      last_sync_status: "never",
+      last_sync_error: null,
+      last_sync_counts: null,
+    });
+    const loaded = await loadCatalog(A);
+    expect(loaded.collections).toHaveLength(0);
+    expect(loaded.products).toHaveLength(0);
+    expect(loaded.variants).toHaveLength(0);
+    expect((await loadCatalog(B)).products).toHaveLength(6);
+  });
+
   it("returns copies, not stored state", async () => {
     await saveConnection(input(A));
     const c = (await getConnection(A))!;

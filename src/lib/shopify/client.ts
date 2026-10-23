@@ -17,6 +17,12 @@ export class ShopifyApiError extends Error {
     message: string,
     readonly status: number,
     readonly code: string | null,
+    /**
+     * For server logs only, never stored or shown: Shopify's own validation text
+     * (userErrors / GraphQL error messages with their field paths, bulk errorCode),
+     * with the token redacted. It holds no customer data.
+     */
+    readonly detail: string | null = null,
   ) {
     super(message);
     this.name = "ShopifyApiError";
@@ -123,8 +129,24 @@ export function assertReadOnlyDocument(document: string): void {
 
 type GraphqlResponse<T> = {
   data?: T;
-  errors?: Array<{ message?: string; extensions?: { code?: string } }>;
+  errors?: Array<{ message?: string; path?: Array<string | number>; extensions?: { code?: string } }>;
 };
+
+/** "path: message [CODE]" for each error, for logs. */
+function describeErrors(
+  errors: Array<{ message?: string; field?: Array<string | number> | null; path?: Array<string | number>; code?: string | null }>,
+  token: string,
+): string {
+  return redact(
+    errors
+      .map((e) => {
+        const where = (e.field ?? e.path ?? []).join(".");
+        return `${where ? `${where}: ` : ""}${e.message ?? "(no message)"}${e.code ? ` [${e.code}]` : ""}`;
+      })
+      .join("; "),
+    token,
+  );
+}
 
 /**
  * Read-only Admin GraphQL call. The store address is validated and the
@@ -210,7 +232,15 @@ export async function shopifyGraphql<T>(
       const first = json.errors[0];
       const code = throttled ? "THROTTLED" : (first.extensions?.code ?? null);
       logger.warn("Shopify GraphQL error", { status: res.status, code });
-      throw new ShopifyApiError(redact(first.message ?? "Shopify returned an error.", token), res.status, code);
+      throw new ShopifyApiError(
+        redact(first.message ?? "Shopify returned an error.", token),
+        res.status,
+        code,
+        describeErrors(
+          json.errors.map((e) => ({ message: e.message, path: e.path, code: e.extensions?.code ?? null })),
+          token,
+        ),
+      );
     }
 
     if (!json || json.data === undefined) {
@@ -239,19 +269,18 @@ export async function startBulkQuery(shop: string, token: string, innerQuery: st
   const result = data.bulkOperationRunQuery;
   const errors = result?.userErrors ?? [];
   if (errors.length) {
+    const detail = describeErrors(errors, token);
     const running = errors.some((e) => /already|in progress|in_progress/i.test(`${e.message} ${e.code ?? ""}`));
     if (running) {
       throw new ShopifyApiError(
         "Another Shopify bulk operation is already running for this store. Wait for it to finish and try again.",
         200,
         "BULK_OPERATION_RUNNING",
+        detail,
       );
     }
-    throw new ShopifyApiError(
-      redact(`Shopify refused the bulk query: ${errors.map((e) => e.message).join("; ")}`, token),
-      200,
-      errors[0].code ?? "BULK_QUERY_REFUSED",
-    );
+    // Shopify's validation text goes to `detail` (logged by the caller), not the message.
+    throw new ShopifyApiError("Shopify refused the bulk query.", 200, errors[0].code ?? "BULK_QUERY_REFUSED", detail);
   }
   const id = result?.bulkOperation?.id;
   if (!id) throw new ShopifyApiError("Shopify did not start the bulk operation.", 200, null);
@@ -264,17 +293,22 @@ const POLL_BULK = `query PollBulk($id: ID!) {
   }
 }`;
 
-/** Polls until the bulk operation completes. A null url means an empty result. */
+/**
+ * Polls until the bulk operation completes. A null url means an empty result.
+ * `onPoll` runs before every poll (e.g. a heartbeat for a long wait); if it throws, the
+ * wait stops with that error.
+ */
 export async function waitForBulkQuery(
   shop: string,
   token: string,
   gid: string,
-  opts: { intervalMs?: number; timeoutMs?: number } = {},
+  opts: { intervalMs?: number; timeoutMs?: number; onPoll?: () => Promise<void> | void } = {},
 ): Promise<{ url: string | null; objectCount: number }> {
   const intervalMs = opts.intervalMs ?? 2000;
   const timeoutMs = opts.timeoutMs ?? 10 * 60_000;
   const deadline = Date.now() + timeoutMs;
   for (;;) {
+    await opts.onPoll?.();
     const data = await shopifyGraphql<{
       node: { status: string; errorCode?: string | null; objectCount?: string | number | null; url?: string | null } | null;
     }>(shop, token, POLL_BULK, { id: gid });
@@ -285,7 +319,12 @@ export async function waitForBulkQuery(
     }
     if (op.status === "FAILED" || op.status === "EXPIRED" || op.status === "CANCELED") {
       const code = op.errorCode ?? op.status;
-      throw new ShopifyApiError(`Shopify bulk operation ${op.status.toLowerCase()} (${code}).`, 200, code);
+      throw new ShopifyApiError(
+        `Shopify bulk operation ${op.status.toLowerCase()} (${code}).`,
+        200,
+        code,
+        `bulk operation ${op.status}, errorCode ${op.errorCode ?? "none"}`,
+      );
     }
     if (Date.now() + intervalMs > deadline) {
       throw new ShopifyApiError("Shopify's bulk operation took too long to finish.", 0, "BULK_TIMEOUT");

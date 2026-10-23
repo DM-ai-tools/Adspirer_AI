@@ -55,7 +55,7 @@ beforeEach(() => {
 
 describe("shopify store on Supabase", () => {
   it("upserts the connection on client_id", async () => {
-    db.rows.shopify_connection = { id: "x", client_id: CLIENT };
+    db.rows.shopify_connection = { id: "x", client_id: CLIENT, shop_domain: MOCK_SHOP.domain };
     await saveConnection({
       clientId: CLIENT,
       shopDomain: MOCK_SHOP.domain,
@@ -69,6 +69,49 @@ describe("shopify store on Supabase", () => {
     expect(up.options).toEqual({ onConflict: "client_id" });
     expect(up.payload).toMatchObject({ client_id: CLIENT, shop_domain: MOCK_SHOP.domain, access_token_encrypted: "v1:cipher" });
     expect(up.payload).not.toHaveProperty("last_sync_status");
+    expect(up.payload).not.toHaveProperty("last_sync_at");
+    expect(db.calls.filter((c) => c.op === "delete")).toHaveLength(0);
+  });
+
+  it("a first connection sends no sync status and deletes nothing", async () => {
+    await saveConnection({
+      clientId: CLIENT,
+      shopDomain: MOCK_SHOP.domain,
+      shopName: "S",
+      currency: "USD",
+      scopes: [],
+      accessTokenEncrypted: "v1:cipher",
+      connectedBy: null,
+    });
+    const up = db.calls.find((c) => c.op === "upsert")!;
+    expect(up.payload).not.toHaveProperty("last_sync_status");
+    expect(db.calls.filter((c) => c.op === "delete")).toHaveLength(0);
+  });
+
+  it("connecting a different store resets the sync status, then deletes the old catalogue", async () => {
+    db.rows.shopify_connection = { id: "x", client_id: CLIENT, shop_domain: "old-store.myshopify.com" };
+    await saveConnection({
+      clientId: CLIENT,
+      shopDomain: MOCK_SHOP.domain,
+      shopName: "S",
+      currency: "USD",
+      scopes: [],
+      accessTokenEncrypted: "v1:cipher",
+      connectedBy: null,
+    });
+    const up = db.calls.find((c) => c.op === "upsert")!;
+    expect(up.payload).toMatchObject({
+      shop_domain: MOCK_SHOP.domain,
+      last_sync_at: null,
+      last_sync_status: "never",
+      last_sync_error: null,
+      last_sync_counts: null,
+    });
+    const deletes = db.calls.filter((c) => c.op === "delete");
+    expect(deletes.map((d) => d.table).sort()).toEqual(["shopify_collections", "shopify_products", "shopify_variants"]);
+    for (const d of deletes) expect(d.filters).toEqual([["eq", "client_id", CLIENT]]);
+    const ops = db.calls.map((c) => c.op);
+    expect(ops.indexOf("upsert")).toBeLessThan(ops.indexOf("delete"));
   });
 
   it("ok status sets last_sync_at", async () => {

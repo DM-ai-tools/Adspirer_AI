@@ -253,7 +253,55 @@ describe("bulk operations", () => {
     await expect(startBulkQuery(SHOP, TOKEN, "{ x }")).rejects.toMatchObject({ code: "BULK_OPERATION_RUNNING" });
   });
 
+  it("startBulkQuery keeps Shopify's userErrors text out of the message and in a redacted detail", async () => {
+    fetchMock.mockResolvedValue(
+      json({
+        data: {
+          bulkOperationRunQuery: {
+            bulkOperation: null,
+            userErrors: [
+              { field: ["query"], message: `Queries that contain a connection field within a list field are not currently supported. ${TOKEN}`, code: "INVALID" },
+            ],
+          },
+        },
+      }),
+    );
+    const err = (await startBulkQuery(SHOP, TOKEN, "{ x }").catch((e: ShopifyApiError) => e)) as ShopifyApiError;
+    expect(err).toBeInstanceOf(ShopifyApiError);
+    expect(err.message).toBe("Shopify refused the bulk query.");
+    expect(err.code).toBe("INVALID");
+    expect(err.detail).toContain("query: Queries that contain a connection field within a list field");
+    expect(err.detail).toContain("[INVALID]");
+    expect(err.detail).not.toContain(TOKEN);
+  });
+
+  it("GraphQL errors carry their messages and paths in a redacted detail", async () => {
+    fetchMock.mockResolvedValue(
+      json({ errors: [{ message: `Field 'nope' doesn't exist ${TOKEN}`, path: ["query", "shop", "nope"], extensions: { code: "undefinedField" } }] }),
+    );
+    const err = (await shopifyGraphql(SHOP, TOKEN, "{ shop { nope } }").catch((e: ShopifyApiError) => e)) as ShopifyApiError;
+    expect(err.detail).toContain("query.shop.nope: Field 'nope' doesn't exist");
+    expect(err.detail).not.toContain(TOKEN);
+  });
+
   const node = (n: object) => json({ data: { node: n } });
+
+  it("waitForBulkQuery calls onPoll before every poll", async () => {
+    fetchMock
+      .mockResolvedValueOnce(node({ status: "RUNNING" }))
+      .mockResolvedValueOnce(node({ status: "RUNNING" }))
+      .mockResolvedValueOnce(node({ status: "COMPLETED", url: null, objectCount: "0" }));
+    const onPoll = vi.fn();
+    await waitForBulkQuery(SHOP, TOKEN, "gid://x", { intervalMs: 1, onPoll });
+    expect(onPoll).toHaveBeenCalledTimes(3);
+  });
+
+  it("waitForBulkQuery stops when onPoll throws", async () => {
+    fetchMock.mockImplementation(async () => node({ status: "RUNNING" }));
+    const onPoll = vi.fn().mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("db down"));
+    await expect(waitForBulkQuery(SHOP, TOKEN, "gid://x", { intervalMs: 1, onPoll })).rejects.toThrow("db down");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 
   it("waitForBulkQuery resolves on COMPLETED after polling", async () => {
     fetchMock

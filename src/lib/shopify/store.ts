@@ -57,6 +57,19 @@ export async function getConnection(clientId: string): Promise<ShopifyConnection
   return (data as ShopifyConnection | null) ?? null;
 }
 
+/** Sync status for a store that has never been synced (also used when the store changes). */
+const NEVER_SYNCED = {
+  last_sync_at: null,
+  last_sync_status: "never" as const,
+  last_sync_error: null,
+  last_sync_counts: null,
+};
+
+/**
+ * Saves (or replaces) the client's connection. Reconnecting the same store keeps its
+ * sync status and catalogue; connecting a different store drops the old store's
+ * catalogue rows and resets the sync status to "never".
+ */
 export async function saveConnection(input: {
   clientId: string;
   shopDomain: string;
@@ -80,7 +93,14 @@ export async function saveConnection(input: {
     };
     const existing = store.shopifyConnections.find((c) => c.client_id === input.clientId);
     if (existing) {
-      Object.assign(existing, fields, { connected_at: now });
+      const storeChanged = existing.shop_domain !== input.shopDomain;
+      Object.assign(existing, fields, { connected_at: now }, storeChanged ? NEVER_SYNCED : {});
+      if (storeChanged) {
+        const other = <T extends { client_id: string }>(rows: T[]) => rows.filter((r) => r.client_id !== input.clientId);
+        store.shopifyCollections = other(store.shopifyCollections);
+        store.shopifyProducts = other(store.shopifyProducts);
+        store.shopifyVariants = other(store.shopifyVariants);
+      }
       return copyConnection(existing);
     }
     const row: ShopifyConnection = {
@@ -98,7 +118,10 @@ export async function saveConnection(input: {
     return copyConnection(row);
   }
 
-  // Sync status columns are not sent, so reconnecting keeps them.
+  const previous = await getConnection(input.clientId);
+  const storeChanged = previous !== null && previous.shop_domain !== input.shopDomain;
+  // Sync status columns are sent only when the store changed, so reconnecting the same
+  // store keeps them.
   const { data, error } = await createAdminClient()
     .from(CONNECTION)
     .upsert(
@@ -111,12 +134,18 @@ export async function saveConnection(input: {
         scopes: input.scopes,
         connected_by: input.connectedBy,
         connected_at: now,
+        ...(storeChanged ? NEVER_SYNCED : {}),
       },
       { onConflict: "client_id" },
     )
     .select("*")
     .single();
   if (error) throw new Error(error.message);
+  if (storeChanged) {
+    // After the status reset, so a failed delete leaves old rows under a "never synced"
+    // status (chat reads nothing) rather than the old store's data under the new name.
+    await deleteCatalogRows(input.clientId);
+  }
   return data as ShopifyConnection;
 }
 
@@ -222,6 +251,14 @@ export async function listConnectedClientIds(): Promise<string[]> {
   const { data, error } = await createAdminClient().from(CONNECTION).select("client_id");
   if (error) throw new Error(error.message);
   return ((data as Array<{ client_id: string }> | null) ?? []).map((r) => r.client_id);
+}
+
+async function deleteCatalogRows(clientId: string): Promise<void> {
+  const db = createAdminClient();
+  for (const table of [VARIANTS, PRODUCTS, COLLECTIONS]) {
+    const { error } = await db.from(table).delete().eq("client_id", clientId);
+    if (error) throw new Error(error.message);
+  }
 }
 
 export async function deleteConnection(clientId: string): Promise<void> {
