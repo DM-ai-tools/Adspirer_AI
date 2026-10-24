@@ -132,7 +132,8 @@ export function mockShopifySales(clientId: string): ShopifySalesRow[] {
     variant_gid: null,
     product_gid: P(9),
     product_title: "Discontinued Pine Stool",
-    variant_title: null,
+    // A deleted variant keeps the title snapshotted on its order lines.
+    variant_title: "Pine / 65cm",
     sku: "BS-DISC-01",
     vendor: "Nordic Woodworks",
     product_type: "Bar Stool",

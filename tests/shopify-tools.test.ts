@@ -81,6 +81,12 @@ describe("policy and labels", () => {
     expect(getTool("shopify_variants")!.description).toMatch(/live/i);
     expect(getTool("shopify_sales")!.description).toMatch(/synced/i);
     expect(getTool("shopify_sales")!.description).toMatch(/best sell/i);
+    expect(getTool("shopify_sales")!.description).toMatch(/synced from orders when a sync runs/);
+  });
+
+  it("never promises a nightly sync (the schedule lives outside the repo)", () => {
+    expect(buildStaticSystemPromptV2()).not.toMatch(/nightly/i);
+    for (const name of NAMES) expect(getTool(name)!.description, name).not.toMatch(/nightly/i);
   });
 });
 
@@ -237,7 +243,8 @@ describe("prompt and context", () => {
     for (const n of NAMES) expect(p).toContain(n);
     expect(p).not.toContain("shopify_summary");
     expect(p).toMatch(/`shopify_products` and `shopify_variants` read Shopify live/);
-    expect(p).toMatch(/`shopify_sales` reads .*synced nightly/);
+    expect(p).toMatch(/`shopify_sales` reads .*synced from orders when a sync runs \(Sync now or a scheduled run\)/);
+    expect(p).toMatch(/quote that age/);
     expect(p).toMatch(/synced_ago/);
     expect(p).toMatch(/fetched_at/);
     expect(p).toMatch(/cross-check/i);

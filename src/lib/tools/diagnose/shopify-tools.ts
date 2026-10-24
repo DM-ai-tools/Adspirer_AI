@@ -6,7 +6,7 @@ import { registerTool } from "@/lib/tools/registry";
 
 /**
  * Read-only Shopify tools. `shopify_products` and `shopify_variants` read the store live;
- * `shopify_sales` reads the nightly-synced sales. The client is always the task's client
+ * `shopify_sales` reads the synced sales (as of the last sync). The client is always the task's client
  * (ctx.clientId): no tool takes a client id or shop domain, and zod drops unknown keys.
  * A failure comes back as { error: true, source: "Shopify", message } with fixed text;
  * it never throws and never carries Shopify's or the database's own wording.
@@ -82,11 +82,11 @@ export const shopifyVariantsTool = registerTool({
 export const shopifySalesTool = registerTool({
   name: "shopify_sales",
   description: [
-    "Read the client's Shopify sales: units and revenue per variant over the last 30 and 60 days, SYNCED nightly from orders (read-only; never pass an id or domain).",
+    "Read the client's Shopify sales: units and revenue per variant over the last 30 and 60 days, synced from orders when a sync runs (Sync now or a scheduled run), not live (read-only; never pass an id or domain).",
     "Use it for best sellers, top products by units or revenue, and anything sold; group_by variant (default), product, vendor or product_type; window 30 (default) or 60; sort_by units (default) or revenue.",
     "Filter by search (words in product, variant, SKU, vendor or type), vendor, product_type or sku (exact). There is no collection filter for sales: list a collection's products with shopify_products first.",
-    "Revenue is line revenue after product and code discounts, before order-level discounts, shipping and tax, gross of refunds. Only variants sold in the last 60 days have rows.",
-    "Every result carries synced_ago: say how old the sales are, and flag it when the result says stale, not synced yet or that the latest sync failed.",
+    "Revenue is line revenue after product and code discounts, before order-level discounts, shipping and tax, gross of refunds. Only variants sold in the last 60 days have rows; deleted_variant true marks order lines whose variant no longer exists in Shopify.",
+    "Every result carries synced_ago, the age of the sales: quote it, and flag it when the result says stale, not synced yet or that the latest sync failed.",
   ].join(" "),
   inputSchema: z.object({
     search: text.optional(),

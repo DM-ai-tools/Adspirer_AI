@@ -152,6 +152,7 @@ describe("querySales rows", () => {
       group: "Oak Counter Stool / Oak / 65cm",
       product: "Oak Counter Stool",
       variant: "Oak / 65cm",
+      deleted_variant: false,
       sku: "BS-OAK-65",
       vendor: "Nordic Woodworks",
       product_type: "Bar Stool",
@@ -266,10 +267,40 @@ describe("querySales rows", () => {
     );
   });
 
-  it("notes deleted variants shown under a synthetic key", async () => {
+  it("flags deleted variants by variant id, not by a missing variant title", async () => {
     const out = ok(await querySales(A, { sku: "BS-DISC-01" }, NOW));
-    expect(out.rows[0]).toMatchObject({ product: "Discontinued Pine Stool", variant: null, units: 0, units_other_window: 4 });
-    expect(out.note).toContain("deleted from the store");
+    expect(out.rows[0]).toMatchObject({
+      product: "Discontinued Pine Stool",
+      variant: "Pine / 65cm",
+      deleted_variant: true,
+      units: 0,
+      units_other_window: 4,
+    });
+    expect(out.note).toContain(
+      "Rows with deleted_variant true are order lines whose variant no longer exists in Shopify",
+    );
+  });
+
+  it("a live default variant (no variant title) is not flagged; a deleted one with a title is", async () => {
+    const base = mockShopifySales(A)[0];
+    await replaceSales(A, [
+      // Shopify sends variantTitle null for a product's single default variant.
+      { ...base, variant_key: "gid://shopify/ProductVariant/50", variant_gid: "gid://shopify/ProductVariant/50", sku: "LIVE-DEFAULT", variant_title: null },
+      // A deleted variant keeps its snapshot title but has no variant id.
+      { ...base, variant_key: "product:gid://shopify/Product/1:GONE-1", variant_gid: null, sku: "GONE-1", variant_title: "Oak / 90cm" },
+    ]);
+    const live = ok(await querySales(A, { sku: "LIVE-DEFAULT" }, NOW));
+    expect(live.rows[0]).toMatchObject({ variant: null, deleted_variant: false });
+    expect(live.note).not.toContain("deleted_variant true");
+    const gone = ok(await querySales(A, { sku: "GONE-1" }, NOW));
+    expect(gone.rows[0]).toMatchObject({ variant: "Oak / 90cm", deleted_variant: true });
+    expect(gone.note).toContain("deleted_variant true");
+  });
+
+  it("deleted_variant on grouped rows is true only when every variant in the group is deleted", async () => {
+    const out = ok(await querySales(A, { group_by: "product" }, NOW));
+    expect(out.rows.find((r) => r.group === "Discontinued Pine Stool")!.deleted_variant).toBe(true);
+    expect(out.rows.find((r) => r.group === "Oak Counter Stool")!.deleted_variant).toBe(false);
   });
 
   it("output is built from explicit fields: extra stored columns never leak", async () => {

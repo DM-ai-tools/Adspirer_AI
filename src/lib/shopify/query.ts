@@ -80,8 +80,14 @@ export type SalesRow = {
   group: string;
   /** Product title when the group is one product or variant, else null. */
   product: string | null;
-  /** Variant title for a variant row (null for a deleted variant or other groupings). */
+  /**
+   * Variant title from the order line, for a variant row (else null). Null also for a
+   * product's single default variant, so it says nothing about deletion: see deleted_variant.
+   */
   variant: string | null;
+  /** True when the order lines' variant no longer exists in Shopify (no variant id); for a
+   * grouped row, only when every variant in the group is deleted. */
+  deleted_variant: boolean;
   /** The SKU when every variant in the group has the same one, else null. */
   sku: string | null;
   vendor: string | null;
@@ -300,6 +306,7 @@ export async function querySales(
       group: g.label,
       product: groupBy === "variant" || groupBy === "product" ? g.rows[0].product_title : null,
       variant: groupBy === "variant" ? g.rows[0].variant_title : null,
+      deleted_variant: g.rows.every((r) => r.variant_gid === null),
       sku: same(g.rows, (r) => r.sku),
       vendor: same(g.rows, (r) => r.vendor),
       product_type: same(g.rows, (r) => r.product_type),
@@ -323,8 +330,10 @@ export async function querySales(
   if (list.length > shown.length) {
     notes.push(`Showing the first ${shown.length} of ${list.length} groups; totals cover all of them.`);
   }
-  if (shown.some((g) => g.rows.some((r) => r.variant_gid === null))) {
-    notes.push("Rows with variant null are variants deleted from the store since they sold (kept by product and SKU).");
+  if (rows.some((r) => r.deleted_variant)) {
+    notes.push(
+      "Rows with deleted_variant true are order lines whose variant no longer exists in Shopify (kept by product and SKU).",
+    );
   }
   if (list.length === 0) {
     const used = (
