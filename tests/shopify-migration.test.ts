@@ -69,6 +69,15 @@ describe("00014_shopify_sales.sql", () => {
     expect(s).toContain("grant all on public.shopify_sales to service_role;");
   });
 
+  it("revokes default grants from anon and authenticated before granting select", () => {
+    const revoke = s.indexOf("revoke all on public.shopify_sales from anon, authenticated;");
+    expect(revoke).toBeGreaterThan(-1);
+    expect(revoke).toBeLessThan(s.indexOf("grant select on public.shopify_sales to authenticated;"));
+    expect(revoke).toBeLessThan(s.indexOf("grant all on public.shopify_sales to service_role;"));
+    expect(s).not.toMatch(/grant [a-z, ]+ on public\.shopify_sales to anon/);
+    expect(s).not.toMatch(/grant (all|insert|update|delete)[a-z, ]* on public\.shopify_sales to authenticated/);
+  });
+
   it("stores no customer personal data columns", () => {
     expect(s).not.toMatch(/\b[a-z_]*(email|phone|address|customer)[a-z_]*\s+(text|uuid|jsonb|integer|bigint|numeric)/);
   });

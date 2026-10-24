@@ -11,6 +11,7 @@ import { SHOPIFY_STALE_HOURS, type ShopifySalesRow } from "./types";
 export const SALES_NOTE =
   "Sales are line revenue after product and code discounts, before order-level discounts, shipping and tax; " +
   "gross of refunds (refunded and removed units still count); cancelled and test orders are excluded; " +
+  "custom (non-product) line items and lines whose product no longer exists are excluded; " +
   "windows are the rolling 30 and 60 days up to the sync time.";
 
 export const SALES_SOURCE = "Shopify (synced sales)";

@@ -96,6 +96,7 @@ describe("querySales metadata", () => {
     expect(SALES_NOTE).toBe(
       "Sales are line revenue after product and code discounts, before order-level discounts, shipping and tax; " +
         "gross of refunds (refunded and removed units still count); cancelled and test orders are excluded; " +
+        "custom (non-product) line items and lines whose product no longer exists are excluded; " +
         "windows are the rolling 30 and 60 days up to the sync time.",
     );
     expect(out.note).not.toContain("stale");
