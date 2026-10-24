@@ -155,18 +155,30 @@ function describeErrors(
   );
 }
 
+/** Per-call limits for shopifyGraphql. The defaults (3 attempts, 25 s each) suit the sync. */
+export type ShopifyGraphqlOptions = {
+  /** Total attempts, including the first (default 3, at least 1). */
+  attempts?: number;
+  /** Per-attempt timeout in ms (default 25 000). */
+  timeoutMs?: number;
+};
+
 /**
  * Read-only Admin GraphQL call. The store address is validated and the
  * document checked before any request; the token goes in the
  * X-Shopify-Access-Token header only and is scrubbed from anything thrown or
- * logged. Retries 429/5xx, THROTTLED and network errors up to 3 attempts.
+ * logged. Retries 429/5xx, THROTTLED and network errors up to `attempts` (default 3)
+ * attempts, each with a `timeoutMs` (default 25 s) timeout.
  */
 export async function shopifyGraphql<T>(
   shop: string,
   token: string,
   query: string,
   variables?: object,
+  opts: ShopifyGraphqlOptions = {},
 ): Promise<T> {
+  const maxAttempts = Math.max(1, Math.floor(opts.attempts ?? MAX_ATTEMPTS));
+  const timeoutMs = opts.timeoutMs ?? SHOPIFY_TIMEOUT_MS;
   const host = normalizeShopDomain(shop);
   if (!host) {
     throw new ShopifyApiError("That is not a valid Shopify store address (expected name.myshopify.com).", 0, "INVALID_SHOP");
@@ -185,10 +197,10 @@ export async function shopifyGraphql<T>(
         headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": token },
         body,
         redirect: "error",
-        signal: AbortSignal.timeout(SHOPIFY_TIMEOUT_MS),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
-      if (attempt < MAX_ATTEMPTS) {
+      if (attempt < maxAttempts) {
         await sleep(500 * 2 ** (attempt - 1));
         continue;
       }
@@ -212,7 +224,7 @@ export async function shopifyGraphql<T>(
     }
 
     if (!res.ok) {
-      if (attempt < MAX_ATTEMPTS && (res.status === 429 || res.status >= 500)) {
+      if (attempt < maxAttempts && (res.status === 429 || res.status >= 500)) {
         await sleep(1000 * 2 ** (attempt - 1) + Math.random() * 250);
         continue;
       }
@@ -232,7 +244,7 @@ export async function shopifyGraphql<T>(
 
     if (json?.errors?.length) {
       const throttled = json.errors.some((e) => e.extensions?.code === "THROTTLED");
-      if (throttled && attempt < MAX_ATTEMPTS) {
+      if (throttled && attempt < maxAttempts) {
         await sleep(1000 * 2 ** (attempt - 1) + Math.random() * 250);
         continue;
       }
@@ -494,14 +506,4 @@ export async function* streamJsonl(
       // A read still pending after cancel; the stream is finished either way.
     }
   }
-}
-
-/**
- * Downloads a whole bulk result file into an array. For small results and tests only: the
- * sync streams with streamJsonl instead.
- */
-export async function downloadJsonl(url: string): Promise<Array<Record<string, unknown>>> {
-  const rows: Array<Record<string, unknown>> = [];
-  for await (const row of streamJsonl(url)) rows.push(row);
-  return rows;
 }

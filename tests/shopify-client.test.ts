@@ -11,11 +11,17 @@ import {
   DEFAULT_SHOPIFY_API_VERSION,
   SHOPIFY_READ_ONLY_MUTATIONS,
   ShopifyApiError,
-  downloadJsonl,
   shopifyGraphql,
   startBulkQuery,
+  streamJsonl,
   waitForBulkQuery,
 } from "@/lib/shopify/client";
+
+async function collect(url: string): Promise<Array<Record<string, unknown>>> {
+  const rows: Array<Record<string, unknown>> = [];
+  for await (const row of streamJsonl(url)) rows.push(row);
+  return rows;
+}
 
 const SHOP = "duringdays.myshopify.com";
 const TOKEN = "shpat_SECRET_TOKEN_123";
@@ -195,6 +201,42 @@ describe("shopifyGraphql: retries and errors", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
+  it("defaults to 3 attempts of 25 s each", async () => {
+    vi.useFakeTimers();
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    fetchMock.mockImplementation(async () => json({ errors: [{ message: "Throttled", extensions: { code: "THROTTLED" } }] }));
+    const p = shopifyGraphql(SHOP, TOKEN, "{ shop { name } }");
+    const assertion = expect(p).rejects.toMatchObject({ code: "THROTTLED" });
+    await vi.runAllTimersAsync();
+    await assertion;
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(timeout.mock.calls.map((c) => c[0])).toEqual([25_000, 25_000, 25_000]);
+    timeout.mockRestore();
+  });
+
+  it("honours the attempts and timeoutMs options", async () => {
+    vi.useFakeTimers();
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    fetchMock.mockImplementation(async () => json({ errors: [{ message: "Throttled", extensions: { code: "THROTTLED" } }] }));
+    const p = shopifyGraphql(SHOP, TOKEN, "{ shop { name } }", undefined, { attempts: 2, timeoutMs: 10_000 });
+    const assertion = expect(p).rejects.toMatchObject({ code: "THROTTLED" });
+    await vi.runAllTimersAsync();
+    await assertion;
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(timeout.mock.calls.map((c) => c[0])).toEqual([10_000, 10_000]);
+    timeout.mockRestore();
+  });
+
+  it("attempts 1 means no retry, for network errors and 5xx alike", async () => {
+    fetchMock.mockRejectedValueOnce(new Error("down"));
+    await expect(shopifyGraphql(SHOP, TOKEN, "{ shop { name } }", undefined, { attempts: 1 })).rejects.toMatchObject({ status: 0 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValue(new Response("oops", { status: 503 }));
+    await expect(shopifyGraphql(SHOP, TOKEN, "{ shop { name } }", undefined, { attempts: 1 })).rejects.toMatchObject({ status: 503 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("401 says reconnect, never contains the token, and logs status and code only", async () => {
     fetchMock.mockResolvedValue(new Response(`bad token ${TOKEN}`, { status: 401 }));
     const err = (await shopifyGraphql(SHOP, TOKEN, "{ shop { name } }").catch((e: ShopifyApiError) => e)) as ShopifyApiError;
@@ -333,12 +375,12 @@ describe("bulk operations", () => {
     });
   });
 
-  it("downloadJsonl parses lines and refuses non-https links", async () => {
+  it("streamJsonl parses lines and refuses non-https links", async () => {
     fetchMock.mockResolvedValue(new Response('{"id":"a"}\n{"id":"b","__parentId":"a"}\n\n'));
-    await expect(downloadJsonl("https://storage.example/x.jsonl")).resolves.toEqual([{ id: "a" }, { id: "b", __parentId: "a" }]);
+    await expect(collect("https://storage.example/x.jsonl")).resolves.toEqual([{ id: "a" }, { id: "b", __parentId: "a" }]);
     expect(fetchMock.mock.calls[0][1].headers).toBeUndefined();
     fetchMock.mockClear();
-    await expect(downloadJsonl("http://storage.example/x.jsonl")).rejects.toMatchObject({ code: "INVALID_URL" });
+    await expect(collect("http://storage.example/x.jsonl")).rejects.toMatchObject({ code: "INVALID_URL" });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

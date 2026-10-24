@@ -5,7 +5,7 @@ vi.mock("@/lib/observability/logger", () => ({
   logger: { warn: (...a: unknown[]) => warn(...a), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-import { ShopifyApiError, downloadJsonl, streamJsonl } from "@/lib/shopify/client";
+import { ShopifyApiError, streamJsonl } from "@/lib/shopify/client";
 
 const URL_OK = "https://storage.example/result.jsonl";
 const TOKEN = "shpat_SECRET_TOKEN_123";
@@ -240,8 +240,10 @@ describe("streamJsonl", () => {
     expect(cancel).toHaveBeenCalled();
   });
 
-  it("downloadJsonl still collects a small result", async () => {
+  it("collects a small result with blank lines skipped", async () => {
     fetchMock.mockResolvedValueOnce(new Response('{"id":"a"}\n{"id":"b","__parentId":"a"}\n\n'));
-    await expect(downloadJsonl(URL_OK)).resolves.toEqual([{ id: "a" }, { id: "b", __parentId: "a" }]);
+    const rows: Array<Record<string, unknown>> = [];
+    for await (const row of streamJsonl(URL_OK)) rows.push(row);
+    expect(rows).toEqual([{ id: "a" }, { id: "b", __parentId: "a" }]);
   });
 });

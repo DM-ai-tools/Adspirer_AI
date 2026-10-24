@@ -10,6 +10,7 @@ import { encryptToken } from "@/lib/security/token-vault";
 import {
   LIVE_DEFAULT_LIMIT,
   LIVE_MAX_LIMIT,
+  LIVE_REQUEST,
   LiveShopifyError,
   SHOPIFY_MAX_QUERY_COST,
   escapeShopifySearch,
@@ -315,6 +316,7 @@ describe("liveFindProducts", () => {
         status: "ACTIVE",
         handle: "oak-counter-stool",
         variants: 4,
+        variants_read: 4,
         // 24 + 0 (negative clamped); untracked and CONTINUE stay out of the sum.
         stock_units: 24,
         untracked_variants: 2,
@@ -360,18 +362,36 @@ describe("liveFindProducts", () => {
     expect(q).toBe('oak* vendor:"Loft" product_type:"Sofa big"');
     expect(q).not.toContain("\\");
     expect(unquotedFilters(q)).toEqual(["vendor", "product_type"]);
-    // A value with nothing left is ignored, with a note, rather than sent as an empty phrase.
+    // A value with nothing left is ignored, with a note, rather than sent as an empty phrase;
+    // with no other filter left, nothing is looked up (never the unfiltered first page).
     const out = await liveFindProducts(CLIENT, { vendor: '":()' });
-    expect(bodies[1].variables.query).toBeNull();
+    expect(bodies).toHaveLength(1);
+    expect(out.rows).toEqual([]);
+    expect(out.has_more).toBe(false);
     expect(out.note).toMatch(/vendor .* no searchable characters/);
+    expect(out.note).toContain("no products were looked up");
   });
 
-  it("search text with no searchable word is ignored with a note", async () => {
+  it("search text with no searchable word and no other filter returns no rows and sends nothing", async () => {
+    await connect();
+    const { bodies } = installFetch({ products: () => productsReply([productNode({ title: "Anything" })]) });
+    const out = await liveFindProducts(CLIENT, { search: '" OR ()' });
+    expect(bodies).toHaveLength(0);
+    expect(out.rows).toEqual([]);
+    expect(out.currency).toBe("GBP");
+    expect(out.note).toMatch(/search .* no searchable words/);
+    expect(out.note).toContain("None of the text given has searchable characters, so no products were looked up.");
+  });
+
+  it("search text with no searchable word is ignored with a note when other filters remain", async () => {
     await connect();
     const { bodies } = installFetch({ products: () => productsReply([]) });
-    const out = await liveFindProducts(CLIENT, { search: '" OR ()' });
-    expect(bodies[0].variables).toMatchObject({ query: null, sortKey: "TITLE" });
+    const out = await liveFindProducts(CLIENT, { search: '" OR ()', vendor: "Loft" });
+    expect(bodies[0].variables).toMatchObject({ query: 'vendor:"Loft"', sortKey: "TITLE" });
     expect(out.note).toMatch(/search .* no searchable words/);
+    expect(out.note).not.toContain("were looked up");
+    await liveFindProducts(CLIENT, { search: "()", status: "DRAFT" });
+    expect(bodies[1].variables.query).toBe("status:draft");
   });
 
   it("resolves a collection first, then searches products by collection_id (2 requests)", async () => {
@@ -460,7 +480,10 @@ describe("liveFindProducts", () => {
     });
     const out = await liveFindProducts(CLIENT, { limit: 25 });
     expect(out.rows[0].variants).toBe(120);
+    expect(out.rows[0].variants_read).toBe(2);
+    expect(out.rows[0].stock_units).toBe(3);
     expect(out.note).toMatch(/showing first \d+ variants/i);
+    expect(out.note).toContain("cover only the variants_read variants; variants is the full count");
     expect(out.note).toContain("Big Sofa");
     expect(out.note).toMatch(/more products match/i);
   });
@@ -505,9 +528,10 @@ describe("liveLookupVariants", () => {
     const out = await liveLookupVariants(CLIENT, { sku: "BS-OAK-65" });
     expect(bodies).toHaveLength(1);
     expect(bodies[0].query).toContain("query LiveVariants");
-    expect(bodies[0].query).toMatch(/productVariants\(first: \$first, query: \$query\)/);
+    expect(bodies[0].query).toMatch(/productVariants\(first: \$first, query: \$query, sortKey: \$sortKey\)/);
+    expect(bodies[0].query).toContain("$sortKey: ProductVariantSortKeys!");
     expect(bodies[0].query).toContain("unitCost");
-    expect(bodies[0].variables).toEqual({ first: LIVE_MAX_LIMIT, query: 'sku:"BS-OAK-65"' });
+    expect(bodies[0].variables).toEqual({ first: LIVE_MAX_LIMIT, query: 'sku:"BS-OAK-65"', sortKey: "RELEVANCE" });
     expect(out.rows).toEqual([
       {
         product: "Oak Counter Stool",
@@ -523,15 +547,91 @@ describe("liveLookupVariants", () => {
     expect(out.source).toBe("Shopify (live)");
     expect(out.currency).toBe("GBP");
     expect(out.note).toMatch(/exact/i);
+    expect(out.has_more).toBe(false);
   });
 
-  it("says which SKUs were close when none matches exactly", async () => {
+  it("says which SKUs were close when none matches exactly and Shopify has no more candidates", async () => {
     await connect();
     installFetch({ variants: () => variantsReply([variantNode({ sku: "BS-OAK-650" })]) });
     const out = await liveLookupVariants(CLIENT, { sku: "BS-OAK-65" });
     expect(out.rows).toEqual([]);
+    expect(out.has_more).toBe(false);
     expect(out.note).toContain('No variant has the exact SKU "BS-OAK-65" (ignoring case)');
     expect(out.note).toContain("BS-OAK-650");
+  });
+
+  it("with more Shopify candidates and no exact match, never says the SKU does not exist", async () => {
+    await connect();
+    const page = Array.from({ length: 25 }, (_, i) => variantNode({ sku: `BS-OAK-65${i}` }));
+    installFetch({ variants: () => variantsReply(page, true) });
+    const out = await liveLookupVariants(CLIENT, { sku: "BS-OAK-65" });
+    expect(out.rows).toEqual([]);
+    expect(out.has_more).toBe(true);
+    expect(out.note).not.toContain("No variant has the exact SKU");
+    expect(out.note).toContain(
+      'No variant with the exact SKU "BS-OAK-65" is among the first 25 Shopify matches for this SKU; it may still exist, so try the product name.',
+    );
+    expect(out.note).not.toMatch(/More variants match/);
+  });
+
+  it("with more Shopify candidates and an exact match, keeps has_more and says others may exist", async () => {
+    await connect();
+    installFetch({ variants: () => variantsReply([variantNode({ sku: "BS-OAK-65" }), variantNode({ sku: "BS-OAK-650" })], true) });
+    const out = await liveLookupVariants(CLIENT, { sku: "BS-OAK-65" });
+    expect(out.rows.map((r) => r.sku)).toEqual(["BS-OAK-65"]);
+    expect(out.has_more).toBe(true);
+    expect(out.note).toContain("only the first 2 were checked, so other variants with this exact SKU may exist");
+  });
+
+  it("more exact matches than the limit: has_more and a note", async () => {
+    await connect();
+    installFetch({ variants: () => variantsReply([variantNode({ sku: "A", q: 1 }), variantNode({ sku: "a", q: 2 })]) });
+    const out = await liveLookupVariants(CLIENT, { sku: "A", limit: 1 });
+    expect(out.rows.map((r) => r.stock)).toEqual([1]);
+    expect(out.has_more).toBe(true);
+    expect(out.note).toContain("More variants have this SKU; showing the first 1.");
+  });
+
+  it("a SKU changed before sending says so and never claims the SKU does not exist", async () => {
+    await connect();
+    const { bodies } = installFetch({ variants: () => variantsReply([variantNode({ sku: "A 1" })]) });
+    const out = await liveLookupVariants(CLIENT, { sku: "A:1" });
+    expect(bodies[0].variables).toMatchObject({ query: 'sku:"A 1"', sortKey: "RELEVANCE" });
+    expect(out.rows).toEqual([]);
+    expect(out.note).not.toContain("No variant has the exact SKU");
+    expect(out.note).toContain(`The SKU "A:1" contains characters Shopify's search cannot take`);
+    expect(out.note).toContain('None of the 1 variants Shopify returned for the changed value has the exact SKU "A:1"');
+    // When Shopify does return the real SKU, it is matched exactly against the original text.
+    installFetch({ variants: () => variantsReply([variantNode({ sku: "A:1" })]) });
+    const hit = await liveLookupVariants(CLIENT, { sku: "A:1" });
+    expect(hit.rows.map((r) => r.sku)).toEqual(["A:1"]);
+    expect(hit.note).toContain("were sent as spaces");
+  });
+
+  it("a symbols-only SKU or search returns no rows and sends nothing", async () => {
+    await connect();
+    const { bodies } = installFetch({ variants: () => variantsReply([variantNode({ sku: "X" })]) });
+    const sku = await liveLookupVariants(CLIENT, { sku: '":()' });
+    const search = await liveLookupVariants(CLIENT, { search: "() OR \\" });
+    expect(bodies).toHaveLength(0);
+    for (const out of [sku, search]) {
+      expect(out.rows).toEqual([]);
+      expect(out.has_more).toBe(false);
+      expect(out.note).toContain("None of the text given has searchable characters, so no variants were looked up.");
+      expect(out.note).not.toContain("Close SKUs");
+    }
+    expect(sku.note).toMatch(/sku .* no searchable characters/);
+  });
+
+  it("a symbols-only SKU with a usable search: the SKU is ignored, the search applies", async () => {
+    await connect();
+    const { bodies } = installFetch({ variants: () => variantsReply([variantNode({ sku: "X" })]) });
+    const out = await liveLookupVariants(CLIENT, { sku: "()", search: "oak", limit: 5 });
+    expect(bodies[0].variables).toEqual({ first: 5, query: "oak*", sortKey: "ID" });
+    expect(out.rows.map((r) => r.sku)).toEqual(["X"]);
+    expect(out.note).toMatch(/sku .* no searchable characters/);
+    expect(out.note).not.toContain("Close SKUs");
+    expect(out.note).not.toContain("exact SKU");
   });
 
   it("matches the SKU trimmed and ignoring case, and returns every case variant with a note", async () => {
@@ -545,7 +645,7 @@ describe("liveLookupVariants", () => {
         ]),
     });
     const out = await liveLookupVariants(CLIENT, { sku: "  Bs-Oak-65 " });
-    expect(bodies[0].variables).toEqual({ first: 25, query: 'sku:"Bs-Oak-65"' });
+    expect(bodies[0].variables).toEqual({ first: 25, query: 'sku:"Bs-Oak-65"', sortKey: "RELEVANCE" });
     expect(out.rows.map((r) => [r.sku, r.stock])).toEqual([
       ["BS-OAK-65", 1],
       [" bs-oak-65 ", 2],
@@ -590,7 +690,7 @@ describe("liveLookupVariants", () => {
     await connect();
     const { bodies } = installFetch({ variants: () => variantsReply([]) });
     const out = await liveLookupVariants(CLIENT, { search: 'oak") OR sku:(x', vendor: "Loft Living", limit: 99 });
-    expect(bodies[0].variables).toEqual({ first: 25, query: 'oak sku x* vendor:"Loft Living"' });
+    expect(bodies[0].variables).toEqual({ first: 25, query: 'oak sku x* vendor:"Loft Living"', sortKey: "ID" });
     expect(unquotedFilters(String(bodies[0].variables.query))).toEqual(["vendor"]);
     expect(out.note).toMatch(/limit 99 .*25/);
     expect(estimateCost(bodies[0].query, bodies[0].variables)).toBe(variantsQueryCost(25, true));
@@ -677,10 +777,15 @@ describe("errors", () => {
   it("persistent throttle: busy text", async () => {
     await connect();
     vi.useFakeTimers();
-    installFetch({ products: () => json({ errors: [{ message: "Throttled", extensions: { code: "THROTTLED" } }] }) });
+    const { fn } = installFetch({ products: () => json({ errors: [{ message: "Throttled", extensions: { code: "THROTTLED" } }] }) });
+    const timeout = vi.spyOn(AbortSignal, "timeout");
     const p = liveFindProducts(CLIENT, {}).catch((e) => e);
     await vi.runAllTimersAsync();
     const err = await p;
+    // Live calls use 2 attempts of 10 s each, not the sync's 3 of 25 s.
+    expect(fn).toHaveBeenCalledTimes(LIVE_REQUEST.attempts);
+    expect(timeout.mock.calls.map((c) => c[0])).toEqual([10_000, 10_000]);
+    timeout.mockRestore();
     expect(err).toBeInstanceOf(LiveShopifyError);
     expect(err.code).toBe("BUSY");
     expect(err.message).toMatch(/shopify is busy/i);
@@ -696,6 +801,7 @@ describe("errors", () => {
     const p = liveLookupVariants(CLIENT, {}).catch((e) => e);
     await vi.runAllTimersAsync();
     const err = await p;
+    expect(fn).toHaveBeenCalledTimes(2);
     expect(err).toBeInstanceOf(LiveShopifyError);
     expect(err.code).toBe("UNREACHABLE");
     expect(err.message).toMatch(/couldn't reach shopify/i);
@@ -774,6 +880,26 @@ describe("demo mode", () => {
     const hostile = await liveFindProducts(CLIENT, { search: 'oak" OR vendor:x' });
     expect(hostile.rows).toEqual([]);
     expect(fn).not.toHaveBeenCalled();
+  });
+
+  it("symbols-only search or SKU returns no rows in demo mode too", async () => {
+    const { fn } = installFetch({});
+    const products = await liveFindProducts(CLIENT, { search: '" OR ()' });
+    const variants = await liveLookupVariants(CLIENT, { sku: '":()' });
+    expect(fn).not.toHaveBeenCalled();
+    expect(products.rows).toEqual([]);
+    expect(products.note).toContain("no products were looked up");
+    expect(variants.rows).toEqual([]);
+    expect(variants.note).toContain("no variants were looked up");
+    // Another filter remains: it still applies, and the ignored text is noted.
+    const typed = await liveFindProducts(CLIENT, { search: "()", collection: "Bar stools" });
+    expect(typed.rows.length).toBeGreaterThan(0);
+    expect(typed.note).toMatch(/search .* no searchable words/);
+  });
+
+  it("demo product rows carry variants_read", async () => {
+    const out = await liveFindProducts(CLIENT, { collection: "Bar stools" });
+    for (const r of out.rows) expect(r.variants_read).toBe(r.variants);
   });
 
   it("an unknown demo collection lists the mock collection titles", async () => {

@@ -31,7 +31,7 @@ export const shopifyProductsTool = registerTool({
   name: "shopify_products",
   description: [
     "Read the client's Shopify products LIVE from the store right now (read-only; the store is already connected, never pass an id or domain).",
-    "One row per product: title, vendor, product type, status, variant count, current stock (stock_units null means untracked/unlimited, not zero) and price range.",
+    "One row per product: title, vendor, product type, status, variant count (variants; variants_read is how many were read for stock, fewer for a product with many variants), current stock (stock_units null means untracked/unlimited, not zero) and price range.",
     "Filter by search (words in the title), vendor, product_type, collection (title) or status; sort by title, inventory or updated.",
     "This tool has no sales data and cannot sort by best selling: for best sellers, top products by units or revenue, or anything sold, use shopify_sales.",
     "Results carry source and fetched_at: say the figures are live from Shopify.",
@@ -60,7 +60,7 @@ export const shopifyVariantsTool = registerTool({
   description: [
     "Look up the client's Shopify variants / SKUs LIVE from the store right now (read-only; never pass an id or domain).",
     "One row per variant: product, variant, SKU, vendor, current price, cost, margin_pct and current stock. cost null means no cost is recorded and stock null means untracked/unlimited; neither is zero.",
-    "Look up by sku (exact, ignoring case), search (words in product, variant or SKU) or vendor.",
+    "Look up by sku (exact, ignoring case, among Shopify's first 25 matches: when the note says the SKU may still exist, try search with the product name), search (words in product, variant or SKU) or vendor.",
     "No sales data here: units and revenue sold come from shopify_sales.",
     "Results carry source and fetched_at: say the figures are live from Shopify.",
   ].join(" "),

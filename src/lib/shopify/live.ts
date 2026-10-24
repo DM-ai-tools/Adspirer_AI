@@ -1,7 +1,7 @@
 import { getConfig } from "@/lib/config";
 import { logger } from "@/lib/observability/logger";
 import { decryptToken } from "@/lib/security/token-vault";
-import { ShopifyApiError, shopifyGraphql } from "./client";
+import { ShopifyApiError, shopifyGraphql, type ShopifyGraphqlOptions } from "./client";
 import { toCents } from "./domain";
 import { MOCK_SHOP, mockLiveCatalog } from "./mock";
 import { getConnection } from "./store";
@@ -24,6 +24,12 @@ const COST_BUDGET = 900;
 const MAX_VARIANTS_PER_PRODUCT = 25;
 const COLLECTION_CANDIDATES = 5;
 const MAX_TEXT = 200;
+/**
+ * Per-request limits for live calls: 2 attempts of 10 s (plus about 1 s of backoff) keep a
+ * tool call of at most 2 requests near 45 s, well inside a chat request. The sync keeps the
+ * client defaults (3 attempts of 25 s).
+ */
+export const LIVE_REQUEST: Required<ShopifyGraphqlOptions> = { attempts: 2, timeoutMs: 10_000 };
 
 export type LiveShopifyErrorCode = "NOT_CONNECTED" | "RECONNECT" | "BUSY" | "UNREACHABLE" | "ACCESS_DENIED" | "FAILED";
 
@@ -62,7 +68,10 @@ export type LiveProductRow = {
   product_type: string;
   status: string;
   handle: string;
+  /** The product's full variant count. */
   variants: number;
+  /** Variants actually read for stock (fewer than `variants` when the product has many). */
+  variants_read: number;
   /** Sum over tracked, DENY-policy variants read; null if none of them is. */
   stock_units: number | null;
   untracked_variants: number;
@@ -216,8 +225,8 @@ const PRODUCTS_QUERY = `query LiveProducts($first: Int!, $variantsFirst: Int!, $
   }
 }`;
 
-const variantsQuery = (withCost: boolean) => `query LiveVariants($first: Int!, $query: String) {
-  productVariants(first: $first, query: $query) {
+const variantsQuery = (withCost: boolean) => `query LiveVariants($first: Int!, $query: String, $sortKey: ProductVariantSortKeys!) {
+  productVariants(first: $first, query: $query, sortKey: $sortKey) {
     pageInfo { hasNextPage }
     nodes {
       title
@@ -340,18 +349,77 @@ function addSearch(terms: string[], notes: string[], search: string | undefined)
 }
 
 /**
+ * Notes when text was given but none of it is searchable (and nothing else narrows the
+ * lookup): each ignored value is named, and nothing is looked up, rather than returning an
+ * unfiltered first page as if it matched.
+ */
+function nothingSearchableNotes(
+  kind: "products" | "variants",
+  search: string | undefined,
+  values: Array<[string, string | undefined]>,
+  notes: string[],
+): void {
+  addSearch([], notes, search);
+  for (const [field, value] of values) addValue([], notes, field, value);
+  notes.push(`None of the text given has searchable characters, so no ${kind} were looked up. Use letters or digits.`);
+}
+
+/** True when text was given, none of it survives sanitising, and no other filter applies. */
+function nothingSearchable(search: string | undefined, values: Array<string | undefined>, otherFilter: boolean): boolean {
+  if (otherFilter || (!search && values.every((v) => !v))) return false;
+  if (search && escapeShopifySearch(search)) return false;
+  return values.every((v) => !v || quoteShopifyValue(v) === null);
+}
+
+/** Characters a quoted filter value cannot carry: quoteShopifyValue sends them as spaces. */
+const UNSENDABLE_CHARS = /[\\":()]/;
+
+/**
  * Rows whose SKU equals `sku` after trimming, ignoring case (all of them when several differ
- * only by case, with a note). Notes when there is none.
+ * only by case, with a note).
  */
 function exactSkuMatches<T extends { sku: string | null }>(rows: T[], sku: string, notes: string[]): T[] {
   const want = sku.trim().toLowerCase();
   const exact = rows.filter((r) => (r.sku ?? "").trim().toLowerCase() === want);
   const spellings = [...new Set(exact.map((r) => (r.sku ?? "").trim()))];
-  if (exact.length === 0) notes.push(`No variant has the exact SKU "${sku}" (ignoring case).`);
-  else if (spellings.length > 1) {
+  if (spellings.length > 1) {
     notes.push(`Several variants have this SKU in different letter case (${spellings.join(", ")}); all are shown.`);
   }
   return exact;
+}
+
+/**
+ * What a SKU lookup can honestly say. Shopify does not document `sku:` as an exact match, so
+ * the variants it returned (`checked`, at most 25) are only candidates and `more` (Shopify's
+ * hasNextPage) means others were not checked. "No variant has the exact SKU" is said only
+ * when Shopify returned every candidate and the SKU was sent unchanged.
+ */
+function skuNotes(sku: string, checked: number, exactCount: number, more: boolean, notes: string[]): void {
+  const changed = UNSENDABLE_CHARS.test(sku);
+  if (changed) {
+    notes.push(
+      `The SKU "${sku}" contains characters Shopify's search cannot take (: ( ) " \\), so they were sent as spaces.`,
+    );
+  }
+  if (exactCount > 0) {
+    if (more) {
+      notes.push(
+        `Shopify has more than ${checked} candidates for this SKU and only the first ${checked} were checked, so other variants with this exact SKU may exist.`,
+      );
+    }
+    return;
+  }
+  if (more) {
+    notes.push(
+      `No variant with the exact SKU "${sku}" is among the first ${checked} Shopify matches for this SKU; it may still exist, so try the product name.`,
+    );
+  } else if (changed) {
+    notes.push(
+      `None of the ${checked} variants Shopify returned for the changed value has the exact SKU "${sku}"; it may still exist, so try the product name.`,
+    );
+  } else {
+    notes.push(`No variant has the exact SKU "${sku}" (ignoring case).`);
+  }
 }
 
 const SORT_KEYS: Record<Exclude<LiveProductSort, "best_selling">, string> = {
@@ -446,7 +514,7 @@ async function demoCurrency(clientId: string): Promise<string> {
 // ---------------------------------------------------------------------------------------------
 // Products
 
-function productRow(p: ProductsData["products"]["nodes"][number]): { row: LiveProductRow; read: number } {
+function productRow(p: ProductsData["products"]["nodes"][number]): LiveProductRow {
   const variants = p.variants?.nodes ?? [];
   let stock: number | null = null;
   let untracked = 0;
@@ -456,29 +524,28 @@ function productRow(p: ProductsData["products"]["nodes"][number]): { row: LivePr
     else stock = (stock ?? 0) + s;
   }
   return {
-    row: {
-      title: p.title,
-      vendor: p.vendor,
-      product_type: p.productType,
-      status: p.status,
-      handle: p.handle,
-      variants: p.variantsCount?.count ?? variants.length,
-      stock_units: stock,
-      untracked_variants: untracked,
-      price_min: moneyOf(p.priceRangeV2?.minVariantPrice),
-      price_max: moneyOf(p.priceRangeV2?.maxVariantPrice),
-    },
-    read: variants.length,
+    title: p.title,
+    vendor: p.vendor,
+    product_type: p.productType,
+    status: p.status,
+    handle: p.handle,
+    variants: p.variantsCount?.count ?? variants.length,
+    variants_read: variants.length,
+    stock_units: stock,
+    untracked_variants: untracked,
+    price_min: moneyOf(p.priceRangeV2?.minVariantPrice),
+    price_max: moneyOf(p.priceRangeV2?.maxVariantPrice),
   };
 }
 
-function productNotes(rows: LiveProductRow[], truncated: Array<{ title: string; read: number }>, notes: string[]): void {
+function productNotes(rows: LiveProductRow[], notes: string[]): void {
   if (rows.some((r) => r.untracked_variants > 0 || r.stock_units === null)) notes.push(STOCK_NOTE);
+  const truncated = rows.filter((r) => r.variants > r.variants_read);
   if (truncated.length) {
-    const read = Math.max(...truncated.map((t) => t.read));
-    const names = truncated.slice(0, 5).map((t) => t.title);
+    const read = Math.max(...truncated.map((r) => r.variants_read));
+    const names = truncated.slice(0, 5).map((r) => r.title);
     notes.push(
-      `Showing first ${read} variants for ${names.join(", ")}${truncated.length > 5 ? " and others" : ""}: stock_units and untracked_variants cover those variants only; variants is the full count.`,
+      `Showing first ${read} variants for ${names.join(", ")}${truncated.length > 5 ? " and others" : ""}: stock_units and untracked_variants cover only the variants_read variants; variants is the full count.`,
     );
   }
 }
@@ -507,9 +574,29 @@ export async function liveFindProducts(clientId: string, args: LiveFindProductsA
     ["status", status],
   ]);
 
-  if (isDemo()) return demoProducts(clientId, { first, search, vendor, productType, collection, status, args, notes, used });
+  const blank = nothingSearchable(search, [vendor, productType], Boolean(collection || status));
+  const blankResult = (currency: string | null): LiveProductsResult => {
+    nothingSearchableNotes("products", search, [["vendor", vendor], ["product_type", productType]], notes);
+    return { ...meta(currency, false, notes), rows: [] };
+  };
+
+  if (isDemo()) {
+    if (blank) return blankResult(await demoCurrency(clientId));
+    return demoProducts(clientId, {
+      first,
+      search,
+      vendor: demoValue(notes, "vendor", vendor),
+      productType: demoValue(notes, "product_type", productType),
+      collection,
+      status,
+      args,
+      notes,
+      used,
+    });
+  }
 
   const live = await openConnection(clientId);
+  if (blank) return blankResult(live.currency);
   try {
     const terms: string[] = [];
     if (collection) {
@@ -518,10 +605,13 @@ export async function liveFindProducts(clientId: string, args: LiveFindProductsA
         notes.push(unknownCollectionNote(collection, []));
         return { ...meta(live.currency, false, notes), rows: [] };
       }
-      const data = await shopifyGraphql<CollectionsData>(live.shop, live.token, COLLECTIONS_QUERY, {
-        first: COLLECTION_CANDIDATES,
-        query: `title:${title}`,
-      });
+      const data = await shopifyGraphql<CollectionsData>(
+        live.shop,
+        live.token,
+        COLLECTIONS_QUERY,
+        { first: COLLECTION_CANDIDATES, query: `title:${title}` },
+        LIVE_REQUEST,
+      );
       const candidates = data.collections?.nodes ?? [];
       const wanted = collection.toLowerCase();
       const hit = candidates.find((c) => c.title.toLowerCase() === wanted || c.handle.toLowerCase() === wanted);
@@ -539,19 +629,17 @@ export async function liveFindProducts(clientId: string, args: LiveFindProductsA
 
     const { sortKey, reverse } = chooseSort(args, hasSearch, notes);
     const variantsFirst = variantsPageFor(first);
-    const data = await shopifyGraphql<ProductsData>(live.shop, live.token, PRODUCTS_QUERY, {
-      first,
-      variantsFirst,
-      query: terms.length ? terms.join(" ") : null,
-      sortKey,
-      reverse,
-    });
+    const data = await shopifyGraphql<ProductsData>(
+      live.shop,
+      live.token,
+      PRODUCTS_QUERY,
+      { first, variantsFirst, query: terms.length ? terms.join(" ") : null, sortKey, reverse },
+      LIVE_REQUEST,
+    );
     const nodes = data.products?.nodes ?? [];
     const hasMore = Boolean(data.products?.pageInfo?.hasNextPage);
-    const built = nodes.map(productRow);
-    const rows = built.map((b) => b.row);
-    const truncated = built.filter((b) => b.row.variants > b.read).map((b) => ({ title: b.row.title, read: b.read }));
-    productNotes(rows, truncated, notes);
+    const rows = nodes.map(productRow);
+    productNotes(rows, notes);
     if (hasMore) notes.push(`More products match; showing the first ${rows.length}. Narrow the filters to see others.`);
     if (rows.length === 0) notes.push(emptyNote("products", used));
     return { ...meta(live.currency, hasMore, notes), rows };
@@ -578,10 +666,16 @@ function variantRow(v: VariantsData["productVariants"]["nodes"][number], withCos
   };
 }
 
+const SKU_EXACT_NOTE =
+  "Shopify's sku: search filter is not documented as an exact match, so only variants whose SKU equals the requested SKU (trimmed, ignoring case) are shown.";
+
 /**
  * Variants by exact SKU, or by search text / vendor, live from Shopify. Shopify documents the
  * `sku:` filter only as "Filter by the product variant sku field" (not as exact), so a SKU
- * lookup reads up to 25 candidates and keeps SKUs equal after trimming, ignoring case.
+ * lookup reads up to 25 candidates (sortKey RELEVANCE, which ProductVariantSortKeys has in
+ * 2026-10) and keeps SKUs equal after trimming, ignoring case. has_more keeps Shopify's
+ * hasNextPage for those candidates, and the notes never claim a SKU is absent when only some
+ * candidates were checked or the SKU had to be changed before sending.
  */
 export async function liveLookupVariants(clientId: string, args: LiveLookupVariantsArgs): Promise<LiveVariantsResult> {
   const notes: string[] = [];
@@ -594,50 +688,69 @@ export async function liveLookupVariants(clientId: string, args: LiveLookupVaria
     ["search", search],
     ["vendor", vendor],
   ]);
+  // A SKU with nothing sendable left is ignored (with a note), not matched against.
+  const skuUsed = sku && quoteShopifyValue(sku) ? sku : undefined;
+  const blank = nothingSearchable(search, [sku, vendor], false);
+  const blankResult = (currency: string | null): LiveVariantsResult => {
+    nothingSearchableNotes("variants", search, [["sku", sku], ["vendor", vendor]], notes);
+    return { ...meta(currency, false, notes), rows: [] };
+  };
 
-  if (isDemo()) return demoVariants(clientId, { limit, sku, search, vendor, notes, used });
+  if (isDemo()) {
+    if (blank) return blankResult(await demoCurrency(clientId));
+    if (sku && !skuUsed) addValue([], notes, "sku", sku);
+    return demoVariants(clientId, { limit, sku: skuUsed, search, vendor: demoValue(notes, "vendor", vendor), notes, used });
+  }
 
   const live = await openConnection(clientId);
+  if (blank) return blankResult(live.currency);
   const terms: string[] = [];
   addValue(terms, notes, "sku", sku);
   addSearch(terms, notes, search);
   addValue(terms, notes, "vendor", vendor);
-  const variables = { first: sku ? LIVE_MAX_LIMIT : limit, query: terms.length ? terms.join(" ") : null };
+  const variables = {
+    first: skuUsed ? LIVE_MAX_LIMIT : limit,
+    query: terms.length ? terms.join(" ") : null,
+    // RELEVANCE needs a search query (always there for a SKU); ID is Shopify's default order.
+    sortKey: skuUsed ? "RELEVANCE" : "ID",
+  };
 
   let withCost = true;
   let data: VariantsData;
   try {
     try {
-      data = await shopifyGraphql<VariantsData>(live.shop, live.token, variantsQuery(true), variables);
+      data = await shopifyGraphql<VariantsData>(live.shop, live.token, variantsQuery(true), variables, LIVE_REQUEST);
     } catch (error) {
       // No permission to view product costs: answer without cost rather than fail the call.
       if (!(error instanceof ShopifyApiError) || error.code !== "ACCESS_DENIED") throw error;
       logFailure(clientId, error);
       withCost = false;
-      data = await shopifyGraphql<VariantsData>(live.shop, live.token, variantsQuery(false), variables);
+      data = await shopifyGraphql<VariantsData>(live.shop, live.token, variantsQuery(false), variables, LIVE_REQUEST);
     }
   } catch (error) {
     fail(clientId, error);
   }
 
   const nodes = data.productVariants?.nodes ?? [];
-  let hasMore = Boolean(data.productVariants?.pageInfo?.hasNextPage);
+  // Shopify's own hasNextPage: for a SKU lookup, more candidates exist than were checked.
+  const shopifyHasMore = Boolean(data.productVariants?.pageInfo?.hasNextPage);
+  let hasMore = shopifyHasMore;
   let rows = nodes.map((v) => variantRow(v, withCost));
-  if (sku) {
-    notes.push(
-      "Shopify's sku: search filter is not documented as an exact match, so only variants whose SKU equals the requested SKU (trimmed, ignoring case) are shown.",
-    );
-    const exact = exactSkuMatches(rows, sku, notes);
+  if (skuUsed) {
+    notes.push(SKU_EXACT_NOTE);
+    const exact = exactSkuMatches(rows, skuUsed, notes);
+    skuNotes(skuUsed, rows.length, exact.length, shopifyHasMore, notes);
     if (exact.length === 0 && rows.length > 0) {
       const close = [...new Set(rows.map((r) => r.sku).filter((s): s is string => !!s))].slice(0, 5);
       notes.push(`Close SKUs: ${close.join(", ")}.`);
     }
-    hasMore = exact.length > limit;
+    hasMore = shopifyHasMore || exact.length > limit;
     rows = exact.slice(0, limit);
-  } else if (rows.length === 0) {
-    notes.push(emptyNote("variants", used));
+    if (exact.length > limit) notes.push(`More variants have this SKU; showing the first ${rows.length}.`);
+  } else {
+    if (rows.length === 0) notes.push(emptyNote("variants", used));
+    if (hasMore) notes.push(`More variants match; showing the first ${rows.length}. Narrow the filters to see others.`);
   }
-  if (hasMore) notes.push(`More variants match; showing the first ${rows.length}. Narrow the filters to see others.`);
   if (rows.some((r) => r.stock === null)) notes.push(STOCK_NOTE);
   notes.push(withCost ? COST_NOTE : COST_DENIED_NOTE);
   return { ...meta(live.currency, hasMore, notes), rows };
@@ -647,6 +760,15 @@ export async function liveLookupVariants(clientId: string, args: LiveLookupVaria
 // Demo mode: ClickTrends mock catalogue, no network.
 
 const lc = (s: string | null | undefined) => (s ?? "").toLowerCase();
+
+/** A filter value the live path would send, else undefined with the same "ignored" note. */
+function demoValue(notes: string[], field: string, value: string | undefined): string | undefined {
+  if (value && !quoteShopifyValue(value)) {
+    addValue([], notes, field, value);
+    return undefined;
+  }
+  return value;
+}
 
 /** The same words the live search would send (and the same note when none is left). */
 function demoSearchTokens(search: string | undefined, notes: string[]): string[] {
@@ -702,6 +824,7 @@ async function demoProducts(
       status: p.status,
       handle: p.handle,
       variants: vs.length,
+      variants_read: vs.length,
       stock_units: tracked.length ? tracked.reduce((s, v) => s + Math.max(0, v.inventory_quantity ?? 0), 0) : null,
       untracked_variants: vs.length - tracked.length,
       price_min: prices.length ? major(Math.min(...prices)) : null,
@@ -714,7 +837,7 @@ async function demoProducts(
   if (reverse) rows.reverse();
   const shown = rows.slice(0, o.first);
   const hasMore = rows.length > shown.length;
-  productNotes(shown, [], o.notes);
+  productNotes(shown, o.notes);
   if (hasMore) o.notes.push(`More products match; showing the first ${shown.length}. Narrow the filters to see others.`);
   if (shown.length === 0) o.notes.push(emptyNote("products", o.used));
   return { ...meta(currency, hasMore, o.notes), rows: shown };
@@ -747,7 +870,11 @@ async function demoVariants(
         stock: v.inventory_quantity === null ? null : Math.max(0, v.inventory_quantity),
       }),
     );
-  if (o.sku) matches = exactSkuMatches(matches, o.sku, o.notes);
+  if (o.sku) {
+    const candidates = matches.length;
+    matches = exactSkuMatches(matches, o.sku, o.notes);
+    skuNotes(o.sku, candidates, matches.length, false, o.notes);
+  }
   const rows = matches.slice(0, o.limit);
   const hasMore = matches.length > rows.length;
   if (!o.sku && rows.length === 0) o.notes.push(emptyNote("variants", o.used));
