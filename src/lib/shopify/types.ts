@@ -31,7 +31,10 @@ export type ShopifyConnection = {
 /** Per-variant sales from order lines (no catalogue needed). No customer data. */
 export type ShopifySalesRow = {
   client_id: string;
-  /** Variant gid, else `product:<product gid>:<sku or title>` for a deleted variant. */
+  /**
+   * Variant gid; for a deleted variant `product:<product gid>:<sku>`, else
+   * `product:<product gid>:<product title> / <variantTitle>`, else `product:<product gid>:<product title>`.
+   */
   variant_key: string;
   variant_gid: string | null;
   product_gid: string | null;

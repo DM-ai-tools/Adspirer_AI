@@ -44,6 +44,10 @@ const STREAM_HEARTBEAT_MS = 60_000;
 export const MAX_BULK_OBJECTS = 3_000_000;
 const ORDERS_STAGE = "orders bulk read";
 
+const NO_FILE_MESSAGE = "Shopify finished the orders export but returned no file to download. Try Sync now again.";
+const EMPTY_FILE_MESSAGE =
+  "Shopify's orders export file was empty although Shopify reported records in it. Try Sync now again.";
+
 function tooLargeMessage(objectCount: number): string {
   return `This store has too many recent orders to sync (${objectCount.toLocaleString("en-US")} records). Contact support.`;
 }
@@ -69,13 +73,13 @@ function failureLog(
   clientId: string,
   error: unknown,
   message: string,
-  extra: { stage?: string; token?: string; objectCount?: number | null } = {},
+  extra: { stage?: string; token?: string; read?: BulkReadCounts | null } = {},
 ): Record<string, unknown> {
   return {
     clientId,
     message,
     ...(extra.stage ? { stage: extra.stage } : {}),
-    ...(extra.objectCount != null ? { objectCount: extra.objectCount } : {}),
+    ...(extra.read ? extra.read : {}),
     status: error instanceof ShopifyApiError ? error.status : null,
     code: error instanceof ShopifyApiError ? error.code : null,
     detail: error instanceof ShopifyApiError ? error.detail : plainErrorText(error, extra.token),
@@ -183,11 +187,22 @@ export async function connectShopify(input: {
   return { shopName, currency };
 }
 
+/** Counts of the bulk read in progress, for the failure log (counts only, no data). */
+type BulkReadCounts = { objectCount?: number; lines?: number; orphanLineItems?: number };
+
 /**
  * Runs one bulk query and streams its result into `push` one line at a time: the file is never
  * held whole, and no array of its lines is built. Refuses (before downloading) a result over
  * MAX_BULK_OBJECTS. Heartbeats at most every `heartbeatMs` while the result streams, so a long
- * download is not mistaken for a crashed run. Logs counts only (no data) when done.
+ * download is not mistaken for a crashed run. Logs counts only (no data) when done, plus
+ * whatever `logCounts` adds.
+ *
+ * A completed operation with no file link is an empty result only when Shopify counted no
+ * objects (shopify.dev: "If the query produced no results, then the url field will return
+ * null"); a missing link with objects counted, or a file with no lines at all, is refused so
+ * the previous sales are not replaced by nothing. A file with fewer lines than objectCount is
+ * NOT refused: BulkOperation.objectCount is documented only as "a running count of all the
+ * objects processed", not as the number of JSON Lines, so it is not reliably comparable.
  */
 async function readBulk(input: {
   clientId: string;
@@ -198,27 +213,32 @@ async function readBulk(input: {
   poll: { intervalMs?: number; onPoll: () => Promise<void> };
   heartbeatMs: number;
   push: (line: Record<string, unknown>) => void;
-  onObjectCount: (n: number) => void;
+  /** Updated as the read goes, for the caller's failure log. */
+  read: BulkReadCounts;
+  logCounts?: () => Record<string, number>;
 }): Promise<void> {
-  const { clientId, stage } = input;
+  const { clientId, stage, read } = input;
   const op = await startBulkQuery(input.host, input.token, input.query);
   const done = await waitForBulkQuery(input.host, input.token, op, input.poll);
-  input.onObjectCount(done.objectCount);
+  read.objectCount = done.objectCount;
   if (done.objectCount > MAX_BULK_OBJECTS) {
     logger.warn("Shopify bulk result too large", { clientId, stage, objectCount: done.objectCount });
     throw new SyncError(tooLargeMessage(done.objectCount));
   }
+  if (!done.url && done.objectCount > 0) throw new SyncError(NO_FILE_MESSAGE);
   const started = Date.now();
   const stats = { bytes: 0, lines: 0 };
   if (done.url) {
     let lastBeat = Date.now();
     for await (const line of streamJsonl(done.url, { stats })) {
+      read.lines = stats.lines;
       input.push(line);
       if (Date.now() - lastBeat >= input.heartbeatMs) {
         await heartbeat(clientId);
         lastBeat = Date.now();
       }
     }
+    read.lines = stats.lines;
   }
   logger.info("Shopify bulk read complete", {
     clientId,
@@ -227,7 +247,9 @@ async function readBulk(input: {
     bytes: stats.bytes,
     lines: stats.lines,
     ms: Date.now() - started,
+    ...input.logCounts?.(),
   });
+  if (done.url && stats.lines === 0 && done.objectCount > 0) throw new SyncError(EMPTY_FILE_MESSAGE);
 }
 
 /**
@@ -257,8 +279,8 @@ export async function syncShopify(
   // Which phase was running when a failure happened, for the log (never shown to users).
   let stage = "starting";
   let token = "";
-  // Shopify's objectCount for the bulk read in progress, for the failure log.
-  let objectCount: number | null = null;
+  // Counts of the bulk read in progress (objectCount, lines, orphans), for the failure log.
+  let read: BulkReadCounts | null = null;
   try {
     let rows: Omit<ShopifySalesRow, "client_id">[];
     let orders: number;
@@ -272,8 +294,14 @@ export async function syncShopify(
       token = decryptToken(connection.access_token_encrypted);
       // The result is folded into the aggregator as it streams in; no catalogue is read.
       const salesAggregator = createSalesAggregator(now);
-      const since = new Date(now.getTime() - 60 * DAY_MS).toISOString();
+      // Shopify's documented date form has whole seconds: YYYY-MM-DDTHH:MM:SSZ.
+      const since = new Date(now.getTime() - 60 * DAY_MS).toISOString().replace(/\.\d+Z$/, "Z");
       stage = ORDERS_STAGE;
+      const orphans = () => salesAggregator.counts().orphanLineItems;
+      const counts: BulkReadCounts = {};
+      // A getter, so the failure log reads the orphan count at the moment of failure.
+      Object.defineProperty(counts, "orphanLineItems", { enumerable: true, get: orphans });
+      read = counts;
       await readBulk({
         clientId,
         host: connection.shop_domain,
@@ -283,18 +311,26 @@ export async function syncShopify(
         query: ORDERS_BULK_QUERY(since),
         stage,
         push: salesAggregator.push,
-        onObjectCount: (n) => {
-          objectCount = n;
-        },
+        read: counts,
+        logCounts: () => ({ orphanLineItems: orphans() }),
       });
       const sales = salesAggregator.finish();
       rows = sales.rows;
       orders = sales.orders;
       skipped = sales.skippedLineItems;
+      if (sales.orphanLineItems > 0) {
+        // Not expected (Shopify documents children after their parents); if it shows up,
+        // bulkOperationRunQuery(groupObjects: true) is the fallback.
+        logger.warn("Shopify order lines arrived before their order", {
+          clientId,
+          stage,
+          orphanLineItems: sales.orphanLineItems,
+        });
+      }
     }
 
     stage = "saving";
-    objectCount = null;
+    read = null;
     await heartbeat(clientId);
     // An empty result is a valid sync (the store had no sales): it clears the old rows.
     await replaceSales(clientId, rows, () => heartbeat(clientId));
@@ -307,7 +343,7 @@ export async function syncShopify(
     return counts;
   } catch (error) {
     const message = safeMessage(error);
-    logger.warn("Shopify sync failed", failureLog(clientId, error, message, { stage, token, objectCount }));
+    logger.warn("Shopify sync failed", failureLog(clientId, error, message, { stage, token, read }));
     try {
       await setSyncStatus(clientId, { status: "error", error: message });
     } catch {

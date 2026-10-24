@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { aggregateSales, createSalesAggregator } from "@/lib/shopify/parse";
+import { createSalesAggregator } from "@/lib/shopify/parse";
 
 type Line = Record<string, unknown>;
 const now = new Date("2026-10-23T12:00:00Z");
@@ -33,17 +33,42 @@ const salesFixtures: Record<string, Line[]> = {
 };
 
 describe("createSalesAggregator", () => {
-  it.each(Object.keys(salesFixtures))("pushing %s line by line equals aggregateSales", (name) => {
-    const lines = salesFixtures[name];
+  const run = (lines: Line[]) => {
     const a = createSalesAggregator(now);
     for (const l of lines) a.push(l);
-    expect(a.finish()).toEqual(aggregateSales(lines, now));
+    return a.finish();
+  };
+  const V1 = "gid://shopify/ProductVariant/1";
+
+  it("windows: 30d and 60d per variant", () => {
+    const r = run(salesFixtures.windows);
+    expect(r).toMatchObject({ orders: 2, skippedLineItems: 0, orphanLineItems: 0 });
+    expect(r.rows).toEqual([expect.objectContaining({ variant_key: V1, units_30d: 2, revenue_30d_cents: 2000, units_60d: 3, revenue_60d_cents: 2950 })]);
+  });
+
+  it("excluded: cancelled, test, old and undated orders add nothing and their lines are not orphans", () => {
+    expect(run(salesFixtures.excluded)).toEqual({ rows: [], orders: 0, skippedLineItems: 0, orphanLineItems: 0 });
+  });
+
+  it("skipped: a line with no variant or product is skipped; negative quantity counts 0 units and bad money 0 cents", () => {
+    const r = run(salesFixtures.skipped);
+    expect(r).toMatchObject({ orders: 1, skippedLineItems: 1, orphanLineItems: 0 });
+    expect(r.rows.map((x) => [x.variant_key, x.units_30d, x.revenue_30d_cents])).toEqual([
+      [V1, 1, 700],
+      ["gid://shopify/ProductVariant/2", 0, 0],
+    ]);
+  });
+
+  it("orphan: a line before any order is counted as an orphan and left out", () => {
+    const r = run(salesFixtures.orphan);
+    expect(r).toMatchObject({ orders: 1, skippedLineItems: 0, orphanLineItems: 1 });
+    expect(r.rows).toEqual([expect.objectContaining({ variant_key: V1, units_30d: 3, revenue_30d_cents: 2100 })]);
   });
 
   it("keeps the current semantics", () => {
     const x = createSalesAggregator(now);
     for (const l of salesFixtures.excluded) x.push(l);
-    expect(x.finish()).toEqual({ rows: [], orders: 0, skippedLineItems: 0 });
+    expect(x.finish()).toEqual({ rows: [], orders: 0, skippedLineItems: 0, orphanLineItems: 0 });
     const a = createSalesAggregator(now);
     for (const l of salesFixtures.windows) a.push(l);
     const r = a.finish();

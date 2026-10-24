@@ -1,7 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { ORDERS_BULK_QUERY, aggregateSales } from "@/lib/shopify/parse";
+import { ORDERS_BULK_QUERY, createSalesAggregator } from "@/lib/shopify/parse";
 
 type Line = Record<string, unknown>;
+/** Pushes every line through the streaming aggregator and returns its summary. */
+function aggregateSales(lines: Line[], now: Date) {
+  const a = createSalesAggregator(now);
+  for (const l of lines) a.push(l);
+  return a.finish();
+}
 describe("aggregateSales", () => {
   const now = new Date("2026-10-23T12:00:00Z");
   const daysAgo = (d: number) => new Date(now.getTime() - d * 86400000).toISOString();
@@ -171,6 +177,37 @@ describe("aggregateSales", () => {
     expect(r.orders).toBe(1);
   });
 
+  it("counts a line item that arrives before its order as an orphan, not as skipped", () => {
+    const lines = [item("1", "1", 1, "5.00"), order("1", 5), item("1", "1", 2, "14.00")];
+    const r = aggregateSales(lines, now);
+    expect(r.orphanLineItems).toBe(1);
+    expect(r.skippedLineItems).toBe(0);
+    expect(r.orders).toBe(1);
+    // Only the line after its order counts.
+    expect(r.rows[0]).toMatchObject({ variant_key: V1, units_30d: 2, revenue_30d_cents: 1400 });
+  });
+
+  it("lines of seen-but-excluded orders are not orphans", () => {
+    const lines = [
+      order("1", 5, { cancelledAt: daysAgo(4) }), item("1", "1", 1, "5.00"),
+      order("2", 5, { test: true }), item("2", "1", 1, "5.00"),
+      order("3", 70), item("3", "1", 1, "5.00"),
+      order("4", 5, { createdAt: "not a date" }), item("4", "1", 1, "5.00"),
+      item("9", "1", 1, "5.00"),
+      { ...item("8", "1", 1, "5.00"), __parentId: null },
+    ];
+    const r = aggregateSales(lines, now);
+    expect(r).toEqual({ rows: [], orders: 0, skippedLineItems: 0, orphanLineItems: 2 });
+  });
+
+  it("counts() reports running counts without building the rows", () => {
+    const a = createSalesAggregator(now);
+    a.push(item("1", "1", 1, "5.00"));
+    a.push(order("1", 5));
+    a.push(item("1", null, 1, "5.00"));
+    expect(a.counts()).toEqual({ orders: 1, skippedLineItems: 1, orphanLineItems: 1 });
+  });
+
   it("adds up two line items for the same variant", () => {
     const lines = [order("1", 5), item("1", "1", 1, "7.00"), item("1", "1", 2, "14.00")];
     expect(aggregateSales(lines, now).rows.find((x) => x.variant_key === V1)).toMatchObject({
@@ -249,7 +286,15 @@ describe("bulk queries", () => {
       expect(q).toContain(f);
     }
   });
+  it("sends the date without milliseconds (Shopify's documented YYYY-MM-DDTHH:MM:SSZ)", () => {
+    const q = ORDERS_BULK_QUERY("2026-08-24T12:00:00.123Z");
+    expect(q).toContain(`created_at:>='2026-08-24T12:00:00Z'`);
+    expect(q).not.toContain(".123");
+    expect(ORDERS_BULK_QUERY(new Date("2026-08-24T12:00:00Z").toISOString())).toContain(`created_at:>='2026-08-24T12:00:00Z'`);
+  });
   it("rejects a malformed sinceIso", () => {
     expect(() => ORDERS_BULK_QUERY('x" } ) { id')).toThrow();
+    expect(() => ORDERS_BULK_QUERY("2026-08-24")).toThrow();
+    expect(() => ORDERS_BULK_QUERY("2026-08-24T12:00:00+01:00")).toThrow();
   });
 });

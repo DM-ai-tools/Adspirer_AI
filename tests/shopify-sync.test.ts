@@ -71,6 +71,9 @@ type Opts = {
   startReply?: unknown;
   onPoll?: (kind: string) => Promise<void> | void;
   onStart?: (kind: string) => void;
+  /** Poll reply objectCount (default "3") and url (default the file link; null = no file). */
+  objectCount?: string;
+  url?: string | null;
 };
 
 /** Routes Shopify calls by content. */
@@ -109,8 +112,8 @@ function installFetch(o: Opts = {}) {
             id: body.variables.id,
             status: o.pollStatusFor?.(kind, polls[kind]) ?? o.pollStatus ?? "COMPLETED",
             errorCode: o.pollErrorCode ?? null,
-            objectCount: "3",
-            url: `https://files.example/${kind}`,
+            objectCount: o.objectCount ?? "3",
+            url: o.url === undefined ? `https://files.example/${kind}` : o.url,
           },
         },
       });
@@ -244,19 +247,94 @@ describe("syncShopify", () => {
     await connect();
     await syncShopify(CLIENT, { now: NOW });
     expect(await loadSales(CLIENT)).toHaveLength(1);
-    installFetch({ orders: [] });
+    // shopify.dev: "If the query produced no results, then the url field will return null."
+    const { fn } = installFetch({ url: null, objectCount: "0" });
     await expect(syncShopify(CLIENT, { now: NOW })).resolves.toEqual({
       orders: 0,
       sales_variants: 0,
       skipped_line_items: 0,
     });
     expect(await loadSales(CLIENT)).toEqual([]);
+    expect(fn.mock.calls.filter((c) => String(c[0]).startsWith("https://files.example/"))).toHaveLength(0);
     const row = await getConnection(CLIENT);
     expect(row?.last_sync_status).toBe("ok");
     expect(row?.last_sync_at).toBeTruthy();
   });
 
-  it("asks for the 60-day window as a UTC ISO string", async () => {
+  it("a completed read with objects but no file link fails and keeps the old sales", async () => {
+    installFetch();
+    await connect();
+    await syncShopify(CLIENT, { now: NOW });
+    const before = (await getConnection(CLIENT))?.last_sync_at;
+    const { fn } = installFetch({ url: null, objectCount: "1234" });
+    const message = "Shopify finished the orders export but returned no file to download. Try Sync now again.";
+    await expect(syncShopify(CLIENT, { now: NOW })).rejects.toThrow(message);
+    expect(fn.mock.calls.filter((c) => String(c[0]).startsWith("https://files.example/"))).toHaveLength(0);
+    expect(await loadSales(CLIENT)).toHaveLength(1);
+    const row = await getConnection(CLIENT);
+    expect(row?.last_sync_status).toBe("error");
+    expect(row?.last_sync_error).toBe(message);
+    expect(row?.last_sync_at).toBe(before);
+    expect(warnCalls().find(([m]) => m === "Shopify sync failed")?.[1]).toMatchObject({
+      clientId: CLIENT,
+      stage: "orders bulk read",
+      objectCount: 1234,
+    });
+  });
+
+  it("a file with no lines when Shopify counted objects fails and keeps the old sales", async () => {
+    installFetch();
+    await connect();
+    await syncShopify(CLIENT, { now: NOW });
+    installFetch({ orders: [], objectCount: "3" });
+    const message = "Shopify's orders export file was empty although Shopify reported records in it. Try Sync now again.";
+    await expect(syncShopify(CLIENT, { now: NOW })).rejects.toThrow(message);
+    expect(await loadSales(CLIENT)).toHaveLength(1);
+    expect((await getConnection(CLIENT))?.last_sync_error).toBe(message);
+    expect(warnCalls().find(([m]) => m === "Shopify sync failed")?.[1]).toMatchObject({
+      stage: "orders bulk read",
+      objectCount: 3,
+      lines: 0,
+      orphanLineItems: 0,
+    });
+  });
+
+  it("a file with objects and no objectCount match is still accepted (objectCount is not a line count)", async () => {
+    installFetch();
+    await connect();
+    installFetch({ objectCount: "500" });
+    await expect(syncShopify(CLIENT, { now: NOW })).resolves.toEqual({ orders: 1, sales_variants: 1, skipped_line_items: 1 });
+  });
+
+  it("order lines before their order still sync, with a warning carrying the orphan count", async () => {
+    installFetch();
+    await connect();
+    const orphan = { ...ORDERS_JSONL[1], id: "gid://shopify/LineItem/9", __parentId: "gid://shopify/Order/9" };
+    installFetch({ orders: [orphan, ...ORDERS_JSONL] });
+    await expect(syncShopify(CLIENT, { now: NOW })).resolves.toEqual({ orders: 1, sales_variants: 1, skipped_line_items: 1 });
+    expect(warnCalls().find(([m]) => m === "Shopify order lines arrived before their order")?.[1]).toEqual({
+      clientId: CLIENT,
+      stage: "orders bulk read",
+      orphanLineItems: 1,
+    });
+    expect((await getConnection(CLIENT))?.last_sync_status).toBe("ok");
+  });
+
+  it("uses the client's default attempts and 25 s timeout for every Shopify request", async () => {
+    installFetch();
+    await connect();
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    try {
+      installFetch();
+      await syncShopify(CLIENT, { now: NOW });
+      expect(timeout.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(new Set(timeout.mock.calls.map((c) => c[0]))).toEqual(new Set([25_000]));
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+
+  it("asks for the 60-day window as a UTC timestamp without milliseconds", async () => {
     const { fn } = installFetch();
     await connect();
     await syncShopify(CLIENT, { now: NOW });
@@ -264,7 +342,8 @@ describe("syncShopify", () => {
       .map((c) => (c[1]?.body ? JSON.parse(String(c[1].body)) : null))
       .filter(Boolean);
     const orders = bodies.find((b) => b.variables?.query?.includes("orders("));
-    expect(orders.variables.query).toContain(`created_at:>='2026-08-24T12:00:00.000Z'`);
+    expect(orders.variables.query).toContain(`created_at:>='2026-08-24T12:00:00Z'`);
+    expect(orders.variables.query).not.toContain(".000");
   });
 
   it("keeps the previous sales when a bulk operation FAILED", async () => {

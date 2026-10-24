@@ -199,6 +199,7 @@ describe("syncShopify: streamed orders result", () => {
       bytes: expect.any(Number),
       lines: 3,
       ms: expect.any(Number),
+      orphanLineItems: 0,
     });
     expect(JSON.stringify(infoCalls())).not.toContain(TOKEN);
     expect(JSON.stringify(infoCalls())).not.toContain("ProductVariant");
@@ -233,7 +234,21 @@ describe("syncShopify: streamed orders result", () => {
     expect(warnCalls().find(([m]) => m === "Shopify sync failed")?.[1]).toMatchObject({
       stage: "orders bulk read",
       code: "BAD_JSONL",
+      objectCount: 3,
+      lines: 1,
+      orphanLineItems: 0,
     });
+  });
+
+  it("logs the orphan count in the bulk read info log", async () => {
+    installFetch();
+    await connect();
+    const lines = [...orderLines(2)];
+    // The second order's line items arrive before it.
+    installFetch({ orders: () => streamed([lines[0], lines[1], lines[2], lines[4], lines[5], lines[3]], 2) });
+    await syncShopify(CLIENT, { now: NOW });
+    const read = infoCalls().find(([m]) => m === "Shopify bulk read complete")?.[1];
+    expect(read).toMatchObject({ lines: 6, orphanLineItems: 2 });
   });
 
   it("heartbeats while a long download streams, but not on every line", async () => {
