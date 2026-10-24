@@ -1,122 +1,13 @@
 import { describe, it, expect } from "vitest";
-import {
-  CATALOG_BULK_QUERY,
-  ORDERS_BULK_QUERY,
-  parseCatalog,
-  aggregateSales,
-} from "@/lib/shopify/parse";
+import { ORDERS_BULK_QUERY, createSalesAggregator } from "@/lib/shopify/parse";
 
 type Line = Record<string, unknown>;
-const P = "gid://shopify/Product/1";
-
-function variant(id: string, over: Line = {}): Line {
-  return {
-    id: `gid://shopify/ProductVariant/${id}`,
-    __parentId: P,
-    title: `V${id}`,
-    sku: `SKU${id}`,
-    price: "1299.00",
-    inventoryPolicy: "DENY",
-    inventoryQuantity: 5,
-    inventoryItem: { unitCost: { amount: "400.00" }, tracked: true },
-    ...over,
-  };
+/** Pushes every line through the streaming aggregator and returns its summary. */
+function aggregateSales(lines: Line[], now: Date) {
+  const a = createSalesAggregator(now);
+  for (const l of lines) a.push(l);
+  return a.finish();
 }
-
-const baseCatalog = (): Line[] => [
-  {
-    id: P,
-    title: "Prod",
-    handle: "prod",
-    vendor: "V",
-    productType: "T",
-    status: "ACTIVE",
-  },
-  { id: "gid://shopify/Collection/10", handle: "a", title: "A", __parentId: P },
-  { id: "gid://shopify/Collection/11", handle: "b", title: "B", __parentId: P },
-  variant("1"),
-  variant("2"),
-];
-
-describe("parseCatalog", () => {
-  it("assembles products, collections and variants", () => {
-    const r = parseCatalog("c1", baseCatalog());
-    expect(r.collections).toEqual([
-      { client_id: "c1", gid: "gid://shopify/Collection/10", handle: "a", title: "A", products_count: 1 },
-      { client_id: "c1", gid: "gid://shopify/Collection/11", handle: "b", title: "B", products_count: 1 },
-    ]);
-    expect(r.products).toHaveLength(1);
-    expect(r.products[0].collection_gids).toEqual([
-      "gid://shopify/Collection/10",
-      "gid://shopify/Collection/11",
-    ]);
-    expect(r.variants).toHaveLength(2);
-    expect(r.variants[0].product_gid).toBe(P);
-    expect(r.variants[0].price_cents).toBe(129900);
-    expect(r.variants[0].cost_cents).toBe(40000);
-    expect(r.variants[0].inventory_quantity).toBe(5);
-  });
-
-  it("builds collections from the nested product.collections nodes, counting products", () => {
-    const P2 = "gid://shopify/Product/2";
-    const lines = [
-      ...baseCatalog(),
-      { id: P2, title: "Prod 2", handle: "prod-2", vendor: "V", productType: "T", status: "DRAFT" },
-      { id: "gid://shopify/Collection/10", handle: "a", title: "A", __parentId: P2 },
-      // A repeated child line for the same product does not count twice.
-      { id: "gid://shopify/Collection/10", handle: "a", title: "A", __parentId: P2 },
-    ];
-    const r = parseCatalog("c1", lines);
-    const byGid = new Map(r.collections.map((c) => [c.gid, c]));
-    expect(byGid.get("gid://shopify/Collection/10")?.products_count).toBe(2);
-    expect(byGid.get("gid://shopify/Collection/11")?.products_count).toBe(1);
-    expect(r.products.find((p) => p.gid === P2)?.collection_gids).toEqual(["gid://shopify/Collection/10"]);
-  });
-
-  it("ignores a collection line whose product is unknown", () => {
-    const lines = [...baseCatalog(), { id: "gid://shopify/Collection/99", handle: "z", title: "Z", __parentId: "gid://shopify/Product/404" }];
-    expect(parseCatalog("c1", lines).collections.map((c) => c.gid)).not.toContain("gid://shopify/Collection/99");
-  });
-
-  it("keeps DRAFT, ARCHIVED and UNLISTED and stores an unknown status as UNKNOWN, never ACTIVE", () => {
-    const withStatus = (status: unknown) => {
-      const lines = baseCatalog();
-      lines[0] = { ...lines[0], status };
-      return parseCatalog("c1", lines).products[0].status;
-    };
-    expect(withStatus("DRAFT")).toBe("DRAFT");
-    expect(withStatus("ARCHIVED")).toBe("ARCHIVED");
-    expect(withStatus("UNLISTED")).toBe("UNLISTED");
-    expect(withStatus("SOMETHING_NEW")).toBe("UNKNOWN");
-    expect(withStatus(undefined)).toBe("UNKNOWN");
-  });
-
-  it("null unit cost gives null cost_cents, not 0", () => {
-    const lines = [...baseCatalog().slice(0, 3), variant("1", { inventoryItem: { unitCost: null, tracked: true } })];
-    expect(parseCatalog("c1", lines).variants[0].cost_cents).toBeNull();
-  });
-
-  it("untracked inventory gives null quantity", () => {
-    const lines = [...baseCatalog().slice(0, 3), variant("1", { inventoryItem: { unitCost: null, tracked: false } })];
-    expect(parseCatalog("c1", lines).variants[0].inventory_quantity).toBeNull();
-  });
-
-  it("policy CONTINUE gives null quantity", () => {
-    const lines = [...baseCatalog().slice(0, 3), variant("1", { inventoryPolicy: "CONTINUE" })];
-    expect(parseCatalog("c1", lines).variants[0].inventory_quantity).toBeNull();
-  });
-
-  it("negative quantity becomes 0", () => {
-    const lines = [...baseCatalog().slice(0, 3), variant("1", { inventoryQuantity: -3 })];
-    expect(parseCatalog("c1", lines).variants[0].inventory_quantity).toBe(0);
-  });
-
-  it("ignores variants whose parent is unknown without throwing", () => {
-    const lines = [...baseCatalog(), variant("9", { __parentId: "gid://shopify/Product/404" })];
-    expect(() => parseCatalog("c1", lines)).not.toThrow();
-  });
-});
-
 describe("aggregateSales", () => {
   const now = new Date("2026-10-23T12:00:00Z");
   const daysAgo = (d: number) => new Date(now.getTime() - d * 86400000).toISOString();
@@ -142,10 +33,12 @@ describe("aggregateSales", () => {
       order("2", 45), item("2", "1", 1, "9.50"),
     ];
     const r = aggregateSales(lines, now);
-    expect(r.byVariant.get(V1)).toEqual({
-      units_30d: 2, revenue_30d_cents: 2000, units_60d: 3, revenue_60d_cents: 2950,
+    expect(r.rows).toHaveLength(1);
+    expect(r.rows[0]).toMatchObject({
+      variant_key: V1, units_30d: 2, revenue_30d_cents: 2000, units_60d: 3, revenue_60d_cents: 2950,
     });
     expect(r.orders).toBe(2);
+    expect(r).not.toHaveProperty("byVariant");
   });
 
   it("excludes cancelled, test and older-than-60d orders", () => {
@@ -155,7 +48,7 @@ describe("aggregateSales", () => {
       order("3", 70), item("3", "1", 1, "5.00"),
     ];
     const r = aggregateSales(lines, now);
-    expect(r.byVariant.size).toBe(0);
+    expect(r.rows).toHaveLength(0);
     expect(r.orders).toBe(0);
   });
 
@@ -163,12 +56,161 @@ describe("aggregateSales", () => {
     const lines = [order("1", 5), item("1", null, 1, "5.00"), item("1", "1", 1, "7.00")];
     const r = aggregateSales(lines, now);
     expect(r.skippedLineItems).toBe(1);
-    expect(r.byVariant.get(V1)?.units_30d).toBe(1);
+    expect(r.rows.find((x) => x.variant_key === V1)?.units_30d).toBe(1);
+  });
+
+  it("rows: metadata comes through, same variant adds up per window", () => {
+    const P = "gid://shopify/Product/9";
+    const meta = { title: "Tee", variantTitle: "Red / M", sku: "TEE-R", vendor: "Acme", product: { id: P, productType: "Shirt" } };
+    const lines = [
+      order("1", 5), { ...item("1", "1", 1, "7.00"), ...meta },
+      order("2", 30), { ...item("2", "1", 2, "14.00"), ...meta },
+      order("3", 31), { ...item("3", "1", 1, "5.00"), ...meta },
+    ];
+    const r = aggregateSales(lines, now);
+    expect(r.rows).toEqual([{
+      variant_key: V1, variant_gid: V1, product_gid: P, product_title: "Tee", variant_title: "Red / M",
+      sku: "TEE-R", vendor: "Acme", product_type: "Shirt",
+      units_30d: 3, revenue_30d_cents: 2100, units_60d: 4, revenue_60d_cents: 2600,
+    }]);
+  });
+
+  describe("synthetic keys (no variant, product id present)", () => {
+    const P9 = "gid://shopify/Product/9";
+    const P10 = "gid://shopify/Product/10";
+    const gone = (o: string, qty: number, over: Line = {}): Line => ({
+      ...item(o, null, qty, "10.00"),
+      title: "Gone", product: { id: P9, productType: "" }, sku: null, variantTitle: null, vendor: null, ...over,
+    });
+
+    it("uses the SKU when there is one", () => {
+      const r = aggregateSales([order("1", 5), gone("1", 2, { sku: "S1" })], now);
+      expect(r.skippedLineItems).toBe(0);
+      expect(r.rows).toHaveLength(1);
+      expect(r.rows[0]).toMatchObject({
+        variant_key: `product:${P9}:S1`, variant_gid: null, product_gid: P9, vendor: "", product_type: "",
+        variant_title: null, units_30d: 2,
+      });
+    });
+
+    it("without a SKU uses '<product title> / <variantTitle>', else the product title", () => {
+      const r = aggregateSales(
+        [order("1", 5), gone("1", 1, { variantTitle: "Red / M" }), gone("1", 1)],
+        now,
+      );
+      expect(r.rows.map((x) => x.variant_key).sort()).toEqual([`product:${P9}:Gone / Red / M`, `product:${P9}:Gone`].sort());
+    });
+
+    it("the same SKU or title on two different products stays distinct", () => {
+      const r = aggregateSales(
+        [
+          order("1", 5),
+          gone("1", 1, { sku: "DUP" }),
+          gone("1", 1, { sku: "DUP", product: { id: P10 } }),
+          gone("1", 1),
+          gone("1", 1, { product: { id: P10 } }),
+        ],
+        now,
+      );
+      expect(r.rows).toHaveLength(4);
+      expect(new Set(r.rows.map((x) => x.variant_key)).size).toBe(4);
+    });
+
+    it("merged lines that disagree on variant_title store null; agreeing ones keep it", () => {
+      const disagree = aggregateSales(
+        [order("1", 5), gone("1", 1, { sku: "S" , variantTitle: "A" }), gone("1", 1, { sku: "S", variantTitle: "B" })],
+        now,
+      );
+      expect(disagree.rows).toHaveLength(1);
+      expect(disagree.rows[0].variant_title).toBeNull();
+      const agree = aggregateSales(
+        [order("1", 5), gone("1", 1, { sku: "S", variantTitle: "A" }), gone("1", 1, { sku: "S", variantTitle: "A" })],
+        now,
+      );
+      expect(agree.rows[0].variant_title).toBe("A");
+      const mixed = aggregateSales(
+        [order("1", 5), gone("1", 1, { sku: "S" }), gone("1", 1, { sku: "S", variantTitle: "A" })],
+        now,
+      );
+      expect(mixed.rows[0].variant_title).toBeNull();
+    });
+
+    it("a line with a product id but no sku and no title is skipped and counted", () => {
+      const r = aggregateSales([order("1", 5), gone("1", 1, { title: "" })], now);
+      expect(r.rows).toEqual([]);
+      expect(r.skippedLineItems).toBe(1);
+    });
+  });
+
+  it("rows: a line with no variant and no product id is skipped even with a SKU and title", () => {
+    const r = aggregateSales([order("1", 5), { ...item("1", null, 1, "5.00"), title: "T", sku: "S" }], now);
+    expect(r.rows).toEqual([]);
+    expect(r.skippedLineItems).toBe(1);
+  });
+
+  it("rows: a line with neither variant nor product is skipped and counted", () => {
+    const r = aggregateSales([order("1", 5), item("1", null, 1, "5.00")], now);
+    expect(r.rows).toEqual([]);
+    expect(r.skippedLineItems).toBe(1);
+  });
+
+  it("rows: cancelled and test orders add nothing, 30-day boundary is inclusive", () => {
+    const lines = [
+      order("1", 5, { cancelledAt: daysAgo(4) }), item("1", "1", 1, "5.00"),
+      order("2", 5, { test: true }), item("2", "1", 1, "5.00"),
+      order("3", 30), item("3", "1", 1, "4.00"),
+    ];
+    const r = aggregateSales(lines, now);
+    expect(r.rows).toHaveLength(1);
+    expect(r.rows[0]).toMatchObject({ units_30d: 1, revenue_30d_cents: 400, units_60d: 1 });
+  });
+
+  it("rows: the 60-day boundary is inclusive and older orders are excluded", () => {
+    const lines = [
+      order("1", 60), item("1", "1", 1, "3.00"),
+      order("2", 60.01), item("2", "1", 5, "50.00"),
+      order("3", 61), item("3", "2", 1, "9.00"),
+    ];
+    const r = aggregateSales(lines, now);
+    expect(r.rows).toHaveLength(1);
+    expect(r.rows[0]).toMatchObject({ variant_key: V1, units_30d: 0, revenue_30d_cents: 0, units_60d: 1, revenue_60d_cents: 300 });
+    expect(r.orders).toBe(1);
+  });
+
+  it("counts a line item that arrives before its order as an orphan, not as skipped", () => {
+    const lines = [item("1", "1", 1, "5.00"), order("1", 5), item("1", "1", 2, "14.00")];
+    const r = aggregateSales(lines, now);
+    expect(r.orphanLineItems).toBe(1);
+    expect(r.skippedLineItems).toBe(0);
+    expect(r.orders).toBe(1);
+    // Only the line after its order counts.
+    expect(r.rows[0]).toMatchObject({ variant_key: V1, units_30d: 2, revenue_30d_cents: 1400 });
+  });
+
+  it("lines of seen-but-excluded orders are not orphans", () => {
+    const lines = [
+      order("1", 5, { cancelledAt: daysAgo(4) }), item("1", "1", 1, "5.00"),
+      order("2", 5, { test: true }), item("2", "1", 1, "5.00"),
+      order("3", 70), item("3", "1", 1, "5.00"),
+      order("4", 5, { createdAt: "not a date" }), item("4", "1", 1, "5.00"),
+      item("9", "1", 1, "5.00"),
+      { ...item("8", "1", 1, "5.00"), __parentId: null },
+    ];
+    const r = aggregateSales(lines, now);
+    expect(r).toEqual({ rows: [], orders: 0, skippedLineItems: 0, orphanLineItems: 2 });
+  });
+
+  it("counts() reports running counts without building the rows", () => {
+    const a = createSalesAggregator(now);
+    a.push(item("1", "1", 1, "5.00"));
+    a.push(order("1", 5));
+    a.push(item("1", null, 1, "5.00"));
+    expect(a.counts()).toEqual({ orders: 1, skippedLineItems: 1, orphanLineItems: 1 });
   });
 
   it("adds up two line items for the same variant", () => {
     const lines = [order("1", 5), item("1", "1", 1, "7.00"), item("1", "1", 2, "14.00")];
-    expect(aggregateSales(lines, now).byVariant.get(V1)).toMatchObject({
+    expect(aggregateSales(lines, now).rows.find((x) => x.variant_key === V1)).toMatchObject({
       units_30d: 3, revenue_30d_cents: 2100,
     });
   });
@@ -216,15 +258,6 @@ function connectionDepths(doc: string): number[] {
 }
 
 describe("bulk queries", () => {
-  it("catalogue query has a single top-level field and stays inside the bulk limits", () => {
-    expect(topLevelFields(CATALOG_BULK_QUERY)).toEqual(["products"]);
-    const depths = connectionDepths(CATALOG_BULK_QUERY);
-    expect(depths).toHaveLength(3); // products, product.collections, product.variants (max 5)
-    expect(Math.max(...depths)).toBeLessThanOrEqual(1); // nested at most one level (max 2)
-    expect(CATALOG_BULK_QUERY).toContain("collections { edges { node { id handle title } } }");
-    expect(CATALOG_BULK_QUERY).not.toContain("productsCount");
-  });
-
   it("orders query has a single top-level field and stays inside the bulk limits", () => {
     const q = ORDERS_BULK_QUERY("2026-08-24T00:00:00Z");
     expect(topLevelFields(q)).toEqual(["orders"]);
@@ -234,8 +267,14 @@ describe("bulk queries", () => {
   });
 
   const forbidden = ["customer", "email", "phone", "shippingAddress", "billingAddress"];
+  it("orders query selects line metadata as plain objects, no extra connections", () => {
+    const q = ORDERS_BULK_QUERY("2026-08-24T00:00:00Z");
+    for (const f of ["title", "variantTitle", "sku", "vendor", "variant { id }", "product { id productType }"]) {
+      expect(q).toContain(f);
+    }
+  });
   it("never select personal data", () => {
-    for (const q of [CATALOG_BULK_QUERY, ORDERS_BULK_QUERY("2026-08-24T00:00:00Z")]) {
+    for (const q of [ORDERS_BULK_QUERY("2026-08-24T00:00:00Z")]) {
       for (const word of forbidden) expect(q.toLowerCase()).not.toContain(word.toLowerCase());
     }
   });
@@ -247,7 +286,15 @@ describe("bulk queries", () => {
       expect(q).toContain(f);
     }
   });
+  it("sends the date without milliseconds (Shopify's documented YYYY-MM-DDTHH:MM:SSZ)", () => {
+    const q = ORDERS_BULK_QUERY("2026-08-24T12:00:00.123Z");
+    expect(q).toContain(`created_at:>='2026-08-24T12:00:00Z'`);
+    expect(q).not.toContain(".123");
+    expect(ORDERS_BULK_QUERY(new Date("2026-08-24T12:00:00Z").toISOString())).toContain(`created_at:>='2026-08-24T12:00:00Z'`);
+  });
   it("rejects a malformed sinceIso", () => {
     expect(() => ORDERS_BULK_QUERY('x" } ) { id')).toThrow();
+    expect(() => ORDERS_BULK_QUERY("2026-08-24")).toThrow();
+    expect(() => ORDERS_BULK_QUERY("2026-08-24T12:00:00+01:00")).toThrow();
   });
 });

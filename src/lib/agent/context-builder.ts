@@ -20,7 +20,8 @@ import { humanToolLabel } from "@/lib/tools/display-labels";
 import { describeGoalsForAgent } from "@/lib/clients/goals";
 import { mapClientRow } from "@/lib/clients/map-client";
 import { clientGoogleAssets } from "@/lib/google/assets";
-import { describeAgo, describeFailedSync } from "@/lib/shopify/query";
+import { describeAgo, isStale } from "@/lib/shopify/query";
+import { SHOPIFY_STALE_HOURS } from "@/lib/shopify/types";
 import { buildClientBrandBlock } from "./prompts";
 
 /** Reads the turn already started, shared so they are not repeated. */
@@ -74,16 +75,23 @@ async function loadShopifyInfo(clientId: string): Promise<ShopifyContextInfo | n
   }
 }
 
+/**
+ * One line: the catalogue (products, SKUs, stock, price, cost) is read live; only sales
+ * are synced, so only they carry an age, a stale flag or a failed-sync note.
+ */
 function describeShopify(shopify: ShopifyContextInfo | null | undefined, now: Date): string {
   if (!shopify) return "- Shopify: not connected (an admin can connect it under Admin → Connections)";
+  const head = `- Shopify: ${shopify.name ?? shopify.domain} (${shopify.domain}), catalogue read live`;
   const ago = shopify.lastSyncAt ? describeAgo(shopify.lastSyncAt, now) : null;
-  let line = `- Shopify: ${shopify.name ?? shopify.domain} (${shopify.domain}), ${ago ? `last synced ${ago}` : "never synced"}`;
   if (shopify.lastSyncError) {
-    line += ago
-      ? `. ${describeFailedSync(shopify.lastSyncError, ago)}`
-      : `; the latest sync failed (${shopify.lastSyncError})`;
+    const failed = `latest sales sync failed (${shopify.lastSyncError})`;
+    return ago
+      ? `${head}, ${failed}; sales are from the last successful sync ${ago}`
+      : `${head}, ${failed}; sales not synced yet`;
   }
-  return line;
+  if (!shopify.lastSyncAt || !ago) return `${head}, sales not synced yet`;
+  const stale = isStale(shopify.lastSyncAt, now) ? ` (stale: older than ${SHOPIFY_STALE_HOURS} hours)` : "";
+  return `${head}, sales synced ${ago}${stale}`;
 }
 
 export function describeConnectedData(

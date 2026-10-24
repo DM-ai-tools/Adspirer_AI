@@ -42,7 +42,7 @@ beforeEach(() => {
   }
   vi.mocked(connectShopify).mockResolvedValue({ shopName: "Shop", currency: "USD" });
   vi.mocked(syncShopify).mockResolvedValue({
-    collections: 1, products: 2, variants: 3, orders: 4, skipped_line_items: 0,
+    orders: 4, sales_variants: 3, skipped_line_items: 0,
   });
   vi.mocked(getShopifyStatus).mockResolvedValue({
     connected: true, shop_domain: "a.myshopify.com", shop_name: "Shop", currency: "USD",
@@ -136,7 +136,7 @@ describe("shopify admin routes behaviour", () => {
     const r = await calls();
     const ok = await r.sync();
     expect(ok.status).toBe(200);
-    expect((await ok.json()).data.products).toBe(2);
+    expect((await ok.json()).data.sales_variants).toBe(3);
     vi.mocked(syncShopify).mockRejectedValueOnce(new NotFoundError("This client has no Shopify store connected."));
     expect((await r.sync()).status).toBe(404);
     vi.mocked(syncShopify).mockRejectedValueOnce(new ConflictError("A sync is already running for this store"));

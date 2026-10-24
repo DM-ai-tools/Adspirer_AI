@@ -22,12 +22,7 @@ import type {
   WorkspaceDocument,
 } from "@/types";
 import type { GoogleAsset, GoogleConnection } from "@/lib/google/types";
-import type {
-  ShopifyCollection,
-  ShopifyConnection,
-  ShopifyProduct,
-  ShopifyVariant,
-} from "@/lib/shopify/types";
+import type { ShopifyConnection, ShopifySalesRow } from "@/lib/shopify/types";
 import { encryptToken } from "@/lib/security/token-vault";
 import { addDaysIso, addHoursIso, nowIso } from "@/lib/utils";
 
@@ -58,11 +53,10 @@ export interface DemoStore {
   /** The agency read-only Google connection (admin-connected). */
   googleConnection: GoogleConnection | null;
   googleAssets: GoogleAsset[];
-  /** Read-only Shopify stores (one per client) and their synced catalogue. */
+  /** Read-only Shopify stores (one per client). The catalogue is read live, never stored. */
   shopifyConnections: ShopifyConnection[];
-  shopifyCollections: ShopifyCollection[];
-  shopifyProducts: ShopifyProduct[];
-  shopifyVariants: ShopifyVariant[];
+  /** Per-variant sales from the orders-only sync. */
+  shopifySales: ShopifySalesRow[];
 }
 
 type GlobalDemo = typeof globalThis & {
@@ -70,7 +64,7 @@ type GlobalDemo = typeof globalThis & {
   __adspirerDemoStoreVersion?: number;
 };
 
-const DEMO_STORE_VERSION = 11;
+const DEMO_STORE_VERSION = 12;
 
 function id(prefix: string): string {
   return `${prefix}_${nanoid(10)}`;
@@ -692,9 +686,7 @@ function seedStore(): DemoStore {
     },
     googleAssets,
     shopifyConnections: [],
-    shopifyCollections: [],
-    shopifyProducts: [],
-    shopifyVariants: [],
+    shopifySales: [],
   };
 }
 

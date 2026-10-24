@@ -43,3 +43,42 @@ describe("00013_shopify_connection.sql", () => {
     expect(sql).not.toMatch(/\b[a-z_]*(email|phone|address|customer)[a-z_]*\s+(text|uuid|jsonb|integer|bigint|numeric)/);
   });
 });
+
+describe("00014_shopify_sales.sql", () => {
+  const s = readFileSync(path.resolve(__dirname, "../supabase/migrations/00014_shopify_sales.sql"), "utf8").toLowerCase();
+
+  it("creates shopify_sales idempotently with a (client_id, variant_key) key", () => {
+    expect(s).toContain("create table if not exists public.shopify_sales (");
+    expect(s).not.toMatch(/create table (?!if not exists)/);
+    expect(s).toContain("primary key (client_id, variant_key)");
+    expect(s).toContain("synced_run uuid not null");
+    for (const c of [
+      "client_id uuid not null references public.clients(id) on delete cascade",
+      "variant_key text not null", "variant_gid text,", "product_gid text,", "product_title text not null",
+      "variant_title text,", "sku text,", "vendor text not null default ''", "product_type text not null default ''",
+      "units_30d integer not null default 0", "revenue_30d_cents bigint not null default 0",
+      "units_60d integer not null default 0", "revenue_60d_cents bigint not null default 0",
+    ]) expect(s, c).toContain(c);
+  });
+
+  it("has a client-access select policy and service-role writes", () => {
+    expect(s).toContain("alter table public.shopify_sales enable row level security;");
+    expect(s).toContain("drop policy if exists shopify_sales_select on public.shopify_sales;");
+    expect(s).toMatch(/create policy shopify_sales_select\s+on public\.shopify_sales for select to authenticated\s+using \(public\.has_client_access\(client_id\)\);/);
+    expect(s).toContain("grant select on public.shopify_sales to authenticated;");
+    expect(s).toContain("grant all on public.shopify_sales to service_role;");
+  });
+
+  it("revokes default grants from anon and authenticated before granting select", () => {
+    const revoke = s.indexOf("revoke all on public.shopify_sales from anon, authenticated;");
+    expect(revoke).toBeGreaterThan(-1);
+    expect(revoke).toBeLessThan(s.indexOf("grant select on public.shopify_sales to authenticated;"));
+    expect(revoke).toBeLessThan(s.indexOf("grant all on public.shopify_sales to service_role;"));
+    expect(s).not.toMatch(/grant [a-z, ]+ on public\.shopify_sales to anon/);
+    expect(s).not.toMatch(/grant (all|insert|update|delete)[a-z, ]* on public\.shopify_sales to authenticated/);
+  });
+
+  it("stores no customer personal data columns", () => {
+    expect(s).not.toMatch(/\b[a-z_]*(email|phone|address|customer)[a-z_]*\s+(text|uuid|jsonb|integer|bigint|numeric)/);
+  });
+});

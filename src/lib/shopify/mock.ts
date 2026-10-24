@@ -1,6 +1,6 @@
-import type { ShopifyCollection, ShopifyProduct, ShopifyVariant } from "./types";
+import type { ShopifySalesRow } from "./types";
 
-/** Demo-mode Shopify data for ClickTrends. No network call is ever made for it. */
+/** Demo-mode Shopify data for ClickTrends (live-lookup catalogue and synced sales). No network call is ever made for it. */
 export const MOCK_SHOP = {
   domain: "clicktrends-demo.myshopify.com",
   name: "ClickTrends",
@@ -34,14 +34,34 @@ const VARIANTS: VariantSeed[] = [
   { id: 8, product: 6, title: "Default", sku: "SF-LOVE-2", price: 79900, cost: 36000, stock: 11, u30: 0, u60: 2 },
 ];
 
-export function mockShopifyCatalog(clientId: string): {
-  collections: ShopifyCollection[];
-  products: ShopifyProduct[];
-  variants: ShopifyVariant[];
-} {
-  const collections: ShopifyCollection[] = [
-    { client_id: clientId, gid: C(1), handle: "bar-stools", title: "Bar stools", products_count: 3 },
-    { client_id: clientId, gid: C(2), handle: "sofas", title: "Sofas", products_count: 3 },
+/** Demo catalogue the live lookups read in DEMO_MODE (the fields live.ts uses only). */
+export type MockCollection = { gid: string; handle: string; title: string };
+export type MockProductStatus = "ACTIVE" | "DRAFT" | "ARCHIVED" | "UNLISTED";
+export type MockProduct = {
+  gid: string;
+  title: string;
+  handle: string;
+  vendor: string;
+  product_type: string;
+  status: MockProductStatus;
+  collection_gids: string[];
+};
+export type MockVariant = {
+  product_gid: string;
+  title: string;
+  sku: string | null;
+  price_cents: number;
+  /** null = no cost recorded (not zero). */
+  cost_cents: number | null;
+  /** null = untracked / sells at zero stock (unlimited), never 0. */
+  inventory_quantity: number | null;
+};
+
+/** The ClickTrends demo store as the live lookups see it (fresh copies on every call). */
+export function mockLiveCatalog(): { collections: MockCollection[]; products: MockProduct[]; variants: MockVariant[] } {
+  const collections: MockCollection[] = [
+    { gid: C(1), handle: "bar-stools", title: "Bar stools" },
+    { gid: C(2), handle: "sofas", title: "Sofas" },
   ];
 
   const product = (
@@ -51,19 +71,10 @@ export function mockShopifyCatalog(clientId: string): {
     vendor: string,
     product_type: string,
     collection: number,
-    status: ShopifyProduct["status"] = "ACTIVE",
-  ): ShopifyProduct => ({
-    client_id: clientId,
-    gid: P(n),
-    title,
-    handle,
-    vendor,
-    product_type,
-    status,
-    collection_gids: [C(collection)],
-  });
+    status: MockProductStatus = "ACTIVE",
+  ): MockProduct => ({ gid: P(n), title, handle, vendor, product_type, status, collection_gids: [C(collection)] });
 
-  const products: ShopifyProduct[] = [
+  const products: MockProduct[] = [
     product(1, "Oak Counter Stool", "oak-counter-stool", "Nordic Woodworks", "Bar Stool", 1),
     product(2, "Industrial Iron Stool", "industrial-iron-stool", "Forge & Co", "Bar Stool", 1),
     product(3, "Walnut Swivel Stool", "walnut-swivel-stool", "Nordic Woodworks", "Bar Stool", 1),
@@ -72,20 +83,64 @@ export function mockShopifyCatalog(clientId: string): {
     product(6, "Compact Loveseat", "compact-loveseat", "Cosy Home", "Sofa", 2),
   ];
 
-  const variants: ShopifyVariant[] = VARIANTS.map((v) => ({
-    client_id: clientId,
-    gid: V(v.id),
+  const variants: MockVariant[] = VARIANTS.map((v) => ({
     product_gid: P(v.product),
     title: v.title,
     sku: v.sku,
     price_cents: v.price,
     cost_cents: v.cost,
     inventory_quantity: v.stock,
-    units_30d: v.u30,
-    revenue_30d_cents: v.u30 * v.price,
-    units_60d: v.u60,
-    revenue_60d_cents: v.u60 * v.price,
   }));
 
   return { collections, products, variants };
+}
+
+/** Orders (last 60 days) the demo sync reports. */
+export const MOCK_SALES_ORDERS = 37;
+
+/** Demo sales for ClickTrends: sold variants as an orders-only sync would produce them. */
+export function mockShopifySales(clientId: string): ShopifySalesRow[] {
+  const products = new Map<number, { title: string; vendor: string; type: string }>([
+    [1, { title: "Oak Counter Stool", vendor: "Nordic Woodworks", type: "Bar Stool" }],
+    [2, { title: "Industrial Iron Stool", vendor: "Forge & Co", type: "Bar Stool" }],
+    [3, { title: "Walnut Swivel Stool", vendor: "Nordic Woodworks", type: "Bar Stool" }],
+    [4, { title: "Velvet Three Seater Sofa", vendor: "Loft Living", type: "Sofa" }],
+    [5, { title: "Modular Corner Sofa", vendor: "Loft Living", type: "Sofa" }],
+  ]);
+  const rows: ShopifySalesRow[] = VARIANTS.filter((v) => v.product <= 5).map((v) => {
+    const p = products.get(v.product)!;
+    return {
+      client_id: clientId,
+      variant_key: V(v.id),
+      variant_gid: V(v.id),
+      product_gid: P(v.product),
+      product_title: p.title,
+      variant_title: v.title,
+      sku: v.sku,
+      vendor: p.vendor,
+      product_type: p.type,
+      units_30d: v.u30,
+      revenue_30d_cents: v.u30 * v.price,
+      units_60d: v.u60,
+      revenue_60d_cents: v.u60 * v.price,
+    };
+  });
+  // A variant deleted from the store after it sold: no variant id, so a synthetic key.
+  rows.push({
+    client_id: clientId,
+    variant_key: `product:${P(9)}:BS-DISC-01`,
+    variant_gid: null,
+    product_gid: P(9),
+    product_title: "Discontinued Pine Stool",
+    // A deleted variant keeps the title snapshotted on its order lines.
+    variant_title: "Pine / 65cm",
+    sku: "BS-DISC-01",
+    vendor: "Nordic Woodworks",
+    product_type: "Bar Stool",
+    units_30d: 0,
+    revenue_30d_cents: 0,
+    units_60d: 4,
+    revenue_60d_cents: 4 * 9900,
+  });
+  return rows;
 }
