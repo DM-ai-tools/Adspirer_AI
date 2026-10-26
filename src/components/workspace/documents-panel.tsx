@@ -32,7 +32,7 @@ type DocumentsPanelProps = {
 };
 
 const ACCEPT =
-  ".pdf,.doc,.docx,.xlsx,.xls,.csv,.md,.markdown,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,text/markdown";
+  ".pdf,.doc,.docx,.xlsx,.xls,.csv,.md,.markdown,.png,.jpg,.jpeg,.webp,.gif,image/png,image/jpeg,image/webp,image/gif,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,text/markdown";
 
 export function DocumentsPanel({
   clientId,
@@ -225,6 +225,30 @@ export function DocumentsPanel({
   );
 }
 
+/** Upload one file as a workspace document; throws with the server's message. */
+export async function uploadChatFile(args: {
+  file: File;
+  clientId: string;
+  conversationId?: string | null;
+  apiBase?: string;
+}): Promise<void> {
+  const { file, clientId, conversationId, apiBase = "/api" } = args;
+  const form = new FormData();
+  form.set("clientId", clientId);
+  form.set("file", file);
+  if (conversationId) form.set("conversationId", conversationId);
+  const res = await fetch(`${apiBase}/documents/upload`, {
+    method: "POST",
+    body: form,
+    credentials: "same-origin",
+  });
+  const payload = await res.json().catch(() => null);
+  if (!res.ok) {
+    throw new Error(payload?.error?.message ?? "Upload failed");
+  }
+  toast.success(`Attached ${file.name}`);
+}
+
 /** Compact paperclip control for the chat composer. */
 export function ChatDocumentAttachButton({
   clientId,
@@ -247,20 +271,7 @@ export function ChatDocumentAttachButton({
   async function upload(file: File) {
     setUploading(true);
     try {
-      const form = new FormData();
-      form.set("clientId", clientId!);
-      form.set("file", file);
-      if (conversationId) form.set("conversationId", conversationId);
-      const res = await fetch(`${apiBase}/documents/upload`, {
-        method: "POST",
-        body: form,
-        credentials: "same-origin",
-      });
-      const payload = await res.json().catch(() => null);
-      if (!res.ok) {
-        throw new Error(payload?.error?.message ?? "Upload failed");
-      }
-      toast.success(`Attached ${file.name}`);
+      await uploadChatFile({ file, clientId: clientId!, conversationId, apiBase });
       onUploaded?.(file.name);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Upload failed");
@@ -287,7 +298,7 @@ export function ChatDocumentAttachButton({
         size="icon"
         variant="ghost"
         className="h-9 w-9 shrink-0 rounded-xl text-muted hover:text-foreground"
-        title="Attach PDF, Word, Excel, CSV, or Markdown"
+        title="Attach an image, screenshot PDF, Word, Excel, CSV, or Markdown"
         aria-label="Attach a file"
         disabled={disabled || uploading}
         onClick={() => inputRef.current?.click()}

@@ -34,11 +34,13 @@ export const ChatComposer = forwardRef<
     /** Resolve `false` when the message was not delivered — the text comes back. */
     onSubmit: (text: string) => Promise<boolean | void> | boolean | void;
     onStop?: () => void;
+    /** Images / files pasted into or dropped on the box (screenshots from the clipboard). */
+    onFiles?: (files: File[]) => void;
     leading?: ReactNode;
     footer?: ReactNode;
   }
 >(function ChatComposer(
-  { initialValue, placeholder, disabled, sending, onSubmit, onStop, leading, footer },
+  { initialValue, placeholder, disabled, sending, onSubmit, onStop, onFiles, leading, footer },
   ref,
 ) {
   const [value, setValue] = useState(initialValue ?? "");
@@ -91,6 +93,24 @@ export const ChatComposer = forwardRef<
           rows={1}
           value={value}
           onChange={(e) => setValue(e.target.value)}
+          onPaste={(e) => {
+            if (!onFiles) return;
+            const files = Array.from(e.clipboardData.files);
+            if (!files.length) return;
+            // A pasted screenshot has no text; plain text pastes fall through.
+            e.preventDefault();
+            onFiles(files);
+          }}
+          onDragOver={(e) => {
+            if (onFiles && e.dataTransfer.types.includes("Files")) e.preventDefault();
+          }}
+          onDrop={(e) => {
+            if (!onFiles) return;
+            const files = Array.from(e.dataTransfer.files);
+            if (!files.length) return;
+            e.preventDefault();
+            onFiles(files);
+          }}
           placeholder={placeholder}
           disabled={disabled}
           aria-label="Message"

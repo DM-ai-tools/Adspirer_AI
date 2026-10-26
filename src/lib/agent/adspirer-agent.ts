@@ -3,6 +3,7 @@ import {
   asksAboutDeliveryStructure,
   gatherDeliveryStructure,
 } from "@/lib/agent/delivery-structure";
+import { formatCtaForDisplay } from "@/lib/meta/extract-creative-destination";
 import { evaluateCheckpoints } from "@/lib/audit/checkpoints";
 import { applyChatSettings, settingsNoticeLines, type ChatSettingsTurn } from "@/lib/clients/chat-settings";
 import { resolveGoals, type GoalsProfile, type ResolvedGoals } from "@/lib/clients/goals";
@@ -690,6 +691,19 @@ function maxOutputTokensFor(intent: RequestIntent): number {
   return 4000;
 }
 
+/** Prepended to earlier assistant turns so their figures are never treated as current. */
+const STALE_REPLY_MARKER =
+  "[Earlier reply from this chat: its figures, statuses and URLs were not re-verified and may be outdated or wrong.]";
+
+/** Added to every turn: answers come from live tool data, not from the chat. */
+const FRESH_DATA_RULE = [
+  "## Fresh data rule (applies to this turn)",
+  "- Every metric, status, setting, URL, CTA or score in your answer must come from the live tool evidence below or from a read-only data tool you call this turn. Name the source.",
+  "- Do NOT reuse a number, status or URL from earlier messages in this chat, or from workspace documents, unless the operator explicitly asks about what was said earlier (\"you said\", \"earlier\", \"before\"). Then say it is from the earlier reply and not re-verified, and re-check it live when you can.",
+  "- If a figure cannot be verified live, say so plainly. Never fill the gap from memory or from earlier replies.",
+  "- Meta returns some CTA enums under legacy names. BOOK_TRAVEL is the API value for the button Ads Manager labels \"Book Now\"; that is not a mismatch. Report the Ads Manager label and mention the API value only for reference.",
+].join("\n");
+
 function buildWriterMessages(input: WriterInput): {
   /** Same for every client and turn — cached. */
   systemStatic: string;
@@ -876,9 +890,12 @@ function buildWriterMessages(input: WriterInput): {
     messages: [
       ...(input.history ?? []).map((m) => ({
         role: m.role,
-        content: m.content,
+        content:
+          m.role === "assistant" && m.content.trim()
+            ? `${STALE_REPLY_MARKER}\n${m.content}`
+            : m.content,
       })),
-      { role: "user" as const, content: userTurn },
+      { role: "user" as const, content: `${FRESH_DATA_RULE}\n\n${userTurn}` },
     ],
   };
 }
@@ -2234,7 +2251,7 @@ export async function gatherDiagnoseEvidence(input: {
                 : creatives;
 
             const perAdLines = scopedCreatives.slice(0, 40).map((c) => {
-              const cta = c.call_to_action_type?.trim() || "UNKNOWN";
+              const cta = formatCtaForDisplay(c.call_to_action_type);
               const dest = c.landing_page_url?.trim();
               const statusBits = [
                 c.ad_status ? `ad=${c.ad_status}` : null,
@@ -2248,7 +2265,7 @@ export async function gatherDiagnoseEvidence(input: {
                 ) ?? [];
               return `- Ad **${c.ad_name ?? c.ad_id}** (${c.ad_id})${
                 statusBits ? ` · ${statusBits}` : ""
-              } · ${c.creative_type ?? "creative"} · CTA: \`${cta}\` · Website URL: ${
+              } · ${c.creative_type ?? "creative"} · CTA: ${cta} · Website URL: ${
                 dest && /^https?:\/\//i.test(dest)
                   ? dest
                   : "_not returned by Meta on this creative_"
@@ -2302,7 +2319,9 @@ export async function gatherDiagnoseEvidence(input: {
             }
 
             const destLines = [...byUrl.values()].slice(0, 20).map((row) => {
-              const ctas = [...new Set(row.ctaTypes)].join(", ") || "n/a";
+              const ctas =
+                [...new Set(row.ctaTypes)].map(formatCtaForDisplay).join(", ") ||
+                "n/a";
               return `- **${row.url}**\n  - CTA type(s): ${ctas}\n  - Used by: ${row.ads.slice(0, 4).join("; ")}${
                 row.ads.length > 4 ? "…" : ""
               }`;
@@ -2948,7 +2967,7 @@ export async function gatherDiagnoseEvidence(input: {
   // fetch Meta destinations here too — otherwise the writer answers from chat
   // history and repeats an earlier wrong URL.
   const asksAboutLandingPage =
-    /\b(landing\s*page|destination\s*url|website\s*url|lp\s*url|destination\s*link)\b/i.test(
+    /\b(landing\s*pages?|destination\s*url|website\s*url|lp\s*url|destination\s*link|lcp|page\s*speed|pagespeed|core\s*web\s*vitals?|load\s*time|page\s*weight|cta|call[\s-]*to[\s-]*action|book[\s_-]*(?:now|travel))\b/i.test(
       input.request,
     );
   if (
@@ -2993,7 +3012,7 @@ export async function gatherDiagnoseEvidence(input: {
             const dest = c.landing_page_url?.trim();
             return `- **${c.ad_name ?? c.ad_id}** (${c.ad_id})${
               c.campaign_id ? ` · campaign ${c.campaign_id}` : ""
-            } · CTA \`${c.call_to_action_type ?? "UNKNOWN"}\` · Website URL: ${
+            } · CTA ${formatCtaForDisplay(c.call_to_action_type)} · Website URL: ${
               dest && /^https?:\/\//i.test(dest)
                 ? `${dest}${
                     c.destination_source ? ` _(from ${c.destination_source})_` : ""

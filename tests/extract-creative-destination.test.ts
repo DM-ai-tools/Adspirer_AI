@@ -143,3 +143,12 @@ describe("extractCreativeDestination", () => {
     );
   });
 });
+
+describe("formatCtaForDisplay", () => {
+  it("shows BOOK_TRAVEL as the Ads Manager Book Now button", async () => {
+    const { formatCtaForDisplay } = await import("@/lib/meta/extract-creative-destination");
+    expect(formatCtaForDisplay("BOOK_TRAVEL")).toContain("Book Now");
+    expect(formatCtaForDisplay("BOOK_TRAVEL")).toContain("BOOK_TRAVEL");
+    expect(formatCtaForDisplay(null)).toBe("UNKNOWN");
+  });
+});
