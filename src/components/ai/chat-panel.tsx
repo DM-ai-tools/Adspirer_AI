@@ -38,7 +38,7 @@ import { humanToolLabel } from "@/lib/tools/display-labels";
 import { looksLikeFullAuditMarkdown } from "@/lib/report/from-markdown";
 import { columnAlignments } from "@/lib/reports/layout";
 import { splitMarkdownTableRow } from "@/lib/reports/table-row";
-import { ChatDocumentAttachButton } from "@/components/workspace/documents-panel";
+import { ChatDocumentAttachButton, uploadChatFile } from "@/components/workspace/documents-panel";
 import { useCreativeStatus } from "@/hooks/use-creative-status";
 import { TargetingPickerCard } from "@/components/ai/targeting-picker";
 import type {
@@ -1827,6 +1827,35 @@ export function ChatPanel({
       <ChatComposer
         ref={composerRef}
         initialValue={initialInput}
+        onFiles={
+          clientId
+            ? (files) => {
+                for (const raw of files) {
+                  // Clipboard screenshots arrive as "image.png"; give each a unique name.
+                  const file =
+                    raw.type.startsWith("image/") && /^image\.\w+$/i.test(raw.name)
+                      ? new File(
+                          [raw],
+                          `screenshot-${Date.now()}.${raw.type.split("/")[1] || "png"}`,
+                          { type: raw.type },
+                        )
+                      : raw;
+                  const pending = toast.loading(`Reading ${file.name}…`);
+                  uploadChatFile({ file, clientId, conversationId, apiBase })
+                    .then(() => {
+                      setAttachedNames((prev) =>
+                        prev.includes(file.name) ? prev : [...prev.slice(-4), file.name],
+                      );
+                      onDocumentUploaded?.();
+                    })
+                    .catch((err) =>
+                      toast.error(err instanceof Error ? err.message : "Upload failed"),
+                    )
+                    .finally(() => toast.dismiss(pending));
+                }
+              }
+            : undefined
+        }
         placeholder={placeholder}
         disabled={disabled}
         sending={sending}

@@ -19,7 +19,14 @@ const ALLOWED_EXT = new Set([
   ".xlsx",
   ".xls",
   ".csv",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".webp",
+  ".gif",
 ]);
+
+const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
 
 const MIME_BY_EXT: Record<string, string> = {
   ".pdf": "application/pdf",
@@ -32,6 +39,11 @@ const MIME_BY_EXT: Record<string, string> = {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   ".xls": "application/vnd.ms-excel",
   ".csv": "text/csv",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
 };
 
 export function extensionOf(filename: string): string {
@@ -47,9 +59,13 @@ export function assertAllowedDocument(filename: string, sizeBytes: number): void
   const ext = extensionOf(filename);
   if (!ALLOWED_EXT.has(ext)) {
     throw new Error(
-      "Unsupported file type. Upload PDF, Word (.doc/.docx), Excel (.xlsx/.xls), CSV, or Markdown (.md).",
+      "Unsupported file type. Upload an image (PNG/JPG/WebP/GIF), PDF, Word (.doc/.docx), Excel (.xlsx/.xls), CSV, or Markdown (.md).",
     );
   }
+}
+
+export function isImageFilename(filename: string): boolean {
+  return IMAGE_EXT.has(extensionOf(filename));
 }
 
 export function mimeForFilename(filename: string, fallback?: string): string {
@@ -172,11 +188,38 @@ export async function extractDocumentText(input: {
   assertAllowedDocument(input.filename, input.buffer.byteLength);
   const ext = extensionOf(input.filename);
   let raw = "";
+  const mimeType = mimeForFilename(input.filename, input.mimeType);
 
-  if (ext === ".md" || ext === ".markdown") {
+  if (isImageFilename(input.filename)) {
+    const { transcribeVisual, VISION_NOTE } = await import(
+      "@/lib/documents/vision-extract"
+    );
+    const seen = await transcribeVisual({
+      buffer: input.buffer,
+      mimeType,
+      kind: "image",
+    });
+    raw = `${VISION_NOTE}
+
+${seen}`;
+  } else if (ext === ".md" || ext === ".markdown") {
     raw = input.buffer.toString("utf8");
   } else if (ext === ".pdf") {
     raw = await extractPdf(input.buffer);
+    // Screenshot-only PDFs have no text layer: read the pages visually instead.
+    if (raw.replace(/\s+/g, "").length < 20) {
+      const { transcribeVisual, VISION_NOTE } = await import(
+        "@/lib/documents/vision-extract"
+      );
+      const seen = await transcribeVisual({
+        buffer: input.buffer,
+        mimeType,
+        kind: "pdf",
+      });
+      raw = `${VISION_NOTE}
+
+${seen}`;
+    }
   } else if (ext === ".docx") {
     raw = await extractDocx(input.buffer);
   } else if (ext === ".doc") {
@@ -190,13 +233,13 @@ export async function extractDocumentText(input: {
   const text = truncateText(raw, MAX_STORED_TEXT_CHARS);
   if (!text || text.length < 20) {
     throw new Error(
-      "No readable text found in this file. Scanned PDFs without OCR are not supported yet.",
+      "No readable content found in this file.",
     );
   }
 
   return {
     text,
     kind: inferDocKind(input.filename, text),
-    mimeType: mimeForFilename(input.filename, input.mimeType),
+    mimeType,
   };
 }

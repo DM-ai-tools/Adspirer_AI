@@ -360,3 +360,38 @@ export function extractCreativeDestination(
     destination_candidates: uniqueCandidates,
   };
 }
+
+/**
+ * Meta's Graph API returns legacy enum names that differ from the Ads Manager
+ * button label. BOOK_TRAVEL is the API value behind the "Book now" button.
+ */
+const CTA_DISPLAY_LABELS: Record<string, string> = {
+  BOOK_TRAVEL: "Book Now",
+  BOOK_NOW: "Book Now",
+  LEARN_MORE: "Learn More",
+  SIGN_UP: "Sign Up",
+  CONTACT_US: "Contact Us",
+  APPLY_NOW: "Apply Now",
+  GET_QUOTE: "Get Quote",
+  GET_OFFER: "Get Offer",
+  SHOP_NOW: "Shop Now",
+  SUBSCRIBE: "Subscribe",
+  DOWNLOAD: "Download",
+  ORDER_NOW: "Order Now",
+  WATCH_MORE: "Watch More",
+  CALL_NOW: "Call Now",
+  SEND_MESSAGE: "Send Message",
+  MESSAGE_PAGE: "Send Message",
+  GET_DIRECTIONS: "Get Directions",
+  REQUEST_TIME: "Request Time",
+  NO_BUTTON: "No Button",
+};
+
+/** Human label as shown in Ads Manager, with the raw API value for audit. */
+export function formatCtaForDisplay(type: string | null | undefined): string {
+  const raw = type?.trim();
+  if (!raw) return "UNKNOWN";
+  const label = CTA_DISPLAY_LABELS[raw.toUpperCase()];
+  if (!label) return `\`${raw}\``;
+  return `${label} (Ads Manager label; API value \`${raw}\`)`;
+}
