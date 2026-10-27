@@ -1,3 +1,4 @@
+import { getArchivedClientIds } from "@/lib/clients/archive";
 import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
 import { getCurrentUser } from "@/lib/security/auth";
@@ -76,6 +77,9 @@ export async function GET(request: Request) {
       clients = (data ?? []) as Array<{ id: string; name: string }>;
     }
     if (allowed) clients = clients.filter((c) => allowed.includes(c.id));
+    // Archived clients are not monitored.
+    const archivedIds = await getArchivedClientIds();
+    clients = clients.filter((c) => !archivedIds.has(c.id));
 
     const summaries = await mapLimited(clients, CONCURRENCY, async (client): Promise<ClientHealthSummary> => {
       const result = await getClientHealth({ userId: user.id, clientId: client.id, days });
