@@ -4,7 +4,7 @@ import {
   assertAuthenticated,
   assertClientAccess,
 } from "@/lib/authz/assert";
-import { startCreativeGeneration } from "@/lib/creatives/service";
+import { startCreativeGenerationBackground } from "@/lib/creatives/service";
 import { runAfterResponse } from "@/lib/api/background";
 import { jsonOk, parseBody, withApiHandler } from "@/lib/api/response";
 
@@ -31,7 +31,10 @@ export async function POST(request: Request) {
     const body = await parseBody(request, bodySchema);
     await assertClientAccess(user.id, body.clientId);
 
-    const { result, runImages } = await startCreativeGeneration({
+    // Only the placeholder cards are created here; reading the brand, writing
+    // the concepts and rendering run after the response, so the button frees up
+    // at once and leaving the page cannot cancel the job.
+    const { draftIds, run } = await startCreativeGenerationBackground({
       clientId: body.clientId,
       serviceId: body.serviceId,
       conversationId: body.conversationId,
@@ -45,17 +48,8 @@ export async function POST(request: Request) {
       analyzeBrand: body.analyzeBrand,
       generateImages: true,
     });
+    runAfterResponse("workflow-creative-generation", run);
 
-    if (runImages) {
-      runAfterResponse("workflow-creative-images", runImages);
-    }
-
-    return jsonOk({
-      concepts: result.concepts,
-      brandAnalysis: result.brandAnalysis,
-      openaiConfigured: result.openaiConfigured,
-      imageModel: result.imageModel,
-      generatingImages: Boolean(runImages),
-    });
+    return jsonOk({ draftIds, generatingImages: true });
   });
 }

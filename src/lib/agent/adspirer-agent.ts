@@ -1,3 +1,4 @@
+import { detectCreativeFormat } from "@/lib/agent/creative-format";
 import type { LanguageModel, ModelMessage, SystemModelMessage } from "ai";
 import {
   asksAboutDeliveryStructure,
@@ -288,6 +289,13 @@ export type TargetingPickerUi = {
   account_id?: string | null;
 };
 
+/** Opens the campaign settings card. The card loads its own options from Meta. */
+export type CampaignSettingsPickerUi = {
+  account_id?: string | null;
+  objective?: string | null;
+  stated?: Partial<import("@/lib/meta/campaign-rules").CampaignSettings>;
+};
+
 export type CreativePickerUi = {
   drafts: Array<{
     id: string;
@@ -333,6 +341,7 @@ export type AgentRunResult = {
     formatChoice?: FormatChoiceUi;
     videoChoice?: VideoChoiceUi;
     targetingPicker?: TargetingPickerUi;
+    campaignSettingsPicker?: CampaignSettingsPickerUi;
     creativePicker?: CreativePickerUi;
   };
   report?: {
@@ -1119,6 +1128,9 @@ async function finalizeWriterResult(args: {
             : {}),
           ...(humanized.targetingPicker
             ? { targetingPicker: humanized.targetingPicker }
+            : {}),
+          ...(humanized.campaignSettingsPicker
+            ? { campaignSettingsPicker: humanized.campaignSettingsPicker }
             : {}),
         },
     report: input.reportDraft
@@ -3299,9 +3311,9 @@ export async function gatherDiagnoseEvidence(input: {
 
   if (intent === "create_campaign") {
     const request = input.request ?? "";
-    const wantsVideo = /\b(video|reel|reels|mp4|mov)\b/i.test(request);
-    const wantsImage =
-      /\b(image|still|static|jpg|png|jpeg)\b/i.test(request) && !wantsVideo;
+    const format = detectCreativeFormat(request);
+    const wantsVideo = format === "video";
+    const wantsImage = format === "image";
 
     if (wantsVideo) {
       const url = extractUrlFromText(request);
@@ -3385,7 +3397,7 @@ export async function gatherDiagnoseEvidence(input: {
           ? `Primary text on file: ${copyFields.primaryText.slice(0, 280)}${copyFields.primaryText.length > 280 ? "…" : ""}`
           : null,
         "Acknowledge briefly that brand scrape + GPT Image stills are starting.",
-        "Do NOT invent 'here are 3 variations' or dump image_choice JSON as the whole reply — stills attach as creative cards after generation.",
+        "Do NOT invent 'here are N variations' or dump image_choice JSON as the whole reply — stills attach as creative cards after generation.",
         "Do NOT claim images are ready before generation completes.",
         "If workspace documents / competitor ads are in context, treat them as visual or messaging reference — recreate style for OUR brand; do not copy logos or trademarked artwork.",
         "After stills render: stop. Ask if they want to use one in a campaign — do not start targeting or campaign create.",

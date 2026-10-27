@@ -2,6 +2,13 @@
  * Build Meta Graph API targeting / creative payloads from our create inputs.
  */
 
+import {
+  validateCampaignSettings,
+  type CampaignObjective,
+  type ConversionLocation,
+  type OptimizationGoal,
+} from "@/lib/meta/campaign-rules";
+
 type IdName = { id?: string; name?: string } | string;
 
 function asId(value: unknown): string | null {
@@ -261,6 +268,14 @@ export function buildMetaTargeting(input: {
       : undefined);
   applyPublisherPlatforms(targeting, platforms, extra);
 
+  // Advanced placements: device type, device model and OS (card-selected).
+  const devicePlatforms = stringList(extra.device_platforms);
+  if (devicePlatforms) targeting.device_platforms = devicePlatforms;
+  const userDevice = stringList(extra.user_device);
+  if (userDevice) targeting.user_device = userDevice;
+  const userOs = stringList(extra.user_os);
+  if (userOs) targeting.user_os = userOs;
+
   // Meta requires an explicit Advantage+ audience choice on new ad sets.
   // On by default (Meta's recommended setup); off when the proposal says so,
   // or when its settings are hard controls Advantage+ audience can't keep:
@@ -276,6 +291,12 @@ export function buildMetaTargeting(input: {
   };
 
   return targeting;
+}
+
+function stringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const list = value.filter((v): v is string => typeof v === "string" && v.trim() !== "");
+  return list.length ? list : undefined;
 }
 
 function isTruthyFlag(value: unknown): boolean {
@@ -295,6 +316,11 @@ export function resolveLeadFormId(input: {
   lead_form_id?: string;
   extra_args?: Record<string, unknown>;
 }): string | undefined {
+  // A website conversion location means the pixel drives the ad set; a lead
+  // form that happens to be on the args must not turn it into an on-ad one.
+  if (optionalTrimmed(input.extra_args?.conversion_location) === "website") {
+    return undefined;
+  }
   return (
     optionalTrimmed(input.lead_form_id) ??
     optionalTrimmed(input.extra_args?.lead_form_id)
@@ -340,6 +366,50 @@ export function lacksConversionSource(args: Record<string, unknown>): boolean {
   return !(objective === "OUTCOME_LEADS" && resolveLeadFormId({ extra_args: args }));
 }
 
+/**
+ * Ad set `destination_type`: an explicit value wins, then the card's conversion
+ * location, then today's rule (a lead form means on-ad).
+ */
+export function destinationTypeFor(input: {
+  destination_type?: string;
+  conversion_location?: string;
+  leadFormId?: string;
+}): string | undefined {
+  const explicit = optionalTrimmed(input.destination_type);
+  const fromLocation =
+    input.conversion_location === "website"
+      ? "WEBSITE"
+      : input.conversion_location === "instant_form"
+        ? "ON_AD"
+        : undefined;
+  if (explicit && fromLocation && explicit.toUpperCase() !== fromLocation) {
+    throw new Error(
+      `destination_type ${explicit} conflicts with conversion_location ${input.conversion_location}. Remove one of them.`,
+    );
+  }
+  if (explicit) return explicit;
+  if (fromLocation) return fromLocation;
+  return input.leadFormId ? "ON_AD" : undefined;
+}
+
+/**
+ * The bid strategy "minimum ROAS" forces the VALUE goal. When the operator also
+ * chose a different goal, say so instead of quietly changing it.
+ */
+export function reconcileGoalWithBid(
+  resolvedGoal: string,
+  chosenGoal: string | undefined,
+  valueGoal: boolean,
+): string {
+  if (!valueGoal) return resolvedGoal;
+  if (chosenGoal && chosenGoal.toUpperCase() !== "VALUE") {
+    throw new Error(
+      `The minimum ROAS bid strategy optimizes for VALUE, which conflicts with the chosen goal ${chosenGoal}. Choose "Maximise value of conversions" or remove the ROAS floor.`,
+    );
+  }
+  return "VALUE";
+}
+
 export function optimizationForObjective(
   objective?: string,
   options?: { pixel_id?: string; extra_args?: Record<string, unknown> },
@@ -349,6 +419,29 @@ export function optimizationForObjective(
 } {
   const hasPixel = Boolean(resolvePixelId(options ?? {}));
   const upper = (objective ?? "OUTCOME_TRAFFIC").toUpperCase();
+
+  // A goal chosen on the campaign settings card must be one Meta accepts for
+  // this objective and location; it is never silently replaced.
+  const chosen = optionalTrimmed(options?.extra_args?.optimization_goal);
+  if (chosen) {
+    const hasLeadForm = Boolean(resolveLeadFormId(options ?? {}));
+    // Only Sales, Leads and Traffic have a conversion location; Engagement and
+    // Awareness validate their goal on its own.
+    const hasLocation = ["OUTCOME_SALES", "OUTCOME_LEADS", "OUTCOME_TRAFFIC"].includes(upper);
+    const location =
+      (optionalTrimmed(options?.extra_args?.conversion_location) as ConversionLocation | undefined) ??
+      (hasLocation
+        ? upper === "OUTCOME_LEADS" && hasLeadForm && !hasPixel
+          ? "instant_form"
+          : "website"
+        : undefined);
+    const verdict = validateCampaignSettings(
+      { optimization_goal: chosen.toUpperCase() as OptimizationGoal, conversion_location: location },
+      { objective: upper as CampaignObjective, hasPixel, hasLeadForm },
+    );
+    if (!verdict.ok) throw new Error(verdict.error);
+    return { optimization_goal: chosen.toUpperCase(), billing_event: "IMPRESSIONS" };
+  }
 
   // Instant-form lead ads optimise for on-Facebook leads, not pixel events.
   if (upper === "OUTCOME_LEADS" && resolveLeadFormId(options ?? {})) {

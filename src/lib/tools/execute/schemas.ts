@@ -66,6 +66,17 @@ const targetingFields = {
   /** Minimum ROAS, e.g. 2.5 for 2.5×. */
   roas_average_floor: z.number().positive().optional(),
   attribution: z.enum(ATTRIBUTION_SETTINGS).optional(),
+  /** Chosen on the campaign settings card; validated against Meta's rules when the ad set is built. */
+  optimization_goal: z.string().optional(),
+  conversion_location: z
+    .enum(["website", "instant_form", "messaging", "calls", "app"])
+    .refine((v) => v === "website" || v === "instant_form", {
+      message: "That conversion location is not supported yet; use website or instant_form.",
+    })
+    .optional(),
+  device_platforms: z.array(z.enum(["mobile", "desktop"])).optional(),
+  user_device: z.array(z.string()).optional(),
+  user_os: z.array(z.string()).optional(),
 };
 
 /** Creative fields shared by the create tools. */

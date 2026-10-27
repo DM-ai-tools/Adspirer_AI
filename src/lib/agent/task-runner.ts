@@ -87,7 +87,7 @@ function stripFalseQueuedClaims(summary: string): string {
 }
 
 /** Variants produced per inline creative request. */
-const CREATIVE_VARIANT_COUNT = 3;
+const CREATIVE_VARIANT_COUNT = 4;
 
 /**
  * Keep the reply honest on turns where no batch was started: rewrite prose that
@@ -150,6 +150,7 @@ function awaitsOperator(result: AgentRunResult): boolean {
   return Boolean(
     ui?.formatChoice ||
       ui?.targetingPicker ||
+      ui?.campaignSettingsPicker ||
       ui?.videoChoice ||
       ui?.imageChoice ||
       ui?.copyPicker?.copies?.length ||
@@ -567,6 +568,7 @@ export async function runTask(
     // Never re-attach ad picker on a queue-for-Approvals turn (or once we have
     // execute proposals ready to queue) — it looks like the agent ignored the queue.
     if (
+      intent === "optimize" &&
       gathered.adPicker?.ads?.length &&
       !queueApprovalsTurn &&
       !(gathered.executeProposals?.length && queueApprovalsTurn)
@@ -575,7 +577,10 @@ export async function runTask(
         ...(agentResult.ui ?? {}),
         adPicker: agentResult.ui?.adPicker ?? gathered.adPicker,
       };
-    } else if (queueApprovalsTurn && agentResult.ui?.adPicker) {
+    } else if (
+      (queueApprovalsTurn || intent !== "optimize") &&
+      agentResult.ui?.adPicker
+    ) {
       const { adPicker: _drop, ...rest } = agentResult.ui;
       agentResult.ui = Object.keys(rest).length ? rest : undefined;
     }

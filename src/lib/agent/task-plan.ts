@@ -1,3 +1,4 @@
+import { isCreateCampaignAsk } from "@/lib/chat/infer-flow";
 import type { AgentHistoryMessage } from "@/lib/agent/history";
 import { looksLikeAuditBriefReply, parseDateRangeFromText } from "@/lib/agent/audit-brief";
 import { looksLikeLeadBriefReply } from "@/lib/agent/lead-brief";
@@ -162,6 +163,9 @@ const DEFINITION_WORDS = /\b(?:mean|means|define|definition)\b/;
 
 export function detectRequestIntent(request: string): RequestIntent {
   const text = request.toLowerCase();
+  // The campaign settings card's confirmation is a step of the build; its text
+  // mentions budget and attribution, which must not read as other requests.
+  if (/^\s*campaign settings selections\b/.test(text)) return "create_campaign";
   if (
     // Google Ads, GA4 and Search Console are read through the data tools, so they're in scope.
     /weather|recipe|code|python|javascript|write a poem|joke|crypto|stock|linkedin|tiktok/i.test(
@@ -302,12 +306,38 @@ export function detectRequestIntent(request: string): RequestIntent {
  * Same as detectRequestIntent, but keeps short follow-ups ("last 30 days",
  * "entire account") on the audit path when the recent chat is mid-brief.
  */
+/** Words that really ask to optimize an existing ad (as opposed to queueing a campaign). */
+const EXPLICIT_OPTIMIZE_ASK =
+  /\b(optimi[sz]\w*|creative fatigue|refresh (?:the )?ad|improve (?:the )?ad|selected ad|placement optim)/i;
+
+/**
+ * Is a campaign build still in progress? True when the operator asked to
+ * create a campaign / image or video ad in the recent turns and has not since
+ * asked to optimize something. Mid-build replies ("here's the image link",
+ * "send it to Approvals") belong to the build, not to the optimize flow.
+ */
+function campaignBuildOpen(recent: AgentHistoryMessage[]): boolean {
+  for (let i = recent.length - 1; i >= 0; i -= 1) {
+    const m = recent[i]!;
+    if (m.role !== "user") continue;
+    if (EXPLICIT_OPTIMIZE_ASK.test(m.content)) return false;
+    if (isCreateCampaignAsk(m.content)) return true;
+  }
+  return false;
+}
+
 export function detectRequestIntentWithHistory(
   request: string,
   history: AgentHistoryMessage[] = [],
 ): RequestIntent {
   const primary = detectRequestIntent(request);
   const recent = history.slice(-10);
+  const buildOpen = campaignBuildOpen(recent);
+  // "send it to Approvals" while a campaign is being built queues the
+  // campaign; it is not an optimize ask.
+  if (primary === "optimize" && buildOpen && !EXPLICIT_OPTIMIZE_ASK.test(request)) {
+    return "create_campaign";
+  }
   // A short answer ("$1,200/day, 10x") to the strategy brief's own question.
   // Checked before the early return: "my budget is $900 a day" reads as "budget".
   if (primary === "general" || primary === "budget" || primary === "chat") {
@@ -383,6 +413,7 @@ export function detectRequestIntentWithHistory(
   );
   if (
     (assistantOfferedOptimize || userAskedOptimize) &&
+    !buildOpen &&
     /\b(approv|queue|apply|implement|send|optim)/i.test(request)
   ) {
     return "optimize";

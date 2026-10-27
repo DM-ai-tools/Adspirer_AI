@@ -6,6 +6,8 @@ import type { MetaAdsProvider } from "@/lib/adspirer/provider";
 import "./data-tools";
 // Read-only Shopify tools: live products / variants, synced sales (offered only when the client has a store).
 import "./shopify-tools";
+// Image generation: writes creative drafts only, never Meta.
+import "./creative-tools";
 
 /** Live → Meta Graph with the operator's Facebook token; demo → mock data. */
 async function adsProvider(): Promise<MetaAdsProvider> {

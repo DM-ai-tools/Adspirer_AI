@@ -28,6 +28,8 @@ import type {
 import {
   buildMetaTargeting,
   buildPromotedObject,
+  destinationTypeFor,
+  reconcileGoalWithBid,
   optimizationForObjective,
 } from "@/lib/meta/targeting-builder";
 import { resolvePromotePageId, formatMissingPageHelp } from "@/lib/meta/resolve-page";
@@ -1466,14 +1468,18 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     const accountId = normalizeAccountId(input.account_id);
     const objective = input.objective ?? campaign.objective;
     const extra = { ...(input.extra_args ?? {}) };
-    const leadFormId = input.lead_form_id ?? resolveLeadFormId({ extra_args: extra });
+    const leadFormId = resolveLeadFormId({ lead_form_id: input.lead_form_id, extra_args: extra });
     if (leadFormId) extra.lead_form_id = leadFormId;
 
     const currencyForBids = campaign.currency ?? (await this.requireAccountCurrency(accountId));
     const bids = bidPlan(extra, objective, currencyForBids);
     const resolved = optimizationForObjective(objective, { pixel_id: input.pixel_id, extra_args: extra });
     const billing_event = resolved.billing_event;
-    const optimization_goal = bids.valueGoal ? "VALUE" : resolved.optimization_goal;
+    const optimization_goal = reconcileGoalWithBid(
+      resolved.optimization_goal,
+      optionalText(extra.optimization_goal),
+      bids.valueGoal,
+    );
     // Throws a clear error when no location was given (never defaults to US).
     const targeting = buildMetaTargeting({
       age_min: input.age_min,
@@ -1542,8 +1548,11 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       }
     }
 
-    const destinationType =
-      optionalText(extra.destination_type) ?? (leadFormId ? "ON_AD" : undefined);
+    const destinationType = destinationTypeFor({
+      destination_type: optionalText(extra.destination_type),
+      conversion_location: optionalText(extra.conversion_location),
+      leadFormId,
+    });
     if (destinationType) body.destination_type = destinationType;
     const dsaBeneficiary = optionalText(extra.dsa_beneficiary);
     if (dsaBeneficiary) body.dsa_beneficiary = dsaBeneficiary;

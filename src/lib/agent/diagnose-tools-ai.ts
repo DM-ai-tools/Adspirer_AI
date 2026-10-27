@@ -25,6 +25,7 @@ const WORKSPACE_READ_ALLOWLIST = [
   "analyze_landing_pages",
   "analyze_account",
   "analyze_brand_url",
+  "generate_ad_images",
   "meta_insights",
   "ga4_report",
   "search_console_query",
@@ -47,6 +48,10 @@ const WRITER_TOOL_INTENTS: ReadonlySet<RequestIntent> = new Set<RequestIntent>([
   "export",
   "optimize",
   "out_of_scope",
+  // The model decides when to analyse a brand and render images, in the
+  // standalone image flow and mid-way through campaign creation.
+  "generate_creatives",
+  "create_campaign",
 ]);
 
 export function writerHasTools(intent: RequestIntent): boolean {

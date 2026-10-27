@@ -13,10 +13,8 @@ import {
 import { ensurePublicCreativeUrl } from "@/lib/creatives/cloudinary";
 import { appendWorkflowMessage } from "@/lib/workflow/events";
 import { bindImageToPendingApprovals } from "@/lib/workflow/bindings";
-import { queueCampaignForSelectedCreative } from "@/lib/workflow/queue-campaign";
+import { selectionFollowUpMessage } from "@/lib/workflow/selection-message";
 import { patchTaskAgentState } from "@/lib/workflow/state";
-import { getConfig } from "@/lib/config";
-import { getDemoStore } from "@/lib/demo/store";
 import { jsonOk, parseBody, withApiHandler } from "@/lib/api/response";
 
 const selectSchema = z.object({
@@ -78,29 +76,11 @@ export async function POST(request: Request) {
         })
       : [];
 
-    // Nothing was waiting on the image, so the campaign has to be queued now or
-    // the operator is left with a selected creative and an empty Approvals queue.
-    let queued: Awaited<ReturnType<typeof queueCampaignForSelectedCreative>> | null =
-      null;
-    if (bound.length === 0 && imageUrl) {
-      queued = await queueCampaignForSelectedCreative({
-        draft,
-        imageUrl,
-        clientName: await resolveClientName(draft.client_id),
-        requestedBy: user.id,
-      });
-    }
-
-    const approvalIds = [
-      ...bound.map((a) => a.id),
-      ...(queued?.queued ? [queued.approval.id] : []),
-    ];
-
-    const content = queued?.queued
-      ? `Selected creative **${draft.headline}** and queued **create_meta_image_campaign** for approval with this image. Review it below — the campaign, ad set and ad are created PAUSED, and nothing reaches Meta until you approve.`
-      : queued && !queued.queued
-        ? `Selected creative **${draft.headline}**, but I could not queue the campaign: ${queued.reason}`
-        : `Selected creative **${draft.headline}** and attached \`image_url\` to ${bound.length} pending ad approval${bound.length === 1 ? "" : "s"}. Approve below when ready — nothing goes live until you do.`;
+    // Picking an image never queues a campaign by itself: that needs the ad
+    // copy, objective, budget and locations. With nothing waiting on the image,
+    // the chat asks about the copy next.
+    const approvalIds = bound.map((a) => a.id);
+    const content = selectionFollowUpMessage(draft, bound.length);
 
     if (existing.conversation_id) {
       await appendWorkflowMessage({
@@ -126,24 +106,10 @@ export async function POST(request: Request) {
       draft: { ...toPublicDraft(draft), image_b64: undefined },
       image_url: imageUrl,
       approvalIds,
-      queued: Boolean(queued?.queued) || bound.length > 0,
-      blockedReason: queued && !queued.queued ? queued.reason : null,
+      queued: bound.length > 0,
+      needsDetails: bound.length === 0,
+      blockedReason: null,
       workspaceHint: content,
     });
   });
-}
-
-async function resolveClientName(clientId: string): Promise<string | null> {
-  const config = getConfig();
-  if (config.isDemoMode || !config.hasSupabase) {
-    return getDemoStore().clients.find((c) => c.id === clientId)?.name ?? null;
-  }
-  const { createAdminClient } = await import("@/lib/supabase/admin");
-  const supabase = createAdminClient();
-  const { data } = await supabase
-    .from("clients")
-    .select("name")
-    .eq("id", clientId)
-    .maybeSingle();
-  return (data?.name as string | null) ?? null;
 }

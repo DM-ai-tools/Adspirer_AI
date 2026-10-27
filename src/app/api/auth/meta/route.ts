@@ -11,6 +11,11 @@ const SCOPES = [
   "ads_management",
   "ads_read",
   "business_management",
+  // Lead-form lookup for instant-form campaigns. Enable both in the Meta app
+  // (App Review → Permissions and Features) BEFORE deploying: an unknown scope
+  // makes Meta reject the whole connect dialog.
+  "leads_retrieval",
+  "pages_manage_ads",
 ].join(",");
 
 /**

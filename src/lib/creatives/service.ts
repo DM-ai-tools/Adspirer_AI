@@ -2,10 +2,7 @@ import type { ImageFormat } from "@/lib/creatives/formats";
 import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
 import { analyzeBrandFromUrl } from "@/lib/brand/analyze-url";
-import {
-  buildVisualVariantConcepts,
-  generateCreativeConcepts,
-} from "@/lib/creatives/generator";
+import { writeCreativeConcepts } from "@/lib/creatives/concept-writer";
 import { generateImageForDraft } from "@/lib/creatives/generate-draft-image";
 import {
   toPublicDraft,
@@ -17,6 +14,9 @@ import { appendWorkflowMessage } from "@/lib/workflow/events";
 import { patchTaskAgentState } from "@/lib/workflow/state";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { competitorBriefFromRow } from "@/lib/competitors/brief-row";
+
+/** Variations offered in the picker. */
+export const DEFAULT_VARIANT_COUNT = 4;
 
 export type GenerateCreativesInput = {
   clientId: string;
@@ -126,11 +126,24 @@ async function loadScope(input: GenerateCreativesInput) {
   return { client, service, brief };
 }
 
-export async function generateCreativeDrafts(
+type CreativeScope = Awaited<ReturnType<typeof loadScope>>;
+
+/**
+ * Read the brand and write the concepts (the slow part of generation).
+ * `onBrandRead` fires once the site has been read, so callers can report it.
+ */
+async function buildCreativeConcepts(
   input: GenerateCreativesInput,
-): Promise<GenerateCreativesResult> {
-  const config = getConfig();
-  const { client, service, brief } = await loadScope(input);
+  scope: CreativeScope,
+  hooks?: {
+    onBrandRead?: (info: {
+      analysis: Awaited<ReturnType<typeof analyzeBrandFromUrl>> | null;
+      colors: string[] | null;
+      sourceUrl?: string;
+    }) => Promise<void> | void;
+  },
+) {
+  const { client, service, brief } = scope;
   const landing =
     input.landingPageUrl || service?.landing_page_url || undefined;
 
@@ -159,59 +172,61 @@ export async function generateCreativeDrafts(
 
   const colors =
     brandAnalysis?.colors?.length ? brandAnalysis.colors : client.brand_colors;
+  await hooks?.onBrandRead?.({ analysis: brandAnalysis, colors, sourceUrl: brandSourceUrl });
+
   const brandVoice = brandAnalysis?.brand_voice || client.brand_voice;
   const brandName = brandAnalysis?.brand_name || client.name;
-  const serviceName = service?.name ?? "Brand offer";
-  const conceptCount = Math.min(Math.max(input.count ?? 3, 1), 5);
+  const conceptCount = Math.min(Math.max(input.count ?? DEFAULT_VARIANT_COUNT, 1), 5);
+  // The offer is whatever the client sells; with no service record, the
+  // value proposition or page title stands in. Nothing is invented.
+  const offerName =
+    service?.name ?? client.value_proposition ?? brandAnalysis?.title ?? brandName;
 
-  const guidelinesNote = client.brand_guidelines?.trim()
-    ? `Brand guidelines: ${client.brand_guidelines.trim().slice(0, 600)}`
-    : null;
-  const referenceNote = input.referenceBrief?.trim()
-    ? `Reference / competitor recreate brief: ${input.referenceBrief
-        .trim()
-        .slice(0, 800)}`
-    : null;
-  const directionParts = [
-    brandAnalysis?.imagery_notes ?? null,
-    guidelinesNote,
-    referenceNote,
-  ].filter(Boolean);
-  const baseDirection = directionParts.length
-    ? directionParts.join(" | ")
-    : null;
-
-  // Supplied copy means the operator wants the SAME ad rendered several ways,
-  // so vary the art direction instead of rewriting their headline.
+  const guidelinesNote = client.brand_guidelines?.trim() || null;
   const hasSuppliedCopy = Boolean(input.headline || input.primaryText);
 
-  const concepts =
-    hasSuppliedCopy || !service
-      ? buildVisualVariantConcepts({
-          clientId: input.clientId,
-          serviceId: service?.id ?? null,
-          brandName,
-          serviceName,
-          headline: input.headline || client.value_proposition || brandName,
-          primaryText:
-            input.primaryText ||
-            client.value_proposition ||
-            `${brandName} — ${serviceName}`,
-          description: service?.description ?? serviceName,
-          baseDirection,
-          audience: client.target_audience,
-          count: conceptCount,
-        })
-      : generateCreativeConcepts({
-          client: {
-            ...client,
-            brand_colors: colors,
-            brand_voice: brandVoice,
-          } as never,
-          service: service as never,
-          brief: brief as never,
-          count: conceptCount,
-        });
+  const concepts = await writeCreativeConcepts({
+    clientId: input.clientId,
+    serviceId: service?.id ?? null,
+    count: conceptCount,
+    brand: {
+      name: brandName,
+      voice: brandVoice,
+      colors,
+      imageryNotes: brandAnalysis?.imagery_notes,
+      guidelines: guidelinesNote,
+      pageExcerpt: brandAnalysis?.page_excerpt,
+      summary: brandAnalysis?.summary,
+    },
+    business: {
+      industry: (client as { industry?: string | null }).industry,
+      description: (client as { business_description?: string | null })
+        .business_description,
+      valueProposition: client.value_proposition,
+      audience: client.target_audience,
+    },
+    offer: {
+      name: offerName,
+      description: service?.description,
+      landingPageUrl: landing,
+    },
+    referenceBrief: input.referenceBrief,
+    competitorOpportunities: brief?.opportunities,
+    suppliedCopy: hasSuppliedCopy
+      ? { headline: input.headline, primaryText: input.primaryText }
+      : null,
+  });
+
+  return { concepts, brandAnalysis, colors, landing, brandName };
+}
+
+export async function generateCreativeDrafts(
+  input: GenerateCreativesInput,
+): Promise<GenerateCreativesResult> {
+  const config = getConfig();
+  const scope = await loadScope(input);
+  const { service, brief } = scope;
+  const { concepts, brandAnalysis, colors, landing } = await buildCreativeConcepts(input, scope);
 
   // Images are produced after this call returns, so the rows are born
   // "generating" and every surface can render a live placeholder immediately.
@@ -289,6 +304,184 @@ export async function generateCreativeDrafts(
     openaiConfigured: config.hasOpenAI,
     imageModel: config.OPENAI_IMAGE_MODEL,
   };
+}
+
+function hostOf(url?: string): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Start generation without making the operator wait for the slow part.
+ *
+ * Creates the placeholder cards and the chat message right away (a few
+ * database writes), then `run` reads the brand, writes the concepts and renders
+ * the images, reporting each stage on the cards. Schedule `run` after the
+ * response so leaving the page cannot cancel it.
+ */
+export async function startCreativeGenerationBackground(
+  input: GenerateCreativesInput,
+): Promise<{ draftIds: string[]; run: () => Promise<void> }> {
+  const config = getConfig();
+  const scope = await loadScope(input);
+  const { client, service, brief } = scope;
+  const landing = input.landingPageUrl || service?.landing_page_url || undefined;
+  const sourceUrl = input.brandUrl || landing || client.website_url || undefined;
+  const host = hostOf(sourceUrl);
+  const count = Math.min(Math.max(input.count ?? DEFAULT_VARIANT_COUNT, 1), 5);
+  const willRender = input.generateImages !== false && config.hasOpenAI;
+
+  const drafts: CreativeDraft[] = [];
+  for (let i = 0; i < count; i += 1) {
+    drafts.push(
+      await upsertCreativeDraftAsync({
+        client_id: input.clientId,
+        service_id: service?.id ?? null,
+        conversation_id: input.conversationId ?? null,
+        task_id: input.taskId ?? null,
+        brief_id: brief?.id ?? null,
+        concept: `Variation ${i + 1}`,
+        headline: host ? `Reading your brand from ${host}…` : "Preparing your concepts…",
+        primary_text: "",
+        description: null,
+        cta: null,
+        creative_direction: null,
+        image_url: null,
+        image_b64: null,
+        image_mime: "image/png",
+        image_model: null,
+        image_prompt: null,
+        image_status: willRender ? "generating" : "skipped",
+        image_error: null,
+        landing_page_url: landing ?? null,
+        brand_colors: client.brand_colors ?? null,
+        logo_url: null,
+        revision_notes: null,
+        status: "draft",
+      }),
+    );
+  }
+  const draftIds = drafts.map((d) => d.id);
+
+  if (input.taskId) {
+    await patchTaskAgentState(input.taskId, {
+      creatives: {
+        request: {
+          landing_page_url: landing ?? null,
+          headline: input.headline ?? null,
+          primary_text: input.primaryText ?? null,
+          service_id: service?.id ?? null,
+          brief_id: brief?.id ?? null,
+        },
+        draft_ids: draftIds,
+        last_event_at: new Date().toISOString(),
+      },
+    });
+  }
+
+  if (input.conversationId) {
+    await appendWorkflowMessage({
+      conversationId: input.conversationId,
+      taskId: input.taskId,
+      eventType: "creative_generating",
+      content: `Starting ${count} on-brand image variations${host ? ` from ${host}` : ""}. Each card shows what it is doing; you can leave this page and it keeps running.`,
+      metadata: {
+        ui: {
+          creativePicker: {
+            drafts: drafts.map(toPublicDraft),
+            status: willRender ? "generating" : "concepts_ready",
+          },
+        },
+        draftIds,
+      },
+    });
+  }
+
+  const patchAll = (patch: (d: CreativeDraft, index: number) => Partial<CreativeDraft>) =>
+    Promise.all(
+      drafts.map((d, index) =>
+        upsertCreativeDraftAsync({ ...d, id: d.id, ...patch(d, index) }),
+      ),
+    );
+
+  const run = async () => {
+    try {
+      const built = await buildCreativeConcepts(input, scope, {
+        onBrandRead: async ({ analysis, colors, sourceUrl: read }) => {
+          await patchAll(() => ({
+            headline: "Writing your concepts…",
+            brand_colors: colors,
+            logo_url: analysis?.logo_url ?? null,
+          }));
+          if (!input.conversationId) return;
+          const name = hostOf(read) ?? "your site";
+          const palette = colors?.length
+            ? `palette ${colors.slice(0, 4).join(", ")}`
+            : "no brand colours found";
+          const logo = analysis?.logo_url
+            ? "logo found"
+            : "no logo found on the site, so the images will be made without one (upload your logo and ask me to use it)";
+          await appendWorkflowMessage({
+            conversationId: input.conversationId,
+            taskId: input.taskId,
+            eventType: "creative_generating",
+            content: analysis
+              ? `Read your brand from ${name}: ${palette}; ${logo}.`
+              : `Couldn't read ${name}, so the images use ${colors?.length ? `your saved colours (${colors.slice(0, 4).join(", ")})` : "no brand colours"} and no logo.`,
+          });
+        },
+      });
+
+      await patchAll((_, index) => {
+        const c = built.concepts[index];
+        return c
+          ? {
+              concept: c.concept,
+              headline: c.headline,
+              primary_text: c.primary_text,
+              description: c.description,
+              cta: c.cta,
+              creative_direction: c.creative_direction,
+              brand_colors: built.colors,
+              logo_url: built.brandAnalysis?.logo_url ?? null,
+            }
+          : {};
+      });
+
+      if (willRender) {
+        await generateImagesForDrafts({
+          draftIds,
+          brandName: built.brandName,
+          conversationId: input.conversationId,
+          taskId: input.taskId,
+          imageFormat: input.imageFormat,
+        });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn("Background creative generation failed", { error: message });
+      await patchAll(() => ({
+        headline: "Couldn't finish this one",
+        image_status: "failed" as const,
+        image_error: message,
+        status: "failed" as const,
+      })).catch(() => undefined);
+      if (input.conversationId) {
+        await appendWorkflowMessage({
+          conversationId: input.conversationId,
+          taskId: input.taskId,
+          eventType: "creative_failed",
+          content: `Image generation failed: ${message}`,
+        }).catch(() => undefined);
+      }
+    }
+  };
+
+  return { draftIds, run };
 }
 
 export async function generateImagesForDrafts(input: {

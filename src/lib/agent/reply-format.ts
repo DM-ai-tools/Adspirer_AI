@@ -1,4 +1,5 @@
 import { humanToolLabel } from "@/lib/tools/display-labels";
+import type { CampaignSettings } from "@/lib/meta/campaign-rules";
 
 export type FormattedToolCall = {
   name: string;
@@ -59,6 +60,14 @@ export type FormattedTargetingPicker = {
   account_id?: string | null;
 };
 
+/** Opens the campaign settings card (budget level, goal, conversion event, attribution, age, placements). */
+export type FormattedCampaignSettingsPicker = {
+  account_id?: string | null;
+  objective?: string | null;
+  /** Settings the operator already stated in chat; pre-selected on the card. */
+  stated?: Partial<CampaignSettings>;
+};
+
 /**
  * Strip machine JSON appendix blocks and bare JSON payloads from model text.
  */
@@ -71,7 +80,7 @@ export function stripMachineJson(text: string): string {
     } catch {
       // Malformed fence that is clearly a UI appendix — still hide from chat.
       if (
-        /["']ui["']\s*:\s*["'](?:image_choice|format_choice|video_choice|service_picker|copy_picker|ad_picker|targeting_picker)["']/.test(
+        /["']ui["']\s*:\s*["'](?:image_choice|format_choice|video_choice|service_picker|copy_picker|ad_picker|targeting_picker|campaign_settings)["']/.test(
           trimmed,
         )
       ) {
@@ -112,6 +121,7 @@ export function isMachinePayload(parsed: Record<string, unknown>): boolean {
   if (parsed.ui === "format_choice") return true;
   if (parsed.ui === "video_choice") return true;
   if (parsed.ui === "targeting_picker") return true;
+  if (parsed.ui === "campaign_settings") return true;
   if (typeof parsed.tool === "string" && parsed.args && typeof parsed.args === "object") {
     return true;
   }
@@ -152,6 +162,7 @@ export function humanizeAgentReply(raw: string): {
   formatChoice: FormattedFormatChoice | null;
   videoChoice: FormattedVideoChoice | null;
   targetingPicker: FormattedTargetingPicker | null;
+  campaignSettingsPicker: FormattedCampaignSettingsPicker | null;
 } {
   const toolCalls = extractToolProposals(raw);
   const servicePicker = extractServicePicker(raw);
@@ -161,6 +172,7 @@ export function humanizeAgentReply(raw: string): {
   const formatChoice = extractFormatChoice(raw);
   const videoChoice = extractVideoChoice(raw);
   const targetingPicker = extractTargetingPicker(raw);
+  const campaignSettingsPicker = extractCampaignSettingsPicker(raw);
 
   const fillThin = (display: string) => {
     if (isUsableProse(display)) return display;
@@ -174,6 +186,7 @@ export function humanizeAgentReply(raw: string): {
       formatChoice,
       videoChoice,
       targetingPicker,
+      campaignSettingsPicker,
     );
   };
 
@@ -190,6 +203,7 @@ export function humanizeAgentReply(raw: string): {
       formatChoice,
       videoChoice,
       targetingPicker,
+      campaignSettingsPicker,
     };
   }
 
@@ -225,6 +239,7 @@ export function humanizeAgentReply(raw: string): {
       formatChoice,
       videoChoice,
       targetingPicker,
+      campaignSettingsPicker,
     );
   }
 
@@ -243,6 +258,7 @@ export function humanizeAgentReply(raw: string): {
         formatChoice,
         videoChoice,
         targetingPicker,
+        campaignSettingsPicker,
       );
     }
   }
@@ -257,6 +273,7 @@ export function humanizeAgentReply(raw: string): {
     formatChoice,
     videoChoice,
     targetingPicker,
+    campaignSettingsPicker,
   };
 }
 
@@ -372,6 +389,7 @@ export function describeInteractivePayloads(payloads: {
   formatChoice?: FormattedFormatChoice | null;
   videoChoice?: FormattedVideoChoice | null;
   targetingPicker?: FormattedTargetingPicker | null;
+  campaignSettingsPicker?: FormattedCampaignSettingsPicker | null;
   creativePicker?: {
     drafts?: Array<{ id?: string }>;
     status?: string | null;
@@ -385,6 +403,7 @@ export function describeInteractivePayloads(payloads: {
     formatChoice,
     videoChoice,
     targetingPicker,
+    campaignSettingsPicker,
     creativePicker,
   } = payloads;
 
@@ -401,6 +420,14 @@ export function describeInteractivePayloads(payloads: {
       "Set **advanced targeting** — custom audiences, locations, interests, and behaviors.",
       "",
       "Add each field in the panel below, then click **Add to message**. Nothing is sent until you press **Send** in the composer.",
+    ].join("\n");
+  }
+
+  if (campaignSettingsPicker) {
+    return [
+      "Set the **campaign settings** — budget level, conversion location, performance goal, attribution, age and placements.",
+      "",
+      "Each field is pre-filled with a suggestion and the reason. Change anything, then click **Add to message**. Nothing is sent until you press **Send** in the composer.",
     ].join("\n");
   }
 
@@ -496,6 +523,7 @@ function synthesizeFromPayloads(
   formatChoice: FormattedFormatChoice | null = null,
   videoChoice: FormattedVideoChoice | null = null,
   targetingPicker: FormattedTargetingPicker | null = null,
+  campaignSettingsPicker: FormattedCampaignSettingsPicker | null = null,
 ): string {
   const interactive = describeInteractivePayloads({
     servicePicker,
@@ -505,6 +533,7 @@ function synthesizeFromPayloads(
     formatChoice,
     videoChoice,
     targetingPicker,
+    campaignSettingsPicker,
   });
   if (interactive) return interactive;
 
@@ -815,6 +844,7 @@ export function extractToolProposals(text: string): FormattedToolCall[] {
     if (obj.ui === "format_choice") continue;
     if (obj.ui === "video_choice") continue;
     if (obj.ui === "targeting_picker") continue;
+    if (obj.ui === "campaign_settings") continue;
     if (Array.isArray(obj.actions)) {
       for (const item of obj.actions) {
         if (!item || typeof item !== "object") continue;
@@ -975,6 +1005,30 @@ export function extractVideoChoice(text: string): FormattedVideoChoice | null {
       landing_page_url: obj.landing_page_url?.trim(),
       headline: obj.headline?.trim(),
       primary_text: obj.primary_text?.trim(),
+    };
+  }
+  return null;
+}
+
+export function extractCampaignSettingsPicker(
+  text: string,
+): FormattedCampaignSettingsPicker | null {
+  for (const parsed of extractJsonBlocks(text)) {
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+    const obj = parsed as {
+      ui?: string;
+      account_id?: string;
+      objective?: string;
+      stated?: unknown;
+    };
+    if (obj.ui !== "campaign_settings") continue;
+    return {
+      account_id: obj.account_id?.trim() || null,
+      objective: obj.objective?.trim() || null,
+      stated:
+        obj.stated && typeof obj.stated === "object" && !Array.isArray(obj.stated)
+          ? (obj.stated as Partial<CampaignSettings>)
+          : undefined,
     };
   }
   return null;
