@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Plus, Search } from "lucide-react";
+import { Archive, ArchiveRestore, Plus, Search } from "lucide-react";
+import { toast } from "sonner";
 import type { AccessStatus, Client, ConnectedMetaAccount } from "@/types";
 import { apiFetch, formatCents } from "@/lib/api-client";
 import { useApp } from "@/components/layout/app-provider";
@@ -14,6 +15,14 @@ import { ClientStatusBadge } from "@/components/clients/client-status-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Table,
   TableBody,
@@ -32,8 +41,11 @@ type ClientRow = Client & {
 };
 
 export default function ClientsPage() {
-  const { user, clients: appClients, loading: appLoading } = useApp();
+  const { user, clients: appClients, loading: appLoading, refresh } = useApp();
   const [clients, setClients] = useState<Client[]>([]);
+  const [archived, setArchived] = useState<Client[]>([]);
+  const [confirming, setConfirming] = useState<Client | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
   const [accounts, setAccounts] = useState<ConnectedMetaAccount[]>([]);
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
@@ -61,6 +73,12 @@ export default function ClientsPage() {
         } catch {
           setAccounts([]);
         }
+        try {
+          const archivedRes = await apiFetch<{ clients: Client[] }>("/api/clients?archived=only");
+          setArchived(archivedRes.clients);
+        } catch {
+          setArchived([]);
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load clients");
@@ -80,6 +98,31 @@ export default function ClientsPage() {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appLoading, user?.id, user?.profile.role, appClients.length]);
+
+  async function setArchivedState(client: Client, archive: boolean) {
+    setBusyId(client.id);
+    try {
+      await apiFetch(`/api/clients/${client.id}/archive`, {
+        method: "POST",
+        body: JSON.stringify({ archived: archive }),
+      });
+      if (archive) {
+        setClients((current) => current.filter((c) => c.id !== client.id));
+        setArchived((current) => [{ ...client, archived_at: new Date().toISOString() }, ...current]);
+        toast.success(`${client.name} archived. Nothing was deleted; restore it any time from Archived clients.`);
+      } else {
+        setArchived((current) => current.filter((c) => c.id !== client.id));
+        setClients((current) => [{ ...client, archived_at: null }, ...current]);
+        toast.success(`${client.name} restored.`);
+      }
+      setConfirming(null);
+      await refresh();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Couldn't update the client");
+    } finally {
+      setBusyId(null);
+    }
+  }
 
   const rows: ClientRow[] = useMemo(() => {
     return clients.map((client) => {
@@ -239,6 +282,18 @@ export default function ClientsPage() {
                             Workspace
                           </Link>
                         </Button>
+                        {user?.profile.role === "admin" ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-muted hover:text-danger"
+                            onClick={() => setConfirming(client)}
+                            aria-label={`Archive ${client.name}`}
+                          >
+                            <Archive className="h-4 w-4" />
+                            Archive
+                          </Button>
+                        ) : null}
                       </div>
                     </TableCell>
                   </TableRow>
@@ -248,6 +303,61 @@ export default function ClientsPage() {
           </CardContent>
         </Card>
       )}
+
+      {user?.profile.role === "admin" && archived.length > 0 ? (
+        <div className="mt-8">
+          <h2 className="mb-2 text-sm font-semibold">Archived clients ({archived.length})</h2>
+          <p className="mb-3 text-xs text-muted">
+            Hidden from the client list, workspace and monitoring. Their approvals, creatives,
+            documents and chats are kept.
+          </p>
+          <Card>
+            <CardContent className="divide-y divide-border p-0">
+              {archived.map((client) => (
+                <div key={client.id} className="flex items-center justify-between gap-3 px-4 py-3">
+                  <div>
+                    <p className="text-sm font-medium">{client.name}</p>
+                    <p className="font-mono text-[11px] text-muted">{client.slug}</p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busyId === client.id}
+                    onClick={() => void setArchivedState(client, false)}
+                  >
+                    <ArchiveRestore className="h-4 w-4" />
+                    Restore
+                  </Button>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        </div>
+      ) : null}
+
+      <Dialog open={confirming !== null} onOpenChange={(open) => (open ? null : setConfirming(null))}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Archive {confirming?.name}?</DialogTitle>
+            <DialogDescription>
+              {confirming?.name} will disappear from the client list, the workspace picker and
+              monitoring. Nothing is deleted: approvals, creatives, documents and chats are kept,
+              and you can restore the client from Archived clients on this page.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirming(null)} disabled={busyId !== null}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => confirming && void setArchivedState(confirming, true)}
+              disabled={busyId !== null}
+            >
+              {busyId ? "Archiving…" : "Archive client"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

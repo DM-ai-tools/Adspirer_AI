@@ -90,6 +90,8 @@ export interface Client {
   /** Targets and guardrails (see src/lib/clients/goals.ts). */
   goals_profile: GoalsProfile;
   is_demo: boolean;
+  /** Set when archived: hidden from the portal but all history is kept. */
+  archived_at?: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;

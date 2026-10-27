@@ -6,6 +6,7 @@ import { getCurrentUser } from "@/lib/security/auth";
 import { assertAuthenticated, assertAdmin } from "@/lib/authz/assert";
 import { isAdmin } from "@/lib/security/roles";
 import { mapClientRow } from "@/lib/clients/map-client";
+import { activeOnly, archivedOnly } from "@/lib/clients/archive";
 import { slugify, nowIso } from "@/lib/utils";
 import type { Client } from "@/types";
 import { jsonOk, parseBody, withApiHandler } from "@/lib/api/response";
@@ -25,16 +26,22 @@ const createSchema = z.object({
   notes: z.string().nullable().optional(),
 });
 
-export async function GET() {
+export async function GET(request: Request) {
   return withApiHandler(async () => {
     const user = await getCurrentUser();
     assertAuthenticated(user);
+
+    // Default: active clients only. `?archived=only` lists the archived ones (admin).
+    const wantArchived = new URL(request.url).searchParams.get("archived") === "only";
+    if (wantArchived) assertAdmin(user);
+    const pick = <T extends { archived_at?: string | null }>(list: T[]): T[] =>
+      wantArchived ? archivedOnly(list) : activeOnly(list);
 
     const config = getConfig();
     if (config.isDemoMode || !config.hasSupabase) {
       const store = getDemoStore();
       if (isAdmin(user.profile)) {
-        return jsonOk({ clients: store.clients });
+        return jsonOk({ clients: pick(store.clients) });
       }
       const allowed = new Set(
         store.userClientAccess
@@ -42,7 +49,7 @@ export async function GET() {
           .map((a) => a.client_id),
       );
       return jsonOk({
-        clients: store.clients.filter((c) => allowed.has(c.id)),
+        clients: pick(store.clients.filter((c) => allowed.has(c.id))),
       });
     }
 
@@ -53,8 +60,8 @@ export async function GET() {
       const { data, error } = await supabase.from("clients").select("*");
       if (error) throw new Error(error.message);
       return jsonOk({
-        clients: (data ?? []).map((row) =>
-          mapClientRow(row as Record<string, unknown>),
+        clients: pick(
+          (data ?? []).map((row) => mapClientRow(row as Record<string, unknown>)),
         ),
       });
     }
@@ -74,8 +81,8 @@ export async function GET() {
       .in("id", ids);
     if (error) throw new Error(error.message);
     return jsonOk({
-      clients: (data ?? []).map((row) =>
-        mapClientRow(row as Record<string, unknown>),
+      clients: pick(
+        (data ?? []).map((row) => mapClientRow(row as Record<string, unknown>)),
       ),
     });
   });

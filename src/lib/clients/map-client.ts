@@ -31,6 +31,7 @@ export function mapClientRow(row: Record<string, unknown>): Client {
     standing_instructions: (row.standing_instructions as string | null) ?? null,
     goals_profile: parseGoalsProfile(row.goals_profile),
     is_demo: Boolean(row.is_demo),
+    archived_at: (row.archived_at as string | null) ?? null,
     created_by: (row.created_by as string | null) ?? null,
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
