@@ -41,6 +41,7 @@ const WORKSPACE_READ_ALLOWLIST = [
 const WRITER_TOOL_INTENTS: ReadonlySet<RequestIntent> = new Set<RequestIntent>([
   "general",
   "chat",
+  "followup",
   "audit",
   "strategy",
   "budget",

@@ -1,3 +1,4 @@
+import { classifyIntent } from "@/lib/agent/intent-classifier";
 import { parseImageFormat } from "@/lib/creatives/formats";
 import { nanoid } from "nanoid";
 import type { Approval, Task, TaskStatus, ToolCall } from "@/types";
@@ -39,7 +40,6 @@ import {
   completeStepsThrough,
   failStep,
   detectRequestIntent,
-  detectRequestIntentWithHistory,
   holdStepsForOperator,
   markRemainingSkipped,
   mentionsCreativeGeneration,
@@ -371,7 +371,7 @@ export async function runTask(
     }
 
     // Fetch Meta evidence BEFORE writing the answer (fixes "fetching…" placeholders).
-    const intent = detectRequestIntentWithHistory(request, history);
+    const intent = await classifyIntent(request, history);
     const research = researchEvidence
       ? await buildContextResearch({
           clientId: task.client_id,
@@ -416,7 +416,7 @@ export async function runTask(
     // Conversational turns (greetings, definitions, "why is that") need no
     // fresh account data — skip the Graph preflight entirely.
     const gathered: Awaited<ReturnType<typeof gatherDiagnoseEvidence>> =
-      intent === "chat"
+      intent === "chat" || intent === "followup"
         ? { accountId: null, evidence: "", toolCalls: [] }
         : await gatherDiagnoseEvidence({
             clientId: task.client_id,

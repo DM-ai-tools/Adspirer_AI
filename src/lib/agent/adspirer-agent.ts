@@ -711,6 +711,11 @@ const FRESH_DATA_RULE = [
   "- Do NOT reuse a number, status or URL from earlier messages in this chat, or from workspace documents, unless the operator explicitly asks about what was said earlier (\"you said\", \"earlier\", \"before\"). Then say it is from the earlier reply and not re-verified, and re-check it live when you can.",
   "- If a figure cannot be verified live, say so plainly. Never fill the gap from memory or from earlier replies.",
   "- Meta returns some CTA enums under legacy names. BOOK_TRAVEL is the API value for the button Ads Manager labels \"Book Now\"; that is not a mismatch. Report the Ads Manager label and mention the API value only for reference.",
+  "",
+  "## Answer scope rule (applies to every turn)",
+  "- Answer ONLY what the latest operator message asks, in the shape it asks for (steps, a list, one number, a yes/no). Do not widen it.",
+  "- When it builds on a report already in this chat (\"based on the audit\", \"from those findings\", \"what next\"), use that report as the input and produce only the new thing asked for. Never repeat or re-run the report, its summary, scorecard or tables.",
+  "- Stay on the same account, campaign scope and period the chat is already working on unless the operator changes them.",
 ].join("\n");
 
 function buildWriterMessages(input: WriterInput): {
@@ -843,6 +848,20 @@ function buildWriterMessages(input: WriterInput): {
       ]
         .filter(Boolean)
         .join("\n")
+    : intent === "followup"
+      ? [
+          `Operator message: ${input.task.goal ?? input.task.title}`,
+          "Detected intent: follow-up on the report already in this chat (nothing was re-run; no new account data was fetched for this turn)",
+          "",
+          "Reply now:",
+          "- The report you wrote earlier in this chat is your source. Its findings, failed checks, numbers, scope and period are the basis — cite them as \"from the audit above\" (this overrides the fresh-data rule's ban on reusing earlier figures for this purpose only).",
+          "- Produce ONLY what was asked (for example the optimization steps): a prioritized, numbered list. Each step: the fix, which finding / check ID it comes from, the campaign or ad set it applies to, and the expected effect. Order by impact; fix tracking before scaling.",
+          "- Do NOT restate or recreate the audit: no executive summary, no scope header, no scorecard, no checkpoint tables, no per-ad-set verdicts.",
+          "- If they ask which recommendations you can do: answer per item from what Approvals can change in Meta (budgets, pausing/resuming campaigns, ad sets and ads, creating ad sets, ads and campaigns, generating creatives and copy) versus what the client or a developer must do (pixel / Conversions API, landing pages, site speed). Say which is which; never list something you can't do as doable.",
+          "- Only use data tools if a step needs a number the earlier report does not contain; name the source if you do.",
+          "- Recommendations only: do NOT queue Approvals, do NOT propose execute tools or JSON, and do NOT say Meta was changed. End with one sentence saying they can ask you to queue specific steps in Approvals.",
+          "- No emojis. No sign-off menu.",
+        ].join("\n")
     : intent === "chat"
       ? [
           `Operator message: ${input.task.goal ?? input.task.title}`,

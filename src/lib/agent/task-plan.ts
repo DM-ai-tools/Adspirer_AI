@@ -32,6 +32,8 @@ export type RequestIntent =
   | "optimize"
   | "strategy"
   | "general"
+  /** Asks to act on a report already in the chat ("based on the audit, give me the fixes"). */
+  | "followup"
   /** Greetings, thanks, definitions, "why is that" — answered without fresh account data. */
   | "chat"
   | "out_of_scope";
@@ -160,6 +162,16 @@ const STRATEGY_TARGET_ROAS =
 const NOT_STRATEGY_ACTION =
   /\b(?:optimi[sz]\w*|create|launch|pause|resume|queue|apply|implement|execute|set\s*up)\b/;
 const DEFINITION_WORDS = /\b(?:mean|means|define|definition)\b/;
+
+/** Points at a report that already exists: "based on the audit", "from the findings above". */
+const EARLIER_REPORT_REFERENCE =
+  /\b(?:on|from|using|per|to|off|after|given|following|with|of)\s+(?:the|this|that|your|our)\s+(?:(?:above|previous|last|earlier)\s+)?(?:audit|report|findings?|analysis|review|scorecard|results)\b|\b(?:the|this|that|your)\s+(?:audit|report|findings?|scorecard)\s+(?:above|you\s+(?:just\s+)?(?:gave|ran|wrote|made|did))\b|\b(?:the|these|those)\s+(?:above\s+)?(?:findings|issues|failures|fails)\b/;
+/** Asks for the way forward from what was just shown, with no data or build request of its own. */
+const NEXT_STEPS_ASK =
+  /\b(?:optimi[sz]ation|optimi[sz]ing|improvement|fix|action|next)\s+(?:steps?|actions?|plan|list|recommendations?|priorities)\b|\bwhat\s+(?:should|do)\s+(?:i|we)\s+(?:do|fix|change|improve)\b|\bhow\s+(?:do|can|should)\s+(?:i|we)\s+(?:fix|improve)\b|\b(?:among|out\s+of|of)\s+(?:these|those)\b|\b(?:these|those)\s+(?:recommendations?|steps?|fixes|actions?|changes)\b|\bcan\s+you\s+(?:do|apply|fix|implement|handle|take\s+care\s+of)\s+(?:any|some|all|these|those|them|it)\b|\bwhich\s+(?:ones?|of\s+(?:these|those|them))\b[^.?!\n]{0,60}\b(?:can|could|possible|able)\b/;
+/** Wants the audit (re)done rather than used. */
+const AUDIT_RERUN_ASK =
+  /\b(?:run|do|start|perform|redo|re-?run|another|new|fresh|again|update|refresh|repeat)\b[^.?!\n]{0,30}\baudit/;
 
 export function detectRequestIntent(request: string): RequestIntent {
   const text = request.toLowerCase();
@@ -296,10 +308,31 @@ export function detectRequestIntent(request: string): RequestIntent {
   // Only an explicit audit ask runs the heavy multi-step audit. Other
   // performance questions ("how is spend pacing?", "why is delivery low?") take
   // the lighter general path, which still pulls a live performance snapshot.
-  if (EXPLICIT_AUDIT.test(text)) {
+  // "based on the audit, give me the fixes" uses an audit; it doesn't ask for one.
+  if (
+    EXPLICIT_AUDIT.test(text) &&
+    (!EARLIER_REPORT_REFERENCE.test(text) || AUDIT_RERUN_ASK.test(text))
+  ) {
     return "audit";
   }
   return "general";
+}
+
+/**
+ * Does this message build on a report the assistant already wrote in this chat
+ * ("based on the audit, give me the optimization steps")? Needs a delivered
+ * report in the recent turns, so a first message never counts.
+ */
+function buildsOnEarlierReport(
+  request: string,
+  recent: AgentHistoryMessage[],
+): boolean {
+  const text = request.toLowerCase();
+  if (AUDIT_RERUN_ASK.test(text)) return false;
+  if (!recent.some((m) => m.role === "assistant" && m.content.length >= 800)) {
+    return false;
+  }
+  return EARLIER_REPORT_REFERENCE.test(text) || NEXT_STEPS_ASK.test(text);
 }
 
 /**
@@ -351,6 +384,14 @@ export function detectRequestIntentWithHistory(
       return "strategy";
     }
   }
+  // Work on the report already in the chat; never re-run it. Explicit queue /
+  // apply asks keep their own optimize path (they are not "audit" or "general").
+  if (
+    (primary === "audit" || primary === "general") &&
+    buildsOnEarlierReport(request, recent)
+  ) {
+    return "followup";
+  }
   if (primary !== "general") return primary;
 
   // Only a brief that is still open counts. Once a full audit has been
@@ -362,7 +403,7 @@ export function detectRequestIntentWithHistory(
   const assistantAskedAudit = Boolean(
     lastAssistant &&
       briefStillOpen &&
-      /\b(audit|date range|entire ad account|specific campaign|best-practice audit|competitor landing)\b/i.test(
+      /\b(date range|entire ad account|specific campaign|best-practice audit|competitor landing)\b/i.test(
         lastAssistant.content,
       ),
   );
@@ -452,6 +493,7 @@ export function planTaskSteps(
 
   switch (intent) {
     case "chat":
+    case "followup":
       return [
         { id: "queued", label: "Queued", state: "pending" },
         { id: "write_report", label: "Answer", state: "pending" },
