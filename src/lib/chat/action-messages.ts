@@ -1,3 +1,4 @@
+import type { CampaignSettings } from "@/lib/meta/campaign-rules";
 import {
   targetingSelectionToCreateArgs,
   type CampaignTargetingSelection,
@@ -74,6 +75,85 @@ export function composeTargetingMessage(
     .join("\n");
 }
 
+const SETTING_LABELS: Record<string, string> = {
+  budget_level: "Budget level",
+  conversion_location: "Conversion location",
+  optimization_goal: "Performance goal",
+  pixel_event_name: "Conversion event",
+  pixel_id: "Pixel",
+  lead_form_id: "Lead form",
+  attribution: "Attribution",
+  age: "Age",
+  publisher_platforms: "Platforms",
+  facebook_positions: "Facebook placements",
+  instagram_positions: "Instagram placements",
+  device_platforms: "Devices",
+  user_device: "Device models",
+  user_os: "Operating systems",
+};
+
+/**
+ * The card's confirmed choices as a chat message: readable lines for the
+ * operator and the create args as JSON for the model to pass on verbatim.
+ */
+export function composeCampaignSettingsMessage(
+  settings: CampaignSettings,
+  labels: Partial<Record<keyof CampaignSettings, string>>,
+): string {
+  const { budget_level, ...rest } = settings;
+  const args: Record<string, unknown> = {};
+  if (budget_level) args.campaign_budget_optimization = budget_level === "campaign";
+  for (const [key, value] of Object.entries(rest)) {
+    if (value === undefined || (Array.isArray(value) && !value.length)) continue;
+    args[key] = value;
+  }
+
+  const show = (key: keyof CampaignSettings): string => {
+    const value = settings[key];
+    return labels[key] ?? (Array.isArray(value) ? value.join(", ") : String(value));
+  };
+  const lines: string[] = [];
+  for (const key of [
+    "budget_level",
+    "conversion_location",
+    "optimization_goal",
+    "pixel_event_name",
+    "pixel_id",
+    "lead_form_id",
+    "attribution",
+  ] as const) {
+    if (settings[key]) lines.push(`${SETTING_LABELS[key]}: ${show(key)}`);
+  }
+  if (settings.age_min != null || settings.age_max != null) {
+    lines.push(`${SETTING_LABELS.age}: ${settings.age_min ?? 18}–${settings.age_max ?? 65}`);
+  }
+  for (const key of [
+    "publisher_platforms",
+    "facebook_positions",
+    "instagram_positions",
+    "device_platforms",
+    "user_device",
+    "user_os",
+  ] as const) {
+    if (settings[key]?.length) lines.push(`${SETTING_LABELS[key]}: ${show(key)}`);
+  }
+
+  return [
+    "Campaign settings selections:",
+    Object.keys(args).length
+      ? `\`\`\`json\n${JSON.stringify(args, null, 2)}\n\`\`\``
+      : "- (none)",
+    lines.length ? "" : null,
+    ...lines.map((l) => `- ${l}`),
+  ]
+    .filter((line) => line !== null)
+    .join("\n");
+}
+
+export function composeSkipCampaignSettingsMessage(): string {
+  return "Campaign settings selections: none. Keep the defaults for performance goal, attribution, age and placements.";
+}
+
 export function composeSkipTargetingMessage(): string {
   return "Skip advanced targeting — use broad / Advantage+ defaults (no custom_audiences or detailed interests/behaviors/locations).";
 }
@@ -105,6 +185,13 @@ export function composeImageSourceMessage(
   return source === "url"
     ? "I have an image URL or Meta image hash."
     : "Generate image creatives from my ad copy and landing page.";
+}
+
+/** The operator supplied (or uploaded) the creative; the URL is the public HTTPS link. */
+export function composeMediaUrlMessage(kind: "image" | "video", url: string): string {
+  return kind === "image"
+    ? `Use this image URL for the ad: ${url}`
+    : `Use this video URL for the ad: ${url}`;
 }
 
 export function composeVideoSourceMessage(

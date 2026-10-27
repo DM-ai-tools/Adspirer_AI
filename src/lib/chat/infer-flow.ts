@@ -9,7 +9,7 @@ export type ConversationFlow =
   | "optimize"
   | "general";
 
-function isCreateCampaignAsk(text: string): boolean {
+export function isCreateCampaignAsk(text: string): boolean {
   const t = text.toLowerCase();
   if (/\bcreate_meta_/.test(t)) return true;
   if (/\bi want an (image|video) ad\/campaign\b/.test(t)) return true;
@@ -106,6 +106,7 @@ export function inferConversationFlow(
       return "ad_copy";
     }
     if (
+      /\bcampaign settings selections\b/.test(text) ||
       /\badvanced targeting selections\b/.test(text) ||
       /\bskip advanced targeting\b/.test(text) ||
       /\buse broad\b.*\badvantage\+/i.test(m.content)

@@ -351,11 +351,11 @@ describe("writer tool set", () => {
     expect(workspaceReadToolNames().sort()).toEqual(names.sort());
   });
 
-  it("is given to the writer on every question intent, not on the fixed picker flows", () => {
-    for (const intent of ["general", "chat", "audit", "strategy", "budget", "list_campaigns", "export", "optimize"] as const) {
+  it("is given to the writer on every question intent and on the image / campaign flows, not on the fixed copy and scrape flows", () => {
+    for (const intent of ["general", "chat", "audit", "strategy", "budget", "list_campaigns", "export", "optimize", "generate_creatives", "create_campaign"] as const) {
       expect(writerHasTools(intent), intent).toBe(true);
     }
-    for (const intent of ["create_campaign", "ad_copy", "generate_creatives", "scrape_services", "copy_approved"] as const) {
+    for (const intent of ["ad_copy", "scrape_services", "copy_approved"] as const) {
       expect(writerHasTools(intent), intent).toBe(false);
     }
   });

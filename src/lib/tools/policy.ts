@@ -19,6 +19,8 @@ const TOOL_POLICY: Record<string, ToolSafetyClass> = {
   get_meta_ad_creatives: "diagnose",
   analyze_landing_pages: "diagnose",
   analyze_brand_url: "diagnose",
+  // Renders ad stills into creative drafts and Cloudinary; nothing reaches Meta.
+  generate_ad_images: "diagnose",
   optimize_meta_budget: "diagnose",
   optimize_meta_placements: "diagnose",
   detect_meta_creative_fatigue: "diagnose",

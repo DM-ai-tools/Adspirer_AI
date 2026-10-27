@@ -16,6 +16,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { humanToolLabel } from "@/lib/tools/display-labels";
+import { describeCampaignSettings } from "@/lib/meta/campaign-settings-summary";
 import { AdPreviewPanel } from "@/components/approvals/ad-preview-panel";
 
 function isBudgetChange(approval: Approval): boolean {
@@ -245,6 +246,7 @@ function summarizeArgs(
       if (args.headline) rows.push(["Headline", formatArgValue(args.headline)]);
       if (args.call_to_action) rows.push(["Button", String(args.call_to_action)]);
       if (args.landing_page_url) rows.push(["Landing page", formatArgValue(args.landing_page_url)]);
+      rows.push(...describeCampaignSettings(args));
       if (args.lead_form_id) rows.push(["Lead form", formatArgValue(args.lead_form_id)]);
     }
   }

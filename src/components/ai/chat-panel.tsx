@@ -28,6 +28,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ChatComposer, type ChatComposerHandle } from "@/components/ai/chat-composer";
+import { MediaSourcePicker } from "@/components/ai/media-source-picker";
 import { cn } from "@/lib/utils";
 import { resolveAssistantDisplay } from "@/lib/agent/message-reconcile";
 import {
@@ -40,16 +41,20 @@ import { columnAlignments } from "@/lib/reports/layout";
 import { splitMarkdownTableRow } from "@/lib/reports/table-row";
 import { ChatDocumentAttachButton, uploadChatFile } from "@/components/workspace/documents-panel";
 import { useCreativeStatus } from "@/hooks/use-creative-status";
+import { CampaignSettingsCard } from "@/components/ai/campaign-settings-card";
 import { TargetingPickerCard } from "@/components/ai/targeting-picker";
+import type { CampaignSettings } from "@/lib/meta/campaign-rules";
 import type {
   CampaignTargetingSelection,
 } from "@/lib/adspirer/targeting";
 import {
+  composeCampaignSettingsMessage,
   composeCopyApprovedMessage,
   composeFormatChoiceMessage,
-  composeImageSourceMessage,
+  composeMediaUrlMessage,
   composeOptimizeAdMessage,
   composeServicesMessage,
+  composeSkipCampaignSettingsMessage,
   composeSkipTargetingMessage,
   composeTargetingMessage,
   composeVideoSourceMessage,
@@ -131,6 +136,7 @@ type ParsedAssistant = {
     primary_text?: string;
   } | null;
   targetingPicker: { account_id?: string | null } | null;
+  campaignSettingsPicker: CampaignSettingsPickerData | null;
   creativePicker: {
     drafts?: CreativeDraftCard[];
     status?: string;
@@ -256,6 +262,22 @@ function readMetaVideoChoice(
   return ui?.videoChoice ?? null;
 }
 
+type CampaignSettingsPickerData = {
+  account_id?: string | null;
+  objective?: string | null;
+  stated?: Partial<CampaignSettings>;
+};
+
+function readMetaCampaignSettingsPicker(
+  metadata: Record<string, unknown> | null | undefined,
+): CampaignSettingsPickerData | null {
+  const ui = metadata?.ui as
+    | { campaignSettingsPicker?: CampaignSettingsPickerData }
+    | null
+    | undefined;
+  return ui?.campaignSettingsPicker ?? null;
+}
+
 function readMetaTargetingPicker(
   metadata: Record<string, unknown> | null | undefined,
 ) {
@@ -278,6 +300,7 @@ function parseAssistantContent(
   const metaFormatChoice = readMetaFormatChoice(metadata);
   const metaVideoChoice = readMetaVideoChoice(metadata);
   const metaTargetingPicker = readMetaTargetingPicker(metadata);
+  const metaCampaignSettingsPicker = readMetaCampaignSettingsPicker(metadata);
   const metaCreativePicker = readMetaCreativePicker(metadata);
   const pendingApprovalIds = readPendingApprovalIds(metadata);
   const services = metaServices?.length
@@ -292,6 +315,8 @@ function parseAssistantContent(
   const videoChoice = metaVideoChoice ?? humanized.videoChoice ?? null;
   const targetingPicker =
     metaTargetingPicker ?? humanized.targetingPicker ?? null;
+  const campaignSettingsPicker =
+    metaCampaignSettingsPicker ?? humanized.campaignSettingsPicker ?? null;
   const creativePicker = metaCreativePicker ?? null;
 
   return {
@@ -303,6 +328,7 @@ function parseAssistantContent(
       formatChoice,
       videoChoice,
       targetingPicker,
+      campaignSettingsPicker,
       creativePicker,
     }),
     services,
@@ -312,6 +338,7 @@ function parseAssistantContent(
     formatChoice,
     videoChoice,
     targetingPicker,
+    campaignSettingsPicker,
     creativePicker,
     pendingApprovalIds,
     proposals: humanized.toolCalls.map((t) => ({
@@ -957,6 +984,16 @@ export function ChatPanel({
     return null;
   }, [messages, parsedById]);
 
+  const latestCampaignSettingsMessageId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const m = messages[i];
+      if (m.role !== "assistant") continue;
+      const parsed = parsedById.get(m.id);
+      if (parsed?.campaignSettingsPicker) return m.id;
+    }
+    return null;
+  }, [messages, parsedById]);
+
   const latestTargetingPickerMessageId = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       const m = messages[i];
@@ -1099,6 +1136,10 @@ export function ChatPanel({
                 message.id === latestVideoChoiceMessageId;
               const isLatestTargetingPicker =
                 message.id === latestTargetingPickerMessageId;
+              const isLatestCampaignSettings =
+                message.id === latestCampaignSettingsMessageId;
+              const campaignSettingsPicker =
+                parsed?.campaignSettingsPicker ?? null;
               const formatChoice = parsed?.formatChoice ?? null;
               const videoChoice = parsed?.videoChoice ?? null;
               const targetingPicker = parsed?.targetingPicker ?? null;
@@ -1447,7 +1488,10 @@ export function ChatPanel({
                       </div>
                     ) : null}
 
-                    {!streaming && ads && isLatestAdPicker ? (
+                    {!streaming &&
+                    ads &&
+                    isLatestAdPicker &&
+                    conversationFlow !== "create_campaign" ? (
                       <div className="mt-3 space-y-2.5 border-t border-border/60 pt-3">
                         <p className="text-xs font-semibold text-foreground">
                           Select an ad to optimize
@@ -1519,6 +1563,34 @@ export function ChatPanel({
 
                     {!streaming &&
                     showCreativeUi &&
+                    campaignSettingsPicker?.objective &&
+                    isLatestCampaignSettings &&
+                    clientId ? (
+                      <CampaignSettingsCard
+                        key={`${campaignSettingsPicker.account_id ?? ""}:${campaignSettingsPicker.objective}:${JSON.stringify(campaignSettingsPicker.stated ?? {})}`}
+                        clientId={clientId}
+                        accountId={campaignSettingsPicker.account_id}
+                        objective={campaignSettingsPicker.objective}
+                        stated={campaignSettingsPicker.stated}
+                        apiBase={apiBase}
+                        disabled={disabled || sending}
+                        onConfirm={(settings, labels) =>
+                          applyToComposer(
+                            composeCampaignSettingsMessage(settings, labels),
+                            "settings",
+                          )
+                        }
+                        onSkip={() =>
+                          applyToComposer(
+                            composeSkipCampaignSettingsMessage(),
+                            "settings",
+                          )
+                        }
+                      />
+                    ) : null}
+
+                    {!streaming &&
+                    showCreativeUi &&
                     formatChoice &&
                     isLatestFormatChoice ? (
                       <div className="mt-3 space-y-2 border-t border-border/60 pt-3">
@@ -1579,37 +1651,27 @@ export function ChatPanel({
                             ? ` Landing page on file: ${videoChoice.landing_page_url}`
                             : ""}
                         </p>
-                        <div className="flex flex-wrap gap-2">
-                          <Button
-                            type="button"
-                            size="sm"
-                            className="h-8"
-                            disabled={disabled || sending}
-                            onClick={() =>
-                              applyToComposer(
-                                composeVideoSourceMessage("url"),
-                                "video",
-                              )
-                            }
-                          >
-                            I have a video URL
-                          </Button>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="secondary"
-                            className="h-8"
-                            disabled={disabled || sending}
-                            onClick={() =>
-                              applyToComposer(
-                                composeVideoSourceMessage("meta_id"),
-                                "video",
-                              )
-                            }
-                          >
-                            I have a Meta video ID
-                          </Button>
-                        </div>
+                        <MediaSourcePicker
+                          kind="video"
+                          clientId={clientId}
+                          disabled={disabled || sending}
+                          onReady={(url) => void submit(composeMediaUrlMessage("video", url))}
+                        />
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 text-[11px]"
+                          disabled={disabled || sending}
+                          onClick={() =>
+                            applyToComposer(
+                              composeVideoSourceMessage("meta_id"),
+                              "video",
+                            )
+                          }
+                        >
+                          Use an existing Meta video ID instead
+                        </Button>
                       </div>
                     ) : null}
 
@@ -1630,22 +1692,14 @@ export function ChatPanel({
                             : " + brand URL"}{" "}
                           (colours / logo / guidelines).
                         </p>
+                        <MediaSourcePicker
+                          kind="image"
+                          clientId={clientId}
+                          disabled={disabled || sending}
+                          onReady={(url) => void submit(composeMediaUrlMessage("image", url))}
+                        />
                         <div className="flex flex-wrap gap-2">
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="secondary"
-                            className="h-8"
-                            disabled={disabled || sending}
-                            onClick={() =>
-                              applyToComposer(
-                                composeImageSourceMessage("url"),
-                                "image",
-                              )
-                            }
-                          >
-                            I have an image URL
-                          </Button>
+
                           <Button
                             type="button"
                             size="sm"

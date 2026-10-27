@@ -168,9 +168,8 @@ export function buildBrandImagePrompt(input: {
   return [
     `Professional Meta (Facebook/Instagram) feed ad still for ${input.brandName}.`,
     `Offer/theme: ${input.serviceName}.`,
-    input.headline ? `Ad headline to support visually (do not render tiny illegible text): ${input.headline}` : null,
-    input.primaryText
-      ? `Primary message mood: ${input.primaryText.slice(0, 280)}`
+    input.headline || input.primaryText
+      ? `THE POST THIS IMAGE ACCOMPANIES — the image must make this message understood at a glance, showing its subject and benefit, not a generic mood. ${input.headline ? `Headline: "${input.headline}". ` : ""}${input.primaryText ? `Primary text: "${input.primaryText.slice(0, 400)}". ` : ""}Do not render the copy as small illegible text.`
       : null,
     input.brandVoice ? `Brand mood/voice: ${input.brandVoice}.` : null,
     // Hex codes listed as "accents" get treated as a loose suggestion and the
@@ -196,10 +195,8 @@ export function buildBrandImagePrompt(input: {
     input.landingPageUrl ? `Landing page context: ${input.landingPageUrl}` : null,
     input.creativeDirection
       ? `ART DIRECTION — follow this exactly; it is what makes this variant different from the others: ${input.creativeDirection}`
-      : "Clean commercial photography, shallow depth of field, premium lighting.",
+      : null,
     input.variantLabel ? `Variant style: ${input.variantLabel}.` : null,
-    // Left unchecked the model converges on one house style for every variant.
-    "Do not default to the generic layout of a laptop or dashboard on a desk with a rising green arrow and a city skyline unless the art direction explicitly asks for it. Commit fully to the stated art direction's composition and subject matter.",
     input.revisionNotes ? `Operator revision request: ${input.revisionNotes}` : null,
     formatPromptRule(input.format ?? "1:1"),
   ]

@@ -562,13 +562,18 @@ const CAMPAIGN_PASSTHROUGH_KEYS = [
   "bid_amount",
   "roas_average_floor",
   "attribution",
+  "optimization_goal",
+  "conversion_location",
+  "device_platforms",
+  "user_device",
+  "user_os",
   "extra_ads",
   "primary_texts",
   "headlines",
   "descriptions",
 ] as const;
 
-function collectPassthrough(
+export function collectPassthrough(
   args: Record<string, unknown>,
 ): Record<string, unknown> | undefined {
   const extra: Record<string, unknown> = {};

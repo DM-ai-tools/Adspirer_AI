@@ -2,10 +2,7 @@ import type { ImageFormat } from "@/lib/creatives/formats";
 import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
 import { analyzeBrandFromUrl } from "@/lib/brand/analyze-url";
-import {
-  buildVisualVariantConcepts,
-  generateCreativeConcepts,
-} from "@/lib/creatives/generator";
+import { writeCreativeConcepts } from "@/lib/creatives/concept-writer";
 import { generateImageForDraft } from "@/lib/creatives/generate-draft-image";
 import {
   toPublicDraft,
@@ -17,6 +14,9 @@ import { appendWorkflowMessage } from "@/lib/workflow/events";
 import { patchTaskAgentState } from "@/lib/workflow/state";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { competitorBriefFromRow } from "@/lib/competitors/brief-row";
+
+/** Variations offered in the picker. */
+export const DEFAULT_VARIANT_COUNT = 4;
 
 export type GenerateCreativesInput = {
   clientId: string;
@@ -161,57 +161,46 @@ export async function generateCreativeDrafts(
     brandAnalysis?.colors?.length ? brandAnalysis.colors : client.brand_colors;
   const brandVoice = brandAnalysis?.brand_voice || client.brand_voice;
   const brandName = brandAnalysis?.brand_name || client.name;
-  const serviceName = service?.name ?? "Brand offer";
-  const conceptCount = Math.min(Math.max(input.count ?? 3, 1), 5);
+  const conceptCount = Math.min(Math.max(input.count ?? DEFAULT_VARIANT_COUNT, 1), 5);
+  // The offer is whatever the client sells; with no service record, the
+  // value proposition or page title stands in. Nothing is invented.
+  const offerName =
+    service?.name ?? client.value_proposition ?? brandAnalysis?.title ?? brandName;
 
-  const guidelinesNote = client.brand_guidelines?.trim()
-    ? `Brand guidelines: ${client.brand_guidelines.trim().slice(0, 600)}`
-    : null;
-  const referenceNote = input.referenceBrief?.trim()
-    ? `Reference / competitor recreate brief: ${input.referenceBrief
-        .trim()
-        .slice(0, 800)}`
-    : null;
-  const directionParts = [
-    brandAnalysis?.imagery_notes ?? null,
-    guidelinesNote,
-    referenceNote,
-  ].filter(Boolean);
-  const baseDirection = directionParts.length
-    ? directionParts.join(" | ")
-    : null;
-
-  // Supplied copy means the operator wants the SAME ad rendered several ways,
-  // so vary the art direction instead of rewriting their headline.
+  const guidelinesNote = client.brand_guidelines?.trim() || null;
   const hasSuppliedCopy = Boolean(input.headline || input.primaryText);
 
-  const concepts =
-    hasSuppliedCopy || !service
-      ? buildVisualVariantConcepts({
-          clientId: input.clientId,
-          serviceId: service?.id ?? null,
-          brandName,
-          serviceName,
-          headline: input.headline || client.value_proposition || brandName,
-          primaryText:
-            input.primaryText ||
-            client.value_proposition ||
-            `${brandName} — ${serviceName}`,
-          description: service?.description ?? serviceName,
-          baseDirection,
-          audience: client.target_audience,
-          count: conceptCount,
-        })
-      : generateCreativeConcepts({
-          client: {
-            ...client,
-            brand_colors: colors,
-            brand_voice: brandVoice,
-          } as never,
-          service: service as never,
-          brief: brief as never,
-          count: conceptCount,
-        });
+  const concepts = await writeCreativeConcepts({
+    clientId: input.clientId,
+    serviceId: service?.id ?? null,
+    count: conceptCount,
+    brand: {
+      name: brandName,
+      voice: brandVoice,
+      colors,
+      imageryNotes: brandAnalysis?.imagery_notes,
+      guidelines: guidelinesNote,
+      pageExcerpt: brandAnalysis?.page_excerpt,
+      summary: brandAnalysis?.summary,
+    },
+    business: {
+      industry: (client as { industry?: string | null }).industry,
+      description: (client as { business_description?: string | null })
+        .business_description,
+      valueProposition: client.value_proposition,
+      audience: client.target_audience,
+    },
+    offer: {
+      name: offerName,
+      description: service?.description,
+      landingPageUrl: landing,
+    },
+    referenceBrief: input.referenceBrief,
+    competitorOpportunities: brief?.opportunities,
+    suppliedCopy: hasSuppliedCopy
+      ? { headline: input.headline, primaryText: input.primaryText }
+      : null,
+  });
 
   // Images are produced after this call returns, so the rows are born
   // "generating" and every surface can render a live placeholder immediately.

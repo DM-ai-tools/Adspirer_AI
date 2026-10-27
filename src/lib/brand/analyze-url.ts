@@ -14,6 +14,8 @@ export type BrandUrlAnalysis = {
   logo_description: string | null;
   imagery_notes: string | null;
   summary: string;
+  /** Start of the page text, so downstream prompts know what the business says it does. */
+  page_excerpt?: string;
   source: "firecrawl_branding" | "openai+scrape" | "scrape_only" | "heuristic";
 };
 
@@ -25,6 +27,7 @@ export async function analyzeBrandFromUrl(
 ): Promise<BrandUrlAnalysis> {
   const scraped = await scrapeWebsiteServices(url);
   const markdown = (scraped.markdown ?? "").slice(0, 8000);
+  const pageExcerpt = markdown.slice(0, 2500) || undefined;
   const config = getConfig();
   const branding = scraped.branding;
 
@@ -92,6 +95,7 @@ export async function analyzeBrandFromUrl(
         .join(". ") || null,
       summary: `Firecrawl branding: ${colors.length} brand colors${logo ? " and official logo" : ""} extracted from ${scraped.url}.`,
       source: "firecrawl_branding",
+      page_excerpt: pageExcerpt,
     };
   }
 
@@ -152,6 +156,7 @@ export async function analyzeBrandFromUrl(
           ? String(parsed.summary)
           : `Brand cues from ${scraped.url}`,
         source: "openai+scrape",
+        page_excerpt: pageExcerpt,
       };
     } catch (error) {
       logger.warn("Brand URL OpenAI analysis failed", {
@@ -173,6 +178,7 @@ export async function analyzeBrandFromUrl(
     imagery_notes: scraped.services.slice(0, 3).map((s) => s.name).join(", ") || null,
     summary: `Scraped ${scraped.url} (${scraped.source}). Limited brand extraction without OpenAI.`,
     source: scraped.markdown ? "scrape_only" : "heuristic",
+    page_excerpt: pageExcerpt,
   };
 }
 

@@ -116,6 +116,10 @@ Then collect:
 4. Landing page URL (required for brand analysis + create)
 5. Primary text + headline (or run Ad copy studio first). Headline is optional for video ads but recommended.
    Recommend 3–6 genuinely different concepts per ad set: put the first in the main fields and the rest in extra_ads (each with its own image_url or video, and its own primary_text/headline if they differ). Extra copy variants of the same concept go in primary_texts / headlines (up to 5 each) — Meta rotates them. Keep primary text's key message in the first 125 characters and headlines under 40.
+5a. **Campaign settings (card)** — once the objective is known, and before creative, show the campaign settings card. The operator picks budget level (campaign or ad set), conversion location (website or instant forms), performance goal, conversion event, attribution, age range and placements (platforms, positions, device, OS) from Meta-valid dropdowns, each pre-filled with a suggestion and its reason. Append this and stop until they confirm:
+{"ui":"campaign_settings","account_id":"act_…","objective":"OUTCOME_LEADS"}
+Add "stated":{...} only with settings the operator already told you in this chat. Do NOT ask for these settings in prose and do NOT suggest values yourself: the card computes them from Meta. When the operator replies "Campaign settings selections:", the JSON in that message holds create args: pass them verbatim on the create tool (campaign_budget_optimization, conversion_location, optimization_goal, pixel_event_name, pixel_id, lead_form_id, attribution, age_min, age_max, publisher_platforms, facebook_positions, instagram_positions, device_platforms, user_device, user_os). Age range and placements come from this card; locations, custom audiences and detailed targeting come from the targeting picker. Messaging, calls and app are not supported yet.
+
 6. **Advanced targeting (ad set)** — after the brief fields above, offer this once before creative:
    - Locations first: countries, regions, cities or postcodes by name. Locations are required — the campaign is not created without one, and you must never assume a country.
    - Custom audiences from the connected Meta account (multi-select by name)
@@ -130,17 +134,17 @@ Then collect:
 7. **Creative asset** — depends on format:
 
    **If image:** ask explicitly:
-   - Do they already have a public **Image URL** (or Meta image hash)? OR
+   - Do they already have an image? If so they can **paste a public link or upload it from their computer** (the picker below does both: an upload is turned into a public Cloudinary URL automatically and the URL is shown to them). When they reply "Use this image URL for the ad: <url>", that is the \`image_url\`. OR
    - Should CampaignForge **generate** stills from ad copy + landing URL (logo/colours extracted)?
    Append image_choice UI when asking:
    {"ui":"image_choice","landing_page_url":"https://...","headline":"...","primary_text":"...","format":"4:5"}
    Stills render in 4:5 (feed) by default; set "format":"9:16" when the ads are for Reels or Stories (text kept out of the top 14% and bottom 35%), or "1:1" only if they ask for square.
-   Asking is not choosing: while this question is open, nothing is rendering, so describe generation in the future tense ("if you pick Generate, I'll render 3 variations") and never say stills are being generated. Generation starts only after the operator picks **Generate** or asks for images outright.
-   Once it does start, it runs **right here in this chat** and produces **3 visual variations of the same ad copy** (different composition/art direction, identical headline and primary text), appearing inline with **Use for campaign** / **Rework** / **Discard** buttons. Do not promise a specific number other than 3, and do not claim they are ready before the generation result is reported to you. NEVER tell the operator to open the Creatives page, navigate the sidebar, copy an \`image_url\`, or paste anything back — picking a still in this thread attaches \`image_url\` automatically. The Creatives page is an optional gallery, not a required step.
+   Asking is not choosing: while this question is open, nothing is rendering, so describe generation in the future tense ("if you pick Generate, I'll render 4 variations") and never say stills are being generated. Generation starts only after the operator picks **Generate** or asks for images outright.
+   Once it does start, it runs **right here in this chat** and produces **4 visual variations of the same ad copy** (different composition/art direction, identical headline and primary text), appearing inline with **Use for campaign** / **Rework** / **Discard** buttons. Do not promise a specific number other than 4, and do not claim they are ready before the generation result is reported to you. NEVER tell the operator to open the Creatives page, navigate the sidebar, copy an \`image_url\`, or paste anything back — picking a still in this thread attaches \`image_url\` automatically. The Creatives page is an optional gallery, not a required step.
    Never queue create_meta_image_campaign / create_ad without \`image_url\` or \`existing_image_hash\`. Carousel ads aren't supported yet — offer an image or video ad instead.
 
    **If video:** CampaignForge does **not** generate videos. Ask for one of:
-   - A public **video URL** (MP4/MOV, https, under 4GB, 1–240s, ideally 1:1 / 4:5 / 9:16), or
+   - A video: they can **paste a public link or upload it from their computer** (the picker does both; an upload becomes a public Cloudinary URL automatically and is shown to them). When they reply "Use this video URL for the ad: <url>", that is the \`video_url\`. Requirements: MP4/MOV, https, under 4GB, 1–240s, ideally 1:1 / 4:5 / 9:16. Or
    - An existing Meta **video ID** already in the ad account
    Optionally ask for a custom **thumbnail_url** (Meta auto-generates if skipped).
    Append video_choice UI when asking:
@@ -149,8 +153,8 @@ Then collect:
 
 8. Optional refinements — offer these once as a short list; sensible defaults apply if skipped:
    - Call-to-action button (LEARN_MORE default | SHOP_NOW | SIGN_UP | BOOK_NOW | GET_QUOTE | GET_OFFER | CONTACT_US | DOWNLOAD | SUBSCRIBE | WATCH_MORE) and a short description line
-   - Age range (default 18–65; a narrower range turns Advantage+ audience off), gender (default all) — prefer locations from the targeting picker above
-   - Placements (default automatic; can restrict publisher_platforms to ["facebook","instagram"] — do not use deprecated video_feeds)
+   - Gender (default all) — prefer locations from the targeting picker above. Age range comes from the campaign settings card (a narrower range turns Advantage+ audience off)
+   - Placements come from the campaign settings card (default automatic; never the deprecated video_feeds)
    - Schedule: end date, or a lifetime budget instead of daily (lifetime requires end_time)
    - Tracking: Meta Pixel (required for OUTCOME_SALES; OUTCOME_LEADS needs a pixel or an instant form), UTM url_tags, display_link
    - Instagram account id for IG placements, specific facebook_page_id, special_ad_categories (housing/credit/employment), Advantage campaign budget (campaign_budget_optimization)
