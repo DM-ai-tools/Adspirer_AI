@@ -1,3 +1,4 @@
+import { detectCreativeFormat } from "@/lib/agent/creative-format";
 import type { LanguageModel, ModelMessage, SystemModelMessage } from "ai";
 import {
   asksAboutDeliveryStructure,
@@ -3310,9 +3311,9 @@ export async function gatherDiagnoseEvidence(input: {
 
   if (intent === "create_campaign") {
     const request = input.request ?? "";
-    const wantsVideo = /\b(video|reel|reels|mp4|mov)\b/i.test(request);
-    const wantsImage =
-      /\b(image|still|static|jpg|png|jpeg)\b/i.test(request) && !wantsVideo;
+    const format = detectCreativeFormat(request);
+    const wantsVideo = format === "video";
+    const wantsImage = format === "image";
 
     if (wantsVideo) {
       const url = extractUrlFromText(request);

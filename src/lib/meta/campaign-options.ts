@@ -229,7 +229,12 @@ export async function loadCampaignOptions(
           limit: 50,
         }),
       );
-      const rows = (res.data ?? []).filter((r) => r.name).map((r) => ({ id: String(r.name), name: String(r.name) }));
+      // Meta can repeat a name, and sometimes returns the class itself as a row.
+      const seen = new Set<string>();
+      const rows = (res.data ?? [])
+        .filter((r) => r.name && r.name !== kind)
+        .map((r) => ({ id: String(r.name), name: String(r.name) }))
+        .filter((r) => !seen.has(r.id) && seen.add(r.id));
       return rows.length ? rows : fallback;
     } catch {
       return fallback;

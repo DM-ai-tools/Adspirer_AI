@@ -3,6 +3,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { getConfig } from "@/lib/config";
 import { logger } from "@/lib/observability/logger";
 import { scrapeWebsiteServices } from "@/lib/scraping/firecrawl";
+import { extractBrandColorsFromHtml, mergeBrandColors } from "@/lib/brand/html-colors";
 
 export type BrandUrlAnalysis = {
   url: string;
@@ -19,10 +20,55 @@ export type BrandUrlAnalysis = {
   source: "firecrawl_branding" | "openai+scrape" | "scrape_only" | "heuristic";
 };
 
+async function fetchText(url: string, timeoutMs: number, maxChars: number): Promise<string> {
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(timeoutMs),
+    headers: { "User-Agent": "Mozilla/5.0 (compatible; CampaignForgeBot/1.0)" },
+    redirect: "follow",
+  });
+  if (!res.ok) return "";
+  return (await res.text()).slice(0, maxChars);
+}
+
+/** The page HTML plus its first two stylesheets, where brand variables usually live. */
+export async function fetchBrandHtml(url: string): Promise<string> {
+  try {
+    const html = await fetchText(url, 8_000, 1_500_000);
+    const hrefs = [...html.matchAll(/<link[^>]+rel=["']stylesheet["'][^>]*>/gi)]
+      .map((m) => /href=["']([^"']+)["']/i.exec(m[0])?.[1])
+      .filter((h): h is string => Boolean(h))
+      .slice(0, 2);
+    const css = await Promise.all(
+      hrefs.map((href) => {
+        try {
+          return fetchText(new URL(href, url).toString(), 5_000, 600_000).catch(() => "");
+        } catch {
+          return Promise.resolve("");
+        }
+      }),
+    );
+    return [html, ...css].join("\n");
+  } catch {
+    return "";
+  }
+}
+
 /**
  * Scrape a landing URL and extract brand colours / logo cues for creative gen.
+ * The site's own CSS brand variables lead the palette; the scrape fills in the rest.
  */
-export async function analyzeBrandFromUrl(
+export async function analyzeBrandFromUrl(url: string): Promise<BrandUrlAnalysis> {
+  const [analysis, html] = await Promise.all([analyzeBrandCore(url), fetchBrandHtml(url)]);
+  const fromHtml = extractBrandColorsFromHtml(html);
+  if (!fromHtml.length) return analysis;
+  return {
+    ...analysis,
+    colors: mergeBrandColors(fromHtml, analysis.colors),
+    summary: `${analysis.summary} Brand colours read from the site's own CSS variables.`,
+  };
+}
+
+async function analyzeBrandCore(
   url: string,
 ): Promise<BrandUrlAnalysis> {
   const scraped = await scrapeWebsiteServices(url);

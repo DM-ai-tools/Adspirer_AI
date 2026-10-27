@@ -239,7 +239,7 @@ function CreativesInner() {
         return;
       }
       toast.success(
-        "Approved — attached to pending ad approvals and posted to Workspace.",
+        "Creative selected — continue in Workspace to confirm the ad copy and campaign details.",
       );
       refreshDrafts();
     } catch (err) {

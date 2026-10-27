@@ -21,11 +21,11 @@ export const generateAdImagesTool = registerTool({
     format: z.enum(IMAGE_FORMATS).optional(),
   }),
   async execute(args, ctx) {
-    const { startCreativeGeneration, DEFAULT_VARIANT_COUNT } = await import(
+    const { startCreativeGenerationBackground, DEFAULT_VARIANT_COUNT } = await import(
       "@/lib/creatives/service"
     );
     const { runAfterResponse } = await import("@/lib/api/background");
-    const { result, runImages } = await startCreativeGeneration({
+    const { draftIds, run } = await startCreativeGenerationBackground({
       clientId: ctx.clientId,
       conversationId: ctx.conversationId ?? undefined,
       taskId: ctx.taskId ?? undefined,
@@ -39,29 +39,12 @@ export const generateAdImagesTool = registerTool({
       generateImages: true,
       analyzeBrand: true,
     });
-    if (runImages) runAfterResponse("tool-creative-images", runImages);
+    runAfterResponse("tool-creative-generation", run);
 
-    const brand = result.brandAnalysis;
     return {
-      status: runImages ? "rendering" : "concepts_only",
-      variations: result.drafts.length,
-      image_model: result.imageModel,
-      brand: brand
-        ? {
-            name: brand.brand_name ?? brand.title ?? null,
-            colors: brand.colors,
-            logo_found: Boolean(brand.logo_url),
-            source: brand.source,
-          }
-        : null,
-      concepts: result.drafts.map((d) => ({
-        id: d.id,
-        concept: d.concept,
-        headline: d.headline,
-      })),
-      note: runImages
-        ? "Stills are rendering and appear in the chat as each finishes (30-90s). Tell the operator this, mention the palette and logo you found, and stop: they pick one in the chat."
-        : "No image credentials are configured, so only concepts were drafted.",
+      status: "rendering",
+      variations: draftIds.length,
+      note: "Four placeholder cards are in the chat now. The brand is read, the concepts written and the images rendered in the background, with each stage shown on the cards and in the chat (the palette and whether a logo was found are posted when the site has been read). Tell the operator this in one sentence and stop; they pick one in the chat.",
     };
   },
 });

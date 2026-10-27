@@ -109,7 +109,7 @@ export function buildConceptPrompt(input: ConceptWriterInput): string {
           .join("\n")
       : "Write each concept's copy yourself, grounded only in the facts above. Do not invent prices, statistics, awards or guarantees.",
     "",
-    `Produce exactly ${input.count} concepts. Make them genuinely different from each other in subject, composition and setting, and choose those differences from what suits THIS business and THIS message; do not reuse a stock set of layouts. Each creative_direction must show the specific message of the post (what the viewer should understand in one glance), use the brand colours as the palette, and avoid rendering readable text, logos or UI.`,
+    `Produce exactly ${input.count} concepts. Make them genuinely different from each other in subject, composition and setting, and choose those differences from what suits THIS business and THIS message; do not reuse a stock set of layouts. Each creative_direction must show the specific message of the post (what the viewer should understand in one glance), use the brand colours as the palette (the dominant colour must be the first one listed), and avoid rendering readable text or UI. The brand's real logo is supplied separately, so never describe or invent a logo.`,
   ];
   return lines.filter((line) => line !== null).join("\n");
 }

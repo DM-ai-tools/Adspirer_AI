@@ -43,21 +43,69 @@ export async function generateOpenAIImage(input: {
   }
 
   try {
-    const res = await fetch("https://api.openai.com/v1/images/generations", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${config.OPENAI_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        prompt,
-        size,
-        quality,
-        n: 1,
-      }),
-      signal: AbortSignal.timeout(120_000),
-    });
+    // The logo goes to the model as a reference image so it is built into the
+    // ad. If that is not possible, fall back to a plain render and paste the
+    // logo on afterwards.
+    let logoPng: Buffer | null = null;
+    if (input.logoUrl) {
+      try {
+        logoPng = await prepareLogoReference(input.logoUrl);
+      } catch (error) {
+        logger.warn("Logo could not be prepared as a reference image", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    let res: Response | null = null;
+    let usedReference = false;
+    if (logoPng) {
+      try {
+        const form = new FormData();
+        form.set("model", model);
+        form.set("prompt", `${prompt} ${logoInstruction("attached", input.format)}`.slice(0, 32000));
+        form.set("size", size);
+        form.set("quality", quality);
+        form.set("n", "1");
+        form.append("image[]", new Blob([new Uint8Array(logoPng)], { type: "image/png" }), "logo.png");
+        const edited = await fetch("https://api.openai.com/v1/images/edits", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${config.OPENAI_API_KEY}` },
+          body: form,
+          signal: AbortSignal.timeout(180_000),
+        });
+        if (edited.ok) {
+          res = edited;
+          usedReference = true;
+        } else {
+          logger.warn("Image edit with logo reference was refused; falling back", {
+            status: edited.status,
+          });
+        }
+      } catch (error) {
+        logger.warn("Image edit with logo reference failed; falling back", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    if (!res) {
+      const fallbackPrompt = `${prompt} ${logoInstruction(input.logoUrl ? "overlay" : "none", input.format)}`.slice(0, 32000);
+      res = await fetch("https://api.openai.com/v1/images/generations", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${config.OPENAI_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          prompt: fallbackPrompt,
+          size,
+          quality,
+          n: 1,
+        }),
+        signal: AbortSignal.timeout(120_000),
+      });
+    }
 
     const payload = (await res.json().catch(() => null)) as {
       data?: Array<{ b64_json?: string; url?: string }>;
@@ -88,7 +136,7 @@ export async function generateOpenAIImage(input: {
         logger.warn("Image crop failed", { error: error instanceof Error ? error.message : String(error) });
       }
     }
-    if (input.logoUrl) {
+    if (input.logoUrl && !usedReference) {
       try {
         const sourceImage = b64
           ? Buffer.from(b64, "base64")
@@ -148,6 +196,27 @@ export async function generateOpenAIImage(input: {
   }
 }
 
+/** The one sentence about the logo, which depends on how it reaches the image. */
+function logoInstruction(mode: "attached" | "overlay" | "none", format?: ImageFormat): string {
+  if (mode === "attached") {
+    return `LOGO: the attached reference image is this brand's official logo. Include it exactly once in the ad, small, clearly legible and faithfully reproduced (same shapes, colours and lettering; do not redraw, restyle or replace it with another mark), in the top-left corner on a clean area${format === "9:16" ? ", below the top 14% of the frame" : ""}.`;
+  }
+  if (mode === "overlay") {
+    return "Leave the top-left corner visually quiet for the logo overlay. Do not invent, redraw, or render a logo.";
+  }
+  return "Do not invent or render a logo.";
+}
+
+/** The logo as a PNG the image model can take as a reference (SVGs are rasterised large). */
+async function prepareLogoReference(logoUrl: string): Promise<Buffer> {
+  const logo = await loadLogoBuffer(logoUrl);
+  const sharp = (await import("sharp")).default;
+  return sharp(logo, isSvg(logo) ? { density: 384 } : undefined)
+    .resize({ width: 1024, height: 1024, fit: "inside", withoutEnlargement: !isSvg(logo) })
+    .png()
+    .toBuffer();
+}
+
 export function buildBrandImagePrompt(input: {
   brandName: string;
   serviceName: string;
@@ -189,9 +258,6 @@ export function buildBrandImagePrompt(input: {
           .join(" ")
       : null,
     input.logoDescription ? `Brand identity note: ${input.logoDescription}.` : null,
-    input.logoUrl
-      ? "Leave the top-left corner visually quiet for the official logo overlay. Do not invent, redraw, or render a logo."
-      : "Do not invent or render a logo.",
     input.landingPageUrl ? `Landing page context: ${input.landingPageUrl}` : null,
     input.creativeDirection
       ? `ART DIRECTION — follow this exactly; it is what makes this variant different from the others: ${input.creativeDirection}`

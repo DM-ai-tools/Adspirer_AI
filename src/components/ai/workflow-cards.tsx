@@ -36,6 +36,7 @@ export function InlineCreativeCards({
       const result = await apiFetch<{
         approvalIds: string[];
         queued: boolean;
+        needsDetails?: boolean;
         blockedReason: string | null;
       }>("/api/creatives/select", {
         method: "POST",
@@ -44,8 +45,10 @@ export function InlineCreativeCards({
 
       if (result.queued) {
         toast.success(
-          `Creative selected — ${result.approvalIds.length} action queued for approval`,
+          `Creative selected — attached to ${result.approvalIds.length} pending approval${result.approvalIds.length === 1 ? "" : "s"}`,
         );
+      } else if (result.needsDetails) {
+        toast.success("Creative selected — answer the ad copy question in the chat");
       } else {
         toast.error(
           result.blockedReason ??

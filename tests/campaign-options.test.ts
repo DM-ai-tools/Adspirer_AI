@@ -172,3 +172,16 @@ describe("final review fixes: options", () => {
     expect(ig.suggestion.settings.pixel_id).toBeUndefined();
   });
 });
+
+describe("device and OS lists from Meta", () => {
+  it("drops duplicates and rows that are just the class name, so every option id is unique", async () => {
+    const { graph } = fakeGraph({
+      ...happyRoutes,
+      "search:user_os": { data: [{ name: "iOS" }, { name: "iOS" }, { name: "user_os" }, { name: "user_os" }, { name: "Android" }] },
+      "search:user_device": { data: [{ name: "iPhone" }, { name: "iPhone" }, { name: "user_device" }] },
+    });
+    const options = await loadCampaignOptions(input, deps(graph));
+    expect(options.osList.map((o) => o.id)).toEqual(["iOS", "Android"]);
+    expect(options.devices.map((d) => d.id)).toEqual(["iPhone"]);
+  });
+});
