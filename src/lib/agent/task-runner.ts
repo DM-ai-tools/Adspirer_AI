@@ -1,4 +1,4 @@
-import { classifyIntent } from "@/lib/agent/intent-classifier";
+import { classifyRequest } from "@/lib/agent/intent-classifier";
 import { parseImageFormat } from "@/lib/creatives/formats";
 import { nanoid } from "nanoid";
 import type { Approval, Task, TaskStatus, ToolCall } from "@/types";
@@ -45,13 +45,22 @@ import {
   mentionsCreativeGeneration,
   planTaskSteps,
   replyAwaitsOperator,
+  type RequestIntent,
   setStepState,
   type TaskStep,
 } from "@/lib/agent/task-plan";
+import { resolveEntityIds } from "@/lib/agent/optimize-evidence";
+import { loadLastOptimizeOffer, saveOptimizeOffer } from "@/lib/agent/optimize-offer";
 import {
-  mergeExecuteProposals,
-  wantsQueueApprovals,
-} from "@/lib/agent/optimize-queue";
+  adoptOfferContext,
+  isReferencingQueue,
+  renderQueueBlock,
+  renderQueueDecisionEvidence,
+  selectForQueue,
+  stripQueuedClaims,
+  type QueueDecision,
+} from "@/lib/agent/queue-selection";
+import { isQueueableIntent } from "@/lib/agent/request-brief";
 import { nowIso } from "@/lib/utils";
 import { logger, newCorrelationId } from "@/lib/observability/logger";
 import { startCreativeGeneration } from "@/lib/creatives/service";
@@ -69,6 +78,43 @@ import {
   toTaskUpsert,
   toToolCallInsert,
 } from "@/lib/db/live-maps";
+
+/** Flows with their own explicit-request steps: their proposed creates go straight to Approvals. */
+/**
+ * Turns that move the conversation on from an optimisation list: a number said after one of
+ * these no longer means the list shown before it. A follow-up question or a chat keeps it.
+ */
+const MOVE_ON_INTENTS: ReadonlySet<RequestIntent> = new Set<RequestIntent>([
+  "audit",
+  "list_campaigns",
+  "budget",
+  "export",
+  "strategy",
+  "create_campaign",
+  "generate_creatives",
+  "scrape_services",
+  "ad_copy",
+  "copy_approved",
+]);
+
+/** A create flow queues only things it creates. */
+const isCreateTool = (name: string) => name.startsWith("create_");
+
+/** A queue turn refers to the earlier list; this turn's differently numbered copy would only confuse. */
+function withoutNumberedProposals(evidence: string): string {
+  return evidence
+    .replace(/(?:^|\n)### Numbered proposals[^\n]*\n[\s\S]*?(?=\n### |$)/, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+const CREATE_FLOW_INTENTS: ReadonlySet<RequestIntent> = new Set<RequestIntent>([
+  "create_campaign",
+  "scrape_services",
+  "ad_copy",
+  "copy_approved",
+  "generate_creatives",
+]);
 
 export type TaskProgressHandler = (
   event: AgentProgressEvent & { task: Task },
@@ -371,7 +417,13 @@ export async function runTask(
     }
 
     // Fetch Meta evidence BEFORE writing the answer (fixes "fetching…" placeholders).
-    const intent = await classifyIntent(request, history);
+    let brief = await classifyRequest(request, history);
+    // A turn that queues from an earlier numbered list keeps that list's period, scope and areas.
+    const storedOffer = brief.queue.requested
+      ? await loadLastOptimizeOffer(task.conversation_id, task.id).catch(() => null)
+      : null;
+    if (storedOffer) brief = adoptOfferContext(brief, storedOffer);
+    const intent = brief.intent;
     const research = researchEvidence
       ? await buildContextResearch({
           clientId: task.client_id,
@@ -425,6 +477,7 @@ export async function runTask(
             conversationId: task.conversation_id,
             history,
             intent,
+            brief,
             preloaded: { metaAccounts, documents, selectedCreative },
             onProgress: emit,
             // Saved the moment it changes, so a later throw can't lose it.
@@ -538,6 +591,72 @@ export async function runTask(
       });
     }
 
+    // Which of the offered changes this turn queues is decided here, from the operator's words,
+    // and told to the writer so its prose can neither promise more nor less.
+    const createFlow = CREATE_FLOW_INTENTS.has(intent);
+    const nothingNamed = { ids: new Set<string>(), direct: new Set<string>() };
+    const queueEntities = gathered.inventory
+      ? resolveEntityIds(brief.queue.entities, gathered.inventory)
+      : { ...nothingNamed, unresolved: brief.queue.entities };
+    const leftAlone = gathered.inventory
+      ? resolveEntityIds(brief.exclude, gathered.inventory)
+      : { ...nothingNamed, unresolved: brief.exclude };
+    const excludedEntityIds = [...leftAlone.ids];
+    const decideQueue = (writerCalls: AgentToolCallProposal[]): QueueDecision => {
+      // A name to leave alone that is not in the account cannot be left alone, so nothing is queued.
+      if (brief.mode === "act" && brief.queue.requested && leftAlone.unresolved.length) {
+        return {
+          queue: [],
+          labels: [],
+          queuedRefs: [],
+          skipped: leftAlone.unresolved.map((name) => ({
+            label: `"${name}"`,
+            reason: "you asked me to leave it alone, but it wasn't found in this ad account, so I queued nothing. Check the name and ask again",
+          })),
+        };
+      }
+      const decision = selectForQueue({
+        brief,
+        offered: gathered.offered ?? [],
+        previousOffer: storedOffer?.items ?? null,
+        writerCalls,
+        namedEntityIds: [...queueEntities.ids],
+        directEntityIds: [...queueEntities.direct],
+        excludedEntityIds,
+      });
+      return {
+        ...decision,
+        skipped: [
+          ...decision.skipped,
+          ...queueEntities.unresolved.map((name) => ({
+            label: `"${name}"`,
+            reason: "wasn't found in this ad account, so nothing was queued for it",
+          })),
+        ],
+      };
+    };
+    if (intent === "optimize") {
+      gathered.evidence = [gathered.evidence, renderQueueDecisionEvidence(brief, decideQueue([]))]
+        .filter(Boolean)
+        .join("\n\n");
+      // The list this turn showed is what a later "queue #2" refers to. A turn that queues from
+      // an earlier list leaves that list, and its numbers, exactly as it was.
+      if (isReferencingQueue(brief) && storedOffer) {
+        saveOptimizeOffer(task, storedOffer);
+        gathered.evidence = withoutNumberedProposals(gathered.evidence);
+        gathered.optimizeAppendix = undefined;
+      } else {
+        saveOptimizeOffer(task, {
+          items: gathered.offered ?? [],
+          period: brief.period,
+          scopeMentions: brief.scope.mentions,
+        });
+      }
+    } else if (MOVE_ON_INTENTS.has(intent)) {
+      // The operator has moved on: "#1" no longer means the list from before this turn.
+      saveOptimizeOffer(task, { items: [], period: brief.period, scopeMentions: [] });
+    }
+
     const agentResult = await runAdspirerAgent({
       task,
       clientContext: `${context}\n\n${research}`,
@@ -547,6 +666,7 @@ export async function runTask(
       reportData,
       history,
       intent,
+      brief,
       correlationId,
       onProgress: emit,
     });
@@ -556,6 +676,9 @@ export async function runTask(
     if (gathered.auditAppendix && agentResult.summary.trim()) {
       agentResult.summary = `${agentResult.summary.trimEnd()}\n\n${gathered.auditAppendix}`;
     }
+    if (gathered.optimizeAppendix && agentResult.summary.trim()) {
+      agentResult.summary = `${agentResult.summary.trimEnd()}\n\n${gathered.optimizeAppendix}`;
+    }
 
     // Prefer structured pickers from preflight evidence when the model forgets the appendix
     if (gathered.copyPicker?.copies?.length) {
@@ -564,14 +687,13 @@ export async function runTask(
         copyPicker: agentResult.ui?.copyPicker ?? gathered.copyPicker,
       };
     }
-    const queueApprovalsTurn = wantsQueueApprovals(task.goal ?? task.title);
-    // Never re-attach ad picker on a queue-for-Approvals turn (or once we have
-    // execute proposals ready to queue) — it looks like the agent ignored the queue.
+    const queueApprovalsTurn = brief.queue.requested;
+    // Never re-attach the ad picker on a turn that queues changes: it looks like the agent
+    // ignored the request.
     if (
       intent === "optimize" &&
       gathered.adPicker?.ads?.length &&
-      !queueApprovalsTurn &&
-      !(gathered.executeProposals?.length && queueApprovalsTurn)
+      !queueApprovalsTurn
     ) {
       agentResult.ui = {
         ...(agentResult.ui ?? {}),
@@ -649,10 +771,8 @@ export async function runTask(
         steps = completeStepsThrough(steps, "list_ads");
         steps = activateStep(steps, "pick_ad");
       }
-      if (
-        gathered.evidence.includes("### Budget optimize") ||
-        gathered.evidence.includes("### Creative fatigue")
-      ) {
+      // The evidence is built for whatever areas the operator named, so any built evidence closes the step.
+      if (gathered.evidence.includes("### Scope and period")) {
         steps = completeStepsThrough(steps, "optimize");
       }
     }
@@ -860,22 +980,24 @@ export async function runTask(
       ? resolveImageUrlForAdspirer(selectedDraft)
       : null;
 
-    // When the operator asks to send/queue optimizations for Approvals, inject
-    // concrete execute proposals from live optimize evidence (LLM often only
-    // describes them in prose and Approvals stays empty).
-    const requestText = task.goal ?? task.title;
-    if (
-      wantsQueueApprovals(requestText) &&
-      (gathered.executeProposals?.length ?? 0) > 0
-    ) {
-      agentResult.toolCalls = mergeExecuteProposals(
-        agentResult.toolCalls,
-        gathered.executeProposals ?? [],
-      );
-    }
-
+    // Create flows keep their explicit-request steps. Every other turn queues only what the
+    // operator asked for, chosen by selectForQueue from their words.
     // Only the settings step records a settings save; the writer never can.
-    agentResult.toolCalls = withoutSettingsCalls(agentResult.toolCalls);
+    const writerCalls = withoutSettingsCalls(agentResult.toolCalls);
+    const queueDecision: QueueDecision | null = createFlow ? null : decideQueue(writerCalls);
+    // A create flow queues what it creates and nothing else; any other change the writer
+    // proposes is refused, and the operator is told.
+    const strayCalls = queueDecision
+      ? []
+      : writerCalls.filter((c) => classify(c.name) === "execute" && !isCreateTool(c.name));
+    agentResult.toolCalls = queueDecision ? queueDecision.queue : writerCalls.filter((c) => !strayCalls.includes(c));
+    for (const call of strayCalls) {
+      rejectedProposals.push(`**${humanToolLabel(call.name)}** — that isn't part of what you asked me to create, so it wasn't queued.`);
+    }
+    const callLabels = new Map(agentResult.toolCalls.map((c, i) => [c, queueDecision?.labels[i]]));
+    const queuedLabels: string[] = [];
+    const alreadyQueued: Array<{ label: string; status: string }> = [];
+    const notQueued: Array<{ label: string; reason: string }> = queueDecision ? [...queueDecision.skipped] : [];
     for (const call of agentResult.toolCalls) {
       const safety = classify(call.name);
       const args =
@@ -891,6 +1013,12 @@ export async function runTask(
         toolCall.error_message = "Tool blocked by policy gate";
         toolCall.completed_at = nowIso();
         await saveToolCall(toolCall, task.client_id);
+        if (queueDecision) {
+          notQueued.push({
+            label: callLabels.get(call) ?? humanToolLabel(call.name),
+            reason: "that action isn't available here",
+          });
+        }
         continue;
       }
 
@@ -932,58 +1060,80 @@ export async function runTask(
             rationale: call.rationale ?? approvalSummary,
             budgetImpactCents: estimateBudgetImpact(call.name, args),
             requestedBy: task.created_by,
+            // A repeated "queue #1" is a new task each time; it must not queue the change twice.
+            reuseAcrossTasks: Boolean(queueDecision),
           });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           toolCall.error_message = message;
           toolCall.completed_at = nowIso();
           await saveToolCall(toolCall, task.client_id);
-          rejectedProposals.push(`**${humanToolLabel(call.name)}** — ${message}`);
+          if (queueDecision) {
+            notQueued.push({
+              label: callLabels.get(call) ?? humanToolLabel(call.name),
+              reason: `Approvals refused it: ${message}`,
+            });
+          } else {
+            rejectedProposals.push(`**${humanToolLabel(call.name)}** — ${message}`);
+          }
           continue;
         }
 
         toolCall.approval_id = approval.id;
         toolCall.completed_at = nowIso();
         await saveToolCall(toolCall, task.client_id);
-        // Identical proposals dedupe to the same approval.
-        if (!pendingApprovalIds.includes(approval.id)) {
-          pendingApprovalIds.push(approval.id);
+        const label = callLabels.get(call) ?? humanToolLabel(call.name);
+        if (queueDecision && approval.task_id !== task.id) {
+          // An earlier message already put this change in Approvals; it is not a new one.
+          alreadyQueued.push({ label, status: approval.status });
+        } else {
+          // Identical proposals dedupe to the same approval.
+          if (!pendingApprovalIds.includes(approval.id)) {
+            pendingApprovalIds.push(approval.id);
+          }
+          if (queueDecision) queuedLabels.push(label);
         }
       }
     }
 
-    const summaryClaimsQueued =
-      /\bqueued\b.*\bapprovals?\b/i.test(agentResult.summary) ||
-      agentResult.summary.includes("What's next");
-    if (summaryClaimsQueued && pendingApprovalIds.length === 0) {
-      approvalSummary = [
-        stripFalseQueuedClaims(agentResult.summary),
-        "",
-        "**Could not queue approvals** — structured tool JSON was missing or blocked.",
-        "Ask me to queue `create_adset` / `create_ad` again and I'll retry with valid payloads.",
-      ].join("\n");
-    } else if (
-      wantsQueueApprovals(requestText) &&
-      pendingApprovalIds.length === 0 &&
-      !(gathered.executeProposals?.length ?? 0)
-    ) {
-      approvalSummary = [
-        stripFalseQueuedClaims(agentResult.summary),
-        "",
-        "**Could not queue Approvals** — live Meta optimize analysis did not produce concrete budget/pause mutations (no ad sets with daily budgets, or no fatigue signals).",
-        "Ask me to optimize again after campaigns are delivering, or name a specific ad set / ad to change.",
-      ].join("\n");
-    } else if (pendingApprovalIds.length > 0) {
-      approvalSummary = appendApprovalCta(agentResult.summary);
+    if (queueDecision) {
+      // The reply's account of what went to Approvals is written from what was actually
+      // queued, so it is always true; a sentence claiming more is dropped.
+      const inApprovals = queuedLabels.length + alreadyQueued.length > 0;
+      // On a turn that decides a queue, the block below is the account of what went to Approvals, so
+      // the writer's own claims are dropped (it may have said "both" when one was refused). A reply
+      // about anything else is left as written unless the writer proposed changes that were not queued.
+      const claimsUnbacked = isQueueableIntent(intent) || (writerCalls.length > 0 && !inApprovals);
+      const base = claimsUnbacked ? stripQueuedClaims(agentResult.summary) : agentResult.summary;
+      const withCta = inApprovals ? appendApprovalCta(base) : base;
+      const block = renderQueueBlock({ queued: queuedLabels, alreadyQueued, notQueued });
+      approvalSummary = block ? `${withCta.trimEnd()}\n\n${block}` : withCta;
+      agentResult.summary = approvalSummary;
+    } else {
+      const summaryClaimsQueued =
+        /\bqueued\b.*\bapprovals?\b/i.test(agentResult.summary) ||
+        agentResult.summary.includes("What's next");
+      if (summaryClaimsQueued && pendingApprovalIds.length === 0) {
+        approvalSummary = [
+          stripFalseQueuedClaims(agentResult.summary),
+          "",
+          "**Could not queue approvals** — structured tool JSON was missing or blocked.",
+          "Ask me to queue `create_adset` / `create_ad` again and I'll retry with valid payloads.",
+        ].join("\n");
+      } else if (pendingApprovalIds.length > 0) {
+        approvalSummary = appendApprovalCta(agentResult.summary);
+      }
+      if (rejectedProposals.length) {
+        approvalSummary = [
+          approvalSummary,
+          "",
+          `**Not queued** — ${rejectedProposals.length === 1 ? "this change was" : "these changes were"} refused before reaching Approvals:`,
+          ...rejectedProposals.map((r) => `- ${r}`),
+        ].join("\n");
+      }
     }
-    if (rejectedProposals.length) {
-      approvalSummary = [
-        approvalSummary,
-        "",
-        `**Not queued** — ${rejectedProposals.length === 1 ? "this change was" : "these changes were"} refused before reaching Approvals:`,
-        ...rejectedProposals.map((r) => `- ${r}`),
-      ].join("\n");
-    }
+    // What the operator reads is what was composed above, on every path (not only when something is waiting).
+    agentResult.summary = approvalSummary;
 
     if (pendingApprovalIds.length > 0) {
       if (agentResult.ui?.adPicker) {

@@ -3,6 +3,7 @@ import type { Approval } from "@/types";
 import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
 import { newEntityId } from "@/lib/db/live-maps";
+import type { PlacementState } from "@/lib/meta/placement-format";
 import { nowIso } from "@/lib/utils";
 
 /**
@@ -10,7 +11,21 @@ import { nowIso } from "@/lib/utils";
  * who approved and who ran it, and why. Append-only — entries are never
  * edited or deleted; a rollback is a new entry pointing at the one it undoes.
  */
-export type ChangeState = { daily_budget_cents?: number | null; status?: string };
+export type ChangeState = {
+  daily_budget_cents?: number | null;
+  status?: string;
+  /** Ad set schedule (ISO); null = no end date. */
+  start_time?: string | null;
+  end_time?: string | null;
+  /** Ad set bid: strategy, cap (app cents) and minimum ROAS (multiple). */
+  bid_strategy?: string | null;
+  bid_amount_cents?: number | null;
+  roas_average_floor?: number | null;
+  /** Where the ad set's ads run. */
+  placements?: PlacementState;
+  /** Ids of the custom audiences the ad set excludes. */
+  excluded_custom_audiences?: string[];
+};
 
 export type ChangeLogEntry = {
   id: string;
@@ -68,6 +83,30 @@ export function buildChangeEntry(
   } else if (isStatus) {
     before = liveBefore?.status ? { status: liveBefore.status } : null;
     after = { status: str(proof.status) ?? (tool.startsWith("pause_") ? "PAUSED" : "ACTIVE") };
+  } else if (tool === "update_adset_audience_exclusions") {
+    before = liveBefore?.excluded_custom_audiences ? { excluded_custom_audiences: liveBefore.excluded_custom_audiences } : null;
+    after = Array.isArray(proof.excluded_custom_audiences)
+      ? { excluded_custom_audiences: (proof.excluded_custom_audiences as unknown[]).map(String) }
+      : null;
+  } else if (tool === "update_adset_placements") {
+    before = liveBefore?.placements ? { placements: liveBefore.placements } : null;
+    after = proof.placements && typeof proof.placements === "object" ? { placements: proof.placements as PlacementState } : null;
+  } else if (tool === "update_adset_bid") {
+    before = liveBefore
+      ? {
+          bid_strategy: liveBefore.bid_strategy ?? null,
+          bid_amount_cents: liveBefore.bid_amount_cents ?? null,
+          roas_average_floor: liveBefore.roas_average_floor ?? null,
+        }
+      : null;
+    after = {
+      bid_strategy: str(proof.bid_strategy),
+      bid_amount_cents: num(proof.bid_amount_cents),
+      roas_average_floor: num(proof.roas_average_floor),
+    };
+  } else if (tool === "update_adset_schedule") {
+    before = liveBefore ? { start_time: liveBefore.start_time ?? null, end_time: liveBefore.end_time ?? null } : null;
+    after = { start_time: str(proof.start_time), end_time: str(proof.end_time) };
   } else {
     after = str(proof.status) ? { status: String(proof.status) } : null;
   }

@@ -43,7 +43,7 @@ describe("strategy turn in DEMO_MODE", () => {
     expect(toolNames).toContain("strategy_plan");
     expect(toolNames.filter((n) => EXECUTE_TOOLS.has(n))).toEqual([]);
     expect(classify("strategy_plan")).toBe("diagnose");
-    expect(gathered.executeProposals ?? []).toEqual([]);
+    expect(gathered.offered ?? []).toEqual([]);
     expect(gathered.strategyBriefIncomplete).toBeFalsy();
 
     const plan = gathered.toolCalls.find((c) => c.name === "strategy_plan")!;

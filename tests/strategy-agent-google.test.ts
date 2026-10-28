@@ -92,7 +92,7 @@ describe("cross-channel strategy for ClickTrends in DEMO_MODE", () => {
 
     expect(toolNames).toContain("strategy_plan");
     expect(toolNames.filter((n) => EXECUTE_TOOLS.has(n))).toEqual([]);
-    expect(gathered.executeProposals ?? []).toEqual([]);
+    expect(gathered.offered ?? []).toEqual([]);
     expect(vi.mocked(loadChannelSnapshot)).toHaveBeenCalledWith(CT, expect.objectContaining({ since: expect.any(String), until: expect.any(String) }));
   });
 
@@ -118,7 +118,7 @@ describe("cross-channel strategy for ClickTrends in DEMO_MODE", () => {
     expect(rows[0]).toMatch(/^\| Bar stools /);
     expect(gathered.toolCalls.map((c) => c.name)).not.toContain("strategy_plan");
     expect(gathered.toolCalls.map((c) => c.name).filter((n) => EXECUTE_TOOLS.has(n))).toEqual([]);
-    expect(gathered.executeProposals ?? []).toEqual([]);
+    expect(gathered.offered ?? []).toEqual([]);
   });
 
   it("says Google needs reconnecting when the token is revoked, and still plans on Meta", async () => {

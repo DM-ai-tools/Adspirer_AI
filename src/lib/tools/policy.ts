@@ -31,6 +31,8 @@ const TOOL_POLICY: Record<string, ToolSafetyClass> = {
   search_console_query: "diagnose",
   google_ads_report: "diagnose",
   meta_insights: "diagnose",
+  // Account health checks (tracking, structure, bidding, audiences, creative) with owners.
+  meta_account_health: "diagnose",
   list_client_categories: "diagnose",
   shopify_products: "diagnose",
   shopify_variants: "diagnose",
@@ -59,6 +61,11 @@ const TOOL_POLICY: Record<string, ToolSafetyClass> = {
   update_campaign_budget: "execute",
   pause_adset: "execute",
   resume_adset: "execute",
+  // Edit an existing ad set in place (each is read back and verified; all go through Approvals).
+  update_adset_schedule: "execute",
+  update_adset_bid: "execute",
+  update_adset_placements: "execute",
+  update_adset_audience_exclusions: "execute",
 };
 
 export function classify(toolName: string): ToolSafetyClass {

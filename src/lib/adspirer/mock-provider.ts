@@ -13,9 +13,28 @@ import type {
   MetaInsightsQuery,
   MetaInsightsReport,
   MetaAccountOverview,
+  AdSetDetail,
+  UpdateAdSetAudienceExclusionsInput,
+  UpdateAdSetAudienceExclusionsResult,
+  UpdateAdSetBidInput,
+  UpdateAdSetBidResult,
   UpdateAdSetBudgetInput,
+  UpdateAdSetPlacementsInput,
+  UpdateAdSetPlacementsResult,
+  UpdateAdSetScheduleInput,
+  UpdateAdSetScheduleResult,
   UpdateCampaignBudgetInput,
 } from "./provider";
+import {
+  excludedIdsOf,
+  mergeExclusions,
+  mergePlacements,
+  placementsEqual,
+  placementStateOf,
+  planBidChange,
+  planScheduleChange,
+  sameIds,
+} from "@/lib/meta/adset-edits";
 
 import { mockInsightsReport } from "./mock-insights";
 
@@ -27,6 +46,10 @@ type MutableState = {
   campaigns: MetaCampaign[];
   adsets: MetaAdSet[];
   ads: MetaAd[];
+  /** Ad set schedules by id (the seed ad sets run with no end date). */
+  schedules?: Record<string, { start_time: string | null; end_time: string | null }>;
+  /** Ad set bid settings by id (the seed ad sets bid with no cap). */
+  bids?: Record<string, { bid_strategy: string; bid_amount_cents: number | null; roas_average_floor: number | null }>;
 };
 
 function seedState(): MutableState {
@@ -364,6 +387,145 @@ export class MockMetaAdsProvider implements MetaAdsProvider {
     return { ...adset };
   }
 
+  private scheduleOf(adsetId: string) {
+    const state = getState();
+    state.schedules ??= {};
+    return (state.schedules[adsetId] ??= { start_time: null, end_time: null });
+  }
+
+  private bidOf(adsetId: string) {
+    const state = getState();
+    state.bids ??= {};
+    return (state.bids[adsetId] ??= { bid_strategy: "LOWEST_COST_WITHOUT_CAP", bid_amount_cents: null, roas_average_floor: null });
+  }
+
+  async getAdSetDetail(accountId: string, adSetId: string): Promise<AdSetDetail | null> {
+    const adset = getState().adsets.find((a) => a.id === adSetId && a.account_id === accountId);
+    if (!adset) return null;
+    const schedule = this.scheduleOf(adSetId);
+    return {
+      status: adset.status,
+      daily_budget_cents: adset.daily_budget_cents || null,
+      start_time: schedule.start_time,
+      end_time: schedule.end_time,
+      ...this.bidOf(adSetId),
+      placements: placementStateOf(this.targetingOf(adset)),
+      excluded_custom_audiences: excludedIdsOf(this.targetingOf(adset)),
+    };
+  }
+
+  /** The ad set's targeting as an object (the demo keeps it as a JSON summary). */
+  private targetingOf(adset: MetaAdSet): Record<string, unknown> {
+    try {
+      const parsed = JSON.parse(adset.targeting_summary ?? "{}");
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  async updateAdSetAudienceExclusions(input: UpdateAdSetAudienceExclusionsInput): Promise<UpdateAdSetAudienceExclusionsResult> {
+    const adset = getState().adsets.find((a) => a.id === input.adset_id && (!input.account_id || a.account_id === input.account_id));
+    if (!adset) throw new Error(`Ad set not found: ${input.adset_id}`);
+    const merged = mergeExclusions(this.targetingOf(adset), {
+      add: input.add_excluded_custom_audiences,
+      remove: input.remove_excluded_custom_audiences,
+    });
+    if (sameIds(merged.before, merged.after)) {
+      throw new Error("This ad set's exclusions are already as requested. Nothing was changed.");
+    }
+    const known = new Set((await this.listCustomAudiences(adset.account_id)).map((a) => a.id));
+    for (const id of merged.after.filter((x) => !merged.before.includes(x))) {
+      if (!known.has(id)) throw new Error(`Audience ${id} could not be found in Meta. Nothing was changed.`);
+    }
+    adset.targeting_summary = JSON.stringify(merged.targeting);
+    return {
+      ...adset,
+      excluded_custom_audiences: merged.after,
+      previous_excluded_custom_audiences: merged.before,
+      verified: true,
+    };
+  }
+
+  async updateAdSetPlacements(input: UpdateAdSetPlacementsInput): Promise<UpdateAdSetPlacementsResult> {
+    const adset = getState().adsets.find((a) => a.id === input.adset_id && (!input.account_id || a.account_id === input.account_id));
+    if (!adset) throw new Error(`Ad set not found: ${input.adset_id}`);
+    const merged = mergePlacements(this.targetingOf(adset), {
+      advantage_placements: input.advantage_placements,
+      publisher_platforms: input.publisher_platforms,
+      facebook_positions: input.facebook_positions,
+      instagram_positions: input.instagram_positions,
+      audience_network_positions: input.audience_network_positions,
+      messenger_positions: input.messenger_positions,
+      device_platforms: input.device_platforms,
+    });
+    if (placementsEqual(merged.before, merged.after)) {
+      throw new Error("This ad set already uses those placements. Nothing was changed.");
+    }
+    adset.targeting_summary = JSON.stringify(merged.targeting);
+    return { ...adset, placements: merged.after, previous_placements: merged.before, verified: true };
+  }
+
+  async updateAdSetBid(input: UpdateAdSetBidInput): Promise<UpdateAdSetBidResult> {
+    const state = getState();
+    const adset = state.adsets.find((a) => a.id === input.adset_id && (!input.account_id || a.account_id === input.account_id));
+    if (!adset) throw new Error(`Ad set not found: ${input.adset_id}`);
+    const campaign = state.campaigns.find((c) => c.id === adset.campaign_id);
+    const bid = this.bidOf(adset.id);
+    const strategy = input.bid_strategy.trim().toUpperCase();
+    // The demo seed gives campaigns and their ad sets budgets; an ad set with none spends from the campaign's.
+    planBidChange(
+      {
+        cbo: Boolean(campaign?.daily_budget_cents) && !adset.daily_budget_cents,
+        objective: campaign?.objective,
+        optimization_goal: adset.optimization_goal,
+        bid_strategy: bid.bid_strategy,
+        bid_amount_minor: bid.bid_amount_cents,
+        roas_floor: bid.roas_average_floor,
+        currency: "USD",
+      },
+      { bid_strategy: strategy, bid_amount: input.bid_amount, roas_average_floor: input.roas_average_floor },
+    );
+    const previous = { ...bid };
+    bid.bid_strategy = strategy;
+    bid.bid_amount_cents =
+      strategy === "COST_CAP" || strategy === "LOWEST_COST_WITH_BID_CAP" ? Math.round((input.bid_amount ?? 0) * 100) : null;
+    bid.roas_average_floor = strategy === "LOWEST_COST_WITH_MIN_ROAS" ? (input.roas_average_floor ?? null) : null;
+    return {
+      ...adset,
+      bid_strategy: bid.bid_strategy,
+      bid_amount_cents: bid.bid_amount_cents,
+      roas_average_floor: bid.roas_average_floor,
+      previous_bid_strategy: previous.bid_strategy,
+      previous_bid_amount_cents: previous.bid_amount_cents,
+      previous_roas_average_floor: previous.roas_average_floor,
+      verified: true,
+    };
+  }
+
+  async updateAdSetSchedule(input: UpdateAdSetScheduleInput): Promise<UpdateAdSetScheduleResult> {
+    const adset = getState().adsets.find(
+      (a) => a.id === input.adset_id && (!input.account_id || a.account_id === input.account_id),
+    );
+    if (!adset) throw new Error(`Ad set not found: ${input.adset_id}`);
+    const schedule = this.scheduleOf(adset.id);
+    const plan = planScheduleChange(
+      { status: adset.status, start_time: schedule.start_time, end_time: schedule.end_time, lifetime_budget: Boolean(adset.lifetime_budget_cents) },
+      { end_time: input.end_time, clear_end_time: input.clear_end_time, start_time: input.start_time },
+    );
+    const previous = { ...schedule };
+    if (plan.body.start_time) schedule.start_time = plan.body.start_time;
+    if (plan.body.end_time) schedule.end_time = plan.body.end_time === "0" ? null : plan.body.end_time;
+    return {
+      ...adset,
+      start_time: schedule.start_time,
+      end_time: schedule.end_time,
+      previous_start_time: previous.start_time,
+      previous_end_time: previous.end_time,
+      verified: true,
+    };
+  }
+
   async updateCampaignBudget(input: UpdateCampaignBudgetInput): Promise<MetaCampaign> {
     const campaign = getState().campaigns.find(
       (c) => c.id === input.campaign_id && (!input.account_id || c.account_id === input.account_id),
@@ -654,8 +816,19 @@ export class MockMetaAdsProvider implements MetaAdsProvider {
     });
   }
 
-  async optimizeBudget(accountId: string) {
-    const adsets = getState().adsets.filter((a) => a.account_id === accountId);
+  async optimizeBudget(accountId: string, options: Record<string, unknown> = {}) {
+    const ids = (value: unknown) => (Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : []);
+    const adsetIds = ids(options.adset_ids);
+    const campaignIds = ids(options.campaign_ids);
+    const adsets = getState()
+      .adsets.filter((a) => a.account_id === accountId)
+      .filter((a) =>
+        adsetIds.length ? adsetIds.includes(a.id) : campaignIds.length ? campaignIds.includes(a.campaign_id) : true,
+      );
+    const period =
+      typeof options.since === "string" && typeof options.until === "string"
+        ? ` · ${options.since} → ${options.until}`
+        : "";
     const target = adsets.find((a) => a.status === "ACTIVE") ?? adsets[0];
     const proposals =
       target && target.daily_budget_cents > 0
@@ -674,7 +847,7 @@ export class MockMetaAdsProvider implements MetaAdsProvider {
         : [];
     return {
       text: [
-        `### Budget optimization (demo) for ${accountId}`,
+        `### Budget optimization (demo) for ${accountId}${period}`,
         target
           ? `- SCALE ${target.name} (${target.id}): $${(target.daily_budget_cents / 100).toFixed(0)} → $${((target.daily_budget_cents * 1.2) / 100).toFixed(0)}/day`
           : "- No demo ad sets with budget.",
@@ -695,8 +868,26 @@ export class MockMetaAdsProvider implements MetaAdsProvider {
     };
   }
 
-  async detectCreativeFatigue(accountId: string) {
-    const ads = getState().ads.filter((a) => a.account_id === accountId);
+  async detectCreativeFatigue(accountId: string, options: Record<string, unknown> = {}) {
+    const ids = (value: unknown) => (Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : []);
+    const adIds = ids(options.ad_ids);
+    const adsetIds = ids(options.adset_ids);
+    const campaignIds = ids(options.campaign_ids);
+    const ads = getState()
+      .ads.filter((a) => a.account_id === accountId)
+      .filter((a) =>
+        adIds.length
+          ? adIds.includes(a.id)
+          : adsetIds.length
+            ? adsetIds.includes(a.adset_id)
+            : campaignIds.length
+              ? campaignIds.includes(a.campaign_id)
+              : true,
+      );
+    const period =
+      typeof options.since === "string" && typeof options.until === "string"
+        ? ` · ${options.since} → ${options.until}`
+        : "";
     const fatigued = ads[0];
     const proposals = fatigued
       ? [
@@ -709,12 +900,12 @@ export class MockMetaAdsProvider implements MetaAdsProvider {
       : [];
     return {
       text: [
-        `### Creative fatigue (demo) for ${accountId}`,
+        `### Creative fatigue (demo) for ${accountId}${period}`,
         ...ads.slice(0, 5).map(
           (a) =>
             `- ${a.name} (${a.id}): CTR declining — refresh creative recommended`,
         ),
-        "DEMO DATA — connect live Adspirer for detect_meta_creative_fatigue.",
+        "DEMO DATA — connect live Meta for real creative fatigue checks.",
       ].join("\n"),
       structured: {
         demo: true,
@@ -760,7 +951,7 @@ export class MockMetaAdsProvider implements MetaAdsProvider {
       headline: a.creative_summary?.slice(0, 40) ?? a.name.slice(0, 40),
       primary_text:
         a.creative_summary ??
-        `Demo primary text for ${a.name}. Connect live Adspirer for real creatives.`,
+        `Demo primary text for ${a.name}. Connect live Meta for real creatives.`,
       description: "Demo desc",
       call_to_action_type: "LEARN_MORE",
       landing_page_url: "https://moderndental.example.com/new-patients",

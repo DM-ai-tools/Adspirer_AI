@@ -12,12 +12,33 @@ import type {
   MetaInsights,
   MetaInsightsQuery,
   MetaInsightsReport,
+  AdSetDetail,
   UpdateAdSetBudgetInput,
+  UpdateAdSetBidInput,
+  UpdateAdSetAudienceExclusionsInput,
+  UpdateAdSetAudienceExclusionsResult,
+  UpdateAdSetBidResult,
+  UpdateAdSetPlacementsInput,
+  UpdateAdSetPlacementsResult,
+  UpdateAdSetScheduleInput,
+  UpdateAdSetScheduleResult,
   UpdateCampaignBudgetInput,
   TextOptions,
   AdPreviewInput,
   AdPreview,
 } from "@/lib/adspirer/provider";
+import {
+  excludedIdsOf,
+  mergeExclusions,
+  mergePlacements,
+  metaTimeMs,
+  placementsEqual,
+  placementsSatisfy,
+  placementStateOf,
+  planBidChange,
+  planScheduleChange,
+  sameIds,
+} from "@/lib/meta/adset-edits";
 import { MetaGraphClient } from "@/lib/meta/graph-client";
 import { compactInsightsRow, insightsParams } from "@/lib/meta/insights-report";
 import { fetchMetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
@@ -102,6 +123,41 @@ function budgetToMinorUnits(budgetDaily?: number): number | undefined {
     return undefined;
   }
   return Math.round(budgetDaily * 100);
+}
+
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
+const DAY_MS = 86_400_000;
+
+function shiftDay(day: string, by: number): string {
+  return new Date(Date.parse(`${day}T00:00:00Z`) + by * DAY_MS).toISOString().slice(0, 10);
+}
+
+/** The since/until an optimise read was asked for, when both are real dates in order. */
+function explicitWindow(options: Record<string, unknown>): { dateStart: string; dateStop: string; days: number } | null {
+  const since = options.since;
+  const until = options.until;
+  if (typeof since !== "string" || typeof until !== "string") return null;
+  if (!ISO_DAY.test(since) || !ISO_DAY.test(until) || since > until) return null;
+  const days = Math.round((Date.parse(`${until}T00:00:00Z`) - Date.parse(`${since}T00:00:00Z`)) / DAY_MS) + 1;
+  return { dateStart: since, dateStop: until, days };
+}
+
+/** Campaign / ad set / ad ids an optimise read is restricted to (empty = the whole account). */
+type ReadScope = { campaignIds: string[]; adsetIds: string[]; adIds: string[] };
+
+function readScope(options: Record<string, unknown>): ReadScope {
+  const ids = (value: unknown) =>
+    Array.isArray(value) ? value.filter((v): v is string => typeof v === "string" && v.trim() !== "").map((v) => v.trim()) : [];
+  return { campaignIds: ids(options.campaign_ids), adsetIds: ids(options.adset_ids), adIds: ids(options.ad_ids) };
+}
+
+/** Meta's server-side filter for an insights request, or undefined for the whole account. */
+function scopeFiltering(scope: ReadScope): string | undefined {
+  const filters: Array<{ field: string; operator: "IN"; value: string[] }> = [];
+  if (scope.campaignIds.length) filters.push({ field: "campaign.id", operator: "IN", value: scope.campaignIds });
+  if (scope.adsetIds.length) filters.push({ field: "adset.id", operator: "IN", value: scope.adsetIds });
+  if (scope.adIds.length) filters.push({ field: "ad.id", operator: "IN", value: scope.adIds });
+  return filters.length ? JSON.stringify(filters) : undefined;
 }
 
 function lookbackWindow(days: number): { dateStart: string; dateStop: string } {
@@ -1147,6 +1203,457 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     return this.setAdSetStatus(accountId, adSetId, "ACTIVE");
   }
 
+  /** Meta's time for an ad set, as an ISO string; null when it has none. */
+  private isoTime(value: unknown): string | null {
+    const ms = metaTimeMs(value);
+    return ms == null ? null : new Date(ms).toISOString();
+  }
+
+  async getAdSetDetail(accountId: string, adSetId: string): Promise<AdSetDetail | null> {
+    let row: {
+      account_id?: unknown;
+      status?: unknown;
+      daily_budget?: unknown;
+      start_time?: unknown;
+      end_time?: unknown;
+      bid_strategy?: unknown;
+      bid_amount?: unknown;
+      bid_constraints?: unknown;
+      targeting?: unknown;
+    };
+    try {
+      row = await this.graph.get(adSetId, {
+        fields: "account_id,status,daily_budget,start_time,end_time,bid_strategy,bid_amount,bid_constraints,targeting",
+      });
+    } catch (error) {
+      // Missing is an answer; anything else (outage, auth) must fail closed.
+      if (error instanceof Error && /does not exist/i.test(error.message)) return null;
+      throw error;
+    }
+    const owner = row.account_id != null && String(row.account_id).trim() ? normalizeAccountId(String(row.account_id)) : null;
+    if (owner !== normalizeAccountId(accountId)) return null;
+    const minor = Number(row.daily_budget ?? 0);
+    const currency = await this.accountCurrency(accountId);
+    return {
+      status: String(row.status ?? ""),
+      daily_budget_cents: minor > 0 ? metaMinorToCents(minor, currency) : null,
+      start_time: this.isoTime(row.start_time),
+      end_time: this.isoTime(row.end_time),
+      ...this.bidState(row, currency),
+      placements: placementStateOf(row.targeting),
+      excluded_custom_audiences: excludedIdsOf(row.targeting),
+    };
+  }
+
+  /** An ad set's bid strategy, cap and minimum ROAS as Meta reports them, in app units. */
+  private bidState(
+    row: { bid_strategy?: unknown; bid_amount?: unknown; bid_constraints?: unknown },
+    currency: string,
+  ): { bid_strategy: string | null; bid_amount_cents: number | null; roas_average_floor: number | null } {
+    const strategy = typeof row.bid_strategy === "string" && row.bid_strategy ? row.bid_strategy.toUpperCase() : null;
+    const minor = Number(row.bid_amount);
+    let constraints: unknown = row.bid_constraints;
+    if (typeof constraints === "string") {
+      try {
+        constraints = JSON.parse(constraints);
+      } catch {
+        constraints = null;
+      }
+    }
+    const floor = Number((constraints as { roas_average_floor?: unknown } | null)?.roas_average_floor);
+    return {
+      bid_strategy: strategy,
+      bid_amount_cents: minor > 0 ? metaMinorToCents(minor, currency) : null,
+      roas_average_floor: floor > 0 ? floor / 10_000 : null,
+    };
+  }
+
+  /**
+   * Move or clear an ad set's end date, or move the start of one that has not started.
+   * Every refusal happens before the POST, and the result is read back and checked.
+   * Clearing posts end_time=0: Meta documents that value as "ongoing, no end date" when
+   * creating an ad set; the read-back below fails the call if an update did not clear it.
+   * https://developers.facebook.com/docs/marketing-api/reference/ad-campaign/
+   */
+  async updateAdSetSchedule(input: UpdateAdSetScheduleInput): Promise<UpdateAdSetScheduleResult> {
+    const adset = await this.graph.get<{
+      id?: string;
+      name?: string;
+      status?: string;
+      account_id?: unknown;
+      campaign_id?: string;
+      start_time?: string;
+      end_time?: string;
+      lifetime_budget?: string;
+    }>(input.adset_id, {
+      fields: "id,name,status,account_id,campaign_id,start_time,end_time,daily_budget,lifetime_budget",
+    });
+    const name = adset.name ?? input.adset_id;
+
+    // The account comes from the ad set itself, never from the proposal.
+    const accountId =
+      adset.account_id != null && String(adset.account_id).trim() ? normalizeAccountId(String(adset.account_id).trim()) : null;
+    if (!accountId) {
+      throw new Error(`Could not confirm which ad account ad set ${input.adset_id} belongs to. Nothing was changed.`);
+    }
+    if (input.account_id && normalizeAccountId(input.account_id) !== accountId) {
+      throw new Error(
+        `Ad set "${name}" belongs to ad account ${accountId}, not ${normalizeAccountId(input.account_id)}. Nothing was changed.`,
+      );
+    }
+
+    const plan = planScheduleChange(
+      {
+        status: String(adset.status ?? ""),
+        start_time: adset.start_time,
+        end_time: adset.end_time,
+        lifetime_budget: positiveMinor(adset.lifetime_budget),
+      },
+      { end_time: input.end_time, clear_end_time: input.clear_end_time, start_time: input.start_time },
+    );
+    const previous_start_time = this.isoTime(adset.start_time);
+    const previous_end_time = this.isoTime(adset.end_time);
+
+    await this.graph.post(input.adset_id, plan.body);
+
+    const base = {
+      id: input.adset_id,
+      campaign_id: String(adset.campaign_id ?? ""),
+      account_id: accountId,
+      name,
+      status: String(adset.status ?? "PAUSED") as MetaAdSet["status"],
+      daily_budget_cents: 0,
+      previous_start_time,
+      previous_end_time,
+    };
+
+    // Read back: the change succeeded on Meta, so a failed re-read is reported as
+    // unverified (never as a failure that invites a retry).
+    let after: { start_time?: string; end_time?: string; status?: string; effective_status?: string };
+    try {
+      after = await this.graph.get(input.adset_id, { fields: "start_time,end_time,status,effective_status" });
+    } catch (error) {
+      return {
+        ...base,
+        start_time: plan.body.start_time ?? previous_start_time,
+        end_time: input.clear_end_time ? null : (plan.body.end_time ?? previous_end_time),
+        verified: false,
+        verification_error: error instanceof Error ? error.message : "Read-back failed",
+      };
+    }
+    const endNow = this.isoTime(after.end_time);
+    const startNow = this.isoTime(after.start_time);
+    const wantedEnd = plan.body.end_time ? metaTimeMs(plan.body.end_time) : null;
+    const wantedStart = plan.body.start_time ? metaTimeMs(plan.body.start_time) : null;
+    const endWrong = input.clear_end_time ? endNow !== null : wantedEnd != null && metaTimeMs(endNow) !== wantedEnd;
+    const startWrong = wantedStart != null && metaTimeMs(startNow) !== wantedStart;
+    if (endWrong || startWrong) {
+      throw new ExecutionVerificationError(
+        `Meta accepted the schedule update for "${name}", but reading it back shows start ${startNow ?? "none"} and end ${endNow ?? "none"}, which is not what was requested. Check the ad set in Ads Manager before trying again.`,
+        { adset_id: input.adset_id, requested: plan.body, start_time: startNow, end_time: endNow },
+      );
+    }
+    return {
+      ...base,
+      status: String(after.status ?? base.status) as MetaAdSet["status"],
+      effective_status: after.effective_status,
+      start_time: startNow,
+      end_time: endNow,
+      verified: true,
+    };
+  }
+
+  /**
+   * Exclude (or stop excluding) custom audiences. Meta takes the whole targeting object on
+   * update, so this reads it, changes only the exclusion list, posts the whole object back and
+   * checks the list read back. Added audiences are checked against the ad set's own account.
+   * Every refusal happens before the POST.
+   */
+  async updateAdSetAudienceExclusions(input: UpdateAdSetAudienceExclusionsInput): Promise<UpdateAdSetAudienceExclusionsResult> {
+    const adset = await this.graph.get<{
+      id?: string;
+      name?: string;
+      status?: string;
+      account_id?: unknown;
+      campaign_id?: string;
+      targeting?: unknown;
+    }>(input.adset_id, { fields: "id,name,status,account_id,campaign_id,targeting" });
+    const name = adset.name ?? input.adset_id;
+
+    // The account comes from the ad set itself, never from the proposal.
+    const accountId =
+      adset.account_id != null && String(adset.account_id).trim() ? normalizeAccountId(String(adset.account_id).trim()) : null;
+    if (!accountId) {
+      throw new Error(`Could not confirm which ad account ad set ${input.adset_id} belongs to. Nothing was changed.`);
+    }
+    if (input.account_id && normalizeAccountId(input.account_id) !== accountId) {
+      throw new Error(
+        `Ad set "${name}" belongs to ad account ${accountId}, not ${normalizeAccountId(input.account_id)}. Nothing was changed.`,
+      );
+    }
+
+    const targeting =
+      adset.targeting && typeof adset.targeting === "object" && !Array.isArray(adset.targeting)
+        ? (adset.targeting as Record<string, unknown>)
+        : null;
+    const merged = mergeExclusions(targeting, {
+      add: input.add_excluded_custom_audiences,
+      remove: input.remove_excluded_custom_audiences,
+    });
+    if (sameIds(merged.before, merged.after)) {
+      throw new Error("This ad set's exclusions are already as requested. Nothing was changed.");
+    }
+
+    // An audience is only excluded if it exists and belongs to this ad set's account.
+    for (const id of merged.after.filter((x) => !merged.before.includes(x))) {
+      let row: { account_id?: unknown };
+      try {
+        row = await this.graph.get<{ account_id?: unknown }>(id, { fields: "id,name,account_id" });
+      } catch (error) {
+        throw new Error(
+          `Audience ${id} could not be found in Meta (${error instanceof Error ? error.message : "lookup failed"}). Nothing was changed.`,
+        );
+      }
+      const owner = row.account_id != null && String(row.account_id).trim() ? normalizeAccountId(String(row.account_id)) : null;
+      if (owner !== accountId) {
+        throw new Error(`Audience ${id} belongs to another ad account (or its account could not be confirmed). Nothing was changed.`);
+      }
+    }
+
+    await this.graph.post(input.adset_id, { targeting: JSON.stringify(merged.targeting) });
+
+    const base = {
+      id: input.adset_id,
+      campaign_id: String(adset.campaign_id ?? ""),
+      account_id: accountId,
+      name,
+      status: String(adset.status ?? "PAUSED") as MetaAdSet["status"],
+      daily_budget_cents: 0,
+      previous_excluded_custom_audiences: merged.before,
+    };
+
+    // Read back: the change succeeded on Meta, so a failed re-read is reported as
+    // unverified (never as a failure that invites a retry).
+    let after: { targeting?: unknown; status?: string; effective_status?: string };
+    try {
+      after = await this.graph.get(input.adset_id, { fields: "targeting,status,effective_status" });
+    } catch (error) {
+      return {
+        ...base,
+        excluded_custom_audiences: merged.after,
+        verified: false,
+        verification_error: error instanceof Error ? error.message : "Read-back failed",
+      };
+    }
+    const now = excludedIdsOf(after.targeting);
+    if (!sameIds(now, merged.after)) {
+      throw new ExecutionVerificationError(
+        `Meta accepted the exclusion update for "${name}", but reading it back shows different exclusions than were requested. Check the ad set in Ads Manager before trying again.`,
+        { adset_id: input.adset_id, requested: merged.after, actual: now },
+      );
+    }
+    return {
+      ...base,
+      status: String(after.status ?? base.status) as MetaAdSet["status"],
+      effective_status: after.effective_status,
+      excluded_custom_audiences: now,
+      verified: true,
+    };
+  }
+
+  /**
+   * Change where an ad set's ads run. Meta takes the whole targeting object on update, so this
+   * reads it, changes only the placement keys, posts the whole object back and checks the
+   * placements read back. Every refusal happens before the POST.
+   */
+  async updateAdSetPlacements(input: UpdateAdSetPlacementsInput): Promise<UpdateAdSetPlacementsResult> {
+    const adset = await this.graph.get<{
+      id?: string;
+      name?: string;
+      status?: string;
+      account_id?: unknown;
+      campaign_id?: string;
+      targeting?: unknown;
+    }>(input.adset_id, { fields: "id,name,status,account_id,campaign_id,targeting" });
+    const name = adset.name ?? input.adset_id;
+
+    // The account comes from the ad set itself, never from the proposal.
+    const accountId =
+      adset.account_id != null && String(adset.account_id).trim() ? normalizeAccountId(String(adset.account_id).trim()) : null;
+    if (!accountId) {
+      throw new Error(`Could not confirm which ad account ad set ${input.adset_id} belongs to. Nothing was changed.`);
+    }
+    if (input.account_id && normalizeAccountId(input.account_id) !== accountId) {
+      throw new Error(
+        `Ad set "${name}" belongs to ad account ${accountId}, not ${normalizeAccountId(input.account_id)}. Nothing was changed.`,
+      );
+    }
+
+    const targeting =
+      adset.targeting && typeof adset.targeting === "object" && !Array.isArray(adset.targeting)
+        ? (adset.targeting as Record<string, unknown>)
+        : null;
+    const merged = mergePlacements(targeting, {
+      advantage_placements: input.advantage_placements,
+      publisher_platforms: input.publisher_platforms,
+      facebook_positions: input.facebook_positions,
+      instagram_positions: input.instagram_positions,
+      audience_network_positions: input.audience_network_positions,
+      messenger_positions: input.messenger_positions,
+      device_platforms: input.device_platforms,
+    });
+    if (placementsEqual(merged.before, merged.after)) {
+      throw new Error("This ad set already uses those placements. Nothing was changed.");
+    }
+
+    await this.graph.post(input.adset_id, { targeting: JSON.stringify(merged.targeting) });
+
+    const base = {
+      id: input.adset_id,
+      campaign_id: String(adset.campaign_id ?? ""),
+      account_id: accountId,
+      name,
+      status: String(adset.status ?? "PAUSED") as MetaAdSet["status"],
+      daily_budget_cents: 0,
+      previous_placements: merged.before,
+    };
+
+    // Read back: the change succeeded on Meta, so a failed re-read is reported as
+    // unverified (never as a failure that invites a retry).
+    let after: { targeting?: unknown; status?: string; effective_status?: string };
+    try {
+      after = await this.graph.get(input.adset_id, { fields: "targeting,status,effective_status" });
+    } catch (error) {
+      return {
+        ...base,
+        placements: merged.after,
+        verified: false,
+        verification_error: error instanceof Error ? error.message : "Read-back failed",
+      };
+    }
+    const now = placementStateOf(after.targeting);
+    if (!placementsSatisfy(now, merged.after)) {
+      throw new ExecutionVerificationError(
+        `Meta accepted the placement update for "${name}", but reading it back shows different placements than were requested. Check the ad set in Ads Manager before trying again.`,
+        { adset_id: input.adset_id, requested: merged.after, actual: now },
+      );
+    }
+    return {
+      ...base,
+      status: String(after.status ?? base.status) as MetaAdSet["status"],
+      effective_status: after.effective_status,
+      placements: now,
+      verified: true,
+    };
+  }
+
+  /**
+   * Change an ad set's bid strategy and cap. Ad sets under a campaign budget are refused
+   * (the strategy lives on the campaign). Every refusal happens before the POST, and the
+   * result is read back and checked.
+   */
+  async updateAdSetBid(input: UpdateAdSetBidInput): Promise<UpdateAdSetBidResult> {
+    const adset = await this.graph.get<{
+      id?: string;
+      name?: string;
+      status?: string;
+      account_id?: unknown;
+      campaign_id?: string;
+      optimization_goal?: string;
+      bid_strategy?: string;
+      bid_amount?: string | number;
+      bid_constraints?: unknown;
+      campaign?: { id?: string; objective?: string; daily_budget?: string; lifetime_budget?: string };
+    }>(input.adset_id, {
+      fields:
+        "id,name,status,account_id,campaign_id,optimization_goal,bid_strategy,bid_amount,bid_constraints,campaign{id,objective,daily_budget,lifetime_budget}",
+    });
+    const name = adset.name ?? input.adset_id;
+
+    // The account comes from the ad set itself, never from the proposal.
+    const accountId =
+      adset.account_id != null && String(adset.account_id).trim() ? normalizeAccountId(String(adset.account_id).trim()) : null;
+    if (!accountId) {
+      throw new Error(`Could not confirm which ad account ad set ${input.adset_id} belongs to. Nothing was changed.`);
+    }
+    if (input.account_id && normalizeAccountId(input.account_id) !== accountId) {
+      throw new Error(
+        `Ad set "${name}" belongs to ad account ${accountId}, not ${normalizeAccountId(input.account_id)}. Nothing was changed.`,
+      );
+    }
+
+    const campaign = adset.campaign ?? {};
+    const currency = await this.requireAccountCurrency(accountId);
+    const was = this.bidState(adset, currency);
+    const strategy = input.bid_strategy.trim().toUpperCase();
+    const plan = planBidChange(
+      {
+        cbo: positiveMinor(campaign.daily_budget) || positiveMinor(campaign.lifetime_budget),
+        objective: campaign.objective,
+        optimization_goal: adset.optimization_goal,
+        bid_strategy: was.bid_strategy,
+        bid_amount_minor: Number(adset.bid_amount) > 0 ? Number(adset.bid_amount) : null,
+        roas_floor: was.roas_average_floor,
+        currency,
+      },
+      { bid_strategy: strategy, bid_amount: input.bid_amount, roas_average_floor: input.roas_average_floor },
+    );
+
+    await this.graph.post(input.adset_id, plan.body);
+
+    const base = {
+      id: input.adset_id,
+      campaign_id: String(adset.campaign_id ?? campaign.id ?? ""),
+      account_id: accountId,
+      name,
+      status: String(adset.status ?? "PAUSED") as MetaAdSet["status"],
+      daily_budget_cents: 0,
+      previous_bid_strategy: was.bid_strategy,
+      previous_bid_amount_cents: was.bid_amount_cents,
+      previous_roas_average_floor: was.roas_average_floor,
+    };
+
+    // Read back: the change succeeded on Meta, so a failed re-read is reported as
+    // unverified (never as a failure that invites a retry).
+    let after: { bid_strategy?: unknown; bid_amount?: unknown; bid_constraints?: unknown; status?: string; effective_status?: string };
+    try {
+      after = await this.graph.get(input.adset_id, { fields: "bid_strategy,bid_amount,bid_constraints,status,effective_status" });
+    } catch (error) {
+      return {
+        ...base,
+        bid_strategy: strategy,
+        bid_amount_cents: input.bid_amount != null ? Math.round(input.bid_amount * 100) : null,
+        roas_average_floor: input.roas_average_floor ?? null,
+        verified: false,
+        verification_error: error instanceof Error ? error.message : "Read-back failed",
+      };
+    }
+    const now = this.bidState(after, currency);
+    const capped = strategy === "COST_CAP" || strategy === "LOWEST_COST_WITH_BID_CAP";
+    const wrong =
+      now.bid_strategy !== strategy ||
+      (capped && now.bid_amount_cents !== Math.round((input.bid_amount ?? 0) * 100)) ||
+      (strategy === "LOWEST_COST_WITH_MIN_ROAS" &&
+        (now.roas_average_floor == null || Math.abs(now.roas_average_floor - (input.roas_average_floor ?? 0)) > 0.0001));
+    if (wrong) {
+      throw new ExecutionVerificationError(
+        `Meta accepted the bid update for "${name}", but reading it back shows ${now.bid_strategy ?? "no bid strategy"}${
+          now.bid_amount_cents != null ? ` with a cap of ${formatMoney(now.bid_amount_cents, currency)}` : ""
+        }, which is not what was requested. Check the ad set in Ads Manager before trying again.`,
+        { adset_id: input.adset_id, requested: plan.body, bid_strategy: now.bid_strategy, bid_amount_cents: now.bid_amount_cents },
+      );
+    }
+    return {
+      ...base,
+      status: String(after.status ?? base.status) as MetaAdSet["status"],
+      effective_status: after.effective_status,
+      bid_strategy: now.bid_strategy ?? strategy,
+      bid_amount_cents: now.bid_amount_cents,
+      roas_average_floor: now.roas_average_floor,
+      verified: true,
+    };
+  }
+
   async createCampaign(input: CreateCampaignInput): Promise<MetaCampaign> {
     const accountId = normalizeAccountId(input.account_id);
     const hasDaily = typeof input.daily_budget_cents === "number";
@@ -1946,16 +2453,33 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     options: Record<string, unknown> = {},
   ): Promise<{ text: string; structured?: Record<string, unknown> | null }> {
     const id = normalizeAccountId(accountId);
-    const lookbackDays = Math.min(
-      90,
-      Math.max(3, Number(options.lookback_days ?? 7) || 7),
-    );
-    const { dateStart, dateStop } = lookbackWindow(lookbackDays);
-    const [adsets, currency, campaigns] = await Promise.all([
+    // A period the operator asked for wins over the lookback; the default stays 7 days.
+    const stated = explicitWindow(options);
+    const lookbackDays = stated
+      ? stated.days
+      : Math.min(90, Math.max(3, Number(options.lookback_days ?? 7) || 7));
+    const { dateStart, dateStop } = stated ?? lookbackWindow(lookbackDays);
+    const scope = readScope(options);
+    const [allAdsets, currency, allCampaigns] = await Promise.all([
       this.listAdSets(id),
       this.accountCurrency(id),
       this.listCampaigns(id).catch(() => [] as MetaCampaign[]),
     ]);
+    // Only what the operator named: ad sets by id or by campaign, and a campaign-level
+    // budget only when its campaign (not just one ad set) is in scope.
+    const inScope = (a: { id: string; campaign_id: string }) =>
+      scope.adsetIds.length
+        ? scope.adsetIds.includes(a.id)
+        : scope.campaignIds.length
+          ? scope.campaignIds.includes(a.campaign_id)
+          : true;
+    const adsets = allAdsets.filter(inScope);
+    const campaigns = scope.adsetIds.length
+      ? []
+      : scope.campaignIds.length
+        ? allCampaigns.filter((c) => scope.campaignIds.includes(c.id))
+        : allCampaigns;
+    const scoped = scope.adsetIds.length > 0 || scope.campaignIds.length > 0;
     const money = (cents: number) => formatMoney(cents, currency);
     let insightsError: string | null = null;
     // Every ad set's window performance, budgeted or not (CBO ad sets carry no budget).
@@ -2004,10 +2528,13 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
         level: "adset",
         time_range: JSON.stringify({ since: dateStart, until: dateStop }),
         limit: 100,
+        ...(scopeFiltering(scope) ? { filtering: scopeFiltering(scope) } : {}),
       });
       for (const row of data.data ?? []) {
         const adsetId = String(row.adset_id ?? "");
         if (!adsetId) continue;
+        // Meta applies the filter too; this keeps a stray row out of the ranking regardless.
+        if (scoped && !adsets.some((a) => a.id === adsetId)) continue;
         const existing =
           byId.get(adsetId) ??
           ({
@@ -2272,19 +2799,42 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     const lookbackDays = 14;
     const frequencyMax = Number(options.frequency_max) > 0 ? Number(options.frequency_max) : undefined;
     const ads = await this.listAds(id);
+    // Siblings are judged on every live ad, not just the ones in scope: the last live
+    // ad of an ad set is never proposed for a pause.
     const activeAds = ads.filter((a) => a.status === "ACTIVE");
+
+    // A period the operator asked for anchors the two weeks on its last day; the rule stays weekly.
+    const anchor =
+      typeof options.until === "string" && ISO_DAY.test(options.until) ? options.until : null;
+    const windows = anchor
+      ? {
+          now: { since: shiftDay(anchor, -6), until: anchor },
+          fortnight: { since: shiftDay(anchor, -13), until: anchor },
+        }
+      : null;
+    const scope = readScope(options);
+    const filtering = scopeFiltering(scope);
+    const adCampaign = new Map(ads.map((a) => [a.id, a.campaign_id]));
+    const adInScope = (adId: string, adsetId: string) =>
+      scope.adIds.length
+        ? scope.adIds.includes(adId)
+        : scope.adsetIds.length
+          ? scope.adsetIds.includes(adsetId)
+          : scope.campaignIds.length
+            ? scope.campaignIds.includes(adCampaign.get(adId) ?? "")
+            : true;
 
     const proposals: Array<{
       tool: string;
       args: Record<string, unknown>;
       rationale: string;
     }> = [];
-    let dateStart = "";
-    let dateStop = "";
+    let dateStart = windows?.now.since ?? "";
+    let dateStop = windows?.now.until ?? "";
     const lines: string[] = [];
 
     try {
-      const insights = async (preset: "last_7d" | "last_14d") => {
+      const insights = async (which: "now" | "fortnight") => {
         const rows: Array<Record<string, unknown>> = [];
         let after: string | undefined;
         for (let page = 0; page < 10; page++) {
@@ -2294,8 +2844,11 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
           }>(`${id}/insights`, {
             fields: "ad_id,ad_name,adset_id,spend,impressions,frequency,inline_link_clicks,date_start,date_stop",
             level: "ad",
-            date_preset: preset,
+            ...(windows
+              ? { time_range: JSON.stringify(windows[which]) }
+              : { date_preset: which === "now" ? "last_7d" : "last_14d" }),
             limit: 200,
+            ...(filtering ? { filtering } : {}),
             ...(after ? { after } : {}),
           });
           rows.push(...(data.data ?? []));
@@ -2304,9 +2857,12 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
         }
         return rows;
       };
-      const [now, fortnight] = await Promise.all([insights("last_7d"), insights("last_14d").catch(() => [])]);
-      dateStart = String(now[0]?.date_start ?? "");
-      dateStop = String(now[0]?.date_stop ?? "");
+      const [nowAll, fortnight] = await Promise.all([insights("now"), insights("fortnight").catch(() => [])]);
+      const now = nowAll.filter((r) => adInScope(String(r.ad_id ?? ""), String(r.adset_id ?? "")));
+      if (!windows) {
+        dateStart = String(nowAll[0]?.date_start ?? "");
+        dateStop = String(nowAll[0]?.date_stop ?? "");
+      }
       const totals14 = new Map(fortnight.map((r) => [String(r.ad_id ?? ""), { imps: Number(r.impressions ?? 0), clicks: Number(r.inline_link_clicks ?? 0) }]));
       const fatigued = now
         .map((row) => {

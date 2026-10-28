@@ -139,7 +139,6 @@ import {
 } from "@/lib/agent/strategy-brief";
 import {
   renderAdSetEvidence,
-  renderOptimisationSignals,
   renderScorecardEvidence,
   renderScorecardMarkdown,
 } from "@/lib/audit/render";
@@ -166,10 +165,7 @@ import {
   mentionsCreativeGeneration,
   type RequestIntent,
 } from "@/lib/agent/task-plan";
-import {
-  wantsQueueApprovals,
-} from "@/lib/agent/optimize-queue";
-import { buildFullOptimizeProposals, holdIncreasesOnSilentTracking } from "@/lib/agent/optimize-proposals";
+import { buildOptimizeEvidence, type EntityRef, type Inventory, type OfferedProposal } from "@/lib/agent/optimize-evidence";
 import {
   buildAuditClarifyingQuestion,
   resolveAuditBrief,
@@ -199,6 +195,7 @@ import {
   stripDestinationMarkers,
 } from "@/lib/landing/verified-destinations";
 import { logger } from "@/lib/observability/logger";
+import { rulesBrief, type RequestBrief } from "@/lib/agent/request-brief";
 import { resolvePrimaryAccountId } from "@/lib/adspirer/resolve-meta-account";
 import type { ClientService, ConnectedMetaAccount, WorkspaceDocument } from "@/types";
 import type { CreativeDraft } from "@/lib/creatives/drafts";
@@ -361,6 +358,8 @@ export async function runAdspirerAgent(input: {
   history?: AgentHistoryMessage[];
   /** Intent already resolved by the task runner (avoids re-detecting). */
   intent?: RequestIntent;
+  /** What the operator's message means: mode, focus, scope, period, queue selection. */
+  brief?: RequestBrief;
   correlationId?: string;
   onProgress?: (event: AgentProgressEvent) => void | Promise<void>;
 }): Promise<AgentRunResult> {
@@ -636,6 +635,7 @@ type WriterInput = {
   reportData?: import("@/lib/report/schema").AuditReport;
   history?: AgentHistoryMessage[];
   intent?: RequestIntent;
+  brief?: RequestBrief;
   correlationId?: string;
   onProgress?: (event: AgentProgressEvent) => void | Promise<void>;
 };
@@ -718,7 +718,7 @@ const FRESH_DATA_RULE = [
   "- Stay on the same account, campaign scope and period the chat is already working on unless the operator changes them.",
 ].join("\n");
 
-function buildWriterMessages(input: WriterInput): {
+export function buildWriterMessages(input: WriterInput): {
   /** Same for every client and turn — cached. */
   systemStatic: string;
   /** Client brand, research memo, documents. */
@@ -726,6 +726,7 @@ function buildWriterMessages(input: WriterInput): {
   messages: Array<{ role: "assistant" | "user" | "system"; content: string }>;
 } {
   const intent = resolveWriterIntent(input);
+  const brief = input.brief;
   const evidence = input.toolEvidence?.trim() || "(no live tool evidence yet)";
   const accountHint =
     evidence.match(/ID:\s*(act_[^\s]+)/)?.[1] ??
@@ -810,18 +811,29 @@ function buildWriterMessages(input: WriterInput): {
   // the settings saved this turn, are said first.
   const categoryNoticeRules = writerNoticeRules(evidence);
 
+  const optimizeShared = [
+    "- State the period and scope you used in your first sentence (they are in \"Scope and period\"). If a name was not found, say so and stop; never widen to the account.",
+    "- Use only this turn's live evidence. If an earlier report is in this chat, use it only to decide what to look at; every number must come from the evidence below.",
+    "- Use the 'Optimisation signals (live checkpoints)' to order advice: fix tracking (T-codes) before scaling; consolidate learning-limited ad sets; keep 7-day frequency at 1.5–2.5 for prospecting and 3–5 for retargeting; keep 2–6 live ads per ad set and add 3–5 new concepts a month; exclude customers from prospecting; keep retargeting under half of spend.",
+    "- Describe each step as a Meta specialist would: what to change, the numbers behind it (with source and period), the expected effect. Refer to proposals by number (#1, #2…). Add no step that is not in the evidence.",
+    "- Say plainly which steps this app can queue and which need someone else (a developer, the landing page owner, someone in Ads Manager, the client), using \"What can be done, and by whom\".",
+    "- Do not repeat the \"Who does what\" table: the system adds it after your reply.",
+    "- Never invent a 'known limitation'. Offer at most one next step.",
+  ];
   const optimizeRules =
     intent === "optimize"
-      ? [
-          "- Operator asked to optimize (or queue optimizations for Approvals).",
-          "- ONLY mark items as Ready to queue if they appear in Ready-to-queue EXECUTE proposals JSON.",
-          "- Typical queueable tools: update_adset_budget, update_campaign_budget (campaign-budget / CBO campaigns), pause_adset, resume_adset, pause_ad, resume_ad, resume_campaign, create_adset (broad/Advantage+).",
-          "- Creative refresh / Pixel verification stay waiting until the operator provides image / Pixel ID — never claim those were queued.",
-          "- When queuing: do NOT show ad_picker. Confirm separate Approvals cards for each tool.",
-          "- NEVER invent a 'known limitation' that tool calls did not fire.",
-          "- Use the 'Optimisation signals (live checkpoints)' to order advice: fix tracking (T-codes) before scaling; consolidate learning-limited ad sets; keep 7-day frequency at 1.5–2.5 for prospecting and 3–5 for retargeting; keep 2–6 live ads per ad set and add 3–5 new concepts a month; exclude customers from prospecting; keep retargeting under half of spend.",
-          "- For each recommendation give the expected effect with numbers from the evidence (spend moved, results at stake) — no generic advice.",
-        ]
+      ? brief?.mode === "act" && brief.queue.requested
+        ? [
+            "- The operator asked for changes. The Queue decision section below lists exactly what is queued and what is not: confirm it and nothing else, and never add, drop or renumber an item or claim anything more was queued.",
+            "- Do not write tool JSON for items on the numbered list: the system queues them.",
+            "- Only if the operator named a campaign, ad set or ad for a direct change (\"pause X\", \"set the daily budget of X to 60\"), append one JSON block for that change with the matching tool and the exact id from the evidence (budget tools take cents; give an end date with its time zone offset). Write exactly what they named: the campaign, ad set or ad itself, not its ad sets or ads, and no other change. Never invent ids. For a direct change the Queue decision section says whether the system already matched it from the live list; do not say it is queued, the system lists what was queued under your reply.",
+            "- Tell them to review the queued items in Approvals; nothing changes in Meta until approved.",
+            ...optimizeShared,
+          ]
+        : [
+            "- The operator has not asked for changes: do not queue anything and do not claim anything was queued or sent to Approvals. Tell them they can ask by number (\"queue #2\"), by area (\"queue the budget changes\") or \"all of these\".",
+            ...optimizeShared,
+          ]
       : [
           "- Do NOT start an optimize/execute workflow unless Detected intent is optimize (or they clearly asked to change Meta).",
         ];
@@ -857,7 +869,7 @@ function buildWriterMessages(input: WriterInput): {
           "- The report you wrote earlier in this chat is your source. Its findings, failed checks, numbers, scope and period are the basis — cite them as \"from the audit above\" (this overrides the fresh-data rule's ban on reusing earlier figures for this purpose only).",
           "- Produce ONLY what was asked (for example the optimization steps): a prioritized, numbered list. Each step: the fix, which finding / check ID it comes from, the campaign or ad set it applies to, and the expected effect. Order by impact; fix tracking before scaling.",
           "- Do NOT restate or recreate the audit: no executive summary, no scope header, no scorecard, no checkpoint tables, no per-ad-set verdicts.",
-          "- If they ask which recommendations you can do: answer per item from what Approvals can change in Meta (budgets, pausing/resuming campaigns, ad sets and ads, creating ad sets, ads and campaigns, generating creatives and copy) versus what the client or a developer must do (pixel / Conversions API, landing pages, site speed). Say which is which; never list something you can't do as doable.",
+          "- If they ask which recommendations you can do: answer per item using \"What can be done, and by whom\" in your instructions. Say which is which; never list something you can't do as doable.",
           "- Only use data tools if a step needs a number the earlier report does not contain; name the source if you do.",
           "- Recommendations only: do NOT queue Approvals, do NOT propose execute tools or JSON, and do NOT say Meta was changed. End with one sentence saying they can ask you to queue specific steps in Approvals.",
           "- No emojis. No sign-off menu.",
@@ -1705,6 +1717,8 @@ export async function gatherDiagnoseEvidence(input: {
   history?: AgentHistoryMessage[];
   /** Pre-resolved intent (supports audit brief follow-ups). */
   intent?: ReturnType<typeof detectRequestIntent>;
+  /** What the operator's message means: mode, focus, scope, period, queue selection. */
+  brief?: RequestBrief;
   /** Reads the task runner already started — shared to avoid repeat queries. */
   preloaded?: {
     metaAccounts?: Promise<ConnectedMetaAccount[]>;
@@ -1721,8 +1735,16 @@ export async function gatherDiagnoseEvidence(input: {
   accountId: string | null;
   evidence: string;
   toolCalls: AgentToolCallProposal[];
-  /** Concrete execute tools ready to queue when the operator asks for Approvals. */
-  executeProposals?: AgentToolCallProposal[];
+  /** Numbered optimisation proposals offered this turn (nothing is queued from them until asked). */
+  offered?: OfferedProposal[];
+  /** Ids in the optimisation's scope; null = the whole account. */
+  scopeEntityIds?: string[] | null;
+  /** Campaigns, ad sets and ads by name, for resolving names the operator types later. */
+  entityIndex?: EntityRef[];
+  /** The account's campaigns, ad sets and ads, for resolving names the operator typed. */
+  inventory?: Inventory;
+  /** Code-written "who does what" table appended to an optimisation reply. */
+  optimizeAppendix?: string;
   copyPicker?: CopyPickerUi;
   adPicker?: AdPickerUi;
   imageChoice?: ImageChoiceUi;
@@ -1756,7 +1778,11 @@ export async function gatherDiagnoseEvidence(input: {
   let currency: string | null = null;
   const money = (amount: number) => formatMoneyMajor(amount, currency);
   const toolCalls: AgentToolCallProposal[] = [];
-  const executeProposals: AgentToolCallProposal[] = [];
+  let offered: OfferedProposal[] = [];
+  let scopeEntityIds: string[] | null = null;
+  let entityIndex: EntityRef[] = [];
+  let inventory: Inventory | undefined;
+  let optimizeAppendix: string | undefined;
   const sections: string[] = [];
   let copyPicker: CopyPickerUi | undefined;
   let adPicker: AdPickerUi | undefined;
@@ -3440,32 +3466,38 @@ export async function gatherDiagnoseEvidence(input: {
   }
 
   if (intent === "optimize" && accountId) {
-    const queueNow = wantsQueueApprovals(input.request);
     await input.onProgress?.({
       phase: "optimize",
       label: "Building optimize proposals…",
       stepId: "optimize",
     });
-    // Live checkpoints (last 14 days) load alongside the proposals: they
-    // explain what to fix first and stop budget increases on ad sets whose
-    // conversions aren't being recorded.
-    const snapshotPromise = provider.getAuditSnapshot
-      ? provider.getAuditSnapshot(accountId, { days: 14 }).catch(() => null)
-      : Promise.resolve(null);
     try {
-      const ads = await provider.listAds(accountId);
-      toolCalls.push({
-        name: "list_ads",
-        args: { account_id: accountId },
-        rationale: "Ads inventory for optimize",
+      const optimizeBrief = input.brief ?? rulesBrief(input.request, input.history ?? []);
+      const { getClient } = await import("@/lib/approvals/service");
+      const built = await buildOptimizeEvidence({
+        provider,
+        accountId,
+        brief: optimizeBrief,
+        currency: await getClient(input.clientId).then((c) => c.currency).catch(() => null),
+        goals: await turnGoals(),
       });
+      sections.push(...built.sections);
+      toolCalls.push(...built.toolsRun);
+      offered = built.offered;
+      scopeEntityIds = built.scopeEntityIds;
+      entityIndex = built.entityIndex;
+      inventory = built.inventory;
+      optimizeAppendix = built.appendix || undefined;
 
-      const known = ads.find((a) => input.request.includes(a.id));
-      // Only show ad picker when the operator still needs to pick an ad for
-      // creative-focused work — never after / during an Approvals queue turn.
-      if (!queueNow && !known) {
+      // The ad picker is only for a creative refresh where the operator hasn't said which ad.
+      if (
+        optimizeBrief.focus.includes("creative") &&
+        !optimizeBrief.queue.requested &&
+        !built.adNamed &&
+        built.ads.length
+      ) {
         adPicker = {
-          ads: ads.slice(0, 40).map((a) => ({
+          ads: built.ads.slice(0, 40).map((a) => ({
             id: a.id,
             name: a.name,
             status: a.status,
@@ -3474,125 +3506,20 @@ export async function gatherDiagnoseEvidence(input: {
             campaign_id: a.campaign_id,
           })),
         };
-      }
-
-      sections.push(
-        [
-          "### Ads inventory",
-          ...ads.slice(0, 40).map(
-            (a) =>
-              `- ${a.id} · ${a.name} · ${a.status}${
-                a.creative_summary ? ` — ${a.creative_summary}` : ""
-              }`,
-          ),
-          "",
-          known
-            ? `Operator focused ad: ${known.id} (${known.name}).`
-            : queueNow
-              ? "Approvals queue turn — do NOT show ad_picker UI."
-              : "Ad picker only if they still need to pick an ad for creative refresh.",
-          "Optimize from live Meta Graph evidence; EXECUTE mutations go through Approvals.",
-        ]
-          .filter(Boolean)
-          .join("\n"),
-      );
-
-      const { getClient } = await import("@/lib/approvals/service");
-      const bundle = await buildFullOptimizeProposals({
-        provider,
-        accountId,
-        currency: await getClient(input.clientId).then((c) => c.currency).catch(() => null),
-      });
-      // Also record diagnose tools for audit trail
-      toolCalls.push(
-        {
-          name: "optimize_meta_budget",
-          args: { account_id: accountId },
-          rationale: "Budget optimize",
-        },
-        {
-          name: "detect_meta_creative_fatigue",
-          args: { account_id: accountId },
-          rationale: "Creative fatigue",
-        },
-        {
-          name: "optimize_meta_placements",
-          args: { account_id: accountId },
-          rationale: "Placement optimize",
-        },
-      );
-
-      const snapshot = await snapshotPromise;
-      const hold = holdIncreasesOnSilentTracking(bundle.proposals, snapshot);
-      executeProposals.push(...hold.kept);
-      bundle.blockedLines.push(...hold.heldLines);
-      const queueableLines = bundle.queueableLines.filter(
-        (line) => !hold.heldIds.some((id) => line.includes(id)),
-      );
-      if (snapshot) {
-        sections.push(renderOptimisationSignals(evaluateCheckpoints(snapshot, { goals: await turnGoals() })));
-        toolCalls.push({
-          name: "audit_checkpoints",
-          args: { account_id: accountId, days: 14 },
-          rationale: "Optimisation signals",
-        });
-      }
-
-      sections.push(
-        [
-          "### Queueable optimizations (ONLY these may be marked Ready to queue)",
-          ...(queueableLines.length
-            ? queueableLines
-            : ["- (none — live Meta data did not yield concrete mutate args)"]),
-          "",
-          "### Needs operator input (NOT Ready to queue — do not claim Approvals will show these)",
-          ...bundle.blockedLines,
-        ].join("\n"),
-      );
-
-      if (executeProposals.length) {
         sections.push(
           [
-            "### Ready-to-queue EXECUTE proposals (structured)",
-            "Use these exact tool payloads. Do not invent different tools or IDs.",
-            "```json",
-            JSON.stringify(
-              executeProposals.map((p) => ({
-                tool: p.name,
-                args: p.args,
-                rationale: p.rationale,
-              })),
-              null,
-              2,
+            "### Ads inventory",
+            ...built.ads.slice(0, 40).map(
+              (a) => `- ${a.id} · ${a.name} · ${a.status}${a.creative_summary ? ` — ${a.creative_summary}` : ""}`,
             ),
-            "```",
-            queueNow
-              ? "Operator asked to send/queue for Approvals — the system will queue EVERY proposal above as separate Approvals items. Confirm in prose. Do NOT show ad_picker. Do NOT invent Reactivate/Advantage+/broad-ad-set rows that are not in this JSON."
-              : "Present only these as Ready to queue. Ask if they want them sent to Approvals. Creative refresh / Pixel stay waiting.",
-          ].join("\n"),
-        );
-      } else {
-        sections.push(
-          [
-            "### Ready-to-queue EXECUTE proposals",
-            "- No concrete execute mutations yet. Do not invent a fake Approvals queue or a 'known limitation'.",
+            "",
+            "Ad picker only if they still need to pick an ad for creative refresh.",
           ].join("\n"),
         );
       }
-
-      sections.push(
-        [
-          "### Operator next steps",
-          queueNow
-            ? "Confirm each queued tool appears under Approvals (separate cards). Nothing is live until executed."
-            : "Summarize queueable vs blocked. If they ask to send for approval, queue only the structured EXECUTE tools.",
-        ].join("\n"),
-      );
     } catch (error) {
       sections.push(
-        `### Optimize\n- Failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        `### Optimize\n- Failed: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   } else if (intent === "optimize" && !accountId) {
@@ -3605,7 +3532,11 @@ export async function gatherDiagnoseEvidence(input: {
     accountId,
     evidence: sections.join("\n\n"),
     toolCalls,
-    executeProposals: executeProposals.length ? executeProposals : undefined,
+    offered,
+    scopeEntityIds,
+    entityIndex,
+    inventory,
+    optimizeAppendix,
     copyPicker,
     adPicker,
     imageChoice,

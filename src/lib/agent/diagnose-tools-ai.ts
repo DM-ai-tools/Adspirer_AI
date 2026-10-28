@@ -27,6 +27,10 @@ const WORKSPACE_READ_ALLOWLIST = [
   "analyze_brand_url",
   "generate_ad_images",
   "meta_insights",
+  // Budget and fatigue reads take a period and scope; the health check covers tracking, learning and audiences.
+  "optimize_meta_budget",
+  "detect_meta_creative_fatigue",
+  "meta_account_health",
   "ga4_report",
   "search_console_query",
   "google_ads_report",

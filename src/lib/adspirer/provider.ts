@@ -1,4 +1,6 @@
 import type { MetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
+import type { PlacementChange } from "@/lib/meta/adset-edits";
+import type { PlacementState } from "@/lib/meta/placement-format";
 
 import type {
   CreateProgress,
@@ -334,6 +336,108 @@ export interface UpdateCampaignBudgetInput {
 }
 
 /**
+ * What the ad set edit tools read before changing an ad set, and read again after (one read
+ * by id). A field is null when Meta reports none (for instance an ad set with no end date).
+ */
+export type AdSetDetail = {
+  status: string;
+  daily_budget_cents: number | null;
+  /** ISO time the ad set starts. */
+  start_time: string | null;
+  /** ISO time the ad set stops; null = it runs until paused. */
+  end_time: string | null;
+  /** LOWEST_COST_WITHOUT_CAP, COST_CAP, LOWEST_COST_WITH_BID_CAP or LOWEST_COST_WITH_MIN_ROAS; null when Meta reports none. */
+  bid_strategy: string | null;
+  /** The cost or bid cap, in app cents (major units x 100). */
+  bid_amount_cents: number | null;
+  /** The minimum ROAS as a multiple (2.5 = 2.5x). */
+  roas_average_floor: number | null;
+  /** Where the ads run; null lists mean automatic (Advantage+) placements. */
+  placements: PlacementState;
+  /** Ids of the custom audiences the ad set excludes. */
+  excluded_custom_audiences: string[];
+};
+
+/** Move or clear an ad set's end date, or move the start of an ad set that has not started. */
+export interface UpdateAdSetScheduleInput {
+  /** Expected account; the live provider derives the real one from the ad set and refuses on mismatch. */
+  account_id?: string;
+  adset_id: string;
+  /** New end date (ISO, in the future). */
+  end_time?: string;
+  /** Run until paused. Not allowed for a lifetime budget. */
+  clear_end_time?: boolean;
+  /** New start (ISO, in the future, only before the ad set has started). */
+  start_time?: string;
+}
+
+export type UpdateAdSetScheduleResult = MetaAdSet & {
+  start_time: string | null;
+  end_time: string | null;
+  previous_start_time: string | null;
+  previous_end_time: string | null;
+  effective_status?: string;
+  verified: boolean;
+  verification_error?: string;
+};
+
+/** Change an ad set's bid strategy and cap (ad sets that hold their own budget). */
+export interface UpdateAdSetBidInput {
+  /** Expected account; the live provider derives the real one from the ad set and refuses on mismatch. */
+  account_id?: string;
+  adset_id: string;
+  bid_strategy: string;
+  /** Cost cap or bid cap, in major units per result. */
+  bid_amount?: number;
+  /** Minimum ROAS as a multiple (2.5 = 2.5x). */
+  roas_average_floor?: number;
+}
+
+export type UpdateAdSetBidResult = MetaAdSet & {
+  bid_strategy: string;
+  bid_amount_cents: number | null;
+  roas_average_floor: number | null;
+  previous_bid_strategy: string | null;
+  previous_bid_amount_cents: number | null;
+  previous_roas_average_floor: number | null;
+  effective_status?: string;
+  verified: boolean;
+  verification_error?: string;
+};
+
+/** Change where an ad set's ads run: manual platforms and positions, or automatic (Advantage+) placements. */
+export type UpdateAdSetPlacementsInput = {
+  /** Expected account; the live provider derives the real one from the ad set and refuses on mismatch. */
+  account_id?: string;
+  adset_id: string;
+} & PlacementChange;
+
+export type UpdateAdSetPlacementsResult = MetaAdSet & {
+  placements: PlacementState;
+  previous_placements: PlacementState;
+  effective_status?: string;
+  verified: boolean;
+  verification_error?: string;
+};
+
+/** Exclude (or stop excluding) custom audiences on an ad set; the rest of the targeting is kept. */
+export interface UpdateAdSetAudienceExclusionsInput {
+  /** Expected account; the live provider derives the real one from the ad set and refuses on mismatch. */
+  account_id?: string;
+  adset_id: string;
+  add_excluded_custom_audiences?: string[];
+  remove_excluded_custom_audiences?: string[];
+}
+
+export type UpdateAdSetAudienceExclusionsResult = MetaAdSet & {
+  excluded_custom_audiences: string[];
+  previous_excluded_custom_audiences: string[];
+  effective_status?: string;
+  verified: boolean;
+  verification_error?: string;
+};
+
+/**
  * Domain-oriented Meta Ads provider.
  * Implementations: MockMetaAdsProvider, AdspirerMCPProvider.
  */
@@ -364,6 +468,10 @@ export interface MetaAdsProvider {
 
   updateAdSetBudget(input: UpdateAdSetBudgetInput): Promise<MetaAdSet>;
   updateCampaignBudget(input: UpdateCampaignBudgetInput): Promise<MetaCampaign>;
+  updateAdSetSchedule(input: UpdateAdSetScheduleInput): Promise<UpdateAdSetScheduleResult>;
+  updateAdSetBid(input: UpdateAdSetBidInput): Promise<UpdateAdSetBidResult>;
+  updateAdSetPlacements(input: UpdateAdSetPlacementsInput): Promise<UpdateAdSetPlacementsResult>;
+  updateAdSetAudienceExclusions(input: UpdateAdSetAudienceExclusionsInput): Promise<UpdateAdSetAudienceExclusionsResult>;
   pauseCampaign(accountId: string, campaignId: string): Promise<MetaCampaign>;
   resumeCampaign(accountId: string, campaignId: string): Promise<MetaCampaign>;
   pauseAdSet(accountId: string, adSetId: string): Promise<MetaAdSet>;
@@ -396,6 +504,8 @@ export interface MetaAdsProvider {
     entityId: string,
   ): Promise<{ status: string; daily_budget_cents?: number | null } | null>;
   resumeAd(accountId: string, adId: string): Promise<MetaAd>;
+  /** An ad set's schedule (and later bid, placements and exclusions), read by id. null when it isn't in the account. */
+  getAdSetDetail?(accountId: string, adSetId: string): Promise<AdSetDetail | null>;
 
   /** Adspirer list_meta_custom_audiences — for picker UIs (names, not raw ID entry). */
   listCustomAudiences?(accountId: string): Promise<

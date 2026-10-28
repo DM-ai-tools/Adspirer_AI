@@ -92,60 +92,31 @@ function pickCreativeSeed(
   );
 }
 
+/** One kind of proposal with the evidence lines that go with it. */
+export type ProposalPart = {
+  proposals: AgentToolCallProposal[];
+  /** Operator-facing lines (only queueable items). */
+  queueableLines: string[];
+  /** Items that need operator input before Approvals. */
+  blockedLines: string[];
+};
+
 /**
- * Build every EXECUTE proposal we can safely queue for an account optimize turn.
- * Only tools with concrete IDs/args are included — chat must not invent extras.
+ * Reactivate paused campaigns only with evidence they produced results in the
+ * last 90 days: resuming starts real spend.
  */
-export async function buildFullOptimizeProposals(input: {
+export async function reactivationPart(input: {
   provider: MetaAdsProvider;
   accountId: string;
-  /** Optional client website — used only if live creatives lack a landing URL. */
-  fallbackLandingUrl?: string | null;
-  /** The client's currency, for spend in rationales. */
+  campaigns: MetaCampaign[];
+  adsets: MetaAdSet[];
   currency?: string | null;
-}): Promise<OptimizeProposalBundle> {
-  const { provider, accountId } = input;
+}): Promise<ProposalPart> {
+  const { provider, accountId, campaigns, adsets } = input;
   const proposals: AgentToolCallProposal[] = [];
   const queueableLines: string[] = [];
   const blockedLines: string[] = [];
 
-  const [campaigns, adsets, creatives] = await Promise.all([
-    provider.listCampaigns(accountId).catch(() => [] as MetaCampaign[]),
-    provider.listAdSets(accountId).catch(() => [] as MetaAdSet[]),
-    provider.getAdCreatives
-      ? provider.getAdCreatives(accountId, { limit: 30 }).catch(() => [] as MetaAdCreative[])
-      : Promise.resolve([] as MetaAdCreative[]),
-  ]);
-
-  // 1) Budget + fatigue from provider diagnose helpers (structured proposals)
-  if (provider.optimizeBudget) {
-    const budget = await provider.optimizeBudget(accountId);
-    const fromBudget = proposalsFromOptimizeStructured(
-      budget.structured as Record<string, unknown> | null,
-    );
-    for (const p of fromBudget) {
-      proposals.push(p);
-      // The id lets a held increase be taken back out of the queueable list.
-      queueableLines.push(
-        `- BUDGET: ${p.rationale ?? "update_adset_budget"} (${targetId(p)}) → tool \`${p.name}\``,
-      );
-    }
-  }
-  if (provider.detectCreativeFatigue) {
-    const fatigue = await provider.detectCreativeFatigue(accountId);
-    const fromFatigue = proposalsFromOptimizeStructured(
-      fatigue.structured as Record<string, unknown> | null,
-    );
-    for (const p of fromFatigue) {
-      proposals.push(p);
-      queueableLines.push(
-        `- FATIGUE: ${p.rationale ?? "pause_ad"} (${targetId(p)}) → tool \`${p.name}\``,
-      );
-    }
-  }
-
-  // 2) Reactivate paused campaigns only with evidence they produced results
-  //    in the last 90 days — resuming starts real spend.
   const day = (offset: number) => new Date(Date.now() - offset * 86_400_000).toISOString().slice(0, 10);
   const paused = campaigns.filter((c) => c.status === "PAUSED").slice(0, 5);
   const history = await Promise.all(
@@ -185,6 +156,22 @@ export async function buildFullOptimizeProposals(input: {
   } else if (!paused.length) {
     blockedLines.push("- Reactivate campaign: no PAUSED campaigns found on this account.");
   }
+
+  return { proposals, queueableLines, blockedLines };
+}
+
+/** A new broad / Advantage+ ad set under the best ACTIVE campaign, from a sibling's countries and pixel. */
+export function broadAdSetPart(input: {
+  accountId: string;
+  campaigns: MetaCampaign[];
+  adsets: MetaAdSet[];
+  creatives: MetaAdCreative[];
+  fallbackLandingUrl?: string | null;
+}): ProposalPart {
+  const { accountId, campaigns, adsets, creatives } = input;
+  const proposals: AgentToolCallProposal[] = [];
+  const queueableLines: string[] = [];
+  const blockedLines: string[] = [];
 
   // 3) New broad / Advantage+ ad set under the best ACTIVE campaign
   const activeCampaigns = campaigns.filter((c) => c.status === "ACTIVE");
@@ -283,6 +270,73 @@ export async function buildFullOptimizeProposals(input: {
       "- New broad / Advantage+ ad set: no campaign available to attach an ad set to.",
     );
   }
+
+  return { proposals, queueableLines, blockedLines };
+}
+
+/**
+ * Build every EXECUTE proposal we can safely queue for an account optimize turn.
+ * Only tools with concrete IDs/args are included — chat must not invent extras.
+ */
+export async function buildFullOptimizeProposals(input: {
+  provider: MetaAdsProvider;
+  accountId: string;
+  /** Optional client website — used only if live creatives lack a landing URL. */
+  fallbackLandingUrl?: string | null;
+  /** The client's currency, for spend in rationales. */
+  currency?: string | null;
+}): Promise<OptimizeProposalBundle> {
+  const { provider, accountId } = input;
+  const proposals: AgentToolCallProposal[] = [];
+  const queueableLines: string[] = [];
+  const blockedLines: string[] = [];
+
+  const [campaigns, adsets, creatives] = await Promise.all([
+    provider.listCampaigns(accountId).catch(() => [] as MetaCampaign[]),
+    provider.listAdSets(accountId).catch(() => [] as MetaAdSet[]),
+    provider.getAdCreatives
+      ? provider.getAdCreatives(accountId, { limit: 30 }).catch(() => [] as MetaAdCreative[])
+      : Promise.resolve([] as MetaAdCreative[]),
+  ]);
+
+  // 1) Budget + fatigue from provider diagnose helpers (structured proposals)
+  if (provider.optimizeBudget) {
+    const budget = await provider.optimizeBudget(accountId);
+    const fromBudget = proposalsFromOptimizeStructured(
+      budget.structured as Record<string, unknown> | null,
+    );
+    for (const p of fromBudget) {
+      proposals.push(p);
+      // The id lets a held increase be taken back out of the queueable list.
+      queueableLines.push(
+        `- BUDGET: ${p.rationale ?? "update_adset_budget"} (${targetId(p)}) → tool \`${p.name}\``,
+      );
+    }
+  }
+  if (provider.detectCreativeFatigue) {
+    const fatigue = await provider.detectCreativeFatigue(accountId);
+    const fromFatigue = proposalsFromOptimizeStructured(
+      fatigue.structured as Record<string, unknown> | null,
+    );
+    for (const p of fromFatigue) {
+      proposals.push(p);
+      queueableLines.push(
+        `- FATIGUE: ${p.rationale ?? "pause_ad"} (${targetId(p)}) → tool \`${p.name}\``,
+      );
+    }
+  }
+
+  // 2) Reactivate paused campaigns that produced results (see reactivationPart).
+  const reactivation = await reactivationPart({ provider, accountId, campaigns, adsets, currency: input.currency });
+  proposals.push(...reactivation.proposals);
+  queueableLines.push(...reactivation.queueableLines);
+  blockedLines.push(...reactivation.blockedLines);
+
+  // 3) New broad / Advantage+ ad set under the best ACTIVE campaign (see broadAdSetPart).
+  const broad = broadAdSetPart({ accountId, campaigns, adsets, creatives, fallbackLandingUrl: input.fallbackLandingUrl });
+  proposals.push(...broad.proposals);
+  queueableLines.push(...broad.queueableLines);
+  blockedLines.push(...broad.blockedLines);
 
   // 4) Creative refresh + pixel always need operator input
   blockedLines.push(

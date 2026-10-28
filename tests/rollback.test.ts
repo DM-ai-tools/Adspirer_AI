@@ -80,6 +80,6 @@ describe("rollbackChange", () => {
     };
     const store = (await import("@/lib/demo/store")).getDemoStore();
     store.changeLog.push({ ...created, id: "change_create", tool_name: "create_meta_image_campaign", before: null });
-    await expect(rollbackChange({ changeId: "change_create", userId: ADMIN })).rejects.toThrow(/Only budget and status changes/);
+    await expect(rollbackChange({ changeId: "change_create", userId: ADMIN })).rejects.toThrow(/Only budget, status, schedule, bid, placement and audience exclusion changes/);
   });
 });

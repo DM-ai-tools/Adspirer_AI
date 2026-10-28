@@ -4,6 +4,8 @@ import { resolveProvider } from "@/lib/adspirer/client";
 import type { MetaAdsProvider } from "@/lib/adspirer/provider";
 // Read-only GA4 / Search Console / Google Ads / Meta insights / categories tools.
 import "./data-tools";
+// Account health checks with owners (read-only).
+import "./health-tool";
 // Read-only Shopify tools: live products / variants, synced sales (offered only when the client has a store).
 import "./shopify-tools";
 // Image generation: writes creative drafts only, never Meta.
@@ -232,14 +234,24 @@ export const analyzeBrandUrlTool = registerTool({
   },
 });
 
+/** Period (YYYY-MM-DD) and scope an optimisation read can be limited to. */
+const periodScopeFields = {
+  since: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD").optional(),
+  until: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD").optional(),
+  campaign_ids: z.array(z.string().min(1)).max(50).optional(),
+  adset_ids: z.array(z.string().min(1)).max(50).optional(),
+  ad_ids: z.array(z.string().min(1)).max(50).optional(),
+};
+
 export const optimizeMetaBudgetTool = registerTool({
   name: "optimize_meta_budget",
   description:
-    "Adspirer optimize_meta_budget — budget reallocation recommendations from account performance",
+    "Budget reallocation recommendations (scale / trim / pause) from live performance. Pass since + until (YYYY-MM-DD) for the period asked about, and campaign_ids / adset_ids to stay on what the operator named; without a period it reads the last 7 days.",
   inputSchema: z.object({
     account_id: z.string().min(1),
     lookback_days: z.number().int().optional(),
     objective: z.string().optional(),
+    ...periodScopeFields,
   }),
   async execute(args) {
     const provider = await adsProvider();
@@ -249,6 +261,10 @@ export const optimizeMetaBudgetTool = registerTool({
     return provider.optimizeBudget(args.account_id, {
       lookback_days: args.lookback_days ?? 30,
       objective: args.objective,
+      since: args.since,
+      until: args.until,
+      campaign_ids: args.campaign_ids,
+      adset_ids: args.adset_ids,
     });
   },
 });
@@ -279,9 +295,10 @@ export const optimizeMetaPlacementsTool = registerTool({
 export const detectMetaCreativeFatigueTool = registerTool({
   name: "detect_meta_creative_fatigue",
   description:
-    "Adspirer detect_meta_creative_fatigue — find ads losing effectiveness that need creative refresh",
+    "Find ads losing effectiveness that need a creative refresh (7-day frequency over the limit and link CTR down 20%+ against the week before). Pass until (YYYY-MM-DD) to judge the week ending that day, and campaign_ids / adset_ids / ad_ids to stay on what the operator named.",
   inputSchema: z.object({
     account_id: z.string().min(1),
+    ...periodScopeFields,
   }),
   async execute(args) {
     const provider = await adsProvider();
@@ -290,7 +307,13 @@ export const detectMetaCreativeFatigueTool = registerTool({
         "detect_meta_creative_fatigue is not available on this provider",
       );
     }
-    return provider.detectCreativeFatigue(args.account_id);
+    return provider.detectCreativeFatigue(args.account_id, {
+      since: args.since,
+      until: args.until,
+      campaign_ids: args.campaign_ids,
+      adset_ids: args.adset_ids,
+      ad_ids: args.ad_ids,
+    });
   },
 });
 

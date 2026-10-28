@@ -173,7 +173,7 @@ function mapFlexibleSpec(extra: Record<string, unknown> | undefined) {
 const DEPRECATED_FACEBOOK_POSITIONS = new Set(["video_feeds"]);
 
 /** v24+ safe defaults — video_feeds is deprecated (subcode 2490562). */
-const DEFAULT_PLATFORM_POSITIONS: Record<string, string[]> = {
+export const DEFAULT_PLATFORM_POSITIONS: Record<string, string[]> = {
   facebook: ["feed", "story", "facebook_reels", "marketplace"],
   instagram: ["stream", "story", "reels", "explore"],
   audience_network: ["classic", "rewarded_video"],

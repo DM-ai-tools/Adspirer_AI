@@ -18,6 +18,10 @@ import {
   resumeAdSetSchema,
   resumeCampaignSchema,
   updateAdsetBudgetSchema,
+  updateAdsetAudienceExclusionsSchema,
+  updateAdsetBidSchema,
+  updateAdsetPlacementsSchema,
+  updateAdsetScheduleSchema,
   updateCampaignBudgetSchema,
 } from "@/lib/tools/execute/schemas";
 
@@ -189,6 +193,46 @@ export const updateCampaignBudgetTool = registerTool({
   inputSchema: updateCampaignBudgetSchema,
   async execute(args, ctx) {
     return requireAndExecute("update_campaign_budget", args, ctx);
+  },
+});
+
+export const updateAdsetScheduleTool = registerTool({
+  name: "update_adset_schedule",
+  description:
+    "Change an ad set's end date (or clear it so it runs until paused), or move the start of an ad set that has not started (requires approval)",
+  inputSchema: updateAdsetScheduleSchema,
+  async execute(args, ctx) {
+    return requireAndExecute("update_adset_schedule", args, ctx);
+  },
+});
+
+export const updateAdsetBidTool = registerTool({
+  name: "update_adset_bid",
+  description:
+    "Change an ad set's bid strategy: cost cap, bid cap, minimum ROAS or no cap (requires approval). Ad sets under a campaign budget are changed on the campaign in Ads Manager; Meta restarts learning after a bid change.",
+  inputSchema: updateAdsetBidSchema,
+  async execute(args, ctx) {
+    return requireAndExecute("update_adset_bid", args, ctx);
+  },
+});
+
+export const updateAdsetPlacementsTool = registerTool({
+  name: "update_adset_placements",
+  description:
+    "Change where an ad set's ads run: choose platforms and positions, or switch to automatic (Advantage+) placements (requires approval). Only the placements change; the rest of the targeting is kept.",
+  inputSchema: updateAdsetPlacementsSchema,
+  async execute(args, ctx) {
+    return requireAndExecute("update_adset_placements", args, ctx);
+  },
+});
+
+export const updateAdsetAudienceExclusionsTool = registerTool({
+  name: "update_adset_audience_exclusions",
+  description:
+    "Exclude (or stop excluding) custom audiences on an ad set, for example existing customers from prospecting (requires approval). Only the exclusions change; the rest of the targeting is kept.",
+  inputSchema: updateAdsetAudienceExclusionsSchema,
+  async execute(args, ctx) {
+    return requireAndExecute("update_adset_audience_exclusions", args, ctx);
   },
 });
 

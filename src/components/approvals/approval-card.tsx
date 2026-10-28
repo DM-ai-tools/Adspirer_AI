@@ -17,6 +17,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { humanToolLabel } from "@/lib/tools/display-labels";
 import { describeCampaignSettings } from "@/lib/meta/campaign-settings-summary";
+import { describePlacements, type PlacementState } from "@/lib/meta/placement-format";
 import { AdPreviewPanel } from "@/components/approvals/ad-preview-panel";
 
 function isBudgetChange(approval: Approval): boolean {
@@ -182,6 +183,66 @@ function summarizeArgs(
       rows.push(["Ad set", formatArgValue(args.adset_name ?? args.adset_id ?? args.ad_set_id)]);
       rows.push(["Action", toolName === "pause_adset" ? "Pause" : "Resume (starts spending)"]);
       break;
+    case "update_adset_audience_exclusions": {
+      const list = (v: unknown) => (Array.isArray(v) ? (v as unknown[]).map(String) : []);
+      const add = list(args.add_excluded_custom_audiences);
+      const remove = list(args.remove_excluded_custom_audiences);
+      rows.push(["Ad set", formatArgValue(args.adset_name ?? args.adset_id ?? args.ad_set_id)]);
+      if (add.length) rows.push(["Exclude", add.join(", ")]);
+      if (remove.length) rows.push(["Stop excluding", remove.join(", ")]);
+      rows.push(["Note", "Only the exclusions change; the rest of the targeting is kept"]);
+      break;
+    }
+    case "update_adset_placements": {
+      const before = (args.__before ?? null) as { placements?: PlacementState } | null;
+      const next: PlacementState | null = args.advantage_placements === true
+        ? null
+        : {
+            publisher_platforms: Array.isArray(args.publisher_platforms) ? (args.publisher_platforms as string[]) : null,
+            facebook_positions: Array.isArray(args.facebook_positions) ? (args.facebook_positions as string[]) : null,
+            instagram_positions: Array.isArray(args.instagram_positions) ? (args.instagram_positions as string[]) : null,
+            audience_network_positions: Array.isArray(args.audience_network_positions) ? (args.audience_network_positions as string[]) : null,
+            messenger_positions: Array.isArray(args.messenger_positions) ? (args.messenger_positions as string[]) : null,
+            device_platforms: Array.isArray(args.device_platforms) && args.device_platforms.length ? (args.device_platforms as string[]) : null,
+          };
+      rows.push(["Ad set", formatArgValue(args.adset_name ?? args.adset_id ?? args.ad_set_id)]);
+      rows.push(["Placements", `${before?.placements ? describePlacements(before.placements) : "current placements"} → ${describePlacements(next)}`]);
+      rows.push(["Note", "Only the placements change; the rest of the targeting is kept"]);
+      break;
+    }
+    case "update_adset_bid": {
+      const before = (args.__before ?? null) as {
+        bid_strategy?: string | null;
+        bid_amount_cents?: number | null;
+        roas_average_floor?: number | null;
+      } | null;
+      const describe = (strategy: unknown, cents: number | null, floor: number | null) =>
+        `${String(strategy ?? "unknown").replaceAll("_", " ").toLowerCase()}${cents != null ? ` · ${money(cents)}` : ""}${floor != null ? ` · ${floor}x ROAS` : ""}`;
+      rows.push(["Ad set", formatArgValue(args.adset_name ?? args.adset_id ?? args.ad_set_id)]);
+      rows.push([
+        "Bid",
+        `${before ? describe(before.bid_strategy, before.bid_amount_cents ?? null, before.roas_average_floor ?? null) : "current bid"} → ${describe(
+          args.bid_strategy,
+          asNumber(args.bid_amount) != null ? Math.round(asNumber(args.bid_amount)! * 100) : null,
+          asNumber(args.roas_average_floor),
+        )}`,
+      ]);
+      rows.push(["Note", "Meta restarts the learning phase after a bid change"]);
+      break;
+    }
+    case "update_adset_schedule": {
+      const before = (args.__before ?? null) as { end_time?: string | null } | null;
+      const was = before
+        ? before.end_time
+          ? (formatDate(before.end_time) ?? before.end_time)
+          : "no end date"
+        : "current end date";
+      rows.push(["Ad set", formatArgValue(args.adset_name ?? args.adset_id ?? args.ad_set_id)]);
+      if (args.clear_end_time === true) rows.push(["End date", `${was} → runs until paused`]);
+      else if (args.end_time) rows.push(["End date", `${was} → ${formatDate(args.end_time) ?? String(args.end_time)}`]);
+      if (args.start_time) rows.push(["Start", formatDate(args.start_time) ?? String(args.start_time)]);
+      break;
+    }
     case "pause_ad":
     case "resume_ad":
       rows.push(["Ad", formatArgValue(args.ad_name ?? args.ad_id)]);
@@ -272,6 +333,14 @@ function successHint(toolName: string): string {
       return "Daily budget updated in Meta.";
     case "update_campaign_budget":
       return "Campaign daily budget updated in Meta.";
+    case "update_adset_schedule":
+      return "Ad set schedule updated in Meta.";
+    case "update_adset_bid":
+      return "Ad set bid updated in Meta.";
+    case "update_adset_placements":
+      return "Ad set placements updated in Meta.";
+    case "update_adset_audience_exclusions":
+      return "Ad set audience exclusions updated in Meta.";
     default:
       return "Created in Meta as PAUSED (not published/live).";
   }
