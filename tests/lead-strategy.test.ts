@@ -356,7 +356,7 @@ describe("strategy turn for a lead-gen client (DEMO_MODE)", () => {
       target_leads: 100,
       period_days: 30,
     });
-    expect(gathered.executeProposals ?? []).toEqual([]);
+    expect(gathered.offered ?? []).toEqual([]);
   });
 
   it("asks for the lead goal, not a target ROAS, when the ask has none", async () => {

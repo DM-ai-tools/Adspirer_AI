@@ -456,6 +456,21 @@ function buildExecutionResult(
   } else if (toolName === "pause_adset" || toolName === "resume_adset") {
     if (typeof obj.id === "string") proof.ad_set_id = obj.id;
     if (typeof obj.status === "string") proof.status = obj.status;
+  } else if (toolName === "update_adset_audience_exclusions") {
+    if (typeof obj.id === "string") proof.ad_set_id = obj.id;
+    if (Array.isArray(obj.excluded_custom_audiences)) proof.excluded_custom_audiences = obj.excluded_custom_audiences;
+  } else if (toolName === "update_adset_placements") {
+    if (typeof obj.id === "string") proof.ad_set_id = obj.id;
+    if (obj.placements && typeof obj.placements === "object") proof.placements = obj.placements;
+  } else if (toolName === "update_adset_bid") {
+    if (typeof obj.id === "string") proof.ad_set_id = obj.id;
+    if (typeof obj.bid_strategy === "string") proof.bid_strategy = obj.bid_strategy;
+    proof.bid_amount_cents = typeof obj.bid_amount_cents === "number" ? obj.bid_amount_cents : null;
+    proof.roas_average_floor = typeof obj.roas_average_floor === "number" ? obj.roas_average_floor : null;
+  } else if (toolName === "update_adset_schedule") {
+    if (typeof obj.id === "string") proof.ad_set_id = obj.id;
+    proof.start_time = typeof obj.start_time === "string" ? obj.start_time : null;
+    proof.end_time = typeof obj.end_time === "string" ? obj.end_time : null;
   } else if (toolName === "pause_ad" || toolName === "resume_ad") {
     if (typeof obj.id === "string") proof.ad_id = obj.id;
     if (typeof obj.status === "string") proof.status = obj.status;
@@ -659,6 +674,45 @@ async function dispatchToProvider(
         account_id: optionalString(args.account_id),
         campaign_id: requireString(args, "campaign_id", toolName),
         daily_budget_cents: args.daily_budget_cents as number,
+      });
+    case "update_adset_audience_exclusions":
+      return provider.updateAdSetAudienceExclusions({
+        // Expected account only: the provider derives the real one from the ad set.
+        account_id: optionalString(args.account_id),
+        adset_id: requireString(args, "adset_id", toolName, ["ad_set_id"]),
+        add_excluded_custom_audiences: optionalStringArray(args.add_excluded_custom_audiences),
+        remove_excluded_custom_audiences: optionalStringArray(args.remove_excluded_custom_audiences),
+      });
+    case "update_adset_placements":
+      return provider.updateAdSetPlacements({
+        // Expected account only: the provider derives the real one from the ad set.
+        account_id: optionalString(args.account_id),
+        adset_id: requireString(args, "adset_id", toolName, ["ad_set_id"]),
+        advantage_placements: args.advantage_placements === true,
+        publisher_platforms: optionalStringArray(args.publisher_platforms),
+        facebook_positions: optionalStringArray(args.facebook_positions),
+        instagram_positions: optionalStringArray(args.instagram_positions),
+        audience_network_positions: optionalStringArray(args.audience_network_positions),
+        messenger_positions: optionalStringArray(args.messenger_positions),
+        device_platforms: optionalStringArray(args.device_platforms),
+      });
+    case "update_adset_bid":
+      return provider.updateAdSetBid({
+        // Expected account only: the provider derives the real one from the ad set.
+        account_id: optionalString(args.account_id),
+        adset_id: requireString(args, "adset_id", toolName, ["ad_set_id"]),
+        bid_strategy: requireString(args, "bid_strategy", toolName),
+        bid_amount: optionalNumber(args.bid_amount),
+        roas_average_floor: optionalNumber(args.roas_average_floor),
+      });
+    case "update_adset_schedule":
+      return provider.updateAdSetSchedule({
+        // Expected account only: the provider derives the real one from the ad set.
+        account_id: optionalString(args.account_id),
+        adset_id: requireString(args, "adset_id", toolName, ["ad_set_id"]),
+        end_time: optionalString(args.end_time),
+        clear_end_time: args.clear_end_time === true,
+        start_time: optionalString(args.start_time),
       });
     case "pause_adset":
       return provider.pauseAdSet(

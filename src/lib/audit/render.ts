@@ -6,6 +6,7 @@ import {
   type Checkpoint,
   type CheckpointStatus,
 } from "@/lib/audit/checkpoints";
+import { ownerForCheckpoint, ownerLabel } from "@/lib/agent/optimization-capabilities";
 import { escapeTableCell } from "@/lib/reports/table-row";
 import { hookRate, holdRate } from "@/lib/creative/fatigue";
 import type { AuditAd, AuditAdSet, MetaAuditSnapshot, PeriodPerformance } from "@/lib/audit/meta-audit-data";
@@ -32,6 +33,15 @@ function line(c: Checkpoint) {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+/** Who has to fix a checkpoint ("this app", "a developer"…); empty for an id with no owner mapped. */
+function ownerLine(id: string): string {
+  try {
+    return `  Who: ${ownerLabel(ownerForCheckpoint(id).owner)}`;
+  } catch {
+    return "";
+  }
 }
 
 /** "Campaign TR | Lead Gen (1202…)" when the audit is campaign-scoped; null for the whole account. */
@@ -493,7 +503,10 @@ export function renderOptimisationSignals(scorecard: AuditScorecard): string {
   if (!relevant.length) return "### Optimisation signals (live checkpoints)\n- No failing or warning checkpoints.";
   return [
     "### Optimisation signals (live checkpoints)",
-    ...relevant.map(line),
+    ...relevant.map((c) => {
+      const who = ownerLine(c.id);
+      return who ? `${line(c)}\n${who}` : line(c);
+    }),
     "Fix tracking failures (T-codes) before scaling budgets: budget changes on ad sets whose optimisation event isn't recorded only move money blind.",
   ].join("\n");
 }

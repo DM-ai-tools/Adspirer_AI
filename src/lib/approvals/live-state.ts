@@ -1,4 +1,6 @@
-import type { MetaAdsProvider } from "@/lib/adspirer/provider";
+import type { AdSetDetail, MetaAdsProvider } from "@/lib/adspirer/provider";
+import { metaTimeMs, placementsEqual, sameIds } from "@/lib/meta/adset-edits";
+import { describePlacements, type PlacementState } from "@/lib/meta/placement-format";
 import { accountDailyTotalCents, campaignDailySpendCents } from "@/lib/approvals/validator";
 import type { WorkspaceExecutionBackend } from "@/lib/runtime/workspace-context";
 import { formatMoney } from "@/lib/monitoring/health";
@@ -10,10 +12,31 @@ import { logger } from "@/lib/observability/logger";
  * it runs (so a change someone made in Ads Manager meanwhile is not
  * overwritten). Stored on the args as `__before`.
  */
-export type LiveState = { daily_budget_cents?: number | null; status?: string };
+export type LiveState = {
+  daily_budget_cents?: number | null;
+  status?: string;
+  /** Ad set schedule (ISO); null = no end date. */
+  start_time?: string | null;
+  end_time?: string | null;
+  /** Ad set bid: strategy, cap (app cents) and minimum ROAS (multiple). */
+  bid_strategy?: string | null;
+  bid_amount_cents?: number | null;
+  roas_average_floor?: number | null;
+  /** Where the ad set's ads run. */
+  placements?: PlacementState;
+  /** Ids of the custom audiences the ad set excludes. */
+  excluded_custom_audiences?: string[];
+};
 
 const BUDGET_TOOLS = new Set(["update_adset_budget", "update_campaign_budget"]);
-const ADSET_TOOLS = new Set(["update_adset_budget", "pause_adset", "resume_adset"]);
+/** Tools that edit an existing ad set in place; the state they read comes from one read by id. */
+const EDIT_ADSET_TOOLS = new Set([
+  "update_adset_schedule",
+  "update_adset_bid",
+  "update_adset_placements",
+  "update_adset_audience_exclusions",
+]);
+const ADSET_TOOLS = new Set(["update_adset_budget", "pause_adset", "resume_adset", ...EDIT_ADSET_TOOLS]);
 const CAMPAIGN_TOOLS = new Set(["update_campaign_budget", "pause_campaign", "resume_campaign"]);
 const AD_TOOLS = new Set(["pause_ad", "resume_ad"]);
 
@@ -22,6 +45,28 @@ export function tracksLiveState(toolName: string): boolean {
 }
 
 const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
+
+/** The part of an ad set's detail that a given edit tool depends on. */
+function editState(toolName: string, detail: AdSetDetail): LiveState {
+  if (toolName === "update_adset_schedule") {
+    return { status: detail.status, start_time: detail.start_time, end_time: detail.end_time };
+  }
+  if (toolName === "update_adset_audience_exclusions") {
+    return { status: detail.status, excluded_custom_audiences: detail.excluded_custom_audiences };
+  }
+  if (toolName === "update_adset_placements") return { status: detail.status, placements: detail.placements };
+  if (toolName === "update_adset_bid") {
+    return {
+      status: detail.status,
+      bid_strategy: detail.bid_strategy,
+      bid_amount_cents: detail.bid_amount_cents,
+      roas_average_floor: detail.roas_average_floor,
+    };
+  }
+  return { status: detail.status };
+}
+
+const sameTime = (a: string | null | undefined, b: string | null | undefined) => metaTimeMs(a ?? null) === metaTimeMs(b ?? null);
 const actId = (v: string) => (v.startsWith("act_") ? v : `act_${v}`);
 
 /** null when the tool doesn't track state or the entity isn't found. */
@@ -33,6 +78,12 @@ export async function readLiveState(
   const account = str(args.account_id) ?? str(args.ad_account_id);
   if (!account || !tracksLiveState(toolName)) return null;
   const accountId = actId(account);
+  if (EDIT_ADSET_TOOLS.has(toolName)) {
+    const id = str(args.adset_id) ?? str(args.ad_set_id);
+    if (!id || !provider.getAdSetDetail) return null;
+    const detail = await provider.getAdSetDetail(accountId, id);
+    return detail ? editState(toolName, detail) : null;
+  }
   // One direct read by id when the provider supports it — account-wide lists
   // are slow and truncated on large accounts.
   if (provider.getEntityState) {
@@ -141,10 +192,59 @@ export function describeDrift(
     }
     return null;
   }
+  if (toolName === "update_adset_schedule") {
+    const show = (t: string | null | undefined) => (metaTimeMs(t ?? null) == null ? "none" : String(t));
+    if (!sameTime(before.end_time, now.end_time)) {
+      return `The ad set's end date changed in Meta since this was proposed: was ${show(before.end_time)}, now ${show(now.end_time)}.${tail}`;
+    }
+    if (!sameTime(before.start_time, now.start_time)) {
+      return `The ad set's start changed in Meta since this was proposed: was ${show(before.start_time)}, now ${show(now.start_time)}.${tail}`;
+    }
+  }
+  if (
+    toolName === "update_adset_audience_exclusions" &&
+    before.excluded_custom_audiences &&
+    now.excluded_custom_audiences &&
+    !sameIds(before.excluded_custom_audiences, now.excluded_custom_audiences)
+  ) {
+    const list = (ids: string[]) => (ids.length ? ids.join(", ") : "none");
+    return `The ad set's audience exclusions changed in Meta since this was proposed: was ${list(before.excluded_custom_audiences)}, now ${list(now.excluded_custom_audiences)}.${tail}`;
+  }
+  if (toolName === "update_adset_placements" && before.placements && now.placements && !placementsEqual(before.placements, now.placements)) {
+    return `The ad set's placements changed in Meta since this was proposed: was ${describePlacements(before.placements)}, now ${describePlacements(now.placements)}.${tail}`;
+  }
+  if (toolName === "update_adset_bid") {
+    const show = (s: LiveState) =>
+      `${s.bid_strategy ?? "no bid strategy"}${s.bid_amount_cents != null ? ` at ${formatMoney(s.bid_amount_cents, currency)}` : ""}${
+        s.roas_average_floor != null ? ` at ${s.roas_average_floor}x ROAS` : ""
+      }`;
+    if (
+      (before.bid_strategy ?? null) !== (now.bid_strategy ?? null) ||
+      (before.bid_amount_cents ?? null) !== (now.bid_amount_cents ?? null) ||
+      (before.roas_average_floor ?? null) !== (now.roas_average_floor ?? null)
+    ) {
+      return `The ad set's bid changed in Meta since this was proposed: was ${show(before)}, now ${show(now)}.${tail}`;
+    }
+  }
   if (before.status && now.status && before.status !== now.status) {
     return `The ${entityWord(toolName)} changed in Meta since this was proposed: status was ${before.status}, now ${now.status}.${tail}`;
   }
   return null;
+}
+
+/** Has the entity moved away from the state a logged change left it in? (Rolling back would overwrite that.) */
+export function changedSince(after: LiveState | null, live: LiveState): boolean {
+  if (!after) return false;
+  if (after.daily_budget_cents !== undefined && live.daily_budget_cents !== after.daily_budget_cents) return true;
+  if (after.status !== undefined && live.status !== after.status) return true;
+  if (after.end_time !== undefined && !sameTime(live.end_time, after.end_time)) return true;
+  if (after.start_time !== undefined && !sameTime(live.start_time, after.start_time)) return true;
+  if (after.excluded_custom_audiences !== undefined && !sameIds(live.excluded_custom_audiences ?? [], after.excluded_custom_audiences)) return true;
+  if (after.placements !== undefined && (!live.placements || !placementsEqual(live.placements, after.placements))) return true;
+  if (after.bid_strategy !== undefined && (live.bid_strategy ?? null) !== (after.bid_strategy ?? null)) return true;
+  if (after.bid_amount_cents !== undefined && (live.bid_amount_cents ?? null) !== (after.bid_amount_cents ?? null)) return true;
+  if (after.roas_average_floor !== undefined && (live.roas_average_floor ?? null) !== (after.roas_average_floor ?? null)) return true;
+  return false;
 }
 
 function entityWord(toolName: string): string {

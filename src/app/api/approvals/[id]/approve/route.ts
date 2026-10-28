@@ -6,6 +6,7 @@ import { appendWorkflowMessage, resolveConversationForTask } from "@/lib/workflo
 import { completeTaskIfApprovalsTerminal } from "@/lib/workflow/bindings";
 import { jsonOk, withApiHandler } from "@/lib/api/response";
 import { logger } from "@/lib/observability/logger";
+import { describePlacements, type PlacementState } from "@/lib/meta/placement-format";
 import type { Approval } from "@/types";
 import { NextResponse } from "next/server";
 
@@ -49,6 +50,26 @@ function outcomeLine(approval: Approval): string {
       return `The ad set is now **PAUSED**.${unverified}`;
     case "resume_adset":
       return `The ad set is now **ACTIVE** and can start spending.${unverified}`;
+    case "update_adset_audience_exclusions": {
+      const proof = (result.proof ?? {}) as Record<string, unknown>;
+      const count = Array.isArray(proof.excluded_custom_audiences) ? proof.excluded_custom_audiences.length : 0;
+      return `The ad set now excludes **${count} custom audience${count === 1 ? "" : "s"}**.${unverified}`;
+    }
+    case "update_adset_placements": {
+      const proof = (result.proof ?? {}) as Record<string, unknown>;
+      return `The ad set's placements are now **${describePlacements(proof.placements as PlacementState | undefined)}**.${unverified}`;
+    }
+    case "update_adset_bid": {
+      const proof = (result.proof ?? {}) as Record<string, unknown>;
+      const strategy = typeof proof.bid_strategy === "string" ? proof.bid_strategy.replaceAll("_", " ").toLowerCase() : "updated";
+      const cap = formatMoneyCents(proof.bid_amount_cents, result.currency);
+      return `The ad set's bid is now **${strategy}${cap ? ` at ${cap}` : ""}**; Meta restarts learning after a bid change.${unverified}`;
+    }
+    case "update_adset_schedule": {
+      const proof = (result.proof ?? {}) as Record<string, unknown>;
+      const end = typeof proof.end_time === "string" ? proof.end_time : null;
+      return `The ad set's end date is now **${end ?? "none (it runs until paused)"}**.${unverified}`;
+    }
     case "update_campaign_budget":
     case "update_adset_budget": {
       const money = formatMoneyCents(result.daily_budget_cents, result.currency);

@@ -3,6 +3,7 @@ import { resolveGoals, type GoalsProfile } from "@/lib/clients/goals";
 import type { Client } from "@/types";
 import { ApprovalValidationError, isAppError } from "@/lib/errors";
 import { getExecuteToolSchema } from "@/lib/tools/execute/schemas";
+import { isZoneless, zonedTimeToIso } from "@/lib/meta/adset-edits";
 import { normalizeMetaApprovalArgs } from "@/lib/meta/normalize-approval-args";
 import { normalizeCreateAdArgs } from "@/lib/meta/resolve-ad-set";
 import {
@@ -73,7 +74,22 @@ const NUMERIC_KEYS: Record<string, "int" | "decimal"> = {
   roas_average_floor: "decimal",
 };
 
-const BOOLEAN_KEYS = ["campaign_budget_optimization"];
+const BOOLEAN_KEYS = ["campaign_budget_optimization", "clear_end_time", "advantage_placements"];
+
+/**
+ * Edit tools change one thing about an existing ad set: an edit that names no change is
+ * refused at proposal time (it is a wrong request, not a value to fill in later).
+ */
+const EDIT_CHANGE_FIELDS: Record<string, string[]> = {
+  update_adset_schedule: ["end_time", "clear_end_time", "start_time"],
+  update_adset_placements: ["advantage_placements", "publisher_platforms"],
+  update_adset_audience_exclusions: ["add_excluded_custom_audiences", "remove_excluded_custom_audiences"],
+};
+
+function hasValue(value: unknown): boolean {
+  if (value == null || value === false || value === "") return false;
+  return !(Array.isArray(value) && value.length === 0);
+}
 
 function fail(message: string, details?: Record<string, unknown>): never {
   throw new ApprovalValidationError(message, details);
@@ -180,7 +196,13 @@ function canonicalize(
     args.objective = args.objective.trim().toUpperCase();
   }
   if (
-    (toolName === "pause_adset" || toolName === "resume_adset" || toolName === "update_adset_budget") &&
+    (toolName === "pause_adset" ||
+      toolName === "resume_adset" ||
+      toolName === "update_adset_budget" ||
+      toolName === "update_adset_schedule" ||
+      toolName === "update_adset_bid" ||
+      toolName === "update_adset_placements" ||
+      toolName === "update_adset_audience_exclusions") &&
     !optionalString(args.adset_id) &&
     optionalString(args.ad_set_id)
   ) {
@@ -191,6 +213,37 @@ function canonicalize(
   if (toolName === "create_ad") args = normalizeCreateAdArgs(args);
 
   coerceNumbers(toolName, args);
+
+  // Audience ids arrive as strings, numbers or {id, name} objects: write them one way (sorted, unique).
+  if (toolName === "update_adset_audience_exclusions") {
+    for (const key of ["add_excluded_custom_audiences", "remove_excluded_custom_audiences"]) {
+      const list = args[key];
+      if (!Array.isArray(list)) continue;
+      const ids = list
+        .map((item) =>
+          typeof item === "string" || typeof item === "number"
+            ? String(item).trim()
+            : item && typeof item === "object" && "id" in item
+              ? String((item as { id: unknown }).id).trim()
+              : "",
+        )
+        .filter(Boolean);
+      args[key] = [...new Set(ids)].sort();
+    }
+  }
+  if (toolName === "update_adset_bid" && typeof args.bid_strategy === "string") {
+    args.bid_strategy = args.bid_strategy.trim().toUpperCase();
+  }
+
+  // Times are compared and de-duplicated as instants: write them one way. A date, or a time with
+  // no offset, is left alone here: it is read in the ad account's time zone once the account is known.
+  if (toolName === "update_adset_schedule") {
+    for (const key of ["end_time", "start_time"]) {
+      const raw = optionalString(args[key]);
+      const ms = raw && !isZoneless(raw) ? Date.parse(raw) : Number.NaN;
+      if (raw && !Number.isNaN(ms)) args[key] = new Date(ms).toISOString();
+    }
+  }
 
   // create_campaign budgets are cents; accept a major-unit budget too.
   if (toolName === "create_campaign" && args.daily_budget_cents == null) {
@@ -257,6 +310,8 @@ export type MappedAccount = {
   meta_account_id: string;
   access_status: string;
   currency: string | null;
+  /** The ad account's time zone (IANA name), when known. */
+  timezone?: string | null;
 };
 
 export type PreparedApprovalArgs = {
@@ -304,6 +359,25 @@ function applyCreateDefaults(
   }
 }
 
+/**
+ * "End it on 30 Nov" is the end of 30 Nov where the ad account is, not the start of it in UTC and not
+ * in whatever zone the server runs in. A date or a time with no offset is read in the account's zone;
+ * if that zone is not known it is refused rather than guessed.
+ */
+function readScheduleTimesInZone(args: Record<string, unknown>, timeZone: string | null | undefined): void {
+  for (const [key, edge] of [["end_time", "end"], ["start_time", "start"]] as const) {
+    const raw = optionalString(args[key]);
+    if (!raw || !isZoneless(raw)) continue;
+    const reason = `${key} "${raw}" has no time zone. Give it with an offset (for example ${raw.slice(0, 10)}T23:59:00+10:00) so it ends when you mean.`;
+    if (!timeZone) fail(reason, { field: key });
+    try {
+      args[key] = zonedTimeToIso(raw, timeZone, edge);
+    } catch {
+      fail(reason, { field: key });
+    }
+  }
+}
+
 export async function prepareApprovalArgs(input: {
   toolName: string;
   clientId: string;
@@ -322,7 +396,7 @@ export async function prepareApprovalArgs(input: {
   const schema = getExecuteToolSchema(toolName);
   if (!schema) {
     fail(
-      `"${toolName}" cannot be executed from an approval — CampaignForge has no executor for it. Use create_meta_image_campaign / create_meta_video_campaign, create_adset, create_ad, update_adset_budget, update_campaign_budget, pause_campaign, resume_campaign, pause_adset, resume_adset, pause_ad or resume_ad.`,
+      `"${toolName}" cannot be executed from an approval — CampaignForge has no executor for it. Use create_meta_image_campaign / create_meta_video_campaign, create_adset, create_ad, update_adset_budget, update_campaign_budget, update_adset_schedule, update_adset_bid, update_adset_placements, update_adset_audience_exclusions, pause_campaign, resume_campaign, pause_adset, resume_adset, pause_ad or resume_ad.`,
       { toolName },
     );
   }
@@ -351,6 +425,10 @@ export async function prepareApprovalArgs(input: {
   let args: Record<string, unknown>;
   try {
     args = canonicalize(toolName, core);
+    const changeFields = EDIT_CHANGE_FIELDS[toolName];
+    if (changeFields && !changeFields.some((key) => hasValue(args[key]))) {
+      fail(`${toolName} has nothing to change. Provide ${changeFields.join(", ")}.`, { missing: changeFields });
+    }
   } catch (error) {
     if (isAppError(error)) throw error;
     fail(error instanceof Error ? error.message : String(error));
@@ -387,6 +465,7 @@ export async function prepareApprovalArgs(input: {
       );
     }
     if (match.currency) internal.__account_currency = match.currency.toUpperCase();
+    if (toolName === "update_adset_schedule") readScheduleTimesInZone(args, match.timezone);
   }
 
   const missing: string[] = [];

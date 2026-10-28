@@ -1,10 +1,14 @@
 import { getConfig } from "@/lib/config";
 import { logger } from "@/lib/observability/logger";
 import type { AgentHistoryMessage } from "@/lib/agent/history";
+import type { RequestIntent } from "@/lib/agent/task-plan";
 import {
-  detectRequestIntentWithHistory,
-  type RequestIntent,
-} from "@/lib/agent/task-plan";
+  asksForOptimization,
+  normalizeBrief,
+  parseBriefReply,
+  rulesBrief,
+  type RequestBrief,
+} from "@/lib/agent/request-brief";
 
 /** Every intent the classifier may return, with what it means for the router. */
 const INTENT_GUIDE: Record<RequestIntent, string> = {
@@ -33,7 +37,9 @@ const INTENT_GUIDE: Record<RequestIntent, string> = {
 
 const INTENTS = Object.keys(INTENT_GUIDE) as RequestIntent[];
 
-const CLASSIFY_TIMEOUT_MS = 5_000;
+const CLASSIFY_TIMEOUT_MS = 8_000;
+/** Room for the whole brief (intent, mode, focus, scope, queue selection). */
+const CLASSIFY_MAX_OUTPUT_TOKENS = 400;
 /** Earlier assistant turns are only needed for their shape, not their detail. */
 const ASSISTANT_EXCERPT_CHARS = 700;
 const USER_EXCERPT_CHARS = 500;
@@ -45,7 +51,15 @@ const SYSTEM = [
   "If the assistant's last message asked the operator a question (scope, dates, goal, budget, an image link), a short reply is most likely the answer to it and stays on that flow.",
   "Intents:",
   ...INTENTS.map((i) => `- ${i}: ${INTENT_GUIDE[i]}`),
-  'Reply with JSON only: {"intent":"<one of the names above>"}',
+  "Also read what the operator wants done, and reply with JSON only, exactly this shape:",
+  '{"intent":"<one of the names above>","mode":"analyse|act","focus":[],"scope":[],"periodStated":false,"optimizationAsk":false,"queue":{"requested":false,"all":false,"refs":[],"focus":[],"entities":[]},"exclude":[]}',
+  '- "mode": "act" ONLY when the operator asks for changes to be made or queued (pause, resume, change a budget, apply, queue, send to Approvals). A question, or asking what to optimise, is "analyse". When unsure, "analyse".',
+  '- "focus": any of budget, bids, placements, audiences, creative, schedule, tracking, structure, reactivation, landing_page that the message is about. Empty when it names no area.',
+  '- "scope": campaign, ad set or ad names or ids, copied exactly as the operator typed them. Empty when they mean the whole account.',
+  '- "periodStated": true when the message itself gives a period (last 14 days, 1-15 Oct). Never write dates.',
+  '- "optimizationAsk": true when they want optimisation steps, fixes or advice on what to change.',
+  '- "queue": only when "mode" is "act". "refs" are proposal numbers they typed (#2 -> 2). "all" is true for "all of these / everything / them". "focus" is only for picking among proposals already shown ("queue the budget changes"); leave it empty for a direct instruction like "pause X" or "set the budget of X to 60". "entities" are the names they want changed.',
+  '- "exclude": names the operator said not to touch.',
 ].join("\n");
 
 function excerpt(text: string, limit: number): string {
@@ -95,7 +109,7 @@ async function askModel(prompt: string): Promise<string | null> {
     const { text } = await generateText({
       model: openai(config.OPENAI_MODEL),
       temperature: 0,
-      maxOutputTokens: 40,
+      maxOutputTokens: CLASSIFY_MAX_OUTPUT_TOKENS,
       system: SYSTEM,
       prompt,
       abortSignal,
@@ -108,7 +122,7 @@ async function askModel(prompt: string): Promise<string | null> {
     const { text } = await generateText({
       model: anthropic(config.ANTHROPIC_MODEL),
       temperature: 0,
-      maxOutputTokens: 40,
+      maxOutputTokens: CLASSIFY_MAX_OUTPUT_TOKENS,
       system: SYSTEM,
       prompt,
       abortSignal,
@@ -123,18 +137,30 @@ async function askModel(prompt: string): Promise<string | null> {
  * recent chat. The keyword rules in task-plan.ts are only the fallback for when
  * no model is configured or the call fails or times out.
  */
-export async function classifyIntent(
+export async function classifyRequest(
   request: string,
   history: AgentHistoryMessage[] = [],
-): Promise<RequestIntent> {
+): Promise<RequestBrief> {
+  let brief: RequestBrief | null = null;
   try {
     const reply = await askModel(buildClassifierPrompt(request, history));
-    const intent = reply ? parseIntentReply(reply) : null;
-    if (intent) return intent;
+    brief = reply ? parseBriefReply(reply, request, history) : null;
   } catch (error) {
     logger.warn("Intent classifier failed; using keyword fallback", {
       error: error instanceof Error ? error.message : String(error),
     });
   }
-  return detectRequestIntentWithHistory(request, history);
+  // A model that only named the intent still gets the optimisation-ask check the rules make.
+  const base = brief
+    ? { ...brief, optimizationAsk: brief.optimizationAsk || asksForOptimization(request) }
+    : rulesBrief(request, history);
+  return normalizeBrief(base, request, history);
+}
+
+/** The intent alone (callers that do not need the rest of the brief). */
+export async function classifyIntent(
+  request: string,
+  history: AgentHistoryMessage[] = [],
+): Promise<RequestIntent> {
+  return (await classifyRequest(request, history)).intent;
 }

@@ -1,3 +1,4 @@
+import { capabilityPromptBlock } from "@/lib/agent/optimization-capabilities";
 import { buildSystemPrompt } from "@/lib/agent/prompts";
 
 /**
@@ -152,14 +153,12 @@ export function buildStaticSystemPromptV2(): string {
     "- End the audit with at most one next step (the highest-impact fix), not a menu.",
     "",
     "### Optimization gate (critical)",
-    "- After an audit, do **not** start changing budgets, pausing ads, refreshing copy, or queuing execute tools",
-    "  until the operator explicitly asks to **optimize** (e.g. optimize this campaign, refresh this ad copy, apply recommendation X).",
-    "- Saying \"here are recommendations\" is not permission to mutate Meta.",
-    "- When they do ask to optimize: run live optimize evidence, present concrete changes with real ad set / ad IDs.",
-    "- When they ask to **send / queue / apply for Approvals** (or say Approvals is empty): append EXECUTE tool JSON",
-    "  (`update_adset_budget`, `update_campaign_budget`, `pause_adset`, `pause_ad`, etc.) from the Ready-to-queue proposals in evidence.",
-    "- NEVER invent a \"known limitation\" that tool submissions did not fire. If proposals exist, queue them.",
+    "- Recommendations are not permission to change Meta. Change nothing, and queue nothing, until the operator asks for specific changes.",
+    "- When they ask what to optimise: use live data for the stated period and scope, number the proposals, and say who can do each step (see the list below).",
+    "- When they ask to queue: only what they pointed at (by number, by area, by name, or \"all of these\") goes to Approvals, and the Queue decision in the evidence is the final word.",
     "- Mutations still require Approvals — never claim Meta was changed until executed proof IDs appear.",
+    "",
+    capabilityPromptBlock(),
     "",
     "## Workspace documents",
     "- Use **Workspace documents** in context for briefs, brand notes, and competitor uploads the operator attached.",

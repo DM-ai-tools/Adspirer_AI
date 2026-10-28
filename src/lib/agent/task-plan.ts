@@ -601,8 +601,8 @@ export function planTaskSteps(
       return [
         ...base,
         { id: "list_ads", label: "List account ads", state: "pending" },
-        { id: "pick_ad", label: "Operator picks ad", state: "pending" },
-        { id: "optimize", label: "Run Adspirer optimize tools", state: "pending" },
+        { id: "pick_ad", label: "Pick an ad (creative refresh only)", state: "pending" },
+        { id: "optimize", label: "Review live budgets, creative and tracking", state: "pending" },
         { id: "write_report", label: "Present recommendations", state: "pending" },
         { id: "approval", label: "Queue Approvals (if needed)", state: "pending" },
         { id: "complete", label: "Complete", state: "pending" },

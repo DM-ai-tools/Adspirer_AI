@@ -1,10 +1,14 @@
 import { resolveGoals, type GoalsProfile } from "@/lib/clients/goals";
+import { metaTimeMs } from "@/lib/meta/adset-edits";
 
 export type RiskLevel = "low" | "medium" | "high" | "critical";
 
 export type RiskAssessment = { level: RiskLevel; reason: string };
 
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+
+/** A cap raised, or a ROAS floor lowered, by more than this much of its current value needs an admin. */
+const BID_RAISE_LIMIT = 0.25;
 
 /**
  * How risky an approval is, from what it does to spend:
@@ -58,6 +62,80 @@ export function assessRisk(
   }
   if (toolName === "resume_ad") {
     return { level: "medium", reason: "Resumes an ad inside its ad set's existing budget." };
+  }
+
+  if (toolName === "update_adset_audience_exclusions") {
+    return {
+      level: "medium",
+      reason: "Changes who can see the ads (audience exclusions). It narrows or widens the audience and may restart learning; no extra spend is added.",
+    };
+  }
+
+  if (toolName === "update_adset_placements") {
+    return {
+      level: "medium",
+      reason: "Changes where the ads run. Narrowing placements can limit delivery and may restart learning; no extra spend is added.",
+    };
+  }
+
+  if (toolName === "update_adset_bid") {
+    if (args.bid_strategy === "LOWEST_COST_WITHOUT_CAP") {
+      const before = args.__before as { bid_strategy?: string | null } | undefined;
+      const wasUncapped = before && "bid_strategy" in before && before.bid_strategy === "LOWEST_COST_WITHOUT_CAP";
+      if (!wasUncapped) {
+        return {
+          level: "high",
+          reason: "Removes the cost control (or its current setting could not be read), so the ad set can spend its budget at any cost per result. Meta restarts the learning phase after a bid change.",
+        };
+      }
+    }
+    // A cap is a ceiling on what a result may cost: a big raise lets the ad set pay much more per result.
+    const before = args.__before as
+      | { bid_strategy?: string | null; bid_amount_cents?: number | null; roas_average_floor?: number | null }
+      | undefined;
+    if (before && before.bid_strategy === args.bid_strategy) {
+      const nextCap = num(args.bid_amount);
+      const wasCap = num(before.bid_amount_cents);
+      if (nextCap != null && wasCap != null && wasCap > 0) {
+        const raise = (nextCap * 100 - wasCap) / wasCap;
+        if (raise > BID_RAISE_LIMIT) {
+          return {
+            level: "high",
+            reason: `Raises the cap by ${Math.round(raise * 100)}%, so the ad set can pay that much more per result. Meta restarts the learning phase after a bid change.`,
+          };
+        }
+      }
+      const nextFloor = num(args.roas_average_floor);
+      const wasFloor = num(before.roas_average_floor);
+      if (nextFloor != null && wasFloor != null && wasFloor > 0) {
+        const drop = (wasFloor - nextFloor) / wasFloor;
+        if (drop > BID_RAISE_LIMIT) {
+          return {
+            level: "high",
+            reason: `Lowers the minimum ROAS by ${Math.round(drop * 100)}%, so the ad set will accept much weaker returns. Meta restarts the learning phase after a bid change.`,
+          };
+        }
+      }
+    }
+    return { level: "medium", reason: "Changes how the ad set bids. Meta restarts the learning phase after a bid change." };
+  }
+
+  if (toolName === "update_adset_schedule") {
+    if (args.clear_end_time === true) {
+      return { level: "medium", reason: "Removes the end date, so the ad set keeps spending until it is paused." };
+    }
+    if (typeof args.end_time === "string") {
+      const before = args.__before as { end_time?: string | null } | undefined;
+      if (!before || !("end_time" in before)) {
+        return { level: "medium", reason: "Changes when the ad set stops spending (its current end date could not be read)." };
+      }
+      const was = metaTimeMs(before.end_time ?? null);
+      const next = metaTimeMs(args.end_time);
+      if (was == null) return { level: "low", reason: "Adds an end date, so the ad set stops spending sooner." };
+      if (next != null && next < was) return { level: "low", reason: "Ends the ad set sooner." };
+      return { level: "medium", reason: "Extends the ad set, so it keeps spending for longer." };
+    }
+    return { level: "medium", reason: "Moves when the ad set starts spending." };
   }
 
   if (toolName.startsWith("create_")) {

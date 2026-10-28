@@ -128,6 +128,12 @@ export async function createPendingApproval(input: {
   budgetImpactCents?: number | null;
   requestedBy?: string | null;
   idempotencyKey?: string;
+  /**
+   * Treat the same change proposed by another task as the same proposal while it is
+   * still in flight (pending, edited, approved, executing). A repeated "queue #1" is a new
+   * task each time; without this it would queue the change twice.
+   */
+  reuseAcrossTasks?: boolean;
 }): Promise<Approval> {
   assertNotBlocked(input.toolName);
   const client = await getClient(input.clientId);
@@ -163,7 +169,7 @@ export async function createPendingApproval(input: {
       clientId: input.clientId,
       toolName: input.toolName,
       args: proposedArgs,
-      taskId: input.taskId,
+      taskId: input.reuseAcrossTasks ? null : input.taskId,
     });
     const existing = await findApprovalByKey(idempotencyKey);
     if (existing) {

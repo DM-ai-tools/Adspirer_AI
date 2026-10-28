@@ -317,6 +317,114 @@ export const pauseAdSetSchema = z.object({
 
 export const resumeAdSetSchema = pauseAdSetSchema;
 
+/** Move or clear an ad set's end date, or move the start of an ad set that has not started. */
+export const updateAdsetScheduleSchema = z
+  .object({
+    account_id: accountId,
+    adset_id: z.string().min(1, "adset_id is required"),
+    end_time: isoDate.optional(),
+    clear_end_time: z.boolean().optional(),
+    start_time: isoDate.optional(),
+  })
+  .superRefine((v, ctx) => {
+    if (!v.end_time && !v.clear_end_time && !v.start_time) {
+      ctx.addIssue({ code: "custom", path: [], message: "Provide end_time, clear_end_time or start_time." });
+    }
+    if (v.end_time && v.clear_end_time) {
+      ctx.addIssue({ code: "custom", path: ["clear_end_time"], message: "Set an end date or clear it, not both." });
+    }
+    if (v.end_time && Date.parse(v.end_time) <= Date.now()) {
+      ctx.addIssue({ code: "custom", path: ["end_time"], message: "end_time must be in the future." });
+    }
+    if (v.start_time && Date.parse(v.start_time) <= Date.now()) {
+      ctx.addIssue({ code: "custom", path: ["start_time"], message: "start_time must be in the future." });
+    }
+  });
+
+/** Change an ad set's bid strategy and cap (ad sets that hold their own budget). */
+export const updateAdsetBidSchema = z
+  .object({
+    account_id: accountId,
+    adset_id: z.string().min(1, "adset_id is required"),
+    bid_strategy: z.enum(BID_STRATEGIES),
+    /** Cost cap or bid cap, major units per result. */
+    bid_amount: z.number().positive().finite().optional(),
+    /** Minimum ROAS as a multiple, e.g. 2.5 for 2.5×. */
+    roas_average_floor: z.number().positive().finite().optional(),
+  })
+  .superRefine((v, ctx) => {
+    const isCap = v.bid_strategy === "COST_CAP" || v.bid_strategy === "LOWEST_COST_WITH_BID_CAP";
+    if (isCap && v.bid_amount == null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["bid_amount"],
+        message: `${v.bid_strategy === "COST_CAP" ? "A cost cap" : "A bid cap"} needs bid_amount (major units, e.g. 30 for 30 per result).`,
+      });
+    }
+    if (v.bid_strategy === "LOWEST_COST_WITH_MIN_ROAS" && v.roas_average_floor == null) {
+      ctx.addIssue({ code: "custom", path: ["roas_average_floor"], message: "A minimum ROAS bid needs roas_average_floor (e.g. 2.5 for 2.5×)." });
+    }
+    if (v.bid_amount != null && !isCap) {
+      ctx.addIssue({ code: "custom", path: ["bid_amount"], message: "bid_amount only applies to a cost cap or a bid cap." });
+    }
+    if (v.roas_average_floor != null && v.bid_strategy !== "LOWEST_COST_WITH_MIN_ROAS") {
+      ctx.addIssue({ code: "custom", path: ["roas_average_floor"], message: "roas_average_floor only applies to a minimum ROAS bid." });
+    }
+  });
+
+/** Change where an ad set's ads run: manual platforms and positions, or automatic (Advantage+) placements. */
+const placementPlatform = z.enum(["facebook", "instagram", "audience_network", "messenger"]);
+const placementPositions = z.array(z.string().regex(/^[a-z_]+$/, "Use Meta's position names, e.g. feed")).optional();
+export const updateAdsetPlacementsSchema = z
+  .object({
+    account_id: accountId,
+    adset_id: z.string().min(1, "adset_id is required"),
+    advantage_placements: z.boolean().optional(),
+    publisher_platforms: z.array(placementPlatform).min(1).optional(),
+    facebook_positions: placementPositions,
+    instagram_positions: placementPositions,
+    audience_network_positions: placementPositions,
+    messenger_positions: placementPositions,
+    /** Provided replaces, an empty list clears the device restriction, absent keeps it. */
+    device_platforms: z.array(z.enum(["mobile", "desktop"])).optional(),
+  })
+  .superRefine((v, ctx) => {
+    if (v.advantage_placements && v.publisher_platforms) {
+      ctx.addIssue({ code: "custom", path: ["publisher_platforms"], message: "Set advantage_placements or publisher_platforms, not both." });
+    }
+    if (!v.advantage_placements && !v.publisher_platforms) {
+      ctx.addIssue({ code: "custom", path: [], message: "Provide advantage_placements or publisher_platforms." });
+    }
+    for (const platform of placementPlatform.options) {
+      const key = `${platform}_positions` as const;
+      if (v[key]?.length && (v.advantage_placements || !v.publisher_platforms?.includes(platform))) {
+        ctx.addIssue({ code: "custom", path: [key], message: `${key} was given for ${platform}, which is not selected.` });
+      }
+    }
+    if (v.advantage_placements && v.device_platforms?.length) {
+      ctx.addIssue({ code: "custom", path: ["device_platforms"], message: "Automatic placements take no device restriction." });
+    }
+  });
+
+/** Exclude (or stop excluding) custom audiences on an ad set; the rest of the targeting is kept. */
+export const updateAdsetAudienceExclusionsSchema = z
+  .object({
+    account_id: accountId,
+    adset_id: z.string().min(1, "adset_id is required"),
+    add_excluded_custom_audiences: z.array(z.string().min(1)).optional(),
+    remove_excluded_custom_audiences: z.array(z.string().min(1)).optional(),
+  })
+  .superRefine((v, ctx) => {
+    const add = v.add_excluded_custom_audiences ?? [];
+    const remove = v.remove_excluded_custom_audiences ?? [];
+    if (!add.length && !remove.length) {
+      ctx.addIssue({ code: "custom", path: [], message: "Provide add_excluded_custom_audiences or remove_excluded_custom_audiences." });
+    }
+    if (add.some((id) => remove.includes(id))) {
+      ctx.addIssue({ code: "custom", path: ["remove_excluded_custom_audiences"], message: "The same audience is in both add and remove." });
+    }
+  });
+
 /** Every tool the approval executor can actually dispatch to Meta. */
 export const EXECUTE_TOOL_SCHEMAS: Readonly<Record<string, z.ZodType>> = {
   update_adset_budget: updateAdsetBudgetSchema,
@@ -332,6 +440,10 @@ export const EXECUTE_TOOL_SCHEMAS: Readonly<Record<string, z.ZodType>> = {
   create_adset: createAdSetSchema,
   create_ad: createAdSchema,
   pause_ad: pauseAdSchema,
+  update_adset_schedule: updateAdsetScheduleSchema,
+  update_adset_bid: updateAdsetBidSchema,
+  update_adset_placements: updateAdsetPlacementsSchema,
+  update_adset_audience_exclusions: updateAdsetAudienceExclusionsSchema,
 };
 
 export function getExecuteToolSchema(toolName: string): z.ZodType | undefined {
