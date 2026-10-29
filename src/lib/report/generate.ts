@@ -74,6 +74,8 @@ export async function generateStructuredAuditReport(input: {
       const { object } = await generateObject({
         model: openai(config.OPENAI_MODEL),
         schema: AuditReportSchema,
+        // Schema uses .optional()/.default(), which OpenAI strict mode rejects.
+        providerOptions: { openai: { strictJsonSchema: false } },
         temperature: 0.2,
         system: REPORT_SYSTEM,
         prompt: [
