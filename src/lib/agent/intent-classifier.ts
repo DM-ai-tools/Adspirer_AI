@@ -22,13 +22,15 @@ const INTENT_GUIDE: Record<RequestIntent, string> = {
     "Wants a plan to reach a goal (leads, ROAS, budget) or answers the strategy brief's own question (goal, budget).",
   budget: "Asks about or wants to change budgets or bids.",
   list_campaigns: "Asks to list or show campaigns.",
-  export: "Wants a downloadable report / PDF / Word document / summary of the session.",
+  export: "Wants the conversation itself, or a report already in it, as a downloadable PDF / Word document. Not for new data: if they name metrics, a period or a breakdown to compile, that is custom.",
   create_campaign:
     "Wants to build or launch a campaign, ad set or ad, or is mid-way through doing so (sending an image link, picking settings).",
   generate_creatives: "Wants ad images / creatives generated.",
   scrape_services: "Wants services or offerings pulled from a website.",
   ad_copy: "Wants ad copy, headlines or primary text written.",
   copy_approved: "Chose an approved ad copy variant.",
+  custom:
+    "A specific deliverable or analysis the other intents do not exactly cover: named metrics or columns, a date range, a breakdown (per week, per day, per campaign, per placement), a chosen format such as an Excel sheet or table, or a comparison. The data must be fetched fresh and shaped to what they asked. Choose custom over forcing a near-fit such as audit or export.",
   general:
     "Any other question about the client's ads, spend, results, tracking, analytics (Meta, GA4, Search Console, Google Ads, Shopify) that needs fresh data.",
   chat: "Greeting, thanks, or a short definitional question needing no data.",
@@ -47,6 +49,7 @@ const HISTORY_TURNS = 6;
 
 const SYSTEM = [
   "You route messages in an agency's Meta Ads workspace assistant. Read the operator's latest message IN CONTEXT of the recent conversation and pick what they actually want. Operators phrase things in their own words, with typos and shorthand; judge meaning, never keywords.",
+  "Never force a request into the nearest intent. If it asks for something specific (particular metrics, a period, a breakdown, a file format), that is custom, even when it says \"report\". audit and export are only for a plain request to run an audit or to download the conversation.",
   "Key rule: mentioning an earlier report (\"based on the audit\", \"from those findings\") means they want to USE it (followup), not run it again. Choose audit only when they want a new audit run or are answering the audit's own question.",
   "If the assistant's last message asked the operator a question (scope, dates, goal, budget, an image link), a short reply is most likely the answer to it and stays on that flow.",
   "Intents:",

@@ -685,6 +685,7 @@ function writingLabel(input: WriterInput): string {
   if (input.reportDraft) return "Formatting report…";
   const intent = resolveWriterIntent(input);
   if (intent === "chat") return "Answering…";
+  if (intent === "custom") return "Building your data…";
   if (intent === "strategy") {
     return input.toolEvidence?.includes("### Strategy brief incomplete")
       ? "Asking for the goal & budget…"
@@ -695,7 +696,7 @@ function writingLabel(input: WriterInput): string {
 
 /** Output budget: short for Q&A, long for audits / reports. */
 function maxOutputTokensFor(intent: RequestIntent): number {
-  if (REPORT_INTENTS.has(intent)) return 8000;
+  if (REPORT_INTENTS.has(intent) || intent === "custom") return 8000;
   if (CONVERSATIONAL_INTENTS.has(intent)) return 2000;
   return 4000;
 }
@@ -874,6 +875,26 @@ export function buildWriterMessages(input: WriterInput): {
           "- Recommendations only: do NOT queue Approvals, do NOT propose execute tools or JSON, and do NOT say Meta was changed. End with one sentence saying they can ask you to queue specific steps in Approvals.",
           "- No emojis. No sign-off menu.",
         ].join("\n")
+    : intent === "custom"
+      ? [
+          `Operator request: ${input.task.goal ?? input.task.title}`,
+          "Detected intent: custom (a specific request: plan it yourself and read the data with the tools)",
+          accountHint ? `Primary Meta account_id: ${accountHint}` : "",
+          "",
+          "## Live tool evidence (context only; it may not hold what was asked for)",
+          evidence,
+          "",
+          "Do exactly what the operator asked, in the shape they asked for. Do NOT write an account audit, a health score or a generic report.",
+          "1. Work out the deliverable from their words: the metrics or columns, the period, the breakdown (for example one block per week), the filter (for example only campaigns that delivered in that period) and the format.",
+          "2. Fetch every number with the read-only data tools (meta_insights, ga4_report, search_console_query, google_ads_report, …). For per-week data call meta_insights with time_increment 7 and an explicit time_range, at level campaign, and request only the fields needed (spend, impressions, clicks, inline_link_clicks, inline_link_click_ctr, cost_per_inline_link_click, cpc, cpm, actions for leads). Split a long range into several calls if a limit is hit. A campaign with no delivery in a period does not appear for it.",
+          "3. Derive metrics only from what Meta returned (for example link CPC = spend / link clicks, leads from the lead actions). If a metric is not available, leave the cell as \"n/a\" and say why in one line below the table.",
+          "4. Present the result as markdown tables with one header row, one row per record, plain numbers with the currency symbol on money and % on rates, and the period as its own column (for example \"29 Sep – 5 Oct\"). Order rows the way they asked. Put each distinct table under its own short heading; the Excel export puts every table on its own sheet.",
+          "5. State the period, the account and the currency in one sentence before the tables. Tell them the Export menu under this message has an Excel (.xlsx) option. Do not claim a file is attached.",
+          "- If you cannot fulfil it (no account mapped, Meta error, a metric Meta does not provide), say exactly what failed and what you need. Never fall back to an audit, and never invent figures.",
+          "- No emojis. No menu of next steps.",
+        ]
+          .filter(Boolean)
+          .join("\n")
     : intent === "chat"
       ? [
           `Operator message: ${input.task.goal ?? input.task.title}`,

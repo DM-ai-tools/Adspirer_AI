@@ -63,6 +63,7 @@ const INTENT_SET: Record<RequestIntent, true> = {
   optimize: true,
   strategy: true,
   general: true,
+  custom: true,
   followup: true,
   chat: true,
   out_of_scope: true,
