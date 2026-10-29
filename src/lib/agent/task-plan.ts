@@ -33,6 +33,8 @@ export type RequestIntent =
   | "strategy"
   | "general"
   /** Asks to act on a report already in the chat ("based on the audit, give me the fixes"). */
+  /** Anything specific the fixed intents do not cover (a custom metric table, a weekly breakdown, an Excel with chosen columns): the model plans it and reads the data itself. */
+  | "custom"
   | "followup"
   /** Greetings, thanks, definitions, "why is that" — answered without fresh account data. */
   | "chat"
@@ -492,6 +494,13 @@ export function planTaskSteps(
   ];
 
   switch (intent) {
+    case "custom":
+      return [
+        ...base,
+        { id: "pull_insights", label: "Pull the requested data", state: "pending" },
+        { id: "write_report", label: "Build the answer", state: "pending" },
+        { id: "complete", label: "Complete", state: "pending" },
+      ];
     case "chat":
     case "followup":
       return [
