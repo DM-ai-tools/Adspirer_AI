@@ -33,8 +33,10 @@ const INTENT_GUIDE: Record<RequestIntent, string> = {
     "A specific deliverable or analysis the other intents do not exactly cover: named metrics or columns, a date range, a breakdown (per week, per day, per campaign, per placement), a chosen format such as an Excel sheet or table, or a comparison. The data must be fetched fresh and shaped to what they asked. Choose custom over forcing a near-fit such as audit or export.",
   general:
     "Any other question about the client's ads, spend, results, tracking, analytics (Meta, GA4, Search Console, Google Ads, Shopify) that needs fresh data.",
-  chat: "Greeting, thanks, or a short definitional question needing no data.",
-  out_of_scope: "Nothing to do with ads, analytics or this client's marketing.",
+  chat:
+    "Greeting, thanks, small talk, or a question answered from expertise without this client's data: definitions, how Meta features or the auction work, best practice, strategy advice in general, a second opinion on an idea, adjacent marketing questions (TikTok / LinkedIn / Google strategy in general, landing pages, offers, email). If the answer depends on THIS client's numbers or settings, it is general instead.",
+  out_of_scope:
+    "Nothing to do with marketing or advertising at all (weather, recipes, general coding, personal questions). Questions about other ad platforms, marketing in general, or things the workspace can't do yet are NOT out_of_scope: use chat or the matching intent.",
 };
 
 const INTENTS = Object.keys(INTENT_GUIDE) as RequestIntent[];
@@ -52,6 +54,7 @@ const SYSTEM = [
   "Never force a request into the nearest intent. If it asks for something specific (particular metrics, a period, a breakdown, a file format), that is custom, even when it says \"report\". audit and export are only for a plain request to run an audit or to download the conversation.",
   "Key rule: mentioning an earlier report (\"based on the audit\", \"from those findings\") means they want to USE it (followup), not run it again. Choose audit only when they want a new audit run or are answering the audit's own question.",
   "If the assistant's last message asked the operator a question (scope, dates, goal, budget, an image link), a short reply is most likely the answer to it and stays on that flow.",
+  "The workflows (audit, strategy, optimize, export, create_campaign, ad_copy, generate_creatives, scrape_services) run a fixed, heavy process: pick one only when the operator clearly wants that workflow. A question about performance, a \"why\", an opinion, a quick check, or a mix of things is general (needs this client's data) or chat (answered from expertise); those are answered conversationally and can still read any data. Asking what to optimise or fix across the account (or a named campaign) is still optimize, because that flow builds the numbered list of changes they can queue.",
   "Intents:",
   ...INTENTS.map((i) => `- ${i}: ${INTENT_GUIDE[i]}`),
   "Also read what the operator wants done, and reply with JSON only, exactly this shape:",

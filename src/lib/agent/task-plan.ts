@@ -182,7 +182,9 @@ export function detectRequestIntent(request: string): RequestIntent {
   if (/^\s*campaign settings selections\b/.test(text)) return "create_campaign";
   if (
     // Google Ads, GA4 and Search Console are read through the data tools, so they're in scope.
-    /weather|recipe|code|python|javascript|write a poem|joke|crypto|stock|linkedin|tiktok/i.test(
+    // "stock" and "code" alone are Shopify stock, discount codes and pixel code, so only
+    // stock-market and programming phrasings count.
+    /weather|recipe|\b(?:write|debug|fix|review)\s+(?:some\s+|this\s+|my\s+)?(?:python\s+|javascript\s+)?code\b|python|javascript|write a poem|joke|crypto|\bstocks?\s+(?:market|price|tips?|picks?)\b|linkedin|tiktok/i.test(
       text,
     ) &&
     !/meta|facebook|instagram|campaign|ad\s?set|budget|audit|ads|create|website|scrape|service|copy|headline|optimiz/.test(

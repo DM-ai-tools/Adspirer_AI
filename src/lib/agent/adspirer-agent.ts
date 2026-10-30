@@ -697,7 +697,7 @@ function writingLabel(input: WriterInput): string {
 /** Output budget: short for Q&A, long for audits / reports. */
 function maxOutputTokensFor(intent: RequestIntent): number {
   if (REPORT_INTENTS.has(intent) || intent === "custom") return 8000;
-  if (CONVERSATIONAL_INTENTS.has(intent)) return 2000;
+  if (CONVERSATIONAL_INTENTS.has(intent)) return 3000;
   return 4000;
 }
 
@@ -718,6 +718,114 @@ const FRESH_DATA_RULE = [
   "- When it builds on a report already in this chat (\"based on the audit\", \"from those findings\", \"what next\"), use that report as the input and produce only the new thing asked for. Never repeat or re-run the report, its summary, scorecard or tables.",
   "- Stay on the same account, campaign scope and period the chat is already working on unless the operator changes them.",
 ].join("\n");
+
+/**
+ * Turns that answer the operator in conversation rather than run a workflow
+ * (audit, strategy, optimise, export, the create / copy / image pickers). They
+ * share one adaptive brief: the preflight evidence is a head start and the
+ * model reads whatever else the question needs with the read tools.
+ */
+const CONVERSATION_INTENTS: ReadonlySet<RequestIntent> = new Set<RequestIntent>([
+  "chat",
+  "general",
+  "budget",
+  "list_campaigns",
+  "custom",
+  "followup",
+  "out_of_scope",
+]);
+
+/** What the turn looks like, said to the model in plain words (never shown to the operator). */
+const CONVERSATION_SITUATION: Partial<Record<RequestIntent, string>> = {
+  chat: "A conversational or expertise question; no account data was fetched up front.",
+  general: "A question about this client's ads or data; some live evidence was fetched up front.",
+  budget: "A question about budgets or bids; some live evidence was fetched up front.",
+  list_campaigns: "They want to see campaigns; the live campaign list is below.",
+  custom: "A specific deliverable (chosen metrics, a period, a breakdown or a format); plan it yourself and read the data with the tools.",
+  followup: "Builds on a report or answer already in this chat; nothing was re-run this turn.",
+  out_of_scope: "Looks outside this workspace's scope; no account data was fetched.",
+};
+
+/** Extra guidance for the conversation turns that have a particular job. */
+function conversationTurnRules(intent: RequestIntent): string[] {
+  switch (intent) {
+    case "followup":
+      return [
+        "- The report or answer earlier in this chat is your source: its findings, failed checks, numbers, scope and period. Cite them as \"from the audit above\" (for this purpose only, this overrides the fresh-data rule's ban on reusing earlier figures).",
+        "- Produce only the new thing asked for, in the shape asked for. When it's steps, fixes or priorities: a numbered list ordered by impact (tracking before scaling), each with the fix, the finding or check ID it comes from, the campaign or ad set it applies to, and the expected effect.",
+        "- Never restate or re-create the report: no executive summary, scope header, scorecard, checkpoint tables or per-ad-set verdicts.",
+        "- If they ask which recommendations you can do: answer per item using \"What can be done, and by whom\". Never list something you can't do as doable.",
+        "- Read live data only when a step needs a number the earlier report doesn't have; name the source if you do.",
+        "- Recommendations only: no Approvals, no tool JSON, never say Meta was changed. When steps are actionable here, end with one sentence saying they can ask you to queue specific ones.",
+      ];
+    case "custom":
+      return [
+        "- Never turn it into an account audit, a health score or a generic report.",
+        "- Work out the deliverable from their words: the metrics or columns, the period, the breakdown (e.g. one block per week), the filter (e.g. only campaigns that delivered) and the format.",
+        "- Fetch every number with the read tools. For per-week data call meta_insights with time_increment 7 and an explicit time_range at level campaign, requesting only the fields needed (spend, impressions, clicks, inline_link_clicks, inline_link_click_ctr, cost_per_inline_link_click, cpc, cpm, actions for leads). Split a long range into several calls if a limit is hit. A campaign with no delivery in a period does not appear for it.",
+        "- Derive metrics only from what came back (e.g. link CPC = spend / link clicks). A metric that isn't available is \"n/a\" in its cell, with one line below the table saying why.",
+        "- Present markdown tables: one header row, one row per record, currency symbol on money, % on rates, the period as its own column (e.g. \"29 Sep – 5 Oct\"), rows ordered the way they asked, each distinct table under its own short heading (the Excel export puts every table on its own sheet).",
+        "- One sentence before the tables with the period, the account and the currency. Mention the Export menu under this message has an Excel (.xlsx) option; never claim a file is attached.",
+        "- If you can't fulfil it (no account mapped, a Meta error, a metric Meta doesn't provide), say exactly what failed and what you need.",
+      ];
+    case "out_of_scope":
+      return [
+        "- Follow \"When a request is outside that scope\" in your instructions.",
+        "- If it turns out to be about this client's ads, analytics or marketing after all, just answer it (read data if needed).",
+        "- Adjacent marketing: help briefly from expertise and say what you can't do here. Something the workspace can't do: say so, offer the closest thing you can do, and where they'd do the rest.",
+        "- Unrelated to marketing: one friendly sentence, then two or three specific example questions for this client as a short bulleted list (use the client name, industry, goals and connected data from Additional context).",
+        "- Short and warm: no lecture about scope, no apologies, no invented data.",
+      ];
+    case "chat":
+      return [
+        "- Greetings or thanks: one short, friendly sentence. A greeting with no request can mention one or two things you could do for this client right now.",
+        "- Marketing outside Meta (another ad platform, SEO, email, landing pages): answer from expertise and say plainly that you can't read or change that platform here.",
+      ];
+    case "list_campaigns":
+      return [
+        "- Show the campaigns as a compact table (name, status, objective, daily budget) unless they asked for something narrower; add spend or results only when asked or when it is in the evidence.",
+      ];
+    default:
+      return [];
+  }
+}
+
+function buildConversationTurn(args: {
+  intent: RequestIntent;
+  request: string;
+  accountHint?: string;
+  evidence: string;
+  extraRules: string[];
+}): string {
+  const { intent, request, accountHint, evidence, extraRules } = args;
+  return [
+    `Operator message: ${request}`,
+    `Situation: ${CONVERSATION_SITUATION[intent] ?? "A question for you to answer."}`,
+    accountHint ? `Primary Meta account_id: ${accountHint}` : "",
+    "",
+    ...(evidence
+      ? [
+          "## Live evidence fetched up front (a head start: use it, but it may not cover everything asked)",
+          evidence,
+          "",
+        ]
+      : []),
+    "How to reply (you are a senior Meta media buyer talking to a colleague):",
+    "- Work out the question behind the words, using the conversation and Additional context, and answer it directly in your first sentence. If the message is vague, take the most useful reading, say your assumption in a few words, and answer; ask one short question back only when the readings would lead to genuinely different answers.",
+    "- Get the facts the answer needs. Use the evidence above; for anything it doesn't cover, call the read-only tools (meta_insights, list_adsets, list_ads, get_meta_ad_creatives, meta_account_health for tracking / learning / audiences / what's wrong, detect_meta_creative_fatigue, optimize_meta_budget, analyze_landing_pages, ga4_report, search_console_query, google_ads_report, Shopify when connected). Never say a figure is unavailable before trying the tools, and never estimate one. Name the source and period of every number.",
+    "- \"Why\" and \"what's wrong\" questions: diagnose like a specialist. Follow the chain in \"Diagnosing performance\" (cost per result moves with CPM, click-through rate and conversion rate), compare with the period before when the question is about a change, and name the most likely cause with the numbers that point to it, then what to do about it. Not a list of metrics.",
+    "- Expertise questions need no data: answer them fully, then tie them to this client when that adds something real.",
+    "- Shape the answer to the question: one number or a yes/no in a sentence; a why / how in a short explanation, with bullets or numbered steps only when it really is a list or a sequence; a table when comparing several campaigns, ad sets or periods. Headings only when the answer genuinely has sections.",
+    "- Quote numbers with the account currency, and keep campaign, ad set and ad names exactly as Meta returns them.",
+    "- Nothing is changed or queued on this turn: no tool JSON, and never say anything was queued. When a change is clearly the right move, recommend it specifically (what, where, by how much) and say they can ask you to queue it for Approvals.",
+    "- If evidence or a tool failed, say exactly what failed and what to check (Facebook connection, account mapping, Admin → Connections).",
+    "- At most one natural next step. No emojis, no \"Anything else?\", no \"fetching data\" / \"results incoming\", and never make the whole reply JSON.",
+    ...conversationTurnRules(intent),
+    ...extraRules,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
 
 export function buildWriterMessages(input: WriterInput): {
   /** Same for every client and turn — cached. */
@@ -861,53 +969,14 @@ export function buildWriterMessages(input: WriterInput): {
       ]
         .filter(Boolean)
         .join("\n")
-    : intent === "followup"
-      ? [
-          `Operator message: ${input.task.goal ?? input.task.title}`,
-          "Detected intent: follow-up on the report already in this chat (nothing was re-run; no new account data was fetched for this turn)",
-          "",
-          "Reply now:",
-          "- The report you wrote earlier in this chat is your source. Its findings, failed checks, numbers, scope and period are the basis — cite them as \"from the audit above\" (this overrides the fresh-data rule's ban on reusing earlier figures for this purpose only).",
-          "- Produce ONLY what was asked (for example the optimization steps): a prioritized, numbered list. Each step: the fix, which finding / check ID it comes from, the campaign or ad set it applies to, and the expected effect. Order by impact; fix tracking before scaling.",
-          "- Do NOT restate or recreate the audit: no executive summary, no scope header, no scorecard, no checkpoint tables, no per-ad-set verdicts.",
-          "- If they ask which recommendations you can do: answer per item using \"What can be done, and by whom\" in your instructions. Say which is which; never list something you can't do as doable.",
-          "- Only use data tools if a step needs a number the earlier report does not contain; name the source if you do.",
-          "- Recommendations only: do NOT queue Approvals, do NOT propose execute tools or JSON, and do NOT say Meta was changed. End with one sentence saying they can ask you to queue specific steps in Approvals.",
-          "- No emojis. No sign-off menu.",
-        ].join("\n")
-    : intent === "custom"
-      ? [
-          `Operator request: ${input.task.goal ?? input.task.title}`,
-          "Detected intent: custom (a specific request: plan it yourself and read the data with the tools)",
-          accountHint ? `Primary Meta account_id: ${accountHint}` : "",
-          "",
-          "## Live tool evidence (context only; it may not hold what was asked for)",
-          evidence,
-          "",
-          "Do exactly what the operator asked, in the shape they asked for. Do NOT write an account audit, a health score or a generic report.",
-          "1. Work out the deliverable from their words: the metrics or columns, the period, the breakdown (for example one block per week), the filter (for example only campaigns that delivered in that period) and the format.",
-          "2. Fetch every number with the read-only data tools (meta_insights, ga4_report, search_console_query, google_ads_report, …). For per-week data call meta_insights with time_increment 7 and an explicit time_range, at level campaign, and request only the fields needed (spend, impressions, clicks, inline_link_clicks, inline_link_click_ctr, cost_per_inline_link_click, cpc, cpm, actions for leads). Split a long range into several calls if a limit is hit. A campaign with no delivery in a period does not appear for it.",
-          "3. Derive metrics only from what Meta returned (for example link CPC = spend / link clicks, leads from the lead actions). If a metric is not available, leave the cell as \"n/a\" and say why in one line below the table.",
-          "4. Present the result as markdown tables with one header row, one row per record, plain numbers with the currency symbol on money and % on rates, and the period as its own column (for example \"29 Sep – 5 Oct\"). Order rows the way they asked. Put each distinct table under its own short heading; the Excel export puts every table on its own sheet.",
-          "5. State the period, the account and the currency in one sentence before the tables. Tell them the Export menu under this message has an Excel (.xlsx) option. Do not claim a file is attached.",
-          "- If you cannot fulfil it (no account mapped, Meta error, a metric Meta does not provide), say exactly what failed and what you need. Never fall back to an audit, and never invent figures.",
-          "- No emojis. No menu of next steps.",
-        ]
-          .filter(Boolean)
-          .join("\n")
-    : intent === "chat"
-      ? [
-          `Operator message: ${input.task.goal ?? input.task.title}`,
-          "Detected intent: chat (conversational / definitional — no fresh account data was fetched for this turn)",
-          "",
-          "Reply now:",
-          "- Answer the question directly in the first sentence, in 1–4 sentences total.",
-          "- Plain prose only: no headings, tables, bullet menus, or sign-off questions like \"Anything else?\".",
-          "- Use the conversation so far for follow-ups (\"why is that\", \"what does that mean\"). Do not repeat earlier reports.",
-          "- For greetings or thanks, reply in one short, friendly sentence.",
-          "- If a correct answer needs live numbers that are not in the conversation, read them with the read-only data tools (Meta, GA4, Search Console, Google Ads) and name the source. Never invent figures.",
-          "- Do NOT propose execute tools, JSON, or Meta changes.",
-        ].join("\n")
+    : CONVERSATION_INTENTS.has(intent)
+      ? buildConversationTurn({
+          intent,
+          request: input.task.goal ?? input.task.title,
+          accountHint,
+          evidence: input.toolEvidence?.trim() ?? "",
+          extraRules: [...categoryNoticeRules, ...strategyRules],
+        })
       : [
         `Operator request: ${input.task.goal ?? input.task.title}`,
         `Detected intent: ${intent}`,
@@ -1388,9 +1457,11 @@ async function runMockAgent(input: {
 
   if (intent === "out_of_scope") {
     const summary = [
-      "I'm scoped to this client's ads and analytics — Meta audits, delivery, budgets and approval-gated changes, plus read-only GA4, Search Console and Google Ads data.",
+      "That one's outside what this workspace is set up for. I'm here for this client's Meta ads and the analytics around them (GA4, Search Console, Google Ads, Shopify). A few things you could ask instead:",
       "",
-      "Try: “Audit this account”, “List campaigns”, or “Propose a budget increase”.",
+      "- Which campaigns had the best cost per result last week?",
+      "- Why did my CPM go up this month?",
+      "- Write three new ad angles for our best-selling offer.",
     ].join("\n");
     await input.onProgress?.({
       phase: "write_report",
@@ -2197,9 +2268,10 @@ export async function gatherDiagnoseEvidence(input: {
           const insightTargets: MetaCampaign[] =
             brief.scope === "campaigns"
               ? matchedCampaigns
-              : campaigns
-                  .filter((c) => c.status === "ACTIVE" || c.status === "PAUSED")
-                  .slice(0, 20);
+              : [
+                  ...campaigns.filter((c) => c.status === "ACTIVE"),
+                  ...campaigns.filter((c) => c.status === "PAUSED"),
+                ].slice(0, 20);
 
           const insightLines: string[] = [];
           let totalSpend = 0;
@@ -2875,11 +2947,9 @@ export async function gatherDiagnoseEvidence(input: {
     }
   }
 
-  if (
-    accountId &&
-    intent !== "audit" &&
-    (intent === "budget" || intent === "general" || intent === "export")
-  ) {
+  // Questions read the health checks themselves (meta_account_health) when the
+  // answer needs them; generic findings on every turn pulled answers off topic.
+  if (accountId && intent === "export") {
     await input.onProgress?.({
       phase: "diagnose",
       label: "Running account diagnostics…",

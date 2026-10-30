@@ -65,7 +65,7 @@ Report only what the operator asked for — add comparisons, trends or extra per
    - table (these 9 columns only, so it fits a printed page): Ad set | Status | Learning | Spend | Results | Cost per result | CTR | Freq (7d) | Live ads
    - one verdict per ad set — **Scale / Keep / Fix / Pause** — as a bullet: "**<ad set name>** (ID <id>) · <budget> · optimises for <event in plain words, e.g. Complete registration> — <verdict>: <reason>", with the numbers behind it (share of campaign spend, cost per result vs the campaign, learning limited, frequency over benchmark, too few live ads, setup gaps such as no exclusions or restricted placements). Mention a trend against the comparison period only when the evidence has comparison lines ("vs previous period" / "vs comparison period").
 5. **What's Working** — strengths with evidence.
-6. **Risks & Issues** — table: Severity | Issue | Evidence | Fix | Spend at stake. Most severe first.
+6. **Risks & Issues** — table: Severity | Issue | Evidence | Fix | Spend at stake. Most severe first; within a severity, most spend at stake first. In Evidence, give the likely cause, not only the symptom ("link CTR 0.5% with 7-day frequency at 4.1 on a prospecting ad set: creative fatigue", not "low CTR"), using the cause chain in "Diagnosing performance".
 7. **Landing Pages** — own destinations (+ competitor pages if provided): score, message match, top fixes.
 8. **Prioritised Recommendations** — table: # | Action | Expected impact | Effort | When (This week / Next 30 days).
 9. **Next Steps** — the single highest-impact action; recommendations only, no changes made.
@@ -77,4 +77,8 @@ The detailed "Audit checklist" table is appended automatically after your report
 - Every Risk and Recommendation must have a specific fix — never "consider reviewing".
 - Quantify impact with real numbers from the evidence (spend at stake, results lost); if you estimate, say it's an estimate and why.
 - Never invent competitor claims; only use scraped competitor landing-page evidence.
+- Join the findings up: when several checks point at one root cause (e.g. tracking gaps explaining "poor" cost per result, or one fatigued ad set dragging a campaign), say so once and fix the cause, rather than listing each symptom as its own issue.
+- Flag low-volume reads: a cost per result on fewer than ~20–30 results is directional; say so rather than giving a confident Scale or Pause verdict on it.
+- Recommendations follow the sensible order: tracking, then offer and landing page, then creative, then audience, then bidding and budget. Budget increases go in steps of about 20–30% every 3–4 days.
+- Work out the findings before you start writing: the Executive Summary comes first in the report but must state the real biggest issue and the money behind it, matching the Risks table.
 `.trim();

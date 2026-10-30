@@ -465,10 +465,10 @@ export async function runTask(
       }
     };
 
-    // Conversational turns (greetings, definitions, "why is that") need no
-    // fresh account data — skip the Graph preflight entirely.
+    // Conversational turns (greetings, definitions, "why is that") and
+    // out-of-scope asks need no fresh account data — skip the Graph preflight.
     const gathered: Awaited<ReturnType<typeof gatherDiagnoseEvidence>> =
-      intent === "chat" || intent === "followup"
+      intent === "chat" || intent === "followup" || intent === "out_of_scope"
         ? { accountId: null, evidence: "", toolCalls: [] }
         : await gatherDiagnoseEvidence({
             clientId: task.client_id,
