@@ -576,13 +576,22 @@ export interface MetaAdsProvider {
     },
   ): Promise<MetaAdCreative[]>;
 
-  listAccessibleAccounts(): Promise<
-    Array<{
-      meta_account_id: string;
-      meta_account_name: string;
-      currency?: string;
-      timezone?: string;
-      business_id?: string;
-    }>
-  >;
+  listAccessibleAccounts(): Promise<AccessibleMetaAccount[]>;
+}
+
+/**
+ * How the connected Facebook user reaches the ad account: through a Business
+ * Manager (business portfolio) that owns it or holds it as a client account,
+ * or directly on the user with no business in between.
+ */
+export type MetaBusinessRelation = "owned" | "client" | "personal";
+
+export interface AccessibleMetaAccount {
+  meta_account_id: string;
+  meta_account_name: string;
+  currency?: string;
+  timezone?: string;
+  business_id?: string;
+  business_name?: string;
+  business_relation?: MetaBusinessRelation;
 }

@@ -9,6 +9,10 @@ import type { GoogleAsset, GoogleAssetKind } from "@/lib/google/types";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import type { MappingFilter } from "@/lib/adspirer/business-groups";
+import { Search } from "lucide-react";
 import {
   Select,
   SelectContent,
@@ -33,9 +37,9 @@ type PublicAsset = Omit<GoogleAsset, "raw_metadata">;
 const NOT_MAPPED = "__not_mapped__";
 
 const SECTIONS: Array<{ kind: GoogleAssetKind; title: string; empty: string }> = [
-  { kind: "ga4_property", title: "GA4 properties", empty: "No GA4 properties found yet." },
-  { kind: "ads_customer", title: "Google Ads accounts", empty: "No Google Ads accounts found yet." },
-  { kind: "gsc_site", title: "Search Console sites", empty: "No Search Console sites found yet." },
+  { kind: "ga4_property", title: "GA4", empty: "No GA4 properties found yet." },
+  { kind: "ads_customer", title: "Google Ads", empty: "No Google Ads accounts found yet." },
+  { kind: "gsc_site", title: "Search Console", empty: "No Search Console sites found yet." },
 ];
 
 const ENV_VARS = [
@@ -48,6 +52,18 @@ type Props = {
   clients: Client[];
   onChanged?: () => void;
 };
+
+/** Rows under their parent (GA4 account, Ads manager), keeping the incoming order inside each. */
+function groupByParent(rows: PublicAsset[]): Array<{ parent: string | null; assets: PublicAsset[] }> {
+  const groups = new Map<string | null, PublicAsset[]>();
+  for (const row of rows) {
+    const parent = row.parent_name?.trim() || null;
+    groups.set(parent, [...(groups.get(parent) ?? []), row]);
+  }
+  return [...groups.entries()]
+    .sort(([a], [b]) => (a == null ? 1 : b == null ? -1 : a.localeCompare(b)))
+    .map(([parent, assets]) => ({ parent, assets }));
+}
 
 /** Admin card: the agency's read-only Google connection and the mapping of its assets to clients. */
 export function GoogleConnectCard({ clients, onChanged }: Props) {
@@ -83,6 +99,23 @@ export function GoogleConnectCard({ clients, onChanged }: Props) {
   }, [load]);
 
   const grouped = useMemo(() => groupGoogleAssets(assets as GoogleAsset[]), [assets]);
+  const [kind, setKind] = useState<GoogleAssetKind>("ga4_property");
+  const [query, setQuery] = useState("");
+  const [mapping, setMapping] = useState<MappingFilter>("all");
+  const clientNames = useMemo(() => new Map(clients.map((c) => [c.id, c.name])), [clients]);
+
+  const visibleRows = (rows: PublicAsset[]) => {
+    const q = query.trim().toLowerCase();
+    return rows.filter((a) => {
+      if (mapping === "mapped" && !a.mapped_client_id) return false;
+      if (mapping === "unmapped" && a.mapped_client_id) return false;
+      if (!q) return true;
+      return [a.name, a.external_id, a.parent_name ?? "", a.mapped_client_id ? clientNames.get(a.mapped_client_id) ?? "" : ""]
+        .join(" ")
+        .toLowerCase()
+        .includes(q);
+    });
+  };
 
   async function sync() {
     setSyncing(true);
@@ -252,60 +285,102 @@ export function GoogleConnectCard({ clients, onChanged }: Props) {
             </div>
 
             {status.connected ? (
-              <div className="space-y-4">
+              <Tabs value={kind} onValueChange={(v) => setKind(v as GoogleAssetKind)}>
+                <TabsList>
+                  {SECTIONS.map((section) => (
+                    <TabsTrigger key={section.kind} value={section.kind}>
+                      {section.title}
+                      <Badge variant="muted" className="ml-2 text-[10px]">
+                        {grouped[section.kind].length}
+                      </Badge>
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <div className="relative min-w-[220px] flex-1">
+                    <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
+                    <Input
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      placeholder="Search name, ID, account or client"
+                      className="pl-8"
+                    />
+                  </div>
+                  <Select value={mapping} onValueChange={(v) => setMapping(v as MappingFilter)}>
+                    <SelectTrigger className="w-[150px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All</SelectItem>
+                      <SelectItem value="unmapped">Not mapped</SelectItem>
+                      <SelectItem value="mapped">Mapped</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
                 {SECTIONS.map((section) => {
-                  const rows = grouped[section.kind];
+                  const all = grouped[section.kind];
+                  const rows = visibleRows(all);
+                  const mappedCount = all.filter((a) => a.mapped_client_id).length;
                   return (
-                    <div key={section.kind}>
-                      <p className="mb-2 text-sm font-medium">
-                        {section.title} ({rows.length})
+                    <TabsContent key={section.kind} value={section.kind} className="mt-3">
+                      <p className="mb-2 text-xs text-muted">
+                        {all.length} total · {mappedCount} mapped
+                        {rows.length !== all.length ? ` · showing ${rows.length}` : ""}
                       </p>
-                      {rows.length === 0 ? (
+                      {all.length === 0 ? (
                         <p className="text-xs text-muted">{section.empty}</p>
+                      ) : rows.length === 0 ? (
+                        <p className="py-4 text-center text-sm text-muted">Nothing matches these filters.</p>
                       ) : (
-                        <div className="space-y-2">
-                          {rows.map((asset) => (
-                            <div
-                              key={asset.id}
-                              className="rounded-lg border border-border-subtle px-3 py-2"
-                            >
-                              <div className="flex flex-wrap items-center justify-between gap-2">
-                                <div className="min-w-0">
-                                  <p className="truncate text-sm font-medium">{asset.name}</p>
-                                  <p className="font-mono text-[11px] text-muted">
-                                    {asset.external_id}
-                                    {asset.parent_name ? ` · ${asset.parent_name}` : ""}
-                                  </p>
-                                </div>
-                                <Select
-                                  value={asset.mapped_client_id ?? NOT_MAPPED}
-                                  disabled={mappingId === asset.id}
-                                  onValueChange={(value) => void map(asset, value)}
-                                >
-                                  <SelectTrigger className="w-[200px]">
-                                    <SelectValue placeholder="Map to client" />
-                                  </SelectTrigger>
-                                  <SelectContent>
-                                    <SelectItem value={NOT_MAPPED}>Not mapped</SelectItem>
-                                    {clients.map((c) => (
-                                      <SelectItem key={c.id} value={c.id}>
-                                        {c.name}
-                                      </SelectItem>
-                                    ))}
-                                  </SelectContent>
-                                </Select>
-                              </div>
-                              {mapErrors[asset.id] ? (
-                                <p className="mt-1 text-xs text-danger">{mapErrors[asset.id]}</p>
+                        <div className="max-h-[28rem] overflow-y-auto rounded-lg border border-border-subtle">
+                          {groupByParent(rows).map(({ parent, assets: groupRows }) => (
+                            <div key={parent ?? "__none__"}>
+                              {parent ? (
+                                <p className="sticky top-0 z-10 border-b border-border-subtle bg-card px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide text-muted">
+                                  {parent} · {groupRows.length}
+                                </p>
                               ) : null}
+                              {groupRows.map((asset) => (
+                                <div
+                                  key={asset.id}
+                                  className="border-b border-border-subtle px-3 py-2 last:border-b-0"
+                                >
+                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <div className="min-w-0">
+                                      <p className="truncate text-sm font-medium">{asset.name}</p>
+                                      <p className="font-mono text-[11px] text-muted">{asset.external_id}</p>
+                                    </div>
+                                    <Select
+                                      value={asset.mapped_client_id ?? NOT_MAPPED}
+                                      disabled={mappingId === asset.id}
+                                      onValueChange={(value) => void map(asset, value)}
+                                    >
+                                      <SelectTrigger className="w-[200px]">
+                                        <SelectValue placeholder="Map to client" />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectItem value={NOT_MAPPED}>Not mapped</SelectItem>
+                                        {clients.map((c) => (
+                                          <SelectItem key={c.id} value={c.id}>
+                                            {c.name}
+                                          </SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                  {mapErrors[asset.id] ? (
+                                    <p className="mt-1 text-xs text-danger">{mapErrors[asset.id]}</p>
+                                  ) : null}
+                                </div>
+                              ))}
                             </div>
                           ))}
                         </div>
                       )}
-                    </div>
+                    </TabsContent>
                   );
                 })}
-              </div>
+              </Tabs>
             ) : null}
           </>
         ) : null}

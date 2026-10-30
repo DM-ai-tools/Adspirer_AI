@@ -972,6 +972,8 @@ export class MockMetaAdsProvider implements MetaAdsProvider {
         currency: "USD",
         timezone: "America/New_York",
         business_id: "bm_9001",
+        business_name: "Modern Dental Group",
+        business_relation: "client" as const,
       },
       {
         meta_account_id: TR_ACCOUNT,
@@ -979,6 +981,8 @@ export class MockMetaAdsProvider implements MetaAdsProvider {
         currency: "USD",
         timezone: "America/Chicago",
         business_id: "bm_9002",
+        business_name: "TrafficRadius",
+        business_relation: "owned" as const,
       },
       {
         meta_account_id: CT_ACCOUNT,
@@ -986,6 +990,8 @@ export class MockMetaAdsProvider implements MetaAdsProvider {
         currency: "USD",
         timezone: "America/Los_Angeles",
         business_id: "bm_9003",
+        business_name: "ClickTrends",
+        business_relation: "client" as const,
       },
     ];
   }

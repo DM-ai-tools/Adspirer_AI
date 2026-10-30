@@ -1,6 +1,6 @@
 import { nanoid } from "nanoid";
 import type { ConnectedMetaAccount } from "@/types";
-import type { MetaAdsProvider } from "@/lib/adspirer/provider";
+import type { MetaAdsProvider, MetaBusinessRelation } from "@/lib/adspirer/provider";
 import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
 import { resolveProvider } from "@/lib/adspirer/client";
@@ -50,10 +50,11 @@ export async function syncConnectedMetaAccounts(options?: {
         existing.currency = account.currency ?? existing.currency;
         existing.timezone = account.timezone ?? existing.timezone;
         existing.business_id = account.business_id ?? existing.business_id;
+        existing.business_name = account.business_name ?? existing.business_name ?? null;
         existing.last_synced_at = ts;
         existing.updated_at = ts;
         if (options?.clientId) existing.client_id = options.clientId;
-        existing.raw = mergeSourceMeta(existing.raw, source, provider.name);
+        existing.raw = mergeSourceMeta(existing.raw, source, provider.name, account.business_relation);
         upserted.push(existing);
       } else {
         const row: ConnectedMetaAccount = {
@@ -64,10 +65,11 @@ export async function syncConnectedMetaAccounts(options?: {
           currency: account.currency ?? null,
           timezone: account.timezone ?? null,
           business_id: account.business_id ?? null,
+          business_name: account.business_name ?? null,
           access_status: "granted",
           access_method: "direct_grant",
           last_synced_at: ts,
-          raw: mergeSourceMeta(null, source, provider.name),
+          raw: mergeSourceMeta(null, source, provider.name, account.business_relation),
           created_at: ts,
           updated_at: ts,
         };
@@ -122,11 +124,12 @@ export async function syncConnectedMetaAccounts(options?: {
       currency: account.currency ?? null,
       timezone: account.timezone ?? null,
       business_id: account.business_id ?? null,
+      business_name: account.business_name ?? null,
       access_status: "granted" as const,
       status: "active" as const,
       last_synced_at: ts,
       updated_at: ts,
-      raw_metadata: mergeSourceMeta(existingRaw, source, provider.name),
+      raw_metadata: mergeSourceMeta(existingRaw, source, provider.name, account.business_relation),
     };
 
     const { data, error } = await supabase
@@ -167,6 +170,7 @@ function mergeSourceMeta(
   existing: Record<string, unknown> | null | undefined,
   source: ConnectionSource,
   providerName: string,
+  businessRelation?: MetaBusinessRelation,
 ): Record<string, unknown> {
   const prev = existing ?? {};
   const prevSources = Array.isArray(prev.sources)
@@ -181,6 +185,7 @@ function mergeSourceMeta(
     sources,
     provider: providerName,
     last_source_sync: source,
+    ...(businessRelation ? { business_relation: businessRelation } : {}),
   };
 }
 

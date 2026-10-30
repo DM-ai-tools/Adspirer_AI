@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Search } from "lucide-react";
 
 type ShopifyCounts = {
   orders: number;
@@ -311,6 +312,9 @@ function ClientRow({ client }: { client: Client }) {
 
 /** Admin card: each client's read-only Shopify store connection (token paste) and its sync state. */
 export function ShopifyConnectCard({ clients }: { clients: Client[] }) {
+  const [query, setQuery] = useState("");
+  const q = query.trim().toLowerCase();
+  const shown = q ? clients.filter((c) => c.name.toLowerCase().includes(q)) : clients;
   return (
     <Card>
       <CardHeader className="space-y-0">
@@ -321,11 +325,32 @@ export function ShopifyConnectCard({ clients }: { clients: Client[] }) {
           in Shopify.
         </p>
       </CardHeader>
-      <CardContent className="space-y-2">
+      <CardContent className="space-y-3">
         {clients.length === 0 ? (
           <p className="text-sm text-muted">Add a client first, then connect their store.</p>
         ) : (
-          clients.map((c) => <ClientRow key={c.id} client={c} />)
+          <>
+            {clients.length > 5 ? (
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
+                <Input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder={`Search ${clients.length} clients`}
+                  className="pl-8"
+                />
+              </div>
+            ) : null}
+            {shown.length === 0 ? (
+              <p className="py-4 text-center text-sm text-muted">No client matches “{query}”.</p>
+            ) : (
+              <div className="max-h-[32rem] space-y-2 overflow-y-auto pr-1">
+                {shown.map((c) => (
+                  <ClientRow key={c.id} client={c} />
+                ))}
+              </div>
+            )}
+          </>
         )}
       </CardContent>
     </Card>

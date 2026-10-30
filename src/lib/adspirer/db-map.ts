@@ -67,6 +67,7 @@ export function mapConnectedMetaAccountRow(
     currency: (row.currency as string | null) ?? null,
     timezone: (row.timezone as string | null) ?? null,
     business_id: (row.business_id as string | null) ?? null,
+    business_name: (row.business_name as string | null) ?? null,
     access_status: (row.access_status as AccessStatus) ?? "not_requested",
     access_method: (row.access_method as AccessMethod | null) ?? null,
     last_synced_at: (row.last_synced_at as string | null) ?? null,

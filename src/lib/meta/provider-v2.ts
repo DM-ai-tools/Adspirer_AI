@@ -26,6 +26,8 @@ import type {
   TextOptions,
   AdPreviewInput,
   AdPreview,
+  AccessibleMetaAccount,
+  MetaBusinessRelation,
 } from "@/lib/adspirer/provider";
 import {
   excludedIdsOf,
@@ -3151,78 +3153,85 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     }
   }
 
-  async listAccessibleAccounts() {
-    const fields = "id,name,currency,timezone_name,business";
-    const byId = new Map<
-      string,
-      {
-        meta_account_id: string;
-        meta_account_name: string;
-        currency?: string;
-        timezone?: string;
-        business_id?: string;
-      }
-    >();
+  async listAccessibleAccounts(): Promise<AccessibleMetaAccount[]> {
+    const fields = "id,name,currency,timezone_name,business{id,name}";
+    const byId = new Map<string, AccessibleMetaAccount>();
 
-    const addRow = (row: Record<string, unknown>) => {
+    type Via = { id: string; name?: string; relation: MetaBusinessRelation };
+    const addRow = (row: Record<string, unknown>, via: Via | null) => {
       const rawId = String(row.id ?? "").trim();
       if (!rawId || rawId === "me") return;
       const meta_account_id = rawId.startsWith("act_")
         ? rawId
         : `act_${rawId.replace(/^act_/, "")}`;
       if (byId.has(meta_account_id)) return;
+      // Reached without a Business Manager: label it with the business that owns it, if any.
+      const owner =
+        row.business && typeof row.business === "object"
+          ? (row.business as { id?: unknown; name?: unknown })
+          : null;
+      const ownerId = owner ? String(owner.id ?? "") || undefined : undefined;
+      const business = via ?? (ownerId
+        ? { id: ownerId, name: typeof owner?.name === "string" ? owner.name : undefined, relation: "owned" as const }
+        : null);
       byId.set(meta_account_id, {
         meta_account_id,
         meta_account_name: String(row.name ?? meta_account_id),
         currency: typeof row.currency === "string" ? row.currency : undefined,
         timezone:
           typeof row.timezone_name === "string" ? row.timezone_name : undefined,
-        business_id:
-          row.business && typeof row.business === "object"
-            ? String((row.business as { id?: unknown }).id ?? "") || undefined
-            : undefined,
+        business_id: business?.id,
+        business_name: business?.name,
+        business_relation: business?.relation ?? "personal",
       });
     };
 
-    const addFromEdge = async (path: string) => {
+    const pages = async (
+      path: string,
+      params: Record<string, string | number>,
+      onRow: (row: Record<string, unknown>) => void,
+    ) => {
       let after: string | undefined;
       do {
         const res = await this.graph.get<{
           data?: Array<Record<string, unknown>>;
-          paging?: { cursors?: { after?: string } };
-        }>(path, {
-          fields,
-          limit: 100,
-          ...(after ? { after } : {}),
-        });
-        for (const row of res.data ?? []) addRow(row);
-        after = res.paging?.cursors?.after;
+          paging?: { cursors?: { after?: string }; next?: string };
+        }>(path, { ...params, ...(after ? { after } : {}) });
+        for (const row of res.data ?? []) onRow(row);
+        after = res.paging?.next ? res.paging?.cursors?.after : undefined;
       } while (after);
     };
 
+    // Business Managers first, so each account is shown under the business the
+    // user reaches it through. Owned accounts win over another business's
+    // client access to the same account.
+    const businesses: Array<{ id: string; name?: string }> = [];
     try {
-      await addFromEdge("me/adaccounts");
+      await pages("me/businesses", { fields: "id,name", limit: 100 }, (biz) => {
+        const id = String(biz.id ?? "").trim();
+        if (id) businesses.push({ id, name: typeof biz.name === "string" ? biz.name : undefined });
+      });
     } catch {
-      // User may only have business-scoped access for some accounts.
+      // business_management may be missing on older tokens until reconnect.
+    }
+    for (const relation of ["owned", "client"] as const) {
+      for (const biz of businesses) {
+        try {
+          await pages(
+            `${biz.id}/${relation}_ad_accounts`,
+            { fields, limit: 100 },
+            (row) => addRow(row, { ...biz, relation }),
+          );
+        } catch {
+          // Skip businesses the token cannot read.
+        }
+      }
     }
 
     try {
-      const businesses = await this.graph.get<{
-        data?: Array<Record<string, unknown>>;
-      }>("me/businesses", { fields: "id,name", limit: 50 });
-      for (const biz of businesses.data ?? []) {
-        const businessId = String(biz.id ?? "").trim();
-        if (!businessId) continue;
-        for (const edge of ["owned_ad_accounts", "client_ad_accounts"] as const) {
-          try {
-            await addFromEdge(`${businessId}/${edge}`);
-          } catch {
-            // Skip businesses the token cannot read.
-          }
-        }
-      }
+      await pages("me/adaccounts", { fields, limit: 100 }, (row) => addRow(row, null));
     } catch {
-      // business_management may be missing on older tokens until reconnect.
+      // User may only have business-scoped access for some accounts.
     }
 
     return Array.from(byId.values());

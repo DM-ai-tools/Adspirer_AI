@@ -202,6 +202,8 @@ export interface ConnectedMetaAccount {
   currency: string | null;
   timezone: string | null;
   business_id: string | null;
+  /** The Business Manager (business portfolio) the account is reached through. */
+  business_name?: string | null;
   access_status: AccessStatus;
   access_method: AccessMethod | null;
   last_synced_at: string | null;
