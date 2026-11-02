@@ -370,17 +370,6 @@ export function evaluateCheckpoints(
           ? "Browser-only tracking typically misses a meaningful share of conversions (ad blockers, iOS, cookie limits), which under-reports results and weakens optimisation."
           : undefined,
       });
-      if (!browserOnly.length) {
-        cp.push({
-          id: "T5",
-          category: "Tracking & measurement",
-          title: "Pixel and server events de-duplicated",
-          status: "info",
-          severity: "medium",
-          evidence: "Browser and server events both arrive. Meta's API doesn't expose de-duplication results.",
-          fix: "In Events Manager → Overview, check each conversion event shows \"Deduplicated\" and that browser and server copies share the same event_id; otherwise conversions are double-counted.",
-        });
-      }
     }
   }
 
@@ -473,7 +462,6 @@ export function evaluateCheckpoints(
 
   // T9 — stale pixels and custom conversions (housekeeping).
   {
-    const stalePixels = snap.pixels.filter((p) => daysSince(p.lastFiredTime, now) > 90);
     const usedConversions = new Set(conversionAdSets.map((a) => a.customConversionId).filter(Boolean));
     const deadConversions = snap.customConversions.filter(
       (c) => !c.archived && usedConversions.has(c.id) && daysSince(c.lastFiredTime, now) > 7,
@@ -487,17 +475,6 @@ export function evaluateCheckpoints(
         severity: "critical",
         evidence: `${list(deadConversions.map((c) => c.name))} hasn't fired in over 7 days but ad sets optimise for it.`,
         fix: "Check the custom conversion's URL/event rule still matches the live site, or switch the ad sets to a standard event that fires.",
-      });
-    }
-    if (stalePixels.length) {
-      cp.push({
-        id: "T10",
-        category: "Tracking & measurement",
-        title: "No unused pixels cluttering the account",
-        status: "info",
-        severity: "low",
-        evidence: `${stalePixels.length} pixel${stalePixels.length === 1 ? " has" : "s have"} not fired in 90+ days: ${list(stalePixels.map((p) => p.name))}.`,
-        fix: "Disconnect unused pixels from the ad account so new ad sets can't be pointed at a dead pixel by mistake.",
       });
     }
   }
@@ -539,33 +516,6 @@ export function evaluateCheckpoints(
         fix: empty.length || thin.length || crowded.length
           ? "Give each ad set 3–5 distinct concepts so Meta can find a winner; split very large ad sets so each ad gets enough delivery to learn."
           : undefined,
-      });
-    }
-  }
-  {
-    const named = snap.campaigns.filter((c) => /\s[|_\-–]\s|_/.test(c.name));
-    if (snap.campaigns.length >= 3) {
-      const share = named.length / snap.campaigns.length;
-      cp.push({
-        id: "S3",
-        category: "Account structure",
-        title: "Consistent naming convention",
-        status: share >= 0.8 ? "pass" : "warn",
-        severity: "low",
-        evidence: `${Math.round(share * 100)}% of ${snap.campaigns.length} campaigns follow a delimited naming pattern.`,
-        fix: share >= 0.8 ? undefined : "Adopt one pattern, e.g. Client | Objective | Audience | Month, so reports group cleanly.",
-      });
-    }
-    const pausedCount = snap.campaigns.filter((c) => !isLive(c.status)).length;
-    if (pausedCount > 30) {
-      cp.push({
-        id: "S4",
-        category: "Account structure",
-        title: "Old campaigns archived",
-        status: "info",
-        severity: "low",
-        evidence: `${pausedCount} paused campaigns are still in the account.`,
-        fix: "Archive campaigns you won't restart; it reduces the chance of editing the wrong one and keeps reports readable.",
       });
     }
   }
@@ -665,24 +615,20 @@ export function evaluateCheckpoints(
     const brokenInUse = snap.audiences.filter(
       (a) => !a.ready && liveAdSets.some((s) => s.includedAudienceIds.includes(a.id)),
     );
-    const brokenIdle = snap.audiences.filter((a) => !a.ready).length - brokenInUse.length;
-    if (snap.audiences.length) {
+    // Only audiences a live ad set actually targets matter; idle broken ones are housekeeping, not a finding.
+    if (liveAdSets.some((s) => s.includedAudienceIds.length)) {
       cp.push({
         id: "A1",
         category: "Audiences & targeting",
         title: "Audiences in use are healthy",
-        status: brokenInUse.length ? "fail" : brokenIdle > 0 ? "info" : "pass",
-        severity: brokenInUse.length ? "high" : "low",
+        status: brokenInUse.length ? "fail" : "pass",
+        severity: "high",
         evidence: brokenInUse.length
           ? `Live ad sets target unusable audiences: ${list(brokenInUse.map((a) => `${a.name} (${a.problem ?? "not ready"})`))}.`
-          : brokenIdle > 0
-            ? `${brokenIdle} unused audience${brokenIdle === 1 ? " is" : "s are"} broken or too small (not used by live ad sets).`
-            : "All custom audiences are ready.",
+          : "Every audience a live ad set targets is ready.",
         fix: brokenInUse.length
           ? "Rebuild or replace these audiences; a too-small source list (under ~1,000 matched people) can't seed a lookalike."
-          : brokenIdle > 0
-            ? "Delete or rebuild broken audiences so nobody launches with them."
-            : undefined,
+          : undefined,
       });
     }
     const prospecting = liveAdSets.filter((a) => !isRetargeting(a, lookalikeIds));
@@ -718,18 +664,6 @@ export function evaluateCheckpoints(
         severity: "medium",
         evidence: `Under 1,000 people: ${list(tooSmall)}.`,
         fix: "Widen the audience (longer retention window, add sources) or merge it with a similar ad set.",
-      });
-    }
-    const singlePlatform = liveAdSets.filter((a) => a.publisherPlatforms.length === 1);
-    if (singlePlatform.length) {
-      cp.push({
-        id: "A4",
-        category: "Audiences & targeting",
-        title: "Placements not over-restricted",
-        status: "info",
-        severity: "low",
-        evidence: `${list(singlePlatform.map((a) => `${a.name} (${a.publisherPlatforms[0]})`))} run on one platform only.`,
-        fix: "Test Advantage+ placements unless the creative only suits one platform; restricted placements usually raise CPM.",
       });
     }
   }
@@ -837,20 +771,22 @@ export function evaluateCheckpoints(
     const spendTotal = spending.reduce((s, a) => s + spendOf(a.performance), 0);
     if (spendTotal > 0) {
       const share = rtSpend / spendTotal;
-      cp.push({
-        id: "F1",
-        category: "Funnel & frequency",
-        title: "Full funnel: prospecting and retargeting",
-        status: retargeting.length === 0 ? "warn" : share > 0.5 ? "warn" : "pass",
-        severity: "medium",
-        evidence: `${Math.round((1 - share) * 100)}% of spend on prospecting (${prospecting.length} ad set${prospecting.length === 1 ? "" : "s"}), ${Math.round(share * 100)}% on retargeting (${retargeting.length}).`,
-        fix:
-          retargeting.length === 0
-            ? "Add a small retargeting ad set (website visitors, video viewers, page/lead-form engagers in the last 30 days) to convert people who already showed interest."
-            : share > 0.5
+      // "No retargeting at all" is not a finding on its own: it fires on every new or single-campaign
+      // account. The balance is only judged when retargeting exists and is taking too much of the spend.
+      if (retargeting.length > 0) {
+        cp.push({
+          id: "F1",
+          category: "Funnel & frequency",
+          title: "Retargeting does not outspend prospecting",
+          status: share > 0.5 ? "warn" : "pass",
+          severity: "medium",
+          evidence: `${Math.round((1 - share) * 100)}% of spend on prospecting (${prospecting.length} ad set${prospecting.length === 1 ? "" : "s"}), ${Math.round(share * 100)}% on retargeting (${retargeting.length}).`,
+          fix:
+            share > 0.5
               ? "Retargeting can only harvest demand that prospecting creates — shift budget back toward prospecting so the pool doesn't shrink."
               : undefined,
-      });
+        });
+      }
     }
     // Benchmarks are per 7 days: use the measured 7-day frequency (a longer
     // period's frequency can't be pro-rated — reach de-duplicates over time).
@@ -1091,24 +1027,6 @@ export function evaluateCheckpoints(
       evidence: `${funnel.views.toLocaleString("en")} landing page views from ${funnel.clicks.toLocaleString("en")} link clicks (${Math.round(ratio * 100)}%).`,
       fix: ratio < 0.6 ? "Speed up the landing page (and check the pixel loads on it); many people leave before it finishes loading." : undefined,
     });
-  }
-
-  if (snap.placements.length) {
-    const spend = snap.placements.reduce((s, p) => s + p.spendCents, 0);
-    if (spend > 0) {
-      cp.push({
-        id: "A5",
-        category: "Audiences & targeting",
-        title: "Spend by platform",
-        status: "info",
-        severity: "low",
-        evidence: snap.placements
-          .slice()
-          .sort((a, b) => b.spendCents - a.spendCents)
-          .map((p) => `${p.platform} ${Math.round((p.spendCents / spend) * 100)}%`)
-          .join(", ") + ". Judge platforms on the campaign's overall result, not each platform's average cost.",
-      });
-    }
   }
 
   // ------------------------------------------------------------ Scoring

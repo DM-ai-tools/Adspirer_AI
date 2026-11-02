@@ -557,7 +557,7 @@ export interface MetaAdsProvider {
      * compare: load a comparison window at all (default true; false = the period alone).
      * compareSince/compareUntil: a comparison range the operator named (default: the period just before).
      */
-    options?: { days?: number; since?: string; until?: string; compare?: boolean; compareSince?: string; compareUntil?: string },
+    options?: { days?: number; since?: string; until?: string; compare?: boolean; compareSince?: string; compareUntil?: string; campaignIds?: string[] },
   ): Promise<MetaAuditSnapshot>;
 
   /**

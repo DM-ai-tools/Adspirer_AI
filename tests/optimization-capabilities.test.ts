@@ -51,7 +51,8 @@ describe("checkpoint owners", () => {
   const ids = [...new Set([...source.matchAll(/\bid: "([TSBACF]\d+)"/g)].map((m) => m[1]))];
 
   it("finds the checkpoint ids in the source", () => {
-    expect(ids.length).toBeGreaterThanOrEqual(39);
+    // 39 before the generic always-on checks (T5, T10, S3, S4, A4, A5) were removed from the audit.
+    expect(ids.length).toBeGreaterThanOrEqual(33);
   });
 
   it("every checkpoint id maps to an owner and an existing capability", () => {
