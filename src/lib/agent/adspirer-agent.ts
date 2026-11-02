@@ -139,6 +139,7 @@ import {
 } from "@/lib/agent/strategy-brief";
 import {
   renderAdSetEvidence,
+  renderChangesEvidence,
   renderScorecardEvidence,
   renderScorecardMarkdown,
 } from "@/lib/audit/render";
@@ -2578,6 +2579,8 @@ export async function gatherDiagnoseEvidence(input: {
                 ...(brief.compare && brief.compareStart && brief.compareStop
                   ? { compareSince: brief.compareStart, compareUntil: brief.compareStop }
                   : {}),
+                // The edits made in the window are read for what was audited, so their day-by-day numbers load first.
+                ...(brief.scope === "campaigns" ? { campaignIds: matchedCampaigns.map((c) => c.id) } : {}),
               });
               // A campaign audit scores and lists only those campaigns' ad sets and ads.
               const snapshot =
@@ -2587,6 +2590,7 @@ export async function gatherDiagnoseEvidence(input: {
               const scorecard = evaluateCheckpoints(snapshot, { goals: await turnGoals() });
               sections.push(renderScorecardEvidence(scorecard, snapshot));
               sections.push(renderAdSetEvidence(snapshot));
+              sections.push(renderChangesEvidence(snapshot));
               auditAppendix = renderScorecardMarkdown(scorecard, snapshot);
               toolCalls.push({
                 name: "audit_checkpoints",
@@ -2616,6 +2620,9 @@ export async function gatherDiagnoseEvidence(input: {
               "- Produce the full audit in chat using the Required report format headings, in order.",
               "- Lead with Fail checkpoints from the scorecard (most severe, most spend at stake first); never contradict a checkpoint result.",
               "- Quantify spend and call out what is working vs what needs improvement.",
+              "- Report only problems this evidence actually shows — no generic best-practice findings, no padding. Every number, name and cause must trace to this run's evidence; where it doesn't, say \"not verified\".",
+              "- Write each problem out once, in Risks & Issues (numbered R1, R2…); other sections mention it briefly and point to it. The same explanation must not appear twice.",
+              "- Cover the edits made in the audited period under \"### Changes during this period\" (inside Account Snapshot), working out which mattered and what followed them in the numbers — in whatever shape suits this account, not a fixed template. If the change history could not be read, say so; never say nothing changed.",
               "- **REQUIRED: audit every ad set** listed in “Ad sets” inside section 4 (Active Campaigns): the 9-column ad set table from the report format (IDs, budgets and optimisation events go in the verdict bullets, not the table), then a short verdict per ad set (Scale / Keep / Fix / Pause) with its numbers and the reason. Cover learning status, budget vs results, frequency, audience/placement setup and its ads.",
               "- Spend, results and cost per result for the period come from the evidence above — never say they are unavailable when “Ad sets” or “Campaign performance” lists them.",
               "- **REQUIRED section: Landing pages** — use Website URLs + CTA types from “Ad CTA & destination inventory” and scores from “Landing page analysis”.",

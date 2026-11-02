@@ -497,6 +497,70 @@ export function renderAdSetEvidence(snap: MetaAuditSnapshot, maxAdSets = 40): st
   return lines.join("\n");
 }
 
+const MAX_CHANGE_LINES = 120;
+
+/**
+ * What was edited in the audited window, as plain facts for the writer: the
+ * edits Meta recorded, and the day-by-day delivery of what was edited so
+ * movement around an edit can be read. No wording or layout is decided here —
+ * the writer works out what mattered (see "Changes during the period" in the
+ * audit method). When the history couldn't be read this says so: "nothing
+ * changed" is only ever claimed from a list that loaded and was empty.
+ */
+export function renderChangesEvidence(snap: MetaAuditSnapshot): string {
+  const money = moneyFor(snap.account.currency);
+  const header = `### Changes made ${snap.period.since} → ${snap.period.until} (Meta account activity history — live, authoritative; days are in the ad account's timezone, ${snap.account.timezone})`;
+  if (!snap.changes) {
+    const why = snap.warnings.filter((w) => w.startsWith("Change history")).join("; ");
+    return [
+      header,
+      `- The change history could not be read${why ? ` (${why})` : ""}.`,
+      "- Say plainly that the history could not be read, so you can't say what was or wasn't edited in this period. Do NOT write that nothing changed, and do not infer edits from the numbers.",
+    ].join("\n");
+  }
+  const scope = scopeLabel(snap);
+  if (!snap.changes.length) {
+    return [
+      header,
+      scope ? `Scope: ${scope}.` : "",
+      "- Meta recorded no edits in this window. You may say so in one line.",
+      snap.changesUnresolved ? `- ${snap.changesUnresolved} edit${snap.changesUnresolved === 1 ? "" : "s"} to ads or ad sets Meta no longer lists could not be tied to these campaigns.` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+  const shown = snap.changes.slice(0, MAX_CHANGE_LINES);
+  const kind = (t: string | null) => (t ? t.toLowerCase().replace(/_/g, " ") : "object");
+  const lines: string[] = [
+    header,
+    scope ? `Scope: ${scope} — edits to these campaigns and their ad sets/ads, plus account-wide tracking edits.` : "",
+    `${snap.changes.length} edit${snap.changes.length === 1 ? "" : "s"} recorded, newest first:`,
+    ...shown.map((c) => {
+      const who = c.actor ? `${c.actor}${c.application ? ` via ${c.application}` : ""}` : c.application ? `via ${c.application}` : "actor not reported";
+      return `- ${c.localDate} ${c.time.slice(11, 16)} UTC · ${kind(c.objectType)} "${c.objectName ?? c.objectId ?? "unknown"}"${c.objectId ? ` (${c.objectId})` : ""} · ${c.label ?? c.eventType.replace(/_/g, " ")} [${c.eventType}] · ${who}${c.detail ? ` · detail: ${c.detail}` : ""}`;
+    }),
+    snap.changes.length > shown.length ? `- ${snap.changes.length - shown.length} older edits not listed.` : "",
+    snap.changesTruncated ? "- Meta's history was cut at its page cap, so older edits in this window may be missing — say the list may be incomplete." : "",
+    snap.changesUnresolved ? `- ${snap.changesUnresolved} further edit${snap.changesUnresolved === 1 ? "" : "s"} to ads or ad sets Meta no longer lists could not be tied to these campaigns, so they aren't shown.` : "",
+  ];
+  if (snap.changeContext?.length) {
+    lines.push("", "Delivery by day for what was edited (same period, account timezone; \"results\" are the ad set's / campaign's own optimisation result):");
+    for (const e of snap.changeContext) {
+      lines.push(
+        `- ${e.entityType} "${e.name}" (${e.id}): ${e.days
+          .map((d) => `${d.date.slice(5)} spend ${money(d.spendCents)}, ${d.results ?? "n/a"} results${d.costPerResultCents != null ? `, ${money(d.costPerResultCents)}/result` : ""}, CTR ${d.linkCtr.toFixed(2)}%`)
+          .join(" | ")}`,
+      );
+    }
+  }
+  lines.push(
+    "",
+    "Amounts inside \"detail\" are usually in the account currency's minor units (cents) — check them against the budgets in the ad set / campaign evidence before quoting one, and if you can't be sure, say the budget was raised or lowered without a figure.",
+    "A name or id missing from \"detail\" is just not reported — don't fill it in.",
+  );
+  return lines.filter((l) => l !== "").join("\n");
+}
+
 /** Short list of open issues for the optimise flow. */
 export function renderOptimisationSignals(scorecard: AuditScorecard): string {
   const relevant = scorecard.priorities.slice(0, 10);

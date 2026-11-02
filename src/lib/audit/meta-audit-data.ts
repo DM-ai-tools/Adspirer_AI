@@ -139,6 +139,48 @@ export type AuditAd = {
   rankings?: { quality: string | null; engagement: string | null; conversion: string | null } | null;
 };
 
+/**
+ * One edit recorded in Meta's account activity history during the audited
+ * period. Kept close to what Meta reports so the writer interprets it; nothing
+ * here decides what an edit "means".
+ */
+export type AuditChange = {
+  /** When Meta recorded it (ISO, UTC). */
+  time: string;
+  /** The same moment as a calendar day in the ad account's timezone. */
+  localDate: string;
+  /** Meta's event_type, e.g. update_ad_set_budget. */
+  eventType: string;
+  /** Meta's own plain-words label for the event, when it gives one. */
+  label: string | null;
+  /** Who made the edit (person or app); null when Meta doesn't say. */
+  actor: string | null;
+  /** The app the edit came through, when Meta says (e.g. an API integration). */
+  application: string | null;
+  objectType: string | null;
+  objectId: string | null;
+  objectName: string | null;
+  /** The campaign the edited object belongs to, when it could be resolved. */
+  campaignId: string | null;
+  /** Meta's extra_data (old/new values and so on), compacted; null when none. */
+  detail: string | null;
+};
+
+/** Day-by-day delivery for one edited campaign or ad set, so movement around an edit can be read. */
+export type AuditChangeContext = {
+  entityType: "campaign" | "ad set";
+  id: string;
+  name: string;
+  days: Array<{
+    date: string;
+    spendCents: number;
+    impressions: number;
+    results: number | null;
+    costPerResultCents: number | null;
+    linkCtr: number;
+  }>;
+};
+
 /** One catalog (product) ad's spend on one product, from Meta's product_id breakdown. */
 export type AuditCatalogProduct = {
   adId: string;
@@ -186,6 +228,18 @@ export type MetaAuditSnapshot = {
   catalogProducts?: AuditCatalogProduct[];
   /** Spend by publisher platform (facebook, instagram, audience_network…). */
   placements: Array<{ platform: string; spendCents: number; results: number | null }>;
+  /**
+   * Edits Meta recorded in the audited period (account activity history).
+   * Absent when the history couldn't be read — `warnings` then says why — so
+   * "no changes" is only ever claimed from a loaded, empty list.
+   */
+  changes?: AuditChange[];
+  /** Set when the history hit its page cap: older edits in the window may be missing. */
+  changesTruncated?: boolean;
+  /** Scoped audits: edits to objects Meta no longer lists, which can't be tied to a campaign. */
+  changesUnresolved?: number;
+  /** Day-by-day delivery for the campaigns / ad sets that were edited. */
+  changeContext?: AuditChangeContext[];
   /** Parts that failed to load — checkpoints that need them report "not checked". */
   warnings: string[];
   fetchedAt: string;
@@ -372,6 +426,8 @@ export type AuditSnapshotOptions = {
   /** A comparison range the operator named; default is the same-length period just before. */
   compareSince?: string;
   compareUntil?: string;
+  /** Campaign audits: the campaigns in scope, so day-by-day delivery is loaded for their edits first. */
+  campaignIds?: string[];
 };
 
 /** The snapshot without any comparison data, marked as not requested. */
@@ -407,6 +463,115 @@ export function comparisonPeriodOf(
   return { ...previousPeriodOf(since, until), named: false };
 }
 
+// ---------------------------------------------------------------------------
+// Change history (Meta's account activity log)
+
+const CHANGE_PAGE_SIZE = 100;
+const CHANGE_PAGES = 5;
+/** Campaigns / ad sets whose day-by-day delivery is loaded around their edits. */
+const MAX_CONTEXT_ENTITIES = 8;
+/** Edits to these are account-wide, so a campaign-scoped audit keeps them (like the tracking checks). */
+const TRACKING_OBJECT_TYPES = new Set(["PIXEL", "CUSTOM_CONVERSION", "ADS_PIXEL", "DATASET"]);
+
+/** The calendar day (YYYY-MM-DD) of a moment in the ad account's timezone. */
+function localDay(iso: string, timezone: string): string {
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date(iso));
+  } catch {
+    return iso.slice(0, 10);
+  }
+}
+
+/** Meta's extra_data (a JSON string of old/new values and so on), flattened and capped. */
+function compactDetail(extra: unknown): string | null {
+  if (extra == null || extra === "") return null;
+  let value: unknown = extra;
+  if (typeof extra === "string") {
+    try {
+      value = JSON.parse(extra);
+    } catch {
+      value = extra;
+    }
+  }
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  if (!text || text === "{}" || text === "[]" || text === "null") return null;
+  return text.length > 400 ? `${text.slice(0, 397)}...` : text;
+}
+
+/**
+ * Meta activity rows → changes inside the audited days, newest first. Meta's
+ * window is padded a day each side, so the audited days are re-applied here in
+ * the ad account's timezone. `campaignOf` resolves an edited ad set or ad to
+ * its campaign.
+ */
+export function normalizeChanges(
+  rows: Row[],
+  context: {
+    timezone: string;
+    since: string;
+    until: string;
+    campaignOf: (objectType: string | null, objectId: string | null) => string | null;
+  },
+): AuditChange[] {
+  const out: AuditChange[] = [];
+  for (const row of rows) {
+    const time = str(row.event_time);
+    if (!time || Number.isNaN(Date.parse(time))) continue;
+    const localDate = localDay(time, context.timezone);
+    if (localDate < context.since || localDate > context.until) continue;
+    const objectType = str(row.object_type);
+    const objectId = str(row.object_id);
+    out.push({
+      time,
+      localDate,
+      eventType: str(row.event_type) ?? "unknown",
+      label: str(row.translated_event_type),
+      actor: str(row.actor_name),
+      application: str(row.application_name),
+      objectType,
+      objectId,
+      objectName: str(row.object_name),
+      campaignId: context.campaignOf(objectType, objectId),
+      detail: compactDetail(row.extra_data),
+    });
+  }
+  return out.sort((a, b) => b.time.localeCompare(a.time));
+}
+
+/** The campaigns and ad sets worth a day-by-day look: the ones that were edited, most-edited first. */
+export function entitiesToWatch(
+  changes: AuditChange[],
+  adSetOfAd: (adId: string) => string | null,
+  campaignIds?: string[],
+): { campaigns: string[]; adSets: string[] } {
+  const scope = campaignIds?.length ? new Set(campaignIds) : null;
+  const tally = new Map<string, { kind: "campaign" | "adset"; id: string; n: number }>();
+  const bump = (kind: "campaign" | "adset", id: string | null) => {
+    if (!id) return;
+    const key = `${kind}:${id}`;
+    const entry = tally.get(key) ?? { kind, id, n: 0 };
+    entry.n += 1;
+    tally.set(key, entry);
+  };
+  for (const c of changes) {
+    if (scope && (!c.campaignId || !scope.has(c.campaignId))) continue;
+    const type = (c.objectType ?? "").toUpperCase();
+    if (type === "CAMPAIGN") bump("campaign", c.objectId);
+    else if (type === "AD_SET" || type === "ADSET") bump("adset", c.objectId);
+    else if (type === "AD") bump("adset", c.objectId ? adSetOfAd(c.objectId) : null);
+  }
+  const ranked = [...tally.values()].sort((a, b) => b.n - a.n).slice(0, MAX_CONTEXT_ENTITIES);
+  return {
+    campaigns: ranked.filter((e) => e.kind === "campaign").map((e) => e.id),
+    adSets: ranked.filter((e) => e.kind === "adset").map((e) => e.id),
+  };
+}
+
 export async function fetchMetaAuditSnapshot(
   graph: Graph,
   accountId: string,
@@ -436,7 +601,7 @@ export async function fetchMetaAuditSnapshot(
 
   const [
     pixels, customConversions, audiences, campaigns, adSets, ads, totals, campaignIns, adSetIns, adIns, placements, adSetWeek,
-    previousTotals, previousCampaignIns, previousAdSetIns, adWeek, productIns,
+    previousTotals, previousCampaignIns, previousAdSetIns, adWeek, productIns, activityRows,
   ] =
     await Promise.all([
       settle("Pixels", warnings, paged(graph, `${id}/adspixels`, {
@@ -509,6 +674,14 @@ export async function fetchMetaAuditSnapshot(
       settle("Catalog product spend", warnings, paged(graph, `${id}/insights`, {
         level: "ad", time_range: timeRange, breakdowns: "product_id", fields: "ad_id,spend,actions,action_values", limit: 500,
       }, PRODUCT_PAGES)),
+      // Everything anyone edited in the window. Meta's window is padded a day each side (the
+      // account's own timezone decides the audited days afterwards).
+      settle("Change history", warnings, paged(graph, `${id}/activities`, {
+        fields: "event_type,event_time,actor_name,application_name,object_id,object_name,object_type,translated_event_type,extra_data",
+        since: Math.floor(Date.parse(`${since}T00:00:00Z`) / 1000) - 86_400,
+        until: Math.floor(Date.parse(`${until}T00:00:00Z`) / 1000) + 2 * 86_400,
+        limit: CHANGE_PAGE_SIZE,
+      }, CHANGE_PAGES)),
     ]);
 
   const byKey = (rows: Row[] | null, key: string) => new Map((rows ?? []).map((r) => [String(r[key] ?? ""), r]));
@@ -603,6 +776,76 @@ export async function fetchMetaAuditSnapshot(
         stats28d: statsById.get(pid)?.s28 ?? null,
       });
     }
+  }
+
+  // Change history: tie each edit to its campaign, then read the day-by-day delivery of what was edited.
+  const timezone = String(account.timezone_name ?? "UTC");
+  const campaignOfAdSet = new Map(auditAdSets.map((a) => [a.id, a.campaignId]));
+  const adRows = (ads ?? []).map((a) => ({ id: String(a.id), adSetId: String(a.adset_id ?? ""), campaignId: String(a.campaign_id ?? "") }));
+  const adSetOfAd = new Map(adRows.map((a) => [a.id, a.adSetId]));
+  const campaignOfAd = new Map(adRows.map((a) => [a.id, a.campaignId]));
+  const changes = activityRows
+    ? normalizeChanges(activityRows, {
+        timezone,
+        since,
+        until,
+        campaignOf: (type, objectId) => {
+          if (!objectId) return null;
+          const t = (type ?? "").toUpperCase();
+          if (t === "CAMPAIGN") return objectId;
+          if (t === "AD_SET" || t === "ADSET") return campaignOfAdSet.get(objectId) || null;
+          if (t === "AD") return campaignOfAd.get(objectId) || null;
+          return null;
+        },
+      })
+    : undefined;
+  const changesTruncated = Boolean(activityRows && activityRows.length >= CHANGE_PAGE_SIZE * CHANGE_PAGES);
+  let changeContext: AuditChangeContext[] | undefined;
+  if (changes?.length) {
+    const watch = entitiesToWatch(changes, (adId) => adSetOfAd.get(adId) || null, options.campaignIds);
+    const campaignName = new Map((campaigns ?? []).map((c) => [String(c.id), String(c.name ?? c.id)]));
+    const adSetName = new Map(auditAdSets.map((a) => [a.id, a.name]));
+    const daily = async (level: "campaign" | "adset", ids: string[]) => {
+      if (!ids.length) return [] as Row[];
+      const idKey = level === "campaign" ? "campaign_id" : "adset_id";
+      const rows = await settle(
+        `Day-by-day delivery of edited ${level === "campaign" ? "campaigns" : "ad sets"}`,
+        warnings,
+        paged(graph, `${id}/insights`, {
+          level,
+          time_range: timeRange,
+          time_increment: 1,
+          fields: `${idKey},${insightFields}`,
+          filtering: JSON.stringify([{ field: level === "campaign" ? "campaign.id" : "adset.id", operator: "IN", value: ids }]),
+          limit: 500,
+        }, 3),
+      );
+      return rows ?? [];
+    };
+    const [campaignDays, adSetDays] = await Promise.all([daily("campaign", watch.campaigns), daily("adset", watch.adSets)]);
+    const build = (entityType: "campaign" | "ad set", idKey: string, ids: string[], rows: Row[], names: Map<string, string>) =>
+      ids.map((entityId): AuditChangeContext => ({
+        entityType,
+        id: entityId,
+        name: names.get(entityId) ?? entityId,
+        days: rows
+          .filter((r) => String(r[idKey] ?? "") === entityId)
+          .map((r) => ({ date: String(r.date_start ?? ""), perf: performanceFrom(r) }))
+          .filter((d): d is { date: string; perf: PeriodPerformance } => Boolean(d.date && d.perf))
+          .sort((a, b) => a.date.localeCompare(b.date))
+          .map(({ date, perf }) => ({
+            date,
+            spendCents: perf.spendCents,
+            impressions: perf.impressions,
+            results: perf.results,
+            costPerResultCents: perf.costPerResultCents,
+            linkCtr: perf.linkCtr,
+          })),
+      }));
+    changeContext = [
+      ...build("campaign", "campaign_id", watch.campaigns, campaignDays, campaignName),
+      ...build("ad set", "adset_id", watch.adSets, adSetDays, adSetName),
+    ].filter((e) => e.days.length > 0);
   }
 
   const catalogProducts = catalogProductsFrom(productIns, warnings);
@@ -710,6 +953,13 @@ export async function fetchMetaAuditSnapshot(
         results: perf?.results ?? null,
       };
     }),
+    ...(changes
+      ? {
+          changes,
+          ...(changesTruncated ? { changesTruncated: true as const } : {}),
+          ...(changeContext?.length ? { changeContext } : {}),
+        }
+      : {}),
     warnings,
     fetchedAt: new Date().toISOString(),
   };
@@ -783,8 +1033,22 @@ export function scopeAuditSnapshot(snap: MetaAuditSnapshot, campaignIds: string[
     ? ([...new Set([...snap.comparisonFailures, "totals" as const])] as MetaAuditSnapshot["comparisonFailures"])
     : snap.comparisonFailures;
   const scopedAdIds = new Set(snap.ads.filter((a) => ids.has(a.campaignId)).map((a) => a.id));
+  // Edits to the audited campaigns and their ad sets/ads, plus account-wide tracking edits.
+  // Edits to objects Meta no longer lists can't be tied to a campaign: counted, not guessed at.
+  const inScope = (c: AuditChange) =>
+    (c.campaignId != null && ids.has(c.campaignId)) || TRACKING_OBJECT_TYPES.has((c.objectType ?? "").toUpperCase());
+  const scopedChanges = snap.changes?.filter(inScope);
+  const unresolved = snap.changes?.filter((c) => c.campaignId == null && !inScope(c) && /^(AD|AD_SET|ADSET)$/i.test(c.objectType ?? "")).length ?? 0;
+  const scopedEntityIds = new Set([...ids, ...snap.adSets.filter((a) => ids.has(a.campaignId)).map((a) => a.id)]);
   return {
     ...snap,
+    ...(scopedChanges
+      ? {
+          changes: scopedChanges,
+          changesUnresolved: unresolved,
+          ...(snap.changeContext ? { changeContext: snap.changeContext.filter((e) => scopedEntityIds.has(e.id)) } : {}),
+        }
+      : {}),
     campaigns,
     adSets: snap.adSets.filter((a) => ids.has(a.campaignId)),
     ads: snap.ads.filter((a) => ids.has(a.campaignId)),
@@ -932,6 +1196,7 @@ function demoSnapshotWithComparison(
         { platform: "facebook", spendCents: 196_000, results: 23 },
         { platform: "instagram", spendCents: 134_000, results: 17 },
       ],
+      changes: [],
       warnings: [],
       fetchedAt: new Date().toISOString(),
       demo: true,
@@ -993,6 +1258,21 @@ function demoSnapshotWithComparison(
     placements: [
       { platform: "facebook", spendCents: 241_000, results: 61 },
       { platform: "instagram", spendCents: 147_000, results: 31 },
+    ],
+    changes: [
+      {
+        time: `${until}T01:10:00.000Z`,
+        localDate: until,
+        eventType: "update_ad_set_budget",
+        label: "Ad set budget updated",
+        actor: "Demo Operator",
+        application: null,
+        objectType: "AD_SET",
+        objectId: "as_2",
+        objectName: "Implants – Interests: dental",
+        campaignId: "demo_campaign_1",
+        detail: '{"old_value":{"daily_budget":4000},"new_value":{"daily_budget":2000}}',
+      },
     ],
     warnings: [],
     fetchedAt: new Date().toISOString(),

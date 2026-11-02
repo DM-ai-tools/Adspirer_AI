@@ -63,6 +63,7 @@ import {
 import { isQueueableIntent } from "@/lib/agent/request-brief";
 import { nowIso } from "@/lib/utils";
 import { logger, newCorrelationId } from "@/lib/observability/logger";
+import { findRepeatedFigures } from "@/lib/audit/repeat-check";
 import { startCreativeGeneration } from "@/lib/creatives/service";
 import { runAfterResponse } from "@/lib/api/background";
 import {
@@ -670,6 +671,19 @@ export async function runTask(
       correlationId,
       onProgress: emit,
     });
+
+    // The audit method asks for each problem to be explained once. Measure it on the writer's own
+    // text (before the checklist is appended) so drift shows up in the logs.
+    if (gathered.auditAppendix && agentResult.summary.trim()) {
+      const repeated = findRepeatedFigures(agentResult.summary);
+      if (repeated.length) {
+        logger.warn("Audit repeats the same figures across sections", {
+          correlationId,
+          taskId: task.id,
+          repeated: repeated.slice(0, 5),
+        });
+      }
+    }
 
     // The audit checklist table comes from the checkpoint engine, not the
     // model, so it is always complete and exports with the report.

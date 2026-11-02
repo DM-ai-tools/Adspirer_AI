@@ -87,7 +87,8 @@ describe("evaluateCheckpoints", () => {
     expect(get(cps, "T8")).toMatchObject({ status: "warn" }); // mixed attribution
     expect(get(cps, "S1")).toMatchObject({ status: "fail", severity: "critical" });
     expect(get(cps, "C1")).toMatchObject({ status: "fail" }); // rejected ad in a live campaign
-    expect(get(cps, "F1")).toMatchObject({ status: "warn" }); // no retargeting
+    // "No retargeting ad set" is generic advice that fires on every single-campaign account, so it isn't a finding.
+    expect(get(cps, "F1")).toBeUndefined();
     expect(card.priorities[0]!.status).toBe("fail");
     expect(card.score).toBeLessThan(70);
   });
