@@ -1,12 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { Check, Loader2, X } from "lucide-react";
+import { Check, Download, Loader2, X } from "lucide-react";
 import { toast } from "sonner";
 import { apiFetch } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { creativeDownloadUrl } from "@/lib/creatives/download";
 
 export type CreativeDraftCard = {
   id: string;
@@ -82,8 +83,35 @@ export function InlineCreativeCards({
 
   if (!drafts.length) return null;
 
+  const downloadable = drafts.filter(
+    (d) => d.image_url && d.image_status === "succeeded" && d.status !== "rejected",
+  );
+
+  // Browsers allow several saves in a row only if they are spaced out a little.
+  function downloadAll() {
+    downloadable.forEach((d, i) => {
+      window.setTimeout(() => {
+        const a = document.createElement("a");
+        a.href = creativeDownloadUrl(d.id);
+        a.download = "";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }, i * 450);
+    });
+  }
+
   return (
-    <div className="mt-3 grid gap-3 border-t border-border/60 pt-3 sm:grid-cols-2">
+    <div className="mt-3 border-t border-border/60 pt-3">
+      {downloadable.length > 1 ? (
+        <div className="mb-3 flex justify-end">
+          <Button type="button" size="sm" variant="secondary" className="h-8" onClick={downloadAll}>
+            <Download className="mr-1 h-3.5 w-3.5" />
+            Download all ({downloadable.length})
+          </Button>
+        </div>
+      ) : null}
+      <div className="grid gap-3 sm:grid-cols-2">
       {drafts.map((draft) => (
         <div
           key={draft.id}
@@ -168,6 +196,14 @@ export function InlineCreativeCards({
                   ) : null}
                   Queue for approval
                 </Button>
+                {draft.image_url && draft.image_status === "succeeded" ? (
+                  <Button type="button" size="sm" variant="secondary" className="ml-2 h-8" asChild>
+                    <a href={creativeDownloadUrl(draft.id)} download>
+                      <Download className="mr-1 h-3.5 w-3.5" />
+                      Download
+                    </a>
+                  </Button>
+                ) : null}
               </div>
             ) : draft.status === "rejected" ? (
               <p className="text-[11px] text-muted">Rejected.</p>
@@ -187,6 +223,14 @@ export function InlineCreativeCards({
                   )}
                   Use for campaign
                 </Button>
+                {draft.image_url && draft.image_status === "succeeded" ? (
+                  <Button type="button" size="sm" variant="secondary" className="h-8" asChild>
+                    <a href={creativeDownloadUrl(draft.id)} download>
+                      <Download className="mr-1 h-3.5 w-3.5" />
+                      Download
+                    </a>
+                  </Button>
+                ) : null}
                 <Button
                   type="button"
                   size="sm"
@@ -203,6 +247,7 @@ export function InlineCreativeCards({
           </div>
         </div>
       ))}
+      </div>
     </div>
   );
 }

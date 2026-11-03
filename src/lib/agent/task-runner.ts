@@ -832,6 +832,7 @@ export async function runTask(
           ReturnType<typeof startCreativeGeneration>
         >["result"]["brandAnalysis"] = null;
         let imageModel: string | undefined;
+        let logoSource: "site" | "upload" | null | undefined;
 
         if (inFlight.length) {
           cards = inFlight.map(toPublicDraft);
@@ -864,6 +865,8 @@ export async function runTask(
             headline: imageUi.headline,
             primaryText: imageUi.primary_text,
             referenceBrief: imageUi.reference_notes,
+            pageText: agentUi?.page_text,
+            request: task.goal ?? task.title,
             imageFormat: parseImageFormat(agentUi?.format ?? gatheredUi?.format),
             count: CREATIVE_VARIANT_COUNT,
             generateImages: true,
@@ -875,6 +878,7 @@ export async function runTask(
           cards = result.concepts;
           rendering = Boolean(runImages);
           brandAnalysis = result.brandAnalysis;
+          logoSource = result.logoSource;
           imageModel = result.imageModel;
           await emit({
             phase: "generating_creatives",
@@ -910,11 +914,17 @@ export async function runTask(
               brandAnalysis.colors.length
                 ? ` · palette ${brandAnalysis.colors.slice(0, 4).join(", ")}`
                 : ""
-            }${brandAnalysis.logo_url ? " · logo found" : ""}.`,
+            }${logoSource === "upload" ? " · your uploaded logo" : brandAnalysis.logo_url ? " · logo found" : ""}.`,
           );
           if (brandAnalysis.summary?.trim()) {
             brandLines.push(brandAnalysis.summary.trim().slice(0, 320));
           }
+        }
+        // Never leave the logo's absence to be discovered in the images.
+        if (logoSource === null) {
+          brandLines.push(
+            "**No logo found** on the page, so these images carry no logo. Attach your logo file (name it logo) and tell me to redo them, and it goes on every image.",
+          );
         }
         agentResult.summary = [
           stripCreativesHandoff(agentResult.summary),

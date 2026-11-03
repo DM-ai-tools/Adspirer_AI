@@ -4,6 +4,7 @@ import { getDemoStore } from "@/lib/demo/store";
 import { analyzeBrandFromUrl } from "@/lib/brand/analyze-url";
 import { writeCreativeConcepts } from "@/lib/creatives/concept-writer";
 import { generateImageForDraft } from "@/lib/creatives/generate-draft-image";
+import { loadUploadedLogoDataUri } from "@/lib/creatives/uploaded-logo";
 import {
   toPublicDraft,
   upsertCreativeDraftAsync,
@@ -32,15 +33,22 @@ export type GenerateCreativesInput = {
   primaryText?: string;
   /** Competitor / reference notes for art direction. */
   referenceBrief?: string;
+  /** What an uploaded landing page file says, used when no live page could be read. */
+  pageText?: string;
   analyzeBrand?: boolean;
   /** 4:5 feed (default), 9:16 Reels/Stories or 1:1. */
   imageFormat?: ImageFormat;
+  /** The operator's own words, so "use this as the logo" can pick an uploaded file. */
+  request?: string;
 };
 
 export type GenerateCreativesResult = {
   drafts: CreativeDraft[];
   concepts: ReturnType<typeof toPublicDraft>[];
   brandAnalysis: Awaited<ReturnType<typeof analyzeBrandFromUrl>> | null;
+  /** The logo the images carry: the site's, else one the operator uploaded; null when there is none. */
+  logoUrl: string | null;
+  logoSource: "site" | "upload" | null;
   briefId: string | null;
   openaiConfigured: boolean;
   imageModel: string;
@@ -140,6 +148,8 @@ async function buildCreativeConcepts(
       analysis: Awaited<ReturnType<typeof analyzeBrandFromUrl>> | null;
       colors: string[] | null;
       sourceUrl?: string;
+      logoUrl: string | null;
+      logoSource: "site" | "upload" | null;
     }) => Promise<void> | void;
   },
 ) {
@@ -172,7 +182,18 @@ async function buildCreativeConcepts(
 
   const colors =
     brandAnalysis?.colors?.length ? brandAnalysis.colors : client.brand_colors;
-  await hooks?.onBrandRead?.({ analysis: brandAnalysis, colors, sourceUrl: brandSourceUrl });
+  // The site's logo leads; one the operator uploaded fills in when the site has none.
+  let logoUrl: string | null = brandAnalysis?.logo_url ?? null;
+  let logoSource: "site" | "upload" | null = logoUrl ? "site" : null;
+  if (!logoUrl) {
+    logoUrl = await loadUploadedLogoDataUri({
+      clientId: input.clientId,
+      conversationId: input.conversationId,
+      request: input.request,
+    });
+    logoSource = logoUrl ? "upload" : null;
+  }
+  await hooks?.onBrandRead?.({ analysis: brandAnalysis, colors, sourceUrl: brandSourceUrl, logoUrl, logoSource });
 
   const brandVoice = brandAnalysis?.brand_voice || client.brand_voice;
   const brandName = brandAnalysis?.brand_name || client.name;
@@ -195,7 +216,7 @@ async function buildCreativeConcepts(
       colors,
       imageryNotes: brandAnalysis?.imagery_notes,
       guidelines: guidelinesNote,
-      pageExcerpt: brandAnalysis?.page_excerpt,
+      pageExcerpt: brandAnalysis?.page_excerpt || input.pageText,
       summary: brandAnalysis?.summary,
     },
     business: {
@@ -217,7 +238,7 @@ async function buildCreativeConcepts(
       : null,
   });
 
-  return { concepts, brandAnalysis, colors, landing, brandName };
+  return { concepts, brandAnalysis, colors, landing, brandName, logoUrl, logoSource };
 }
 
 export async function generateCreativeDrafts(
@@ -226,7 +247,7 @@ export async function generateCreativeDrafts(
   const config = getConfig();
   const scope = await loadScope(input);
   const { service, brief } = scope;
-  const { concepts, brandAnalysis, colors, landing } = await buildCreativeConcepts(input, scope);
+  const { concepts, brandAnalysis, colors, landing, logoUrl, logoSource } = await buildCreativeConcepts(input, scope);
 
   // Images are produced after this call returns, so the rows are born
   // "generating" and every surface can render a live placeholder immediately.
@@ -255,7 +276,7 @@ export async function generateCreativeDrafts(
       image_error: null,
       landing_page_url: landing ?? null,
       brand_colors: colors,
-      logo_url: brandAnalysis?.logo_url ?? null,
+      logo_url: logoUrl,
       revision_notes: null,
       status: "draft",
     });
@@ -300,6 +321,8 @@ export async function generateCreativeDrafts(
     drafts,
     concepts: drafts.map(toPublicDraft),
     brandAnalysis,
+    logoUrl,
+    logoSource,
     briefId: brief?.id ?? null,
     openaiConfigured: config.hasOpenAI,
     imageModel: config.OPENAI_IMAGE_MODEL,
@@ -411,20 +434,23 @@ export async function startCreativeGenerationBackground(
   const run = async () => {
     try {
       const built = await buildCreativeConcepts(input, scope, {
-        onBrandRead: async ({ analysis, colors, sourceUrl: read }) => {
+        onBrandRead: async ({ analysis, colors, sourceUrl: read, logoUrl, logoSource }) => {
           await patchAll(() => ({
             headline: "Writing your concepts…",
             brand_colors: colors,
-            logo_url: analysis?.logo_url ?? null,
+            logo_url: logoUrl,
           }));
           if (!input.conversationId) return;
           const name = hostOf(read) ?? "your site";
           const palette = colors?.length
             ? `palette ${colors.slice(0, 4).join(", ")}`
             : "no brand colours found";
-          const logo = analysis?.logo_url
-            ? "logo found"
-            : "no logo found on the site, so the images will be made without one (upload your logo and ask me to use it)";
+          const logo =
+            logoSource === "site"
+              ? "logo found"
+              : logoSource === "upload"
+                ? "no logo on the site, so your uploaded logo is used"
+                : "no logo found on the site, so the images will be made without one (attach your logo file, named logo, and ask me to redo them)";
           await appendWorkflowMessage({
             conversationId: input.conversationId,
             taskId: input.taskId,
@@ -447,7 +473,7 @@ export async function startCreativeGenerationBackground(
               cta: c.cta,
               creative_direction: c.creative_direction,
               brand_colors: built.colors,
-              logo_url: built.brandAnalysis?.logo_url ?? null,
+              logo_url: built.logoUrl,
             }
           : {};
       });
