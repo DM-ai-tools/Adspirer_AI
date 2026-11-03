@@ -43,69 +43,24 @@ export async function generateOpenAIImage(input: {
   }
 
   try {
-    // The logo goes to the model as a reference image so it is built into the
-    // ad. If that is not possible, fall back to a plain render and paste the
-    // logo on afterwards.
-    let logoPng: Buffer | null = null;
-    if (input.logoUrl) {
-      try {
-        logoPng = await prepareLogoReference(input.logoUrl);
-      } catch (error) {
-        logger.warn("Logo could not be prepared as a reference image", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
-    let res: Response | null = null;
-    let usedReference = false;
-    if (logoPng) {
-      try {
-        const form = new FormData();
-        form.set("model", model);
-        form.set("prompt", `${prompt} ${logoInstruction("attached", input.format)}`.slice(0, 32000));
-        form.set("size", size);
-        form.set("quality", quality);
-        form.set("n", "1");
-        form.append("image[]", new Blob([new Uint8Array(logoPng)], { type: "image/png" }), "logo.png");
-        const edited = await fetch("https://api.openai.com/v1/images/edits", {
-          method: "POST",
-          headers: { Authorization: `Bearer ${config.OPENAI_API_KEY}` },
-          body: form,
-          signal: AbortSignal.timeout(180_000),
-        });
-        if (edited.ok) {
-          res = edited;
-          usedReference = true;
-        } else {
-          logger.warn("Image edit with logo reference was refused; falling back", {
-            status: edited.status,
-          });
-        }
-      } catch (error) {
-        logger.warn("Image edit with logo reference failed; falling back", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-    if (!res) {
-      const fallbackPrompt = `${prompt} ${logoInstruction(input.logoUrl ? "overlay" : "none", input.format)}`.slice(0, 32000);
-      res = await fetch("https://api.openai.com/v1/images/generations", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${config.OPENAI_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model,
-          prompt: fallbackPrompt,
-          size,
-          quality,
-          n: 1,
-        }),
-        signal: AbortSignal.timeout(120_000),
-      });
-    }
+    // The model never draws the logo: it would be redrawn, cropped with the frame and
+    // unreadable on a dark ad. A plain render is made with the top-left kept clear, and
+    // the brand's real logo is placed there afterwards on a plate that contrasts with it.
+    const res = await fetch("https://api.openai.com/v1/images/generations", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${config.OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        prompt: `${prompt} ${logoInstruction(input.logoUrl ? "overlay" : "none", input.format)}`.slice(0, 32000),
+        size,
+        quality,
+        n: 1,
+      }),
+      signal: AbortSignal.timeout(180_000),
+    });
 
     const payload = (await res.json().catch(() => null)) as {
       data?: Array<{ b64_json?: string; url?: string }>;
@@ -136,7 +91,7 @@ export async function generateOpenAIImage(input: {
         logger.warn("Image crop failed", { error: error instanceof Error ? error.message : String(error) });
       }
     }
-    if (input.logoUrl && !usedReference) {
+    if (input.logoUrl) {
       try {
         const sourceImage = b64
           ? Buffer.from(b64, "base64")
@@ -154,7 +109,7 @@ export async function generateOpenAIImage(input: {
             sourceImage,
             input.logoUrl,
             // Reels/Stories: below the top 14% Meta covers with the account name.
-            input.format === "9:16" ? { top: 230 } : {},
+            input.format === "9:16" ? { topFraction: 0.14 } : {},
           );
           b64 = branded.toString("base64");
           imageUrl = `data:image/png;base64,${b64}`;
@@ -196,25 +151,12 @@ export async function generateOpenAIImage(input: {
   }
 }
 
-/** The one sentence about the logo, which depends on how it reaches the image. */
-function logoInstruction(mode: "attached" | "overlay" | "none", format?: ImageFormat): string {
-  if (mode === "attached") {
-    return `LOGO: the attached reference image is this brand's official logo. Include it exactly once in the ad, small, clearly legible and faithfully reproduced (same shapes, colours and lettering; do not redraw, restyle or replace it with another mark), in the top-left corner on a clean area${format === "9:16" ? ", below the top 14% of the frame" : ""}.`;
-  }
+/** The one sentence about the logo. The real logo is placed on the finished image, so the model only keeps room for it. */
+function logoInstruction(mode: "overlay" | "none", format?: ImageFormat): string {
   if (mode === "overlay") {
-    return "Leave the top-left corner visually quiet for the logo overlay. Do not invent, redraw, or render a logo.";
+    return `Keep the top-left corner clear: nothing (no text, no key element) in the top-left ${format === "9:16" ? "below the top 14%, in a" : ""} 30% of the width by 14% of the height, because the brand's real logo is placed there afterwards. Do not draw, invent or imitate any logo or brand mark.`;
   }
   return "Do not invent or render a logo.";
-}
-
-/** The logo as a PNG the image model can take as a reference (SVGs are rasterised large). */
-async function prepareLogoReference(logoUrl: string): Promise<Buffer> {
-  const logo = await loadLogoBuffer(logoUrl);
-  const sharp = (await import("sharp")).default;
-  return sharp(logo, isSvg(logo) ? { density: 384 } : undefined)
-    .resize({ width: 1024, height: 1024, fit: "inside", withoutEnlargement: !isSvg(logo) })
-    .png()
-    .toBuffer();
 }
 
 export function buildBrandImagePrompt(input: {
@@ -238,7 +180,7 @@ export function buildBrandImagePrompt(input: {
     `Professional Meta (Facebook/Instagram) feed ad still for ${input.brandName}.`,
     `Offer/theme: ${input.serviceName}.`,
     input.headline || input.primaryText
-      ? `THE POST THIS IMAGE ACCOMPANIES — the image must make this message understood at a glance, showing its subject and benefit, not a generic mood. ${input.headline ? `Headline: "${input.headline}". ` : ""}${input.primaryText ? `Primary text: "${input.primaryText.slice(0, 400)}". ` : ""}Do not render the copy as small illegible text.`
+      ? `THE POST THIS IMAGE ACCOMPANIES — the image must make this message understood at a glance, showing its subject and benefit, not a generic mood. ${input.headline ? `Headline: "${input.headline}". ` : ""}${input.primaryText ? `Primary text: "${input.primaryText.slice(0, 400)}". ` : ""}Show the headline large and legible; never as small text.`
       : null,
     input.brandVoice ? `Brand mood/voice: ${input.brandVoice}.` : null,
     // Hex codes listed as "accents" get treated as a loose suggestion and the
@@ -262,6 +204,9 @@ export function buildBrandImagePrompt(input: {
     input.creativeDirection
       ? `ART DIRECTION — follow this exactly; it is what makes this variant different from the others: ${input.creativeDirection}`
       : null,
+    input.creativeDirection?.includes("ON-IMAGE TEXT")
+      ? "TEXT ON THE IMAGE — design this like a finished paid-social ad, not a stock photo: set the ON-IMAGE TEXT from the art direction as bold, high-contrast, perfectly legible typography; the headline large, the highlighted keywords as accent-coloured words or rounded chips in the brand palette, and the call-to-action as a solid rounded button. Spell every word exactly as given. Put no other words on the image: no extra slogans, no lorem ipsum, no gibberish, no fake UI text."
+      : null,
     input.variantLabel ? `Variant style: ${input.variantLabel}.` : null,
     input.revisionNotes ? `Operator revision request: ${input.revisionNotes}` : null,
     formatPromptRule(input.format ?? "1:1"),
@@ -270,21 +215,42 @@ export function buildBrandImagePrompt(input: {
     .join(" ");
 }
 
+/** True when the logo's visible pixels are mostly light, so it needs a dark plate to be read. */
+async function isLightLogo(png: Buffer): Promise<boolean> {
+  const sharp = (await import("sharp")).default;
+  const { data, info } = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  let total = 0;
+  let count = 0;
+  for (let i = 0; i < data.length; i += info.channels) {
+    if ((data[i + 3] ?? 255) < 40) continue;
+    total += 0.299 * data[i]! + 0.587 * data[i + 1]! + 0.114 * data[i + 2]!;
+    count += 1;
+  }
+  return count > 0 && total / count > 190;
+}
+
 async function compositeOfficialLogo(
   sourceImage: Buffer,
   logoUrl: string,
-  placement: { top?: number } = {},
+  placement: { topFraction?: number } = {},
 ): Promise<Buffer> {
   const logo = await loadLogoBuffer(logoUrl);
   const sharpModule = await import("sharp");
   const sharp = sharpModule.default;
+  const meta = await sharp(sourceImage).metadata();
+  const width = meta.width ?? 1024;
+  // Everything scales with the image, so the logo is as legible on a 1536px still as on a 1024px one.
+  const margin = Math.round(width * 0.04);
+  const cardWidth = Math.round(width * 0.3);
+  const cardHeight = Math.round(cardWidth * 0.4);
+  const pad = Math.round(cardHeight * 0.16);
   // Firecrawl usually hands back an SVG. Rasterizing at the default 72 dpi and
   // refusing to enlarge renders a postage-stamp logo, so vectors get a high
   // density and are allowed to scale up to the card.
   const resized = await sharp(logo, isSvg(logo) ? { density: 384 } : undefined)
     .resize({
-      width: 180,
-      height: 72,
+      width: cardWidth - pad * 2,
+      height: cardHeight - pad * 2,
       fit: "inside",
       withoutEnlargement: !isSvg(logo),
       background: { r: 255, g: 255, b: 255, alpha: 0 },
@@ -292,14 +258,13 @@ async function compositeOfficialLogo(
     .png()
     .toBuffer({ resolveWithObject: true });
 
-  const cardWidth = 220;
-  const cardHeight = 104;
-  const cardLeft = 36;
-  const cardTop = placement.top ?? 36;
+  const light = await isLightLogo(resized.data);
+  const cardLeft = margin;
+  const cardTop = Math.round((meta.height ?? width) * (placement.topFraction ?? 0)) + margin;
   const logoLeft = cardLeft + Math.round((cardWidth - resized.info.width) / 2);
   const logoTop = cardTop + Math.round((cardHeight - resized.info.height) / 2);
   const card = Buffer.from(
-    `<svg width="${cardWidth}" height="${cardHeight}" xmlns="http://www.w3.org/2000/svg"><rect width="${cardWidth}" height="${cardHeight}" rx="14" fill="white" fill-opacity="0.94"/></svg>`,
+    `<svg width="${cardWidth}" height="${cardHeight}" xmlns="http://www.w3.org/2000/svg"><rect width="${cardWidth}" height="${cardHeight}" rx="${Math.round(cardHeight * 0.18)}" fill="${light ? "#15181d" : "#ffffff"}" fill-opacity="0.96"/></svg>`,
   );
 
   return sharp(sourceImage)

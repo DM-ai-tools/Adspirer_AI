@@ -1,5 +1,6 @@
 import { classifyRequest } from "@/lib/agent/intent-classifier";
 import { parseImageFormat } from "@/lib/creatives/formats";
+import { sameLandingPage } from "@/lib/creatives/landing";
 import { nanoid } from "nanoid";
 import type { Approval, Task, TaskStatus, ToolCall } from "@/types";
 import { getConfig } from "@/lib/config";
@@ -68,6 +69,7 @@ import { startCreativeGeneration } from "@/lib/creatives/service";
 import { runAfterResponse } from "@/lib/api/background";
 import {
   getSelectedCreativeDraftAsync,
+  isRenderStalled,
   listCreativeDraftsAsync,
   resolveImageUrlForAdspirer,
   toPublicDraft,
@@ -820,11 +822,24 @@ export async function runTask(
       try {
         // A follow-up message while stills are still rendering must not stack a
         // second batch on top — surface the running one instead.
+        // It is reused only when it is genuinely still rendering (a batch stuck "generating"
+        // after a restart is not) and is for the page the operator names now; a new page or
+        // a new link means a new batch, never yesterday's images under today's request.
+        const namedUrl =
+          agentResult.ui?.imageChoice?.landing_page_url ??
+          gathered.imageChoice?.landing_page_url ??
+          urlMatch?.[0];
         const inFlight = (
           await listCreativeDraftsAsync(task.client_id, {
             conversationId,
           })
-        ).filter((d) => d.image_status === "generating");
+        ).filter(
+          (d) =>
+            d.image_status === "generating" &&
+            !isRenderStalled(d) &&
+            (!namedUrl || sameLandingPage(namedUrl, d.landing_page_url)),
+        );
+        let usedUrl: string | undefined;
 
         let cards: ReturnType<typeof toPublicDraft>[];
         let rendering: boolean;
@@ -837,6 +852,7 @@ export async function runTask(
         if (inFlight.length) {
           cards = inFlight.map(toPublicDraft);
           rendering = true;
+          usedUrl = inFlight[0]?.landing_page_url ?? undefined;
         } else {
           const gatheredUi = gathered.imageChoice;
           const agentUi = agentResult.ui?.imageChoice;
@@ -856,6 +872,7 @@ export async function runTask(
             reference_notes:
               agentUi?.reference_notes ?? gatheredUi?.reference_notes,
           };
+          usedUrl = imageUi.landing_page_url ?? imageUi.brand_url;
           const { result, runImages } = await startCreativeGeneration({
             clientId: task.client_id,
             conversationId,
@@ -926,8 +943,15 @@ export async function runTask(
             "**No logo found** on the page, so these images carry no logo. Attach your logo file (name it logo) and tell me to redo them, and it goes on every image.",
           );
         }
+        const usedHost = (() => {
+          try {
+            return usedUrl ? new URL(usedUrl).toString() : null;
+          } catch {
+            return usedUrl ?? null;
+          }
+        })();
         agentResult.summary = [
-          stripCreativesHandoff(agentResult.summary),
+          `Making ${count} on-brand image variation${count === 1 ? "" : "s"}${usedHost ? ` for **${usedHost}**` : ""}.`,
           "",
           ...brandLines,
           brandLines.length ? "" : null,

@@ -4,6 +4,7 @@ import { getConfig } from "@/lib/config";
 import { logger } from "@/lib/observability/logger";
 import { scrapeWebsiteServices } from "@/lib/scraping/firecrawl";
 import { extractBrandColorsFromHtml, mergeBrandColors } from "@/lib/brand/html-colors";
+import { extractLogoFromHtml } from "@/lib/brand/html-logo";
 
 export type BrandUrlAnalysis = {
   url: string;
@@ -60,9 +61,14 @@ export async function fetchBrandHtml(url: string): Promise<string> {
 export async function analyzeBrandFromUrl(url: string): Promise<BrandUrlAnalysis> {
   const [analysis, html] = await Promise.all([analyzeBrandCore(url), fetchBrandHtml(url)]);
   const fromHtml = extractBrandColorsFromHtml(html);
-  if (!fromHtml.length) return analysis;
+  // The scrape often returns no logo; the site's own header usually shows it.
+  const pageLogo = analysis.logo_url ? null : extractLogoFromHtml(html, url, analysis.brand_name ?? analysis.title);
+  const withLogo: BrandUrlAnalysis = pageLogo
+    ? { ...analysis, logo_url: pageLogo, logo_description: `Logo read from the header of ${url}` }
+    : analysis;
+  if (!fromHtml.length) return withLogo;
   return {
-    ...analysis,
+    ...withLogo,
     colors: mergeBrandColors(fromHtml, analysis.colors),
     summary: `${analysis.summary} Brand colours read from the site's own CSS variables.`,
   };

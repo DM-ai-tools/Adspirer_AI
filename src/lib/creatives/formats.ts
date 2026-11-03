@@ -48,11 +48,12 @@ export async function cropToFormat(b64: string, format: ImageFormat): Promise<st
 
 /** The composition rule for the image prompt. */
 export function formatPromptRule(format: ImageFormat): string {
+  const noDense = "No watermarks, no dense paragraphs of text on the image.";
   if (format === "9:16") {
-    return "Vertical 9:16 composition for Instagram/Facebook Reels and Stories. Keep all text, the logo area and the product out of the top 14% and the bottom 35% of the frame — Meta overlays the account name, caption and buttons there. No watermarks, no dense paragraphs of text on the image.";
+    return `Vertical 9:16 composition for Instagram/Facebook Reels and Stories. The image is cropped to its final shape after it is made, so keep every word, the button and every key element at least 10% of the width away from the left and right edges. Keep all text, the logo area and the product out of the top 14% and the bottom 35% of the frame — Meta overlays the account name, caption and buttons there. ${noDense}`;
   }
   if (format === "4:5") {
-    return "Vertical 4:5 composition for the Instagram/Facebook feed, subject centred with breathing room at the edges. No watermarks, no dense paragraphs of text on the image.";
+    return `Vertical 4:5 composition for the Instagram/Facebook feed. The image is rendered tall and cropped to 4:5 afterwards, so keep every word, the call-to-action button and every key element at least 12% of the height away from the top and bottom edges and 6% of the width away from the sides; nothing important may touch an edge. ${noDense}`;
   }
-  return "Square 1:1 composition for Instagram feed. No watermarks, no dense paragraphs of text on the image.";
+  return `Square 1:1 composition for Instagram feed. Keep every word, the button and every key element at least 6% away from every edge. ${noDense}`;
 }
