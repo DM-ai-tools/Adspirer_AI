@@ -239,7 +239,7 @@ describe("comparison evidence", () => {
     expect(totalsLine).toContain("Purchases 40 → 48 (+20%)");
     expect(totalsLine).toContain("cost per result $25.00 → $25.00 (no change)");
     expect(totalsLine).toContain("ROAS 2.00× → 2.50× (+25%)");
-    expect(totalsLine).toContain("purchase value $2,000 → $3,000 (+50%)");
+    expect(totalsLine).toContain("sales revenue (purchase value) $2,000 → $3,000 (+50%)");
     expect(totalsLine).toContain("landing page views 450 → 540 (+20%)");
   });
 

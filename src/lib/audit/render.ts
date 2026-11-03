@@ -9,7 +9,7 @@ import {
 import { ownerForCheckpoint, ownerLabel } from "@/lib/agent/optimization-capabilities";
 import { escapeTableCell } from "@/lib/reports/table-row";
 import { hookRate, holdRate } from "@/lib/creative/fatigue";
-import type { AuditAd, AuditAdSet, MetaAuditSnapshot, PeriodPerformance } from "@/lib/audit/meta-audit-data";
+import type { AuditAd, AuditAdSet, AuditChange, AuditChangeContext, MetaAuditSnapshot, PeriodPerformance } from "@/lib/audit/meta-audit-data";
 
 const STATUS_LABEL: Record<CheckpointStatus, string> = {
   pass: "Pass",
@@ -222,19 +222,47 @@ function moneyFor(currency: string) {
 function periodLine(
   p: PeriodPerformance | null,
   money: (cents: number) => string,
-  options: { video?: boolean } = {},
+  options: { video?: boolean; full?: boolean } = {},
 ): string {
   if (!p || (p.spendCents === 0 && p.impressions === 0)) return "no delivery in the period";
+  const n = (v: number) => v.toLocaleString("en");
+  const hasSales = p.purchaseValueCents != null || p.purchases != null;
+  // When the result is purchases / leads, the results and cost-per-result figures already are those.
+  const resultIsPurchases = /^purchases?$/i.test(p.resultLabel);
+  const resultIsLeads = /^leads?$/i.test(p.resultLabel);
   return [
     `spend ${money(p.spendCents)}`,
     p.results != null ? `${p.results.toLocaleString("en")} ${p.resultLabel}` : `${p.resultLabel}: not reported`,
     `cost per result ${p.costPerResultCents != null ? money(p.costPerResultCents) : "n/a"}`,
+    // Sales revenue is part of every line, not only the snapshot: a sales account is judged on it.
+    p.purchaseValueCents != null ? `sales revenue (purchase value) ${money(p.purchaseValueCents)}` : null,
     `impressions ${p.impressions.toLocaleString("en")}`,
     p.reachSummed ? "reach and frequency: not summable across campaigns (people overlap)" : `reach ${p.reach.toLocaleString("en")}`,
     p.reachSummed ? null : `frequency ${p.frequency.toFixed(2)}`,
     `link CTR ${p.linkCtr.toFixed(2)}%`,
     `CPM ${p.cpmCents != null ? money(p.cpmCents) : "n/a"}`,
     p.roas != null ? `ROAS ${p.roas.toFixed(2)}×` : null,
+    // The snapshot shows every metric Meta returned, so nothing is missing from it.
+    ...(options.full
+      ? [
+          p.linkClicks != null ? `link clicks ${n(p.linkClicks)}` : null,
+          p.linkClicks ? `cost per link click ${money(Math.round(p.spendCents / p.linkClicks))}` : null,
+          p.clicks != null ? `clicks (all) ${n(p.clicks)}` : null,
+          p.landingPageViews != null ? `landing page views ${n(p.landingPageViews)}` : null,
+          p.addToCart != null ? `add to cart ${n(p.addToCart)}` : null,
+          p.initiateCheckout != null ? `initiate checkout ${n(p.initiateCheckout)}` : null,
+          p.purchases != null && !resultIsPurchases ? `purchases ${n(p.purchases)}` : null,
+          p.purchases && !resultIsPurchases ? `cost per purchase ${money(Math.round(p.spendCents / p.purchases))}` : null,
+          p.purchases && p.purchaseValueCents != null
+            ? `average order value ${money(Math.round(p.purchaseValueCents / p.purchases))}`
+            : null,
+          p.leads != null && !resultIsLeads ? `leads ${n(p.leads)}` : null,
+          p.leads && !resultIsLeads ? `cost per lead ${money(Math.round(p.spendCents / p.leads))}` : null,
+          p.videoViews3s != null ? `3-second video plays ${n(p.videoViews3s)}` : null,
+          p.thruplays != null ? `ThruPlays ${n(p.thruplays)}` : null,
+          hasSales ? null : "sales revenue: no purchase value reported in the period",
+        ]
+      : []),
     // Video rates only per ad: higher rows mix in image impressions.
     options.video && hookRate(p) != null ? `hook rate ${Math.round(hookRate(p)!)}%` : null,
     options.video && holdRate(p) != null ? `hold rate ${Math.round(holdRate(p)!)}%` : null,
@@ -285,7 +313,8 @@ function changeLine(
     ...(previous.linkClicks != null ? { linkClicks: 0 } : {}),
     ...(previous.landingPageViews != null ? { landingPageViews: 0 } : {}),
   };
-  const value = (p: PeriodPerformance) => (p.roas != null ? Math.round(p.roas * p.spendCents) : null);
+  const value = (p: PeriodPerformance) =>
+    p.purchaseValueCents ?? (p.roas != null ? Math.round(p.roas * p.spendCents) : null);
   const summed = previous.reachSummed || now.reachSummed;
   return [
     delta("spend", previous.spendCents, now.spendCents, money),
@@ -305,7 +334,17 @@ function changeLine(
       : null,
     previous.roas != null || now.roas != null ? delta("ROAS", previous.roas, now.roas, (n) => `${n.toFixed(2)}×`) : null,
     // Purchase value = ROAS × spend (Meta's purchase ROAS is value ÷ spend).
-    value(previous) != null || value(now) != null ? delta("purchase value", value(previous), value(now), money) : null,
+    value(previous) != null || value(now) != null ? delta("sales revenue (purchase value)", value(previous), value(now), money) : null,
+    // Skipped when the result already is purchases (it is listed above under its own label).
+    (previous.purchases != null || now.purchases != null) && !/^purchases?$/i.test(now.resultLabel || previous.resultLabel)
+      ? delta("purchases", previous.purchases, now.purchases, count)
+      : null,
+    previous.addToCart != null || now.addToCart != null ? delta("add to cart", previous.addToCart, now.addToCart, count) : null,
+    previous.initiateCheckout != null || now.initiateCheckout != null
+      ? delta("initiate checkout", previous.initiateCheckout, now.initiateCheckout, count)
+      : null,
+    previous.leads != null || now.leads != null ? delta("leads", previous.leads, now.leads, count) : null,
+    previous.clicks != null || now.clicks != null ? delta("clicks (all)", previous.clicks, now.clicks, count) : null,
     previous.landingPageViews != null || now.landingPageViews != null
       ? delta("landing page views", previous.landingPageViews, now.landingPageViews, count)
       : null,
@@ -443,7 +482,7 @@ export function renderAdSetEvidence(snap: MetaAuditSnapshot, maxAdSets = 40): st
       `Current: ${snap.period.since} → ${snap.period.until} (${dayCount(days)}); Comparison: ${previous.since} → ${previous.until} (${dayCount(previousDays)}) — ${
         snap.comparisonNamed ? "the range the operator named" : "the same number of days immediately before"
       }. Use exactly these dates in table headers and labels.`,
-      `Totals: ${periodLine(snap.totals, money)}`,
+      `Totals: ${periodLine(snap.totals, money, { full: true })}`,
       `Totals vs ${compare.word} (${previous.since} → ${previous.until}): ${
         compare.failures.includes("totals") ? failedLine(compare.word) : changeLine(snap.totals, snap.previousTotals, money, compare.word)
       }`,
@@ -454,7 +493,7 @@ export function renderAdSetEvidence(snap: MetaAuditSnapshot, maxAdSets = 40): st
       );
     }
   } else if (snap.comparisonNotRequested) {
-    lines.push(`Totals: ${periodLine(snap.totals, money)}`, "Comparison: not requested — report this period only.");
+    lines.push(`Totals: ${periodLine(snap.totals, money, { full: true })}`, "Comparison: not requested — report this period only.");
   }
   let shown = 0;
   for (const c of campaignOrder) {
@@ -466,7 +505,7 @@ export function renderAdSetEvidence(snap: MetaAuditSnapshot, maxAdSets = 40): st
       `#### Campaign ${c.name} (${c.id}) · ${c.status} · ${c.objective}${
         c.dailyBudgetCents ? ` · campaign daily budget ${money(c.dailyBudgetCents)}` : ""
       } — ${own.length} ad set${own.length === 1 ? "" : "s"}, ${live} live`,
-      `Campaign period: ${periodLine(c.performance, money)}`,
+      `Campaign period: ${periodLine(c.performance, money, { full: true })}`,
       ...(compare
         ? [
             `Campaign vs ${compare.word}: ${
@@ -495,6 +534,49 @@ export function renderAdSetEvidence(snap: MetaAuditSnapshot, maxAdSets = 40): st
       : []),
   );
   return lines.join("\n");
+}
+
+const AROUND_DAYS = 3;
+const MAX_EDIT_DATES_PER_ENTITY = 12;
+
+/** YYYY-MM-DD shifted by whole days. */
+function shiftDay(date: string, delta: number): string {
+  return new Date(Date.parse(`${date}T00:00:00Z`) + delta * 86_400_000).toISOString().slice(0, 10);
+}
+
+/** The edits that belong to a campaign, an ad set (incl. its ads) or — for "account" — edits tied to no campaign. */
+function editsFor(e: AuditChangeContext, changes: AuditChange[], adSetOfAd: Map<string, string>): AuditChange[] {
+  return changes.filter((c) => {
+    const type = (c.objectType ?? "").toUpperCase();
+    if (e.entityType === "campaign") return type === "CAMPAIGN" && c.objectId === e.id;
+    if (e.entityType === "ad set") {
+      return ((type === "AD_SET" || type === "ADSET") && c.objectId === e.id) || (type === "AD" && c.objectId != null && adSetOfAd.get(c.objectId) === e.id);
+    }
+    return c.campaignId == null;
+  });
+}
+
+/** One window of an object's days as totals and per-day figures: "2 days: $40/day spend, 3 results ($26.67/result), CTR 1.10%". */
+function windowLine(days: AuditChangeContext["days"], from: string, to: string, money: (cents: number) => string): string {
+  const inside = days.filter((d) => d.date >= from && d.date <= to);
+  if (!inside.length) return "no data in the audited period";
+  const spend = inside.reduce((sum, d) => sum + d.spendCents, 0);
+  const impressions = inside.reduce((sum, d) => sum + d.impressions, 0);
+  const counted = inside.filter((d) => d.results != null);
+  const results = counted.length ? counted.reduce((sum, d) => sum + d.results!, 0) : null;
+  const ctr = impressions > 0 ? inside.reduce((sum, d) => sum + d.linkCtr * d.impressions, 0) / impressions : 0;
+  const withRevenue = inside.filter((d) => d.purchaseValueCents != null);
+  const revenue = withRevenue.length ? withRevenue.reduce((sum, d) => sum + d.purchaseValueCents!, 0) : null;
+  const n = inside.length;
+  return [
+    `${n} day${n === 1 ? "" : "s"}`,
+    `spend ${money(Math.round(spend / n))}/day`,
+    results != null ? `${results} results${results > 0 ? ` (${money(Math.round(spend / results))}/result)` : " (no cost per result)"}` : "results n/a",
+    `CTR ${ctr.toFixed(2)}%`,
+    revenue != null ? `revenue ${money(Math.round(revenue / n))}/day${spend > 0 ? ` (ROAS ${(revenue / spend).toFixed(2)}×)` : ""}` : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
 }
 
 const MAX_CHANGE_LINES = 120;
@@ -544,13 +626,38 @@ export function renderChangesEvidence(snap: MetaAuditSnapshot): string {
     snap.changesUnresolved ? `- ${snap.changesUnresolved} further edit${snap.changesUnresolved === 1 ? "" : "s"} to ads or ad sets Meta no longer lists could not be tied to these campaigns, so they aren't shown.` : "",
   ];
   if (snap.changeContext?.length) {
-    lines.push("", "Delivery by day for what was edited (same period, account timezone; \"results\" are the ad set's / campaign's own optimisation result):");
+    lines.push(
+      "",
+      `Numbers around each edit (same period, account timezone, ${snap.account.currency}). "results" are the object's own optimisation result. Each edit is shown with the object's schedule and its figures for the ${AROUND_DAYS} days before, the day of, and the ${AROUND_DAYS} days after (only days inside the audited period exist). Use these — not guesses — to judge each edit:`,
+    );
+    const adSetOfAd = new Map(snap.ads.map((a) => [a.id, a.adSetId]));
     for (const e of snap.changeContext) {
-      lines.push(
-        `- ${e.entityType} "${e.name}" (${e.id}): ${e.days
-          .map((d) => `${d.date.slice(5)} spend ${money(d.spendCents)}, ${d.results ?? "n/a"} results${d.costPerResultCents != null ? `, ${money(d.costPerResultCents)}/result` : ""}, CTR ${d.linkCtr.toFixed(2)}%`)
-          .join(" | ")}`,
-      );
+      const edits = editsFor(e, snap.changes ?? [], adSetOfAd);
+      const kindLabel = e.entityType === "account" ? "whole ad account (edits not tied to one campaign, e.g. tracking)" : `${e.entityType} "${e.name}" (${e.id})`;
+      const schedule =
+        e.entityType === "account"
+          ? null
+          : `status ${e.status ?? "unknown"} · scheduled ${e.startDate ?? "start not set"} → ${e.endDate ?? "no end date set"}`;
+      lines.push(`- ${kindLabel}${schedule ? ` · ${schedule}` : ""}`);
+      if (e.days.length <= 31) {
+        lines.push(
+          `  - Day by day: ${e.days
+            .map((d) => `${d.date.slice(5)} spend ${money(d.spendCents)}, ${d.results ?? "n/a"} results${d.costPerResultCents != null ? `, ${money(d.costPerResultCents)}/result` : ""}, CTR ${d.linkCtr.toFixed(2)}%${d.purchaseValueCents != null ? `, revenue ${money(d.purchaseValueCents)}` : ""}`)
+            .join(" | ")}`,
+        );
+      }
+      const byDate = new Map<string, AuditChange[]>();
+      for (const c of edits) byDate.set(c.localDate, [...(byDate.get(c.localDate) ?? []), c]);
+      const dates = [...byDate.keys()].sort().slice(0, MAX_EDIT_DATES_PER_ENTITY);
+      for (const date of dates) {
+        const group = byDate.get(date)!;
+        const what = [...new Set(group.map((c) => c.label ?? c.eventType.replace(/_/g, " ")))].join("; ");
+        const who = [...new Set(group.map((c) => c.actor ?? (c.application ? `via ${c.application}` : null)).filter(Boolean))].join(", ") || "actor not reported";
+        lines.push(
+          `  - Edit on ${date} (${what}; ${who}) — before: ${windowLine(e.days, shiftDay(date, -AROUND_DAYS), shiftDay(date, -1), money)} · day of: ${windowLine(e.days, date, date, money)} · after: ${windowLine(e.days, shiftDay(date, 1), shiftDay(date, AROUND_DAYS), money)}`,
+        );
+      }
+      if (byDate.size > dates.length) lines.push(`  - ${byDate.size - dates.length} more edit days on this object not shown.`);
     }
   }
   lines.push(

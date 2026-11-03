@@ -1,3 +1,4 @@
+import { presentBlocks } from "@/lib/reports/present";
 import {
   AlignmentType,
   BorderStyle,
@@ -252,7 +253,7 @@ export async function renderReportDocx(input: {
   generatedAt?: Date;
 }): Promise<Uint8Array> {
   const title = sanitizeReportText(input.title);
-  let blocks = parseMarkdownToBlocks(input.markdown);
+  let blocks = presentBlocks(parseMarkdownToBlocks(input.markdown));
   if (
     blocks[0]?.type === "heading" &&
     blocks[0].level === 1 &&

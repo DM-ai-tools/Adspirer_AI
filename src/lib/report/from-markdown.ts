@@ -111,6 +111,30 @@ function tableMetric(text: string, label: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Metric | Value rows of the Account Snapshot table, in the order written. Stops
+ * before the "Changes during this period" sub-section; a comparison table's extra
+ * columns are kept in the value ("Current · Comparison · Change").
+ */
+export function snapshotTableRows(snapshotSection: string): Array<{ label: string; value: string }> {
+  const upToChanges = snapshotSection.split(/#{2,4}\s*Changes during this period/i)[0] ?? "";
+  const rows: Array<{ label: string; value: string }> = [];
+  for (const line of upToChanges.split("\n")) {
+    if (!/^\s*\|/.test(line)) continue;
+    const cells = line
+      .trim()
+      .replace(/^\||\|$/g, "")
+      .split("|")
+      .map((c) => cleanCell(c));
+    if (cells.length < 2 || cells.every((c) => /^:?-{2,}:?$/.test(c) || !c)) continue;
+    const [label, ...rest] = cells;
+    if (!label || /^(metric|measure|kpi|label|period)$/i.test(label)) continue;
+    const value = rest.filter(Boolean).join(" · ");
+    if (value) rows.push({ label, value });
+  }
+  return rows;
+}
+
 function extractAccountName(text: string): string {
   const fromAccountLine =
     /(?:^|\n)\s*\*?\*?\s*Account\s*\*?\*?\s*:\s*\*?\*?\s*(.+?)\s*\*?\*?\s*\(\s*act_/i.exec(
@@ -242,7 +266,7 @@ export function auditReportFromMarkdown(
     },
   ];
 
-  const snapshot = [
+  const baseSnapshot = [
     { label: "Account", value: accountName },
     { label: "Account ID", value: accountId, mono: true },
     { label: "Currency", value: currency },
@@ -255,6 +279,22 @@ export function auditReportFromMarkdown(
     ...(reach ? [{ label: "Reach", value: reach }] : []),
     ...(frequency ? [{ label: "Frequency", value: frequency }] : []),
     ...(cpl ? [{ label: "CPL", value: cpl }] : []),
+  ];
+  // Every other metric the audit's snapshot table lists (sales revenue, ROAS, purchases…)
+  // goes into the export too, so nothing the report shows is dropped from the PDF / Word file.
+  const shownLabels = new Set(
+    [...baseSnapshot.map((r) => r.label), "Total campaigns", "Active campaigns", "Paused campaigns", "Total spend", "Total spend (30 days)"].map(
+      (l) => l.toLowerCase(),
+    ),
+  );
+  const snapshot = [
+    ...baseSnapshot,
+    ...snapshotTableRows(snapshotSection).filter((r) => {
+      const key = r.label.toLowerCase();
+      if (shownLabels.has(key)) return false;
+      shownLabels.add(key);
+      return true;
+    }),
   ];
 
   // Section 2 only — do not match the snapshot table's "Active campaigns" label.
