@@ -1,4 +1,4 @@
-import { cropToFormat, formatPromptRule, type ImageFormat } from "@/lib/creatives/formats";
+import { cropToFormat, FALLBACK_SIZE, formatPromptRule, type GenerationSize, type ImageFormat } from "@/lib/creatives/formats";
 import { getConfig } from "@/lib/config";
 import { logger } from "@/lib/observability/logger";
 
@@ -18,7 +18,7 @@ export type OpenAIImageResult = {
  */
 export async function generateOpenAIImage(input: {
   prompt: string;
-  size?: "1024x1024" | "1024x1536" | "1536x1024";
+  size?: GenerationSize | "1536x1024";
   quality?: "low" | "medium" | "high";
   logoUrl?: string | null;
   /** Crop the render to this shape (before the logo goes on). */
@@ -28,7 +28,7 @@ export async function generateOpenAIImage(input: {
   const model = config.OPENAI_IMAGE_MODEL || "gpt-image-2";
   const prompt = input.prompt.slice(0, 32000);
   const size = input.size ?? "1024x1024";
-  const quality = input.quality ?? "medium";
+  const quality = input.quality ?? config.OPENAI_IMAGE_QUALITY ?? "high";
 
   if (!config.OPENAI_API_KEY) {
     return {
@@ -46,26 +46,34 @@ export async function generateOpenAIImage(input: {
     // The model never draws the logo: it would be redrawn, cropped with the frame and
     // unreadable on a dark ad. A plain render is made with the top-left kept clear, and
     // the brand's real logo is placed there afterwards on a plate that contrasts with it.
-    const res = await fetch("https://api.openai.com/v1/images/generations", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${config.OPENAI_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        prompt: `${prompt} ${logoInstruction(input.logoUrl ? "overlay" : "none", input.format)}`.slice(0, 32000),
-        size,
-        quality,
-        n: 1,
-      }),
-      signal: AbortSignal.timeout(180_000),
-    });
+    const render = async (renderSize: string) => {
+      const response = await fetch("https://api.openai.com/v1/images/generations", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${config.OPENAI_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          prompt: `${prompt} ${logoInstruction(input.logoUrl ? "overlay" : "none", input.format)}`.slice(0, 32000),
+          size: renderSize,
+          quality,
+          n: 1,
+        }),
+        signal: AbortSignal.timeout(240_000),
+      });
+      const body = (await response.json().catch(() => null)) as {
+        data?: Array<{ b64_json?: string; url?: string }>;
+        error?: { message?: string };
+      } | null;
+      return { res: response, payload: body };
+    };
 
-    const payload = (await res.json().catch(() => null)) as {
-      data?: Array<{ b64_json?: string; url?: string }>;
-      error?: { message?: string };
-    } | null;
+    let { res, payload } = await render(size);
+    // A model that does not take the exact portrait size gets a 2:3 render that is cropped to shape.
+    if (!res.ok && size !== "1024x1024" && size !== FALLBACK_SIZE && /size/i.test(payload?.error?.message ?? "")) {
+      ({ res, payload } = await render(FALLBACK_SIZE));
+    }
 
     if (!res.ok) {
       throw new Error(
@@ -154,10 +162,17 @@ export async function generateOpenAIImage(input: {
 /** The one sentence about the logo. The real logo is placed on the finished image, so the model only keeps room for it. */
 function logoInstruction(mode: "overlay" | "none", format?: ImageFormat): string {
   if (mode === "overlay") {
-    return `Keep the top-left corner clear: nothing (no text, no key element) in the top-left ${format === "9:16" ? "below the top 14%, in a" : ""} 30% of the width by 14% of the height, because the brand's real logo is placed there afterwards. Do not draw, invent or imitate any logo or brand mark.`;
+    return `Leave the top ${format === "9:16" ? "28%" : "16%"} of the frame free of any text, chip or button (background, glow and imagery may continue through it) and keep the top-left corner clear, because the brand's real logo is placed there afterwards. Do not draw, invent or imitate any logo or brand mark.`;
   }
   return "Do not invent or render a logo.";
 }
+
+/**
+ * What separates an ad that stops the scroll from a plain stock still. It is stated for every
+ * render so the model builds a finished, layered ad, not a flat picture with a caption.
+ */
+const CRAFT_BRIEF =
+  "CRAFT — this must look like a finished, professionally designed static ad, never a plain photo or flat template: one unmistakable focal point that reads in under a second at thumbnail size; real depth with distinct foreground, subject and background layers; deliberate lighting with believable shadows, reflections and highlights; rich materials and texture (grain, glass, gloss, fabric, paper, metal) where they suit the style; confident, generous negative space; a clear type hierarchy (huge headline, small supporting text, one bold button) set with proper kerning and contrast; premium colour grading and crisp edges. No clutter, no clip-art, no generic handshake or laptop-on-desk stock imagery, no watermarks.";
 
 export function buildBrandImagePrompt(input: {
   brandName: string;
@@ -177,8 +192,9 @@ export function buildBrandImagePrompt(input: {
   const palette = input.colors?.filter(Boolean).slice(0, 4) ?? [];
   const [primary, secondary, tertiary] = palette;
   return [
-    `Professional Meta (Facebook/Instagram) feed ad still for ${input.brandName}.`,
+    `Art-directed, scroll-stopping Meta (Facebook/Instagram) ad creative for ${input.brandName}, at the level of a top agency's paid-social work.`,
     `Offer/theme: ${input.serviceName}.`,
+    CRAFT_BRIEF,
     input.headline || input.primaryText
       ? `THE POST THIS IMAGE ACCOMPANIES — the image must make this message understood at a glance, showing its subject and benefit, not a generic mood. ${input.headline ? `Headline: "${input.headline}". ` : ""}${input.primaryText ? `Primary text: "${input.primaryText.slice(0, 400)}". ` : ""}Show the headline large and legible; never as small text.`
       : null,
@@ -207,7 +223,7 @@ export function buildBrandImagePrompt(input: {
     input.creativeDirection?.includes("ON-IMAGE TEXT")
       ? "TEXT ON THE IMAGE — design this like a finished paid-social ad, not a stock photo: set the ON-IMAGE TEXT from the art direction as bold, high-contrast, perfectly legible typography; the headline large, the highlighted keywords as accent-coloured words or rounded chips in the brand palette, and the call-to-action as a solid rounded button. Spell every word exactly as given. Put no other words on the image: no extra slogans, no lorem ipsum, no gibberish, no fake UI text."
       : null,
-    input.variantLabel ? `Variant style: ${input.variantLabel}.` : null,
+    input.variantLabel ? `Variant name: ${input.variantLabel}. Commit fully to the art direction's style so this variation looks clearly different from its siblings.` : null,
     input.revisionNotes ? `Operator revision request: ${input.revisionNotes}` : null,
     formatPromptRule(input.format ?? "1:1"),
   ]

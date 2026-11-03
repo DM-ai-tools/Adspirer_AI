@@ -33,6 +33,8 @@ const envSchema = z.object({
   OPENAI_MODEL: z.string().default("gpt-4o-mini"),
   FIRECRAWL_API_KEY: z.string().optional(),
   OPENAI_IMAGE_MODEL: z.string().default("gpt-image-2"),
+  /** low | medium | high. High is what makes typography and detail ad-grade; medium is cheaper. */
+  OPENAI_IMAGE_QUALITY: z.enum(["low", "medium", "high"]).default("high"),
   SOCIAVAULT_API_KEY: z.string().optional(),
   META_APP_ID: z.string().optional(),
   META_APP_SECRET: z.string().optional(),
@@ -95,6 +97,7 @@ function readRawEnv(): Record<string, string | undefined> {
     OPENAI_MODEL: process.env.OPENAI_MODEL,
     FIRECRAWL_API_KEY: process.env.FIRECRAWL_API_KEY,
     OPENAI_IMAGE_MODEL: process.env.OPENAI_IMAGE_MODEL,
+    OPENAI_IMAGE_QUALITY: process.env.OPENAI_IMAGE_QUALITY || undefined,
     SOCIAVAULT_API_KEY: process.env.SOCIAVAULT_API_KEY,
     META_APP_ID: process.env.META_APP_ID,
     META_APP_SECRET: process.env.META_APP_SECRET,

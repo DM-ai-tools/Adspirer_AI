@@ -1,7 +1,8 @@
 /**
  * Ad image shapes. 4:5 fills the most of a feed; 9:16 fills Reels and
- * Stories. The image model renders square or 2:3 portrait, so portrait
- * formats are rendered at 1024×1536 and centre-cropped to the exact ratio.
+ * Stories. The image model renders each shape natively (1024×1280, 864×1536)
+ * so the composition is made for the real frame; a 2:3 render that is
+ * centre-cropped to the ratio is the fallback for models that refuse the size.
  */
 export const IMAGE_FORMATS = ["1:1", "4:5", "9:16"] as const;
 export type ImageFormat = (typeof IMAGE_FORMATS)[number];
@@ -17,9 +18,17 @@ export function parseImageFormat(value: unknown): ImageFormat {
   return "4:5";
 }
 
-export function generationSize(format: ImageFormat): "1024x1024" | "1024x1536" {
-  return format === "1:1" ? "1024x1024" : "1024x1536";
+export type GenerationSize = "1024x1024" | "1024x1280" | "864x1536" | "1024x1536";
+
+/** The size that is exactly the format's shape, so nothing important is ever cropped away. */
+export function generationSize(format: ImageFormat): GenerationSize {
+  if (format === "4:5") return "1024x1280";
+  if (format === "9:16") return "864x1536";
+  return "1024x1024";
 }
+
+/** Rendered 2:3 and centre-cropped: for image models that do not take the exact size. */
+export const FALLBACK_SIZE: GenerationSize = "1024x1536";
 
 /** The largest centred box of the format's ratio inside width × height. */
 export function cropBox(format: ImageFormat, width: number, height: number) {
@@ -50,10 +59,10 @@ export async function cropToFormat(b64: string, format: ImageFormat): Promise<st
 export function formatPromptRule(format: ImageFormat): string {
   const noDense = "No watermarks, no dense paragraphs of text on the image.";
   if (format === "9:16") {
-    return `Vertical 9:16 composition for Instagram/Facebook Reels and Stories. The image is cropped to its final shape after it is made, so keep every word, the button and every key element at least 10% of the width away from the left and right edges. Keep all text, the logo area and the product out of the top 14% and the bottom 35% of the frame — Meta overlays the account name, caption and buttons there. ${noDense}`;
+    return `Vertical 9:16 composition for Instagram/Facebook Reels and Stories. Keep every word, the button and every key element at least 8% of the width away from the left and right edges, and nothing may touch any edge. Keep all text, the logo area and the product out of the top 14% and the bottom 35% of the frame — Meta overlays the account name, caption and buttons there. ${noDense}`;
   }
   if (format === "4:5") {
-    return `Vertical 4:5 composition for the Instagram/Facebook feed. The image is rendered tall and cropped to 4:5 afterwards, so keep every word, the call-to-action button and every key element at least 12% of the height away from the top and bottom edges and 6% of the width away from the sides; nothing important may touch an edge. ${noDense}`;
+    return `Vertical 4:5 composition for the Instagram/Facebook feed. Keep every word, the call-to-action button and every key element at least 7% of the height away from the top and bottom edges and 7% of the width away from the sides; nothing may touch or run off an edge, and the whole button and every chip must be fully visible inside the frame. This safe margin overrides any position written in the art direction. ${noDense}`;
   }
   return `Square 1:1 composition for Instagram feed. Keep every word, the button and every key element at least 6% away from every edge. ${noDense}`;
 }

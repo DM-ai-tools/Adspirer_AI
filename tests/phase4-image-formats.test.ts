@@ -6,8 +6,8 @@ import { buildBrandImagePrompt } from "@/lib/creatives/openai-image";
 describe("ad image formats", () => {
   it("renders portrait for 4:5 and 9:16 and square for 1:1", () => {
     expect(generationSize("1:1")).toBe("1024x1024");
-    expect(generationSize("4:5")).toBe("1024x1536");
-    expect(generationSize("9:16")).toBe("1024x1536");
+    expect(generationSize("4:5")).toBe("1024x1280");
+    expect(generationSize("9:16")).toBe("864x1536");
   });
 
   it("centre-crops to the exact ratio", () => {
