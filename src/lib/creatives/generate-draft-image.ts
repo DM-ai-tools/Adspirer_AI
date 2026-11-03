@@ -63,7 +63,6 @@ export async function generateImageForDraft(
     image = await generateOpenAIImage({
       prompt,
       size: generationSize(format),
-      quality: "medium",
       logoUrl: existing.logo_url,
       format,
     });

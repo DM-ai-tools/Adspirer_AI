@@ -48,6 +48,9 @@ const conceptSchema = z.object({
   concepts: z.array(
     z.object({
       label: z.string().describe("2-4 word name for this variation"),
+      style: z
+        .string()
+        .describe("The visual style of this still in 2-5 words (for example 'bold typographic poster' or 'cinematic product hero'). It must differ from every other concept's style."),
       hook: z.string(),
       primary_text: z.string(),
       headline: z.string().describe("Under 40 characters"),
@@ -56,7 +59,7 @@ const conceptSchema = z.object({
       creative_direction: z
         .string()
         .describe(
-          "A concrete art direction for the still: subject, setting, composition, lighting, and how the brand colours are used. It must visualise THIS ad's message for THIS business.",
+          "A rich, specific art direction of 70-130 words for a finished, scroll-stopping ad: the visual idea or metaphor that makes THIS offer understood at a glance; the subject and setting; camera angle, lens and framing; lighting and mood; foreground/mid/background layers; where the headline, chips and button sit and how large; textures and finish; and exactly how the brand colours are used (dominant colour first). Never a vague mood description.",
         ),
       on_image_text: z
         .object({
@@ -138,7 +141,7 @@ export function buildConceptPrompt(input: ConceptWriterInput): string {
           .join("\n")
       : "Write each concept's copy yourself, grounded only in the facts above. Do not invent prices, statistics, awards or guarantees.",
     "",
-    `Produce exactly ${input.count} concepts. Make them genuinely different from each other in subject, composition and setting, and choose those differences from what suits THIS business and THIS message; do not reuse a stock set of layouts. Each creative_direction must show the specific message of the post (what the viewer should understand in one glance), use the brand colours as the palette (the dominant colour must be the first one listed), and carry the ad's own words ON the image as designed typography: a large headline, the keywords or proof points that matter picked out as highlighted chips or accent-coloured words, and a clear call-to-action button, all taken from the page and the copy (never invented), so the image sells on its own. No UI screenshots. Carry the brand's look from the notes above (light or dark scheme, typography feel, imagery style) so the still reads as this brand at a glance. The brand's real logo is supplied separately, so never describe or invent a logo.`,
+    `Produce exactly ${input.count} concepts. Each must use a DIFFERENT visual style, chosen from what suits THIS business and message, drawing on a wide range such as: bold typographic poster with oversized headline; cinematic product or subject hero with dramatic lighting; candid lifestyle / user-generated feel photo; 3D-rendered objects or isometric scene; editorial magazine collage with cut-outs and torn paper; flat graphic illustration with big shapes; proof-led hero stat with a supporting visual; testimonial or quote card; before/after or versus split screen; visual metaphor for the problem and its fix; sticker / pop-art / hand-drawn annotation style; macro close-up with shallow depth of field; dark luxe glow versus bright high-key clean. Pick styles that fit the audience and keep the set varied, never five takes on one layout. Each creative_direction must show the specific message of the post (what the viewer should understand in one glance), use the brand colours as the palette (the dominant colour must be the first one listed), and carry the ad's own words ON the image as designed typography: a large headline, the keywords or proof points that matter picked out as highlighted chips or accent-coloured words, and a clear call-to-action button, all taken from the page and the copy (never invented), so the image sells on its own. No UI screenshots. Carry the brand's look from the notes above (light or dark scheme, typography feel, imagery style) so the still reads as this brand at a glance. The brand's real logo is supplied separately, so never describe or invent a logo, and keep the top 16% of the frame free of text (the logo is placed top-left): the headline starts below it. Keep every word, chip and the button well inside the frame, at least 8% from every edge, with the button above the bottom margin; never write "bottom edge" or "bleeding off" in a direction.`,
   ];
   return lines.filter((line) => line !== null).join("\n");
 }
@@ -159,9 +162,9 @@ export async function writeCreativeConcepts(
   const { object } = await generateObject({
     model,
     schema: conceptSchema,
-    temperature: 0.8,
+    temperature: 0.9,
     system:
-      "You are a senior paid-social creative director. You write Meta ad concepts and image art directions that are specific to one business and one message. You never pad with generic stock imagery ideas.",
+      "You are an award-winning paid-social creative director who has made top-performing Meta static ads. You write ad concepts and image art directions that are specific to one business and one message, with a strong visual idea, real art direction (camera, light, layers, type hierarchy) and a distinct style per concept. You never fall back on generic stock imagery, flat templates or vague mood boards.",
     prompt: buildConceptPrompt(input),
   });
 
@@ -178,7 +181,10 @@ export async function writeCreativeConcepts(
     headline: supplied?.headline?.trim() || c.headline,
     description: c.description,
     cta: c.cta,
-    creative_direction: directionWithText(c.creative_direction, c.on_image_text),
+    creative_direction: directionWithText(
+      c.style?.trim() ? `STYLE: ${c.style.trim()}. ${c.creative_direction}` : c.creative_direction,
+      c.on_image_text,
+    ),
     audience: c.audience,
     competitor_gap_addressed: c.label,
     reasoning: c.reasoning,

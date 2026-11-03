@@ -41,6 +41,7 @@ import { columnAlignments } from "@/lib/reports/layout";
 import { splitMarkdownTableRow } from "@/lib/reports/table-row";
 import { ChatDocumentAttachButton, uploadChatFile } from "@/components/workspace/documents-panel";
 import { useCreativeStatus } from "@/hooks/use-creative-status";
+import { groupCreativesByMessage } from "@/lib/creatives/chat-groups";
 import { CampaignSettingsCard } from "@/components/ai/campaign-settings-card";
 import { TargetingPickerCard } from "@/components/ai/targeting-picker";
 import type { CampaignSettings } from "@/lib/meta/campaign-rules";
@@ -663,7 +664,6 @@ export function ChatPanel({
   // the request that started them — leaving and returning keeps the progress.
   const {
     drafts: liveCreativeDrafts,
-    progress: creativeProgress,
     active: creativesRendering,
     refresh: refreshCreativeStatus,
   } = useCreativeStatus({
@@ -1005,41 +1005,23 @@ export function ChatPanel({
   }, [messages, parsedById]);
 
   /**
-   * Every generation event carries its own snapshot of the drafts, which would
-   * otherwise render a duplicate set of cards per message with stale statuses.
-   * Collapse them into one live set shown on the most recent picker message.
+   * Each request makes its own batch of stills, and a batch belongs under the reply
+   * to the request that made it (never merged into one block at the bottom). Live
+   * poll data overrides the frozen per-message snapshots so finished images appear.
    */
-  const { creativeCardsMessageId, creativeCards } = useMemo(() => {
-    const byDraftId = new Map<string, CreativeDraftCard>();
-    let lastMessageId: string | null = null;
-    let lastAssistantId: string | null = null;
-    for (const m of messages) {
-      if (m.role !== "assistant") continue;
-      lastAssistantId = m.id;
-      const picker = parsedById.get(m.id)?.creativePicker;
-      if (!picker?.drafts?.length) continue;
-      lastMessageId = m.id;
-      for (const draft of picker.drafts) {
-        byDraftId.set(draft.id, { ...byDraftId.get(draft.id), ...draft });
-      }
-    }
-
-    // Snapshots freeze at the moment their message was written, so the poll —
-    // which reflects images finishing on the server — always wins.
-    for (const live of liveCreativeDrafts) {
-      byDraftId.set(live.id, {
-        ...byDraftId.get(live.id),
-        ...live,
-      } as CreativeDraftCard);
-    }
-
-    return {
-      // A batch started from the button has no picker message yet; hang its
-      // cards off the newest reply so they show up without a chat reload.
-      creativeCardsMessageId: lastMessageId ?? lastAssistantId,
-      creativeCards: Array.from(byDraftId.values()),
-    };
-  }, [messages, parsedById, liveCreativeDrafts]);
+  const creativeGroups = useMemo(
+    () =>
+      groupCreativesByMessage<CreativeDraftCard>(
+        messages.map((m) => ({
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          drafts: parsedById.get(m.id)?.creativePicker?.drafts,
+        })),
+        liveCreativeDrafts as unknown as CreativeDraftCard[],
+      ),
+    [messages, parsedById, liveCreativeDrafts],
+  );
 
   return (
     <div className={cn("relative flex h-full min-h-0 flex-col", className)}>
@@ -1301,32 +1283,39 @@ export function ChatPanel({
                       </div>
                     ) : null}
 
-                    {message.id === creativeCardsMessageId &&
-                    creativeCards.length ? (
-                      <>
-                        {creativesRendering && creativeProgress ? (
-                          <div className="mt-3 flex items-center gap-2 rounded-lg border border-accent/30 bg-accent/5 px-2.5 py-2 text-xs text-muted">
-                            <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
-                            <span>
-                              Rendering stills —{" "}
-                              {creativeProgress.succeeded +
-                                creativeProgress.failed +
-                                creativeProgress.stalled}{" "}
-                              of {creativeProgress.total} done. Safe to switch
-                              pages; this keeps running.
-                            </span>
-                          </div>
-                        ) : null}
-                        <InlineCreativeCards
-                          drafts={creativeCards}
-                          disabled={disabled || sending}
-                          onUpdated={async () => {
-                            refreshCreativeStatus();
-                            await onWorkflowRefresh?.();
-                          }}
-                        />
-                      </>
-                    ) : null}
+                    {(() => {
+                      const group = creativeGroups.get(message.id);
+                      if (!group) return null;
+                      const pending = group.drafts.filter(
+                        (d) => d.image_status === "generating" || d.image_status === "pending",
+                      ).length;
+                      return (
+                        <div className="mt-3 rounded-xl border border-border/70 bg-card/40 p-2.5">
+                          <p className="mb-2 text-[11px] font-medium text-muted">
+                            {group.drafts.length} image{group.drafts.length === 1 ? "" : "s"}
+                            {group.request ? <> for “{group.request}”</> : null}
+                          </p>
+                          {creativesRendering && pending > 0 ? (
+                            <div className="mb-2 flex items-center gap-2 rounded-lg border border-accent/30 bg-accent/5 px-2.5 py-2 text-xs text-muted">
+                              <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
+                              <span>
+                                Rendering stills — {group.drafts.length - pending} of{" "}
+                                {group.drafts.length} done. Safe to switch pages; this keeps
+                                running.
+                              </span>
+                            </div>
+                          ) : null}
+                          <InlineCreativeCards
+                            drafts={group.drafts}
+                            disabled={disabled || sending}
+                            onUpdated={async () => {
+                              refreshCreativeStatus();
+                              await onWorkflowRefresh?.();
+                            }}
+                          />
+                        </div>
+                      );
+                    })()}
 
                     {!streaming && services && isLatestPicker ? (
                       <div className="mt-3 space-y-2.5 border-t border-border/60 pt-3">
