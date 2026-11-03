@@ -24,7 +24,7 @@ const INTENT_GUIDE: Record<RequestIntent, string> = {
   list_campaigns: "Asks to list or show campaigns.",
   export: "Wants the conversation itself, or a report already in it, as a downloadable PDF / Word document. Not for new data: if they name metrics, a period or a breakdown to compile, that is custom.",
   create_campaign:
-    "Wants to build or launch a campaign, ad set or ad, or is mid-way through doing so (sending an image link, picking settings).",
+    "Wants to build or launch a campaign, ad set or ad, or is mid-way through doing so (sending an image link, picking settings). Also when they want to use, run or launch images the assistant just generated (\"use this in a campaign\", \"run ads with the second one\", \"let's put these live\").",
   generate_creatives: "Wants ad images / creatives generated.",
   scrape_services: "Wants services or offerings pulled from a website.",
   ad_copy: "Wants ad copy, headlines or primary text written.",

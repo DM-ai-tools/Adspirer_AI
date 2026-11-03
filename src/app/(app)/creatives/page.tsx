@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
-import { Check, Loader2, Palette, Sparkles, X } from "lucide-react";
+import { Check, Download, Loader2, Palette, Sparkles, X } from "lucide-react";
 import { toast } from "sonner";
 import { useApp } from "@/components/layout/app-provider";
 import { PageHeader } from "@/components/shared/page-header";
@@ -22,6 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { apiFetch } from "@/lib/api-client";
+import { creativeDownloadUrl } from "@/lib/creatives/download";
 import { useCreativeStatus } from "@/hooks/use-creative-status";
 import type { ClientService } from "@/types";
 
@@ -601,6 +602,14 @@ function CreativesInner() {
                         <Check className="mr-1 h-3.5 w-3.5" />
                         Approve for campaign
                       </Button>
+                      {concept.image_status === "succeeded" ? (
+                        <Button type="button" size="sm" variant="secondary" asChild>
+                          <a href={creativeDownloadUrl(concept.id)} download>
+                            <Download className="mr-1 h-3.5 w-3.5" />
+                            Download
+                          </a>
+                        </Button>
+                      ) : null}
                       <Button
                         type="button"
                         size="sm"

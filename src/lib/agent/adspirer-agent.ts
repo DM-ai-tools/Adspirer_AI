@@ -180,6 +180,7 @@ import {
   formatLandingAnalysesForEvidence,
 } from "@/lib/landing/analyze-page";
 import { loadDocumentsForContext } from "@/lib/documents/service";
+import { extractCreativeSource } from "@/lib/creatives/source-from-documents";
 import { META_AUDIT_FRAMEWORK } from "@/lib/agent/meta-audit-framework";
 import {
   GENERIC_FALLBACK_REPLY,
@@ -270,6 +271,10 @@ export type ImageChoiceUi = {
   reference_notes?: string;
   /** "4:5" (feed, default), "9:16" (Reels/Stories) or "1:1". */
   format?: string;
+  /** What an uploaded landing page file offers (when no live page was read). */
+  page_text?: string;
+  /** Uploaded files the copy / page details came from. */
+  source_files?: string[];
 };
 
 export type FormatChoiceUi = {
@@ -3453,6 +3458,43 @@ export async function gatherDiagnoseEvidence(input: {
     // ignore
   }
 
+  // Images generated in this chat but not yet picked: when the operator says they want to
+  // use them in a campaign (in their own words, no button), the model works out which one
+  // and asks only for what the campaign still needs.
+  if (intent === "create_campaign") {
+    try {
+      const { listCreativeDraftsAsync, resolveImageUrlForAdspirer } = await import("@/lib/creatives/drafts");
+      const alreadySelected = await (input.preloaded?.selectedCreative ??
+        (await import("@/lib/creatives/drafts")).getSelectedCreativeDraftAsync(input.clientId, {
+          conversationId: input.conversationId ?? null,
+        }));
+      const ready = alreadySelected || !input.conversationId
+        ? []
+        : (await listCreativeDraftsAsync(input.clientId, { conversationId: input.conversationId }))
+            .filter((d) => d.image_status === "succeeded" && d.status !== "rejected")
+            .slice(0, 6);
+      if (ready.length) {
+        sections.push(
+          [
+            "### Images generated in this chat (not yet chosen for a campaign)",
+            ...ready.map(
+              (d, i) =>
+                `${i + 1}. ${d.concept} · headline "${d.headline}" · image_url ${resolveImageUrlForAdspirer(d) ?? "(missing)"}${d.landing_page_url ? ` · landing ${d.landing_page_url}` : ""}`,
+            ),
+            "",
+            ready.length === 1
+              ? "If the operator wants to use \"this\" / \"it\" in a campaign, this is the creative: confirm it in one short line."
+              : "If the operator says which one (first, second, by headline, \"the green one\") use that. If they say \"these\" or don't say which, ask which to use (or whether to use all as separate ads) before anything else.",
+            "Then ask ONLY for what the campaign still needs and has not been given: objective, daily budget, locations, destination URL (default to the image's landing page above if there is one), start date, and whether to keep the image's headline and primary text. Ask in one short list, not one question at a time. Do not queue or create anything until they confirm.",
+            "Use the chosen image_url in create_meta_image_campaign / create_ad when it is time to queue.",
+          ].join("\n"),
+        );
+      }
+    } catch {
+      // creatives are optional context here
+    }
+  }
+
   if (intent === "create_campaign") {
     const request = input.request ?? "";
     const format = detectCreativeFormat(request);
@@ -3521,24 +3563,43 @@ export async function gatherDiagnoseEvidence(input: {
   if (intent === "generate_creatives") {
     const url = extractUrlFromText(input.request);
     const copyFields = extractAdCopyFromText(input.request);
+    // An uploaded ad copy or landing page file fills in what the message doesn't say.
+    let fromFiles: Awaited<ReturnType<typeof extractCreativeSource>> = null;
+    try {
+      fromFiles = await extractCreativeSource({
+        docs: await loadDocuments(),
+        conversationId: input.conversationId ?? null,
+        request: input.request,
+      });
+    } catch {
+      fromFiles = null;
+    }
+    const landingUrl = url ?? fromFiles?.landingPageUrl;
+    const headline = copyFields.headline ?? fromFiles?.headline;
+    const primaryText = copyFields.primaryText ?? fromFiles?.primaryText;
     imageChoice = {
-      landing_page_url: url ?? undefined,
-      brand_url: url ?? undefined,
-      headline: copyFields.headline,
-      primary_text: copyFields.primaryText,
+      landing_page_url: landingUrl ?? undefined,
+      brand_url: landingUrl ?? undefined,
+      headline,
+      primary_text: primaryText,
+      ...(fromFiles?.pageSummary ? { page_text: fromFiles.pageSummary } : {}),
+      ...(fromFiles?.sourceFiles.length ? { source_files: fromFiles.sourceFiles } : {}),
     };
     sections.push(
       [
         "### Standalone image / creative generation",
         "Operator asked to generate ad images / creatives — not a full campaign.",
-        url
-          ? `Brand / reference URL detected: ${url} — the system will scrape brand colours/logo from it and render stills in this turn.`
+        landingUrl
+          ? `Brand / reference URL detected: ${landingUrl}${url ? "" : " (from an uploaded file)"} — the system will read the page for brand colours, theme and logo and render stills in this turn.`
           : "If a brand or company URL was given earlier in chat or on the client record, use it for brand colours/logo. Ask only if no URL is available.",
-        copyFields.headline
-          ? `Headline on file: ${copyFields.headline}`
+        fromFiles?.sourceFiles.length
+          ? `Uploaded file(s) used: ${fromFiles.sourceFiles.join(", ")} — the images illustrate that copy exactly; do not rewrite it.`
+          : null,
+        headline
+          ? `Headline on file: ${headline}`
           : "Use headline/primary_text from the request or approved copy when present.",
-        copyFields.primaryText
-          ? `Primary text on file: ${copyFields.primaryText.slice(0, 280)}${copyFields.primaryText.length > 280 ? "…" : ""}`
+        primaryText
+          ? `Primary text on file: ${primaryText.slice(0, 280)}${primaryText.length > 280 ? "…" : ""}`
           : null,
         "Acknowledge briefly that brand scrape + GPT Image stills are starting.",
         "Do NOT invent 'here are N variations' or dump image_choice JSON as the whole reply — stills attach as creative cards after generation.",
