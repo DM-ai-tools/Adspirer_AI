@@ -1,3 +1,4 @@
+import { presentBlocks } from "@/lib/reports/present";
 import {
   Document,
   Link,
@@ -386,7 +387,7 @@ export async function renderReportPdf(input: {
 }): Promise<Uint8Array> {
   ensureReportFonts();
   const title = sanitizeReportText(input.title);
-  let blocks = parseMarkdownToBlocks(input.markdown);
+  let blocks = presentBlocks(parseMarkdownToBlocks(input.markdown));
   // The cover already shows the title — drop a duplicate leading H1.
   if (
     blocks[0]?.type === "heading" &&

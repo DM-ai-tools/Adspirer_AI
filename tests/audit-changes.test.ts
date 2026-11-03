@@ -216,9 +216,9 @@ describe("no generic template findings", () => {
 });
 
 describe("audit method wording", () => {
-  it("teaches how to read changes without fixing a layout for them", () => {
+  it("teaches how to read changes and gives each one a justified / wrong-call verdict", () => {
     expect(META_AUDIT_FRAMEWORK).toContain("## Changes during the period");
-    expect(META_AUDIT_FRAMEWORK).toMatch(/no fixed layout/i);
+    expect(META_AUDIT_FRAMEWORK).toMatch(/justified or a wrong call/i);
     expect(META_AUDIT_FRAMEWORK).toMatch(/learning phase/i);
     expect(META_AUDIT_FRAMEWORK).toMatch(/never write that nothing changed/i);
   });

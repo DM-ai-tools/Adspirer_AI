@@ -66,6 +66,18 @@ export type PeriodPerformance = {
   /** Video: 3-second plays and ThruPlays, when the ad has video. */
   videoViews3s?: number | null;
   thruplays?: number | null;
+  /** All clicks (any click on the ad), when Meta returned them. */
+  clicks?: number;
+  /**
+   * Sales and funnel: set only when the row had any (a lead-gen account has no
+   * purchases). `purchaseValueCents` is the sales revenue Meta attributes to the
+   * ads, in the account currency.
+   */
+  purchases?: number | null;
+  purchaseValueCents?: number | null;
+  addToCart?: number | null;
+  initiateCheckout?: number | null;
+  leads?: number | null;
   /**
    * Set on totals added up across campaigns: people overlap between
    * campaigns, so reach (and frequency) can't be summed — `reach` and
@@ -85,6 +97,9 @@ export type AuditCampaign = {
   advantagePlus: boolean;
   specialAdCategories: string[];
   createdTime: string | null;
+  /** Scheduled start and stop (YYYY-MM-DD); null/absent when Meta reports none. */
+  startDate?: string | null;
+  endDate?: string | null;
   performance: PeriodPerformance | null;
   /** Same-length period just before the audit window. */
   previousPerformance?: PeriodPerformance | null;
@@ -114,6 +129,9 @@ export type AuditAdSet = {
   countries: string[];
   /** Frequency over the last 7 days (benchmarks are weekly). */
   frequency7d: number | null;
+  /** Scheduled start and end (YYYY-MM-DD); null/absent when Meta reports none. */
+  startDate?: string | null;
+  endDate?: string | null;
   performance: PeriodPerformance | null;
   /** Same-length period just before the audit window. */
   previousPerformance?: PeriodPerformance | null;
@@ -168,9 +186,14 @@ export type AuditChange = {
 
 /** Day-by-day delivery for one edited campaign or ad set, so movement around an edit can be read. */
 export type AuditChangeContext = {
-  entityType: "campaign" | "ad set";
+  /** "account" is the whole ad account — for edits that aren't tied to one campaign (tracking, account settings). */
+  entityType: "campaign" | "ad set" | "account";
   id: string;
   name: string;
+  /** Current delivery status, and the dates it is scheduled to run (YYYY-MM-DD; null when none is set). */
+  status?: string | null;
+  startDate?: string | null;
+  endDate?: string | null;
   days: Array<{
     date: string;
     spendCents: number;
@@ -178,6 +201,8 @@ export type AuditChangeContext = {
     results: number | null;
     costPerResultCents: number | null;
     linkCtr: number;
+    /** Sales revenue (purchase value) that day, when the account has any. */
+    purchaseValueCents?: number | null;
   }>;
 };
 
@@ -259,6 +284,12 @@ const num = (v: unknown) => {
 };
 const major = (v: unknown) => Math.round(num(v) * 100);
 const str = (v: unknown) => (typeof v === "string" && v ? v : null);
+/** A scheduled start/stop as YYYY-MM-DD; Meta sends nothing (or an epoch placeholder) when none is set. */
+const scheduleDay = (v: unknown): string | null => {
+  const text = str(v);
+  if (!text || Number.isNaN(Date.parse(text))) return null;
+  return Date.parse(text) < Date.parse("2005-01-01T00:00:00Z") ? null : text.slice(0, 10);
+};
 
 async function settle<T>(label: string, warnings: string[], p: Promise<T>): Promise<T | null> {
   try {
@@ -298,6 +329,18 @@ function performanceFrom(row: Row | undefined): PeriodPerformance | null {
   const thru = Array.isArray(row.video_thruplay_watched_actions)
     ? (row.video_thruplay_watched_actions as Array<{ value?: string }>)[0]
     : undefined;
+  const roas = roasRows[0]?.value != null ? num(roasRows[0].value) : null;
+  // Sales revenue: Meta's purchase value, or ROAS × spend when only ROAS came back.
+  const purchases = purchaseOf(row.actions);
+  const reportedValue = major(purchaseOf(row.action_values));
+  const purchaseValueCents = reportedValue > 0 ? reportedValue : roas != null && roas > 0 ? Math.round(roas * spendCents) : null;
+  const actionCount = (...types: string[]) => {
+    const total = types.reduce((sum, t) => sum + num(actions.find((a) => a.action_type === t)?.value), 0);
+    return total > 0 ? total : null;
+  };
+  const leads = actionCount("lead", "onsite_conversion.lead_grouped");
+  const addToCart = actionCount("omni_add_to_cart", "add_to_cart");
+  const initiateCheckout = actionCount("omni_initiated_checkout", "initiate_checkout");
   return {
     spendCents,
     impressions: num(row.impressions),
@@ -308,7 +351,13 @@ function performanceFrom(row: Row | undefined): PeriodPerformance | null {
     results: count,
     resultLabel: indicator === "mixed" ? "Mixed goals" : indicator ? resultLabelFor(indicator) : "Results",
     costPerResultCents: count && count > 0 ? Math.round(spendCents / count) : null,
-    roas: roasRows[0]?.value != null ? num(roasRows[0].value) : null,
+    roas,
+    ...(row.clicks != null ? { clicks: num(row.clicks) } : {}),
+    ...(purchases > 0 ? { purchases } : {}),
+    ...(purchaseValueCents != null ? { purchaseValueCents } : {}),
+    ...(addToCart != null ? { addToCart } : {}),
+    ...(initiateCheckout != null ? { initiateCheckout } : {}),
+    ...(leads != null ? { leads } : {}),
     ...(row.inline_link_clicks != null ? { linkClicks: num(row.inline_link_clicks) } : {}),
     ...(row.actions !== undefined ? { landingPageViews: lpv ? num(lpv.value) : 0 } : {}),
     ...(videoView ? { videoViews3s: num(videoView.value), thruplays: thru ? num(thru.value) : null } : {}),
@@ -597,7 +646,7 @@ export async function fetchMetaAuditSnapshot(
   const toCents = (minor: unknown) => metaMinorToCents(num(minor), currency);
   const notDeleted = JSON.stringify(["ACTIVE", "PAUSED", "CAMPAIGN_PAUSED", "ADSET_PAUSED", "WITH_ISSUES", "DISAPPROVED", "PENDING_REVIEW", "IN_PROCESS"]);
   const insightFields =
-    "spend,impressions,reach,frequency,inline_link_click_ctr,inline_link_clicks,actions,cpm,results,cost_per_result,purchase_roas";
+    "spend,impressions,reach,frequency,inline_link_click_ctr,inline_link_clicks,clicks,actions,action_values,cpm,results,cost_per_result,purchase_roas";
 
   const [
     pixels, customConversions, audiences, campaigns, adSets, ads, totals, campaignIns, adSetIns, adIns, placements, adSetWeek,
@@ -617,13 +666,13 @@ export async function fetchMetaAuditSnapshot(
         limit: 100,
       }, 3)),
       settle("Campaigns", warnings, paged(graph, `${id}/campaigns`, {
-        fields: "id,name,objective,effective_status,bid_strategy,daily_budget,lifetime_budget,special_ad_categories,smart_promotion_type,created_time",
+        fields: "id,name,objective,effective_status,bid_strategy,daily_budget,lifetime_budget,special_ad_categories,smart_promotion_type,created_time,start_time,stop_time",
         effective_status: notDeleted,
         limit: 200,
       })),
       settle("Ad sets", warnings, paged(graph, `${id}/adsets`, {
         fields:
-          "id,name,campaign_id,effective_status,optimization_goal,bid_strategy,daily_budget,lifetime_budget,learning_stage_info,promoted_object,attribution_spec,targeting{custom_audiences,excluded_custom_audiences,targeting_automation,publisher_platforms,geo_locations}",
+          "id,name,campaign_id,effective_status,start_time,end_time,optimization_goal,bid_strategy,daily_budget,lifetime_budget,learning_stage_info,promoted_object,attribution_spec,targeting{custom_audiences,excluded_custom_audiences,targeting_automation,publisher_platforms,geo_locations}",
         effective_status: notDeleted,
         limit: 200,
       })),
@@ -731,6 +780,8 @@ export async function fetchMetaAuditSnapshot(
       publisherPlatforms: Array.isArray(targeting.publisher_platforms) ? (targeting.publisher_platforms as string[]) : [],
       countries: Array.isArray(geo.countries) ? (geo.countries as string[]) : [],
       frequency7d: weekFrequency.has(String(a.id)) ? num(weekFrequency.get(String(a.id))!.frequency) : null,
+      startDate: scheduleDay(a.start_time),
+      endDate: scheduleDay(a.end_time),
       performance: performanceFrom(adSetPerf.get(String(a.id))),
       ...(hasPrevious && previousAdSetIns != null ? { previousPerformance: performanceFrom(previousAdSetPerf.get(String(a.id))) } : {}),
     };
@@ -822,12 +873,34 @@ export async function fetchMetaAuditSnapshot(
       );
       return rows ?? [];
     };
-    const [campaignDays, adSetDays] = await Promise.all([daily("campaign", watch.campaigns), daily("adset", watch.adSets)]);
+    // The whole account's day-by-day, for edits not tied to one campaign (tracking, account settings).
+    const needsAccountDays = changes.some((c) => c.campaignId == null);
+    const accountDaily = needsAccountDays
+      ? settle("Day-by-day delivery of the account", warnings, paged(graph, `${id}/insights`, {
+          level: "account", time_range: timeRange, time_increment: 1, fields: insightFields, limit: 500,
+        }, 2))
+      : Promise.resolve(null);
+    const [campaignDays, adSetDays, accountDays] = await Promise.all([
+      daily("campaign", watch.campaigns),
+      daily("adset", watch.adSets),
+      accountDaily,
+    ]);
+    const campaignRows = new Map((campaigns ?? []).map((c) => [String(c.id), c]));
+    const adSetById = new Map(auditAdSets.map((a) => [a.id, a]));
+    const schedule = (entityType: "campaign" | "ad set", entityId: string) => {
+      if (entityType === "campaign") {
+        const c = campaignRows.get(entityId);
+        return { status: c ? str(c.effective_status) : null, startDate: c ? scheduleDay(c.start_time) : null, endDate: c ? scheduleDay(c.stop_time) : null };
+      }
+      const a = adSetById.get(entityId);
+      return { status: a?.status ?? null, startDate: a?.startDate ?? null, endDate: a?.endDate ?? null };
+    };
     const build = (entityType: "campaign" | "ad set", idKey: string, ids: string[], rows: Row[], names: Map<string, string>) =>
       ids.map((entityId): AuditChangeContext => ({
         entityType,
         id: entityId,
         name: names.get(entityId) ?? entityId,
+        ...schedule(entityType, entityId),
         days: rows
           .filter((r) => String(r[idKey] ?? "") === entityId)
           .map((r) => ({ date: String(r.date_start ?? ""), perf: performanceFrom(r) }))
@@ -840,11 +913,15 @@ export async function fetchMetaAuditSnapshot(
             results: perf.results,
             costPerResultCents: perf.costPerResultCents,
             linkCtr: perf.linkCtr,
+            ...(perf.purchaseValueCents != null ? { purchaseValueCents: perf.purchaseValueCents } : {}),
           })),
       }));
+    const accountContext: AuditChangeContext[] = build("campaign", "account_id", [id], (accountDays ?? []).map((r) => ({ ...r, account_id: id })), new Map([[id, String(account.name ?? id)]]))
+      .map((e) => ({ ...e, entityType: "account" as const, status: null, startDate: null, endDate: null }));
     changeContext = [
       ...build("campaign", "campaign_id", watch.campaigns, campaignDays, campaignName),
       ...build("ad set", "adset_id", watch.adSets, adSetDays, adSetName),
+      ...accountContext,
     ].filter((e) => e.days.length > 0);
   }
 
@@ -912,6 +989,8 @@ export async function fetchMetaAuditSnapshot(
       advantagePlus: Boolean(str(c.smart_promotion_type) && c.smart_promotion_type !== "GUIDED_CREATION"),
       specialAdCategories: Array.isArray(c.special_ad_categories) ? (c.special_ad_categories as string[]) : [],
       createdTime: str(c.created_time),
+      startDate: scheduleDay(c.start_time),
+      endDate: scheduleDay(c.stop_time),
       performance: performanceFrom(campaignPerf.get(String(c.id))),
       ...(hasPrevious && previousCampaignIns != null ? { previousPerformance: performanceFrom(previousCampaignPerf.get(String(c.id))) } : {}),
     })),
@@ -981,7 +1060,21 @@ function sumPerformance(rows: PeriodPerformance[]): PeriodPerformance | null {
   const results = counted.length ? counted.reduce((sum, p) => sum + p.results!, 0) : null;
   const labels = new Set(counted.map((p) => p.resultLabel));
   // Optional counts: summed when any row has them, left out otherwise.
-  const optional = <K extends "linkClicks" | "landingPageViews" | "videoViews3s" | "thruplays">(key: K) => {
+  const optional = <
+    K extends
+      | "linkClicks"
+      | "landingPageViews"
+      | "videoViews3s"
+      | "thruplays"
+      | "clicks"
+      | "purchases"
+      | "purchaseValueCents"
+      | "addToCart"
+      | "initiateCheckout"
+      | "leads",
+  >(
+    key: K,
+  ) => {
     const present = rows.filter((p) => p[key] != null);
     return present.length ? { [key]: present.reduce((sum, p) => sum + (p[key] as number), 0) } : {};
   };
@@ -992,6 +1085,12 @@ function sumPerformance(rows: PeriodPerformance[]): PeriodPerformance | null {
     ...optional("landingPageViews"),
     ...optional("videoViews3s"),
     ...optional("thruplays"),
+    ...optional("clicks"),
+    ...optional("purchases"),
+    ...optional("purchaseValueCents"),
+    ...optional("addToCart"),
+    ...optional("initiateCheckout"),
+    ...optional("leads"),
     spendCents,
     impressions,
     reach,
@@ -1046,7 +1145,7 @@ export function scopeAuditSnapshot(snap: MetaAuditSnapshot, campaignIds: string[
       ? {
           changes: scopedChanges,
           changesUnresolved: unresolved,
-          ...(snap.changeContext ? { changeContext: snap.changeContext.filter((e) => scopedEntityIds.has(e.id)) } : {}),
+          ...(snap.changeContext ? { changeContext: snap.changeContext.filter((e) => e.entityType === "account" || scopedEntityIds.has(e.id)) } : {}),
         }
       : {}),
     campaigns,
