@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   demo: false,
@@ -337,5 +337,102 @@ describe("listClientCatalogProducts", () => {
     } finally {
       mocks.demo = false;
     }
+  });
+});
+
+describe("discovery cache", () => {
+  const FIVE_MIN = 5 * 60_000;
+  const catalogGraph = () =>
+    mocks.graphGet.mockImplementation(async (path: string) => {
+      if (path === "act_1/adsets") return { data: [adSet("A1", SET)] };
+      if (path === SET) return { id: SET, product_catalog: { id: CATALOG, name: "During Days", product_count: 10 } };
+      return { data: [] };
+    });
+  const discoveryCalls = () => mocks.graphGet.mock.calls.filter(([path]) => path === "act_1/adsets").length;
+
+  beforeEach(() => {
+    resetMocks();
+    vi.useFakeTimers();
+    catalogGraph();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("a second call within the TTL makes no graph calls", async () => {
+    await getClientCommerce("c1");
+    const before = mocks.graphGet.mock.calls.length;
+    const again = await getClientCommerce("c1");
+    expect(again.state).toBe("ok");
+    expect(mocks.graphGet.mock.calls.length).toBe(before);
+  });
+
+  it("the ownership checks reuse the cached discovery", async () => {
+    await getClientCommerce("c1");
+    expect(discoveryCalls()).toBe(1);
+    await listClientCatalogProducts("c1", CATALOG);
+    await getCatalogReport("c1", CATALOG);
+    expect(discoveryCalls()).toBe(1);
+    expect((await listClientCatalogProducts("c1", "999")).state).toBe("no_catalog");
+  });
+
+  it("expires after five minutes and refetches", async () => {
+    await getClientCommerce("c1");
+    vi.advanceTimersByTime(FIVE_MIN - 1);
+    await getClientCommerce("c1");
+    expect(discoveryCalls()).toBe(1);
+    vi.advanceTimersByTime(2);
+    await getClientCommerce("c1");
+    expect(discoveryCalls()).toBe(2);
+  });
+
+  it("caches no_catalog too", async () => {
+    mocks.graphGet.mockReset().mockResolvedValue({ data: [adSet("A2", null)] });
+    expect((await getClientCommerce("c1")).state).toBe("no_catalog");
+    expect((await getClientCommerce("c1")).state).toBe("no_catalog");
+    expect(discoveryCalls()).toBe(1);
+  });
+
+  it("does not cache missing_permission, so a reconnect shows up at once", async () => {
+    mocks.graphGet.mockReset().mockImplementation(async (path: string) => {
+      if (path === "act_1/adsets") return { data: [adSet("A1", SET)] };
+      throw permissionError();
+    });
+    expect((await getClientCommerce("c1")).state).toBe("missing_permission");
+    catalogGraph();
+    expect((await getClientCommerce("c1")).state).toBe("ok");
+  });
+
+  it("does not cache thrown errors or not_connected", async () => {
+    mocks.graphGet.mockReset().mockRejectedValueOnce(new MetaGraphError("(#4) Application request limit reached", 4, 429));
+    await expect(getClientCommerce("c1")).rejects.toThrow(/request limit/);
+    catalogGraph();
+    expect((await getClientCommerce("c1")).state).toBe("ok");
+
+    resetCatalogReportCache();
+    mocks.token.mockRejectedValueOnce(new Error("No Meta access token found."));
+    expect((await getClientCommerce("c1")).state).toBe("not_connected");
+    expect((await getClientCommerce("c1")).state).toBe("ok");
+  });
+
+  it("a different client does not hit another client's entry", async () => {
+    await getClientCommerce("c1");
+    const before = discoveryCalls();
+    await getClientCommerce("c2");
+    expect(discoveryCalls()).toBe(before + 1);
+  });
+
+  it("skips the cache when the token has no Meta user id", async () => {
+    mocks.token.mockResolvedValue({ accessToken: "t", expiresAt: null, metaUserId: null });
+    await getClientCommerce("c1");
+    await getClientCommerce("c1");
+    expect(discoveryCalls()).toBe(2);
+  });
+
+  it("resetCatalogReportCache clears it", async () => {
+    await getClientCommerce("c1");
+    resetCatalogReportCache();
+    await getClientCommerce("c1");
+    expect(discoveryCalls()).toBe(2);
   });
 });

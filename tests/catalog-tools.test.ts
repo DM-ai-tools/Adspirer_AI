@@ -92,9 +92,25 @@ describe("meta_catalogs", () => {
         id: "cat_1",
         name: "Main catalogue",
         product_count: 120,
+        ad_set_count: 1,
         ad_sets: [expect.objectContaining({ id: "as_1", name: "Dynamic ads", product_set_id: "set_1", learning_status: "FAIL" })],
       },
     ]);
+  });
+
+  it("lists at most 20 ad sets per catalogue, learning-limited first, with the full count", async () => {
+    const many = Array.from({ length: 30 }, (_, i) => ({
+      ...USE,
+      adSetId: `as_${i}`,
+      learningStatus: i >= 25 ? ("FAIL" as const) : ("SUCCESS" as const),
+    }));
+    mocks.commerce.mockResolvedValue({ state: "ok", catalogs: [CATALOG], uses: many });
+    const out = await call("meta_catalogs", {});
+    const cat = (out.catalogs as Array<{ ad_set_count: number; ad_sets: Array<{ id: string; learning_status: string }> }>)[0];
+    expect(cat.ad_set_count).toBe(30);
+    expect(cat.ad_sets).toHaveLength(20);
+    expect(cat.ad_sets.slice(0, 5).map((a) => a.learning_status)).toEqual(["FAIL", "FAIL", "FAIL", "FAIL", "FAIL"]);
+    expect(cat.ad_sets[5].learning_status).toBe("SUCCESS");
   });
 
   it("a missing permission comes back flagged", async () => {

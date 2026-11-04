@@ -43,6 +43,7 @@ const failure = (state: FailureState): Failure => ({ state, message: MESSAGES[st
 const ADSET_PAGE_SIZE = 500;
 const MAX_ADSET_PAGES = 5;
 const REPORT_TTL_MS = 5 * 60_000;
+const COMMERCE_TTL_MS = 5 * 60_000;
 
 const normalizeAct = (id: string): string => (id.startsWith("act_") ? id : `act_${id}`);
 const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
@@ -156,6 +157,26 @@ async function connectedGraph(
   };
 }
 
+type Discovered = { catalogs: ClientCatalog[]; uses: ClientCatalogUse[] };
+type Connected = Extract<Awaited<ReturnType<typeof connectedGraph>>, { ok: true }>;
+
+/**
+ * Catalogue discovery per client and Meta user, kept for COMMERCE_TTL_MS. Holds only successful
+ * discoveries (including "no catalogue"); permission failures and thrown errors are never cached,
+ * so a reconnect shows up at once. Keyed by client, so one client never reads another's entry.
+ */
+const commerceCache = new Map<string, { at: number; value: Discovered }>();
+
+async function discoverCached(conn: Connected, clientId: string): Promise<Discovered> {
+  // Without a known Meta user there is nothing safe to key on, so skip the cache.
+  const key = conn.userId ? `${clientId}:${conn.userId}` : null;
+  const hit = key ? commerceCache.get(key) : undefined;
+  if (hit && Date.now() - hit.at < COMMERCE_TTL_MS) return hit.value;
+  const value = await discoverClientCatalogs(conn.graph, conn.accountIds);
+  if (key) commerceCache.set(key, { at: Date.now(), value });
+  return value;
+}
+
 function demoCommerce(): CommerceState {
   return { state: "ok", catalogs: DEMO_CATALOGS, uses: demoCatalogUses() };
 }
@@ -166,7 +187,7 @@ export async function getClientCommerce(clientId: string): Promise<CommerceState
   const conn = await connectedGraph(clientId);
   if (!conn.ok) return conn.result;
   try {
-    const { catalogs, uses } = await discoverClientCatalogs(conn.graph, conn.accountIds);
+    const { catalogs, uses } = await discoverCached(conn, clientId);
     if (catalogs.length === 0) return failure("no_catalog");
     return { state: "ok", catalogs, uses };
   } catch (error) {
@@ -180,6 +201,7 @@ const reportCache = new Map<string, { at: number; setKey: string; snapshot: Cata
 
 export function resetCatalogReportCache(): void {
   reportCache.clear();
+  commerceCache.clear();
 }
 
 export async function getCatalogReport(clientId: string, catalogId: string): Promise<CatalogReport> {
@@ -195,8 +217,8 @@ export async function getCatalogReport(clientId: string, catalogId: string): Pro
   if (!conn.ok) return conn.result;
 
   try {
-    // Always discover first: the catalogue must belong to this client, whatever is cached.
-    const { catalogs, uses: allUses } = await discoverClientCatalogs(conn.graph, conn.accountIds);
+    // Discover first: the catalogue must belong to this client. The discovery cache is per client.
+    const { catalogs, uses: allUses } = await discoverCached(conn, clientId);
     if (!catalogs.some((c) => c.id === catalogId)) return failure("no_catalog");
 
     const uses = allUses.filter((u) => u.catalogId === catalogId);
@@ -243,7 +265,7 @@ export async function listClientCatalogProducts(
   if (!conn.ok) return conn.result;
 
   try {
-    const { catalogs } = await discoverClientCatalogs(conn.graph, conn.accountIds);
+    const { catalogs } = await discoverCached(conn, clientId);
     if (!catalogs.some((c) => c.id === catalogId)) return failure("no_catalog");
     const page = await listCatalogProducts(conn.graph, catalogId, opts);
     return { state: "ok", ...page };

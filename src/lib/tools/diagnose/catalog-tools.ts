@@ -10,6 +10,8 @@ import { registerTool } from "@/lib/tools/registry";
 /** Most products one call returns. Client-side issue filters can scan past `limit`, so this caps the page. */
 const MAX_PRODUCTS = 50;
 const PAGE_LIMIT = 25;
+/** Most ad sets listed per catalogue by meta_catalogs; ad_set_count carries the full number. */
+const MAX_AD_SETS = 20;
 
 type Failure = { state: string; message: string };
 type ToolError = { error: true; source: "Meta"; message: string; missing_permission?: true };
@@ -41,13 +43,16 @@ export const metaCatalogsTool = registerTool({
       if (commerce.state !== "ok") return failureResult(commerce);
       return {
         source: "Meta",
-        catalogs: commerce.catalogs.map((c) => ({
-          id: c.id,
-          name: c.name,
-          product_count: c.productCount,
-          ad_sets: commerce.uses
-            .filter((u) => u.catalogId === c.id)
-            .map((u) => ({
+        catalogs: commerce.catalogs.map((c) => {
+          const uses = commerce.uses.filter((u) => u.catalogId === c.id);
+          // Learning-limited (FAIL) ad sets first: they are what the operator usually asks about.
+          const ordered = [...uses.filter((u) => u.learningStatus === "FAIL"), ...uses.filter((u) => u.learningStatus !== "FAIL")];
+          return {
+            id: c.id,
+            name: c.name,
+            product_count: c.productCount,
+            ad_set_count: uses.length,
+            ad_sets: ordered.slice(0, MAX_AD_SETS).map((u) => ({
               id: u.adSetId,
               name: u.adSetName,
               campaign_id: u.campaignId,
@@ -56,7 +61,8 @@ export const metaCatalogsTool = registerTool({
               learning_status: u.learningStatus,
               status: u.effectiveStatus,
             })),
-        })),
+          };
+        }),
       };
     } catch (error) {
       return thrownResult(error);
