@@ -14,6 +14,8 @@ type Row = Record<string, unknown>;
 type List = { data?: Row[]; paging?: { cursors?: { after?: string }; next?: string }; summary?: { total_count?: number } };
 
 const MAX_FEEDS = 10;
+const MAX_SCAN_PAGES = 5;
+const REJECT_ERROR = /NOT_APPROVED|POLICY|REJECT/i;
 const IN_STOCK_FILTER = JSON.stringify({ availability: { eq: "in stock" } });
 
 const num = (v: unknown) => {
@@ -22,6 +24,9 @@ const num = (v: unknown) => {
 };
 const str = (v: unknown) => (typeof v === "string" && v ? v : null);
 const rows = (v: unknown): Row[] => (Array.isArray(v) ? (v as Row[]) : []);
+/** Rows Meta returned with a usable string id. */
+const withId = (v: unknown): Array<Row & { id: string }> =>
+  rows(v).filter((r): r is Row & { id: string } => typeof r.id === "string" && r.id !== "");
 
 async function settle<T>(label: string, warnings: string[], p: Promise<T>): Promise<T | null> {
   try {
@@ -69,10 +74,10 @@ async function loadFeeds(graph: CatalogGraph, catalogId: string, warnings: strin
     limit: MAX_FEEDS,
   });
   return Promise.all(
-    rows(res.data)
+    withId(res.data)
       .slice(0, MAX_FEEDS)
       .map(async (f): Promise<CatalogFeed> => {
-        const id = String(f.id);
+        const id = f.id;
         const schedule = (f.schedule ?? {}) as Row;
         const uploads = await settle(
           `feed ${id} uploads`,
@@ -128,8 +133,8 @@ export async function fetchCatalogSnapshot(
   ]);
 
   const productSets: CatalogProductSet[] = await Promise.all(
-    rows(sets?.data).map(async (s): Promise<CatalogProductSet> => {
-      const id = String(s.id);
+    withId(sets?.data).map(async (s): Promise<CatalogProductSet> => {
+      const id = s.id;
       let inStockCount: number | null = null;
       if (used.has(id)) {
         const counted = await settle(
@@ -149,6 +154,14 @@ export async function fetchCatalogSnapshot(
     }),
   );
 
+  for (const [label, list] of [
+    ["product sets", sets],
+    ["diagnostics", diagnostics],
+    ["event stats", events],
+  ] as const) {
+    if (list?.paging?.next) warnings.push(`${label}: list was cut off (more results than one page)`);
+  }
+
   const diagnosticRows = diagnostics ? rows(diagnostics.data).map(diagnosticFrom) : [];
   const outOfStockCount = diagnostics
     ? diagnosticRows
@@ -166,53 +179,71 @@ export async function fetchCatalogSnapshot(
     productSets,
     feeds: feeds ?? [],
     events: eventsFrom(rows(events?.data)),
-    pixelIds: rows(sources?.data).map((r) => String(r.id)),
+    pixelIds: withId(sources?.data).map((r) => r.id),
     outOfStockCount,
     warnings,
     fetchedAt: new Date().toISOString(),
   };
 }
 
-const ISSUE_FILTERS: Partial<Record<CatalogProductIssue, string>> = {
+const SERVER_FILTERS: Partial<Record<CatalogProductIssue, string>> = {
   out_of_stock: JSON.stringify({ availability: { eq: "out of stock" } }),
-  rejected: JSON.stringify({ review_status: { eq: "rejected" } }),
 };
 
+/** Meta cannot filter these server-side (review_status is blank on most products), so they are matched here. */
+const CLIENT_MATCHERS: Partial<Record<CatalogProductIssue, (p: CatalogProduct) => boolean>> = {
+  any_error: (p) => p.errors.length > 0,
+  rejected: (p) => p.reviewStatus?.toLowerCase() === "rejected" || p.errors.some((e) => REJECT_ERROR.test(e.type)),
+};
+
+function productFrom(p: Row & { id: string }): CatalogProduct {
+  return {
+    id: p.id,
+    retailerId: str(p.retailer_id) ?? "",
+    name: str(p.name),
+    availability: str(p.availability),
+    reviewStatus: str(p.review_status),
+    visibility: str(p.visibility),
+    url: str(p.url),
+    imageUrl: str(p.image_url),
+    price: str(p.price),
+    errors: rows(p.errors).map((e) => ({
+      type: str(e.error_type) ?? "UNKNOWN",
+      priority: str(e.error_priority) ?? "",
+      title: str(e.title) ?? "",
+    })),
+  };
+}
+
 /**
- * One page of products, optionally narrowed to an issue. Meta has no
- * server-side "has any error" filter, so `any_error` keeps the page's rows
- * that carry errors (a page can therefore come back short).
+ * One page of products, optionally narrowed to an issue. `any_error` and
+ * `rejected` have no server-side filter, so they scan up to 5 Graph pages for
+ * `limit` matches; `next` resumes after the last page scanned (so a result can
+ * hold slightly more than `limit`, never skip rows).
  */
 export async function listCatalogProducts(
   graph: CatalogGraph,
   catalogId: string,
   opts: { issue?: CatalogProductIssue; after?: string; limit?: number },
 ): Promise<{ products: CatalogProduct[]; next: string | null }> {
-  const filter = opts.issue ? ISSUE_FILTERS[opts.issue] : undefined;
-  const res = await graph.get<List>(`${catalogId}/products`, {
-    fields: "id,retailer_id,name,availability,review_status,visibility,url,image_url,price,errors",
-    limit: Math.min(Math.max(opts.limit ?? 25, 1), 100),
-    ...(filter ? { filter } : {}),
-    ...(opts.after ? { after: opts.after } : {}),
-  });
-  let products = rows(res.data).map(
-    (p): CatalogProduct => ({
-      id: String(p.id),
-      retailerId: str(p.retailer_id) ?? "",
-      name: str(p.name),
-      availability: str(p.availability),
-      reviewStatus: str(p.review_status),
-      visibility: str(p.visibility),
-      url: str(p.url),
-      imageUrl: str(p.image_url),
-      price: str(p.price),
-      errors: rows(p.errors).map((e) => ({
-        type: str(e.error_type) ?? "UNKNOWN",
-        priority: str(e.error_priority) ?? "",
-        title: str(e.title) ?? "",
-      })),
-    }),
-  );
-  if (opts.issue === "any_error") products = products.filter((p) => p.errors.length > 0);
-  return { products, next: res.paging?.next ? (res.paging.cursors?.after ?? null) : null };
+  const limit = Math.min(Math.max(opts.limit ?? 25, 1), 100);
+  const filter = opts.issue ? SERVER_FILTERS[opts.issue] : undefined;
+  const matches = opts.issue ? CLIENT_MATCHERS[opts.issue] : undefined;
+  const products: CatalogProduct[] = [];
+  let after = opts.after;
+  let next: string | null = null;
+  for (let page = 0; page < (matches ? MAX_SCAN_PAGES : 1); page++) {
+    const res = await graph.get<List>(`${catalogId}/products`, {
+      fields: "id,retailer_id,name,availability,review_status,visibility,url,image_url,price,errors",
+      limit,
+      ...(filter ? { filter } : {}),
+      ...(after ? { after } : {}),
+    });
+    const batch = withId(res.data).map(productFrom);
+    products.push(...(matches ? batch.filter(matches) : batch));
+    next = res.paging?.next ? (res.paging.cursors?.after ?? null) : null;
+    if (!next || products.length >= limit) break;
+    after = next;
+  }
+  return { products, next };
 }

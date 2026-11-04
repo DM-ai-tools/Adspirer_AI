@@ -248,10 +248,20 @@ describe("listCatalogProducts", () => {
     expect(calls[0].params.filter).toBeUndefined();
   });
 
-  it("filters rejected products by review status", async () => {
-    const { graph, calls } = fakeGraph({ [productsPath]: { data: [] } });
-    await listCatalogProducts(graph, CATALOG, { issue: "rejected" });
-    expect(calls[0].params.filter).toBe('{"review_status":{"eq":"rejected"}}');
+  it("rejected is matched client-side and sends no review_status filter", async () => {
+    const { graph, calls } = fakeGraph({
+      [productsPath]: {
+        data: [
+          { id: "a", retailer_id: "ra", review_status: "", errors: [] },
+          { id: "b", retailer_id: "rb", review_status: "REJECTED", errors: [] },
+          { id: "c", retailer_id: "rc", review_status: "", errors: [{ error_type: "PRODUCT_NOT_APPROVED", error_priority: "high", title: "t" }] },
+          { id: "d", retailer_id: "rd", review_status: "", errors: [{ error_type: "PRODUCT_OUT_OF_STOCK", error_priority: "high", title: "t" }] },
+        ],
+      },
+    });
+    const res = await listCatalogProducts(graph, CATALOG, { issue: "rejected" });
+    expect(calls[0].params.filter).toBeUndefined();
+    expect(res.products.map((p) => p.id)).toEqual(["b", "c"]);
   });
 
   it("any_error keeps only products that carry errors", async () => {
@@ -260,5 +270,64 @@ describe("listCatalogProducts", () => {
     });
     const res = await listCatalogProducts(graph, CATALOG, { issue: "any_error" });
     expect(res.products.map((p) => p.id)).toEqual(["8253074574816159"]);
+  });
+
+  it("client-side issues scan further pages until matches are found", async () => {
+    const clean = { id: "x", retailer_id: "rx", errors: [] };
+    const bad = (id: string) => ({ id, retailer_id: `r${id}`, errors: [{ error_type: "E", error_priority: "low", title: "t" }] });
+    const { graph, calls } = fakeGraph({
+      [productsPath]: (params: Params) =>
+        params.after === "C1"
+          ? { data: [bad("m1"), bad("m2")], paging: { cursors: { after: "C2" }, next: "n2" } }
+          : { data: [clean], paging: { cursors: { after: "C1" }, next: "n1" } },
+    });
+    const res = await listCatalogProducts(graph, CATALOG, { issue: "any_error", limit: 2 });
+    expect(res.products.map((p) => p.id)).toEqual(["m1", "m2"]);
+    expect(res.next).toBe("C2");
+    expect(calls).toHaveLength(2);
+  });
+
+  it("stops scanning after 5 pages and returns the cursor to resume from", async () => {
+    let n = 0;
+    const { graph, calls } = fakeGraph({
+      [productsPath]: () => {
+        n += 1;
+        return { data: [{ id: `p${n}`, retailer_id: "r", errors: [] }], paging: { cursors: { after: `C${n}` }, next: "more" } };
+      },
+    });
+    const res = await listCatalogProducts(graph, CATALOG, { issue: "any_error", limit: 5 });
+    expect(calls).toHaveLength(5);
+    expect(res.products).toEqual([]);
+    expect(res.next).toBe("C5");
+  });
+
+  it("returns next null when scanning reaches the end", async () => {
+    const { graph } = fakeGraph({ [productsPath]: { data: [{ id: "x", retailer_id: "r", errors: [] }] } });
+    const res = await listCatalogProducts(graph, CATALOG, { issue: "any_error" });
+    expect(res.next).toBeNull();
+  });
+});
+
+describe("snapshot robustness", () => {
+  it("skips rows without an id", async () => {
+    const { graph } = fakeGraph({
+      [`${CATALOG}/product_sets`]: { data: [{ name: "no id", product_count: 1 }, { id: "9", name: "ok", product_count: 2 }] },
+      [`${CATALOG}/external_event_sources`]: { data: [{}, { id: "px" }] },
+    });
+    const snap = await fetchCatalogSnapshot(graph, CATALOG);
+    expect(snap.productSets.map((s) => s.id)).toEqual(["9"]);
+    expect(snap.pixelIds).toEqual(["px"]);
+  });
+
+  it("warns when a list was cut off by paging", async () => {
+    const { graph } = fakeGraph({
+      [`${CATALOG}/product_sets`]: { data: [], paging: { cursors: { after: "x" }, next: "n" } },
+      [`${CATALOG}/diagnostics`]: { data: [], paging: { cursors: { after: "x" }, next: "n" } },
+      [`${CATALOG}/event_stats`]: { data: [], paging: { cursors: { after: "x" }, next: "n" } },
+    });
+    const snap = await fetchCatalogSnapshot(graph, CATALOG);
+    expect(snap.warnings.some((w) => /product sets/i.test(w) && /cut off/i.test(w))).toBe(true);
+    expect(snap.warnings.some((w) => /diagnostics/i.test(w) && /cut off/i.test(w))).toBe(true);
+    expect(snap.warnings.some((w) => /event stats/i.test(w) && /cut off/i.test(w))).toBe(true);
   });
 });
