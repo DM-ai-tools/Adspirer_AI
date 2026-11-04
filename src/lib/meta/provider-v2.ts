@@ -173,10 +173,17 @@ function lookbackWindow(days: number): { dateStart: string; dateStop: string } {
 }
 
 /** Pixel + event an ad set optimises for, from its promoted_object. */
-function promotedConversion(value: unknown): { pixel_id?: string; custom_event_type?: string } {
+function promotedConversion(value: unknown): {
+  pixel_id?: string;
+  custom_event_type?: string;
+  product_set_id?: string;
+} {
   if (!value || typeof value !== "object") return {};
-  const promoted = value as { pixel_id?: unknown; custom_event_type?: unknown };
+  const promoted = value as { pixel_id?: unknown; custom_event_type?: unknown; product_set_id?: unknown };
   return {
+    ...(typeof promoted.product_set_id === "string" && promoted.product_set_id
+      ? { product_set_id: promoted.product_set_id }
+      : {}),
     ...(typeof promoted.pixel_id === "string" && promoted.pixel_id ? { pixel_id: promoted.pixel_id } : {}),
     ...(typeof promoted.custom_event_type === "string" && promoted.custom_event_type
       ? { custom_event_type: promoted.custom_event_type }

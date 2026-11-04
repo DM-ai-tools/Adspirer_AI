@@ -120,6 +120,8 @@ export type AuditAdSet = {
   pixelId: string | null;
   customEventType: string | null;
   customConversionId: string | null;
+  /** Catalogue product set from promoted_object (catalogue ad sets only). */
+  productSetId?: string;
   /** e.g. ["7d_click", "1d_view"]. */
   attributionWindows: string[];
   includedAudienceIds: string[];
@@ -771,6 +773,7 @@ export async function fetchMetaAuditSnapshot(
       pixelId: str(promoted.pixel_id),
       customEventType: str(promoted.custom_event_type),
       customConversionId: str(promoted.custom_conversion_id),
+      ...(str(promoted.product_set_id) ? { productSetId: str(promoted.product_set_id)! } : {}),
       attributionWindows: attribution
         .filter((s) => s.event_type === "CLICK_THROUGH" || s.event_type === "VIEW_THROUGH")
         .map((s) => `${num(s.window_days)}d_${s.event_type === "CLICK_THROUGH" ? "click" : "view"}`),

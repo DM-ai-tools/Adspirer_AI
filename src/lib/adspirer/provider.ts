@@ -38,6 +38,8 @@ export interface MetaAdSet {
   /** From promoted_object: the pixel and event the ad set optimises for. */
   pixel_id?: string;
   custom_event_type?: string;
+  /** From promoted_object: the catalogue product set a catalogue ad set sells. */
+  product_set_id?: string;
 }
 
 export interface MetaAd {

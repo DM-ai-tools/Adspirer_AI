@@ -267,3 +267,25 @@ describe("findRepeatedFigures", () => {
     expect(findRepeatedFigures(once)).toEqual([]);
   });
 });
+
+describe("ad set product set", () => {
+  it("maps promoted_object.product_set_id to productSetId", async () => {
+    const graph = {
+      get: async <T,>(path: string): Promise<T> => {
+        if (path === "act_1") return { name: "TR", currency: "USD", timezone_name: "UTC", account_status: 1 } as T;
+        if (path === "act_1/adsets") {
+          return {
+            data: [
+              { id: "a1", name: "Catalogue", campaign_id: "c1", effective_status: "ACTIVE", promoted_object: { product_set_id: "1290781623112463" } },
+              { id: "a2", name: "Other", campaign_id: "c1", effective_status: "ACTIVE", promoted_object: { pixel_id: "9" } },
+            ],
+          } as T;
+        }
+        return { data: [] } as T;
+      },
+    };
+    const snap = await fetchMetaAuditSnapshot(graph, "act_1", { since: "2026-10-28", until: "2026-10-30", compare: false });
+    expect(snap.adSets.find((a) => a.id === "a1")!.productSetId).toBe("1290781623112463");
+    expect(snap.adSets.find((a) => a.id === "a2")!.productSetId).toBeUndefined();
+  });
+});
