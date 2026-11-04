@@ -1563,7 +1563,9 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
 
   /**
    * Replace a product set's filter. The set is read first (nothing is sent if that fails), the
-   * filter is written, then read back. A permission failure is a CatalogAccessError.
+   * filter is written, then read back. A permission failure is a CatalogAccessError. When the fix
+   * says which filter it was built from (`expected_filter`), a set whose live filter now differs is
+   * refused before anything is sent.
    */
   async updateProductSetFilter(input: UpdateProductSetFilterInput): Promise<UpdateProductSetFilterResult> {
     type ProductSetRow = { id?: string; name?: string; filter?: string | null; product_count?: number | string };
@@ -1571,6 +1573,12 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     const before = await catalogCall(`product set ${input.product_set_id}`, () =>
       this.graph.get<ProductSetRow>(input.product_set_id, { fields }),
     );
+    if (input.expected_filter !== undefined) {
+      const live = typeof before.filter === "string" && before.filter.trim() ? before.filter : null;
+      const expected = typeof input.expected_filter === "string" && input.expected_filter.trim() ? input.expected_filter : null;
+      const same = live === null || expected === null ? live === expected : canonicalJson(live) === canonicalJson(expected);
+      if (!same) throw new Error(STALE_FILTER_MESSAGE);
+    }
     await catalogCall(`product set ${input.product_set_id}`, () =>
       this.graph.post(input.product_set_id, { filter: input.filter }),
     );
@@ -3347,13 +3355,20 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
 }
 
 
+/** Refusal when a product set's filter changed between queueing a fix and approving it. */
+export const STALE_FILTER_MESSAGE =
+  "The product set's filter changed since this fix was queued. Nothing was changed. Re-open Commerce to queue a fresh fix.";
+
 /** A catalogue Graph call whose access failures become CatalogAccessError with an operator-readable message. */
 async function catalogCall<T>(what: string, call: () => Promise<T>): Promise<T> {
   try {
     return await call();
   } catch (error) {
     const reason = catalogAccessReason(error);
-    if (reason === "missing_permission") throw new CatalogAccessError("missing_permission", CATALOG_PERMISSION_MESSAGE);
+    // An expired token (190) is an approver problem here too: same reconnect message.
+    if (reason === "missing_permission" || reason === "expired") {
+      throw new CatalogAccessError("missing_permission", CATALOG_PERMISSION_MESSAGE);
+    }
     if (reason === "not_found") {
       throw new CatalogAccessError(
         "not_found",

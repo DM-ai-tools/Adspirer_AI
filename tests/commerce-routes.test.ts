@@ -56,14 +56,14 @@ const finding = (over: Partial<CatalogFinding>): CatalogFinding => ({
   ...over,
 });
 
-const use = (adSetId: string, adSetName: string) => ({
+const use = (adSetId: string, adSetName: string, over: { productSetId?: string; effectiveStatus?: string } = {}) => ({
   adSetId,
   adSetName,
   campaignId: "c1",
   accountId: "act_1",
-  productSetId: "set_1",
+  productSetId: over.productSetId ?? "set_1",
   learningStatus: null,
-  effectiveStatus: "ACTIVE",
+  effectiveStatus: over.effectiveStatus ?? "ACTIVE",
   catalogId: DEMO_CATALOG_ID,
 });
 
@@ -73,13 +73,21 @@ const FINDINGS: CatalogFinding[] = [
     title: "Product set is too small",
     productSetIds: ["set_1"],
     adSetIds: ["as_1", "as_2", "as_gone"],
-    fix: { toolName: "update_product_set_filter", args: { product_set_id: "set_1", filter: '{"availability":{"eq":"in stock"}}' } },
+    fix: {
+      toolName: "update_product_set_filter",
+      args: {
+        product_set_id: "set_1",
+        product_set_name: "Bestsellers",
+        filter: '{"availability":{"eq":"in stock"}}',
+        expected_filter: null,
+      },
+    },
   }),
   finding({
     id: "feed_stale:feed_1",
     title: "Feed has not refreshed",
     adSetIds: ["as_1"],
-    fix: { toolName: "request_feed_refresh", args: { feed_id: "feed_1" } },
+    fix: { toolName: "request_feed_refresh", args: { feed_id: "feed_1", feed_name: "Daily feed" } },
   }),
   finding({
     id: "adset_starved:as_1",
@@ -96,7 +104,16 @@ function useReport() {
     snapshot: {},
     findings: FINDINGS,
     learningLinks: [],
-    uses: [use("as_1", "DPA - Broad"), use("as_2", "DPA - Spring")],
+    uses: [
+      use("as_1", "DPA - Broad"),
+      use("as_2", "DPA - Spring"),
+      // Same set, paused: still reached by a filter change, and marked.
+      use("as_3", "DPA - Old", { effectiveStatus: "PAUSED" }),
+      // The same ad set listed twice: named once.
+      use("as_1", "DPA - Broad"),
+      // Another set in the same catalogue: only a feed refresh reaches it.
+      use("as_4", "DPA - Shoes", { productSetId: "set_2" }),
+    ],
   };
 }
 
@@ -211,14 +228,27 @@ describe("POST /api/commerce/fixes", () => {
     expect(input.toolName).toBe("update_product_set_filter");
     expect(input.proposedArgs).toEqual({
       product_set_id: "set_1",
+      product_set_name: "Bestsellers",
       filter: '{"availability":{"eq":"in stock"}}',
+      expected_filter: null,
     });
     expect(input.requestedBy).toBe(user.id);
     expect(input.reuseAcrossTasks).toBe(true);
-    // Names where the report knows them, ids where it does not.
+    // Every ad set selling this set, from the report's uses rather than the finding's list:
+    // deduped, paused ones marked, ad sets on other sets left out.
     expect(input.rationale).toBe(
-      ["Product set is too small", "Affects ad sets: DPA - Broad, DPA - Spring, as_gone", NOTE].join("\n"),
+      ["Product set is too small", "Affects ad sets: DPA - Broad, DPA - Spring, DPA - Old (paused)", NOTE].join("\n"),
     );
+  });
+
+  it("lists at most 25 ad sets, then counts the rest", async () => {
+    useReport();
+    (reportOverride.value as { uses: unknown[] }).uses = Array.from({ length: 30 }, (_, i) => use(`as_${i}`, `Set ${i}`));
+    as("admin");
+    await postFix(post({ clientId: clientId(), catalogId: DEMO_CATALOG_ID, findingId: "set_too_small:set_1" }));
+    const line = vi.mocked(createPendingApproval).mock.calls[0][0].rationale!.split("\n")[1];
+    expect(line).toContain("Set 24, and 5 more");
+    expect(line).not.toContain("Set 25");
   });
 
   it("feed refresh fixes carry the unmapped-accounts note", async () => {
@@ -227,8 +257,9 @@ describe("POST /api/commerce/fixes", () => {
     await postFix(post({ clientId: clientId(), catalogId: DEMO_CATALOG_ID, findingId: "feed_stale:feed_1" }));
     const input = vi.mocked(createPendingApproval).mock.calls[0][0];
     expect(input.toolName).toBe("request_feed_refresh");
-    expect(input.proposedArgs).toEqual({ feed_id: "feed_1" });
-    expect(input.rationale).toContain("Affects ad sets: DPA - Broad");
+    expect(input.proposedArgs).toEqual({ feed_id: "feed_1", feed_name: "Daily feed" });
+    // A feed refresh reaches every ad set selling from the catalogue, whatever its product set.
+    expect(input.rationale).toContain("Affects ad sets: DPA - Broad, DPA - Spring, DPA - Old (paused), DPA - Shoes");
     expect(input.rationale).toContain(NOTE);
   });
 
@@ -239,6 +270,8 @@ describe("POST /api/commerce/fixes", () => {
     const input = vi.mocked(createPendingApproval).mock.calls[0][0];
     expect(input.toolName).toBe("pause_adset");
     expect(input.proposedArgs).toEqual({ account_id: "act_1", adset_id: "as_1" });
+    expect(input.rationale).toContain("Affects ad sets: DPA - Broad");
+    expect(input.rationale).not.toContain("DPA - Spring");
     expect(input.rationale).not.toContain(NOTE);
   });
 

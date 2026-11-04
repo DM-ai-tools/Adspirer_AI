@@ -1,6 +1,6 @@
 import { createPendingApproval } from "@/lib/approvals/service";
 import { NotFoundError, ValidationError } from "@/lib/errors";
-import type { CatalogFinding } from "@/lib/meta/catalog/findings";
+import { isDeliveringStatus, type CatalogFinding } from "@/lib/meta/catalog/findings";
 import { getCatalogReport, type CatalogReport } from "@/lib/meta/catalog/service";
 
 const UNMAPPED_ACCOUNTS_NOTE =
@@ -10,12 +10,40 @@ export const NO_AUTOMATIC_FIX_MESSAGE = "This suggestion has no automatic fix; f
 
 type OkReport = Extract<CatalogReport, { state: "ok" }>;
 
-/** Why this approval was queued: the finding, the ad sets it touches, and any reach beyond this client. */
+/** Most ad set names listed in a rationale; the rest are counted. */
+export const MAX_RATIONALE_AD_SETS = 25;
+
+/**
+ * Every ad set the fix reaches, from the report's uses (this catalogue's ad sets): a filter change
+ * reaches every ad set selling that product set, a feed refresh every ad set selling from the
+ * catalogue, and a pause just that ad set. Deduped by id; paused ones are marked.
+ */
+function reachedAdSets(finding: CatalogFinding, uses: OkReport["uses"]): string[] {
+  const fix = finding.fix;
+  let reached: OkReport["uses"];
+  if (fix?.toolName === "update_product_set_filter") reached = uses.filter((u) => u.productSetId === fix.args.product_set_id);
+  else if (fix?.toolName === "request_feed_refresh") reached = uses;
+  else if (fix?.toolName === "pause_adset") reached = uses.filter((u) => u.adSetId === fix.args.adset_id);
+  else reached = uses.filter((u) => finding.adSetIds.includes(u.adSetId));
+
+  const byId = new Map<string, string>();
+  for (const u of reached) {
+    if (byId.has(u.adSetId)) continue;
+    byId.set(u.adSetId, isDeliveringStatus(u.effectiveStatus) ? u.adSetName : `${u.adSetName} (paused)`);
+  }
+  // A pause target missing from the uses is still named, by id.
+  if (fix?.toolName === "pause_adset" && byId.size === 0) byId.set(fix.args.adset_id, fix.args.adset_id);
+  return [...byId.values()];
+}
+
+/** Why this approval was queued: the finding, every ad set it reaches, and any reach beyond this client. */
 export function buildFixRationale(finding: CatalogFinding, uses: OkReport["uses"]): string {
-  const nameOf = new Map(uses.map((u) => [u.adSetId, u.adSetName]));
   const lines = [finding.title];
-  if (finding.adSetIds.length > 0) {
-    lines.push(`Affects ad sets: ${finding.adSetIds.map((id) => nameOf.get(id) ?? id).join(", ")}`);
+  const names = reachedAdSets(finding, uses);
+  if (names.length > 0) {
+    const shown = names.slice(0, MAX_RATIONALE_AD_SETS);
+    const more = names.length - shown.length;
+    lines.push(`Affects ad sets: ${shown.join(", ")}${more > 0 ? `, and ${more} more` : ""}`);
   }
   const toolName = finding.fix?.toolName;
   if (toolName === "update_product_set_filter" || toolName === "request_feed_refresh") {

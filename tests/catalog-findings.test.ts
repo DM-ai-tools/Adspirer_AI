@@ -164,7 +164,7 @@ describe("out_of_stock_in_used_set", () => {
     expect(f.evidence.join("\n")).toContain("30.4%");
     expect(f.fix).toEqual({
       toolName: "update_product_set_filter",
-      args: { product_set_id: "SET_A", filter: IN_STOCK },
+      args: { product_set_id: "SET_A", product_set_name: "Dresses", filter: IN_STOCK, expected_filter: null },
     });
   });
 
@@ -175,7 +175,13 @@ describe("out_of_stock_in_used_set", () => {
     const f = find(findings, "out_of_stock_in_used_set")!;
     expect(f.fix).toEqual({
       toolName: "update_product_set_filter",
-      args: { product_set_id: "SET_A", filter: `{"and":[${existing},${IN_STOCK}]}` },
+      args: {
+        product_set_id: "SET_A",
+        product_set_name: "Dresses",
+        filter: `{"and":[${existing},${IN_STOCK}]}`,
+        // The fix records the filter it was built from, so a later edit to the set is caught.
+        expected_filter: existing,
+      },
     });
   });
 
@@ -291,7 +297,7 @@ describe("feed findings", () => {
     const f = find(findings, "feed_stale")!;
     expect(f.severity).toBe("medium");
     expect(f.evidence.join("\n")).toContain("72");
-    expect(f.fix).toEqual({ toolName: "request_feed_refresh", args: { feed_id: "FEED1" } });
+    expect(f.fix).toEqual({ toolName: "request_feed_refresh", args: { feed_id: "FEED1", feed_name: "Daily feed" } });
   });
 
   it("does not flag a feed uploaded 10h ago", () => {

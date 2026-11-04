@@ -52,8 +52,12 @@ export type CatalogAdSetUse = {
 };
 
 export type CatalogFix =
-  | { toolName: "update_product_set_filter"; args: { product_set_id: string; filter: string } }
-  | { toolName: "request_feed_refresh"; args: { feed_id: string } }
+  | {
+      toolName: "update_product_set_filter";
+      /** expected_filter: the set's filter when the fix was built (null: none), checked before writing. */
+      args: { product_set_id: string; product_set_name: string; filter: string; expected_filter: string | null };
+    }
+  | { toolName: "request_feed_refresh"; args: { feed_id: string; feed_name: string } }
   | { toolName: "pause_adset"; args: { account_id: string; adset_id: string } };
 
 export type CatalogFinding = {
@@ -246,7 +250,12 @@ function checkProductSets(sets: CatalogProductSet[], uses: CatalogAdSetUse[], t:
               ? null
               : {
                   toolName: "update_product_set_filter",
-                  args: { product_set_id: set.id, filter: inStockFilter(set.filter) },
+                  args: {
+                    product_set_id: set.id,
+                    product_set_name: set.name,
+                    filter: inStockFilter(set.filter),
+                    expected_filter: set.filter,
+                  },
                 },
           },
           affected: outOfStock,
@@ -283,7 +292,7 @@ function checkFeeds(feeds: CatalogFeed[], t: CatalogThresholds, nowMs: number): 
               adSetIds: [],
               howToFix:
                 "Request a feed refresh. If it keeps going stale, check that the feed URL is reachable and the schedule is still active.",
-              fix: { toolName: "request_feed_refresh", args: { feed_id: feed.id } },
+              fix: { toolName: "request_feed_refresh", args: { feed_id: feed.id, feed_name: feed.name } },
             },
             affected: feed.productCount,
             catalogWide: true,

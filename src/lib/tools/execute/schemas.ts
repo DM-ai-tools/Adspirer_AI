@@ -443,12 +443,18 @@ export const updateProductSetFilterSchema = z.object({
   account_id: accountId.optional(),
   product_set_id: z.string().min(1, "product_set_id is required"),
   filter: jsonObjectString,
+  /** The filter the fix was built from; null when the set had none. Absent: not checked. */
+  expected_filter: z.string().nullable().optional(),
+  /** Shown on the approval card; not sent to Meta. */
+  product_set_name: z.string().optional(),
 });
 
 /** Ask Meta to re-fetch a scheduled catalogue feed from its schedule URL now. */
 export const requestFeedRefreshSchema = z.object({
   account_id: accountId.optional(),
   feed_id: z.string().min(1, "feed_id is required"),
+  /** Shown on the approval card; not sent to Meta. */
+  feed_name: z.string().optional(),
 });
 
 /** Every tool the approval executor can actually dispatch to Meta. */

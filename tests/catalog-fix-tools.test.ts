@@ -170,6 +170,8 @@ describe("catalogue fix tools: through approvals", () => {
       after: { filter: IN_STOCK },
     } as unknown as ChangeLogEntry;
     expect(() => inverseOf(change)).toThrow(/Catalogue changes can't be rolled back/);
+    // The before filter is in the change log, and in the approval's result for anyone without the log.
+    expect(() => inverseOf(change)).toThrow(/shown in the change log or in the approval's result/);
     expect(() => inverseOf({ ...change, tool_name: "request_feed_refresh", entity_type: "feed" } as ChangeLogEntry)).toThrow(
       /Catalogue changes can't be rolled back/,
     );
@@ -254,6 +256,86 @@ describe("MetaGraphProviderV2.updateProductSetFilter", () => {
     });
     const result = await live.updateProductSetFilter({ product_set_id: "PS1", filter: IN_STOCK });
     expect(result).toMatchObject({ after_filter: IN_STOCK, product_count_after: null, verified: false });
+  });
+});
+
+describe("MetaGraphProviderV2.updateProductSetFilter: stale filter guard", () => {
+  const STALE =
+    "The product set's filter changed since this fix was queued. Nothing was changed. Re-open Commerce to queue a fresh fix.";
+  const liveWith = (filter: string | null) =>
+    providerWith({
+      get: () => ({ id: "PS1", name: "Spring", ...(filter === null ? {} : { filter }), product_count: 10 }),
+    });
+
+  it("refuses before the POST when the live filter differs from the one the fix was built from", async () => {
+    const { provider: live, post } = liveWith('{"tag":{"eq":"summer"}}');
+    await expect(
+      live.updateProductSetFilter({ product_set_id: "PS1", filter: IN_STOCK, expected_filter: '{"tag":{"eq":"spring"}}' }),
+    ).rejects.toThrow(STALE);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("compares key-order-insensitively, so the same rule written differently passes", async () => {
+    const { provider: live, post } = liveWith('{"b":{"eq":"2"},"a":{"eq":"1"}}');
+    await live.updateProductSetFilter({ product_set_id: "PS1", filter: IN_STOCK, expected_filter: '{"a":{"eq":"1"},"b":{"eq":"2"}}' });
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it("null means the set had no filter: passes on a set with none, refuses one that gained a filter", async () => {
+    const none = liveWith(null);
+    await none.provider.updateProductSetFilter({ product_set_id: "PS1", filter: IN_STOCK, expected_filter: null });
+    expect(none.post).toHaveBeenCalledTimes(1);
+
+    const gained = liveWith('{"tag":{"eq":"spring"}}');
+    await expect(
+      gained.provider.updateProductSetFilter({ product_set_id: "PS1", filter: IN_STOCK, expected_filter: null }),
+    ).rejects.toThrow(STALE);
+    expect(gained.post).not.toHaveBeenCalled();
+  });
+
+  it("a set whose filter was removed is refused when the fix expected one", async () => {
+    const { provider: live, post } = liveWith(null);
+    await expect(
+      live.updateProductSetFilter({ product_set_id: "PS1", filter: IN_STOCK, expected_filter: '{"tag":{"eq":"spring"}}' }),
+    ).rejects.toThrow(STALE);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("older approvals without expected_filter keep the unchecked write", async () => {
+    const { provider: live, post } = liveWith('{"tag":{"eq":"anything"}}');
+    await live.updateProductSetFilter({ product_set_id: "PS1", filter: IN_STOCK });
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it("the schema accepts expected_filter (string or null) and the display names", () => {
+    const filterSchema = getExecuteToolSchema("update_product_set_filter")!;
+    expect(filterSchema.safeParse({ product_set_id: SET, filter: IN_STOCK, expected_filter: null, product_set_name: "Spring" }).success).toBe(true);
+    expect(filterSchema.safeParse({ product_set_id: SET, filter: IN_STOCK, expected_filter: '{"tag":{"eq":"spring"}}' }).success).toBe(true);
+    expect(filterSchema.safeParse({ product_set_id: SET, filter: IN_STOCK, expected_filter: 5 }).success).toBe(false);
+    expect(getExecuteToolSchema("request_feed_refresh")!.safeParse({ feed_id: FEED, feed_name: "Daily" }).success).toBe(true);
+  });
+
+  it("the executor passes expected_filter through, and the approval fails with the stale message", async () => {
+    const spy = vi.spyOn(provider(), "updateProductSetFilter");
+    spy.mockClear();
+    const { approval } = await run("update_product_set_filter", {
+      product_set_id: SET,
+      product_set_name: "Spring",
+      filter: IN_STOCK,
+      expected_filter: '{"tag":{"eq":"spring"}}',
+    });
+    expect(spy).toHaveBeenCalledWith({ product_set_id: SET, filter: IN_STOCK, expected_filter: '{"tag":{"eq":"spring"}}' });
+    expect(approval.status).toBe("executed");
+
+    spy.mockRejectedValueOnce(new Error(STALE));
+    const pending = await createPendingApproval({
+      clientId: CLIENT_ID,
+      toolName: "update_product_set_filter",
+      proposedArgs: { product_set_id: SET, filter: IN_STOCK, expected_filter: null },
+    });
+    await approve({ approvalId: pending.id, reviewedBy: REVIEWER });
+    await expect(executeApprovedAction({ approvalId: pending.id, executedBy: REVIEWER })).rejects.toThrow(STALE);
+    expect(spy).toHaveBeenLastCalledWith({ product_set_id: SET, filter: IN_STOCK, expected_filter: null });
   });
 });
 
@@ -398,6 +480,20 @@ describe("catalogue fix tools: client ownership", () => {
     ).rejects.toThrow(PERMISSION_MESSAGE);
     await expect(
       assertCatalogTargetOwned({ clientId: CLIENT_ID, target: { product_set_id: "PS1" }, provider: live, loadCommerce: commerce(["CAT1"]) }),
+    ).rejects.toThrow(PERMISSION_MESSAGE);
+  });
+
+  it("an expired token (not_connected in the service) keeps the approver-permission message on the fix path", async () => {
+    const { assertCatalogTargetOwned } = await import("@/lib/meta/catalog/ownership");
+    const { EXPIRED_MESSAGE } = await import("@/lib/meta/catalog/service");
+    const { provider: live } = providerWith({ get: () => ({}) });
+    await expect(
+      assertCatalogTargetOwned({
+        clientId: CLIENT_ID,
+        target: { product_set_id: "PS1" },
+        provider: live,
+        loadCommerce: async () => ({ state: "not_connected", message: EXPIRED_MESSAGE }),
+      }),
     ).rejects.toThrow(PERMISSION_MESSAGE);
   });
 });

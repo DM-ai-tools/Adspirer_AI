@@ -22,7 +22,7 @@ export function inverseOf(change: ChangeLogEntry): { toolName: string; args: Rec
   if (change.entity_type === "product_set" || change.entity_type === "feed") {
     throw new ApprovalValidationError(
       change.entity_type === "product_set"
-        ? "Catalogue changes can't be rolled back in one click. To restore the product set, ask for a new filter change using the before filter shown in the change log, or edit it in Commerce Manager."
+        ? "Catalogue changes can't be rolled back in one click. To restore the product set, ask for a new filter change using the before filter shown in the change log or in the approval's result, or edit it in Commerce Manager."
         : "Catalogue changes can't be rolled back in one click, and a feed refresh has nothing to undo: the catalogue now holds what the feed URL served.",
     );
   }

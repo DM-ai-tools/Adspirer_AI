@@ -743,7 +743,12 @@ async function dispatchToProvider(
       const product_set_id = requireString(args, "product_set_id", toolName);
       const filter = requireString(args, "filter", toolName);
       await assertCatalogOwnership(options.clientId, { product_set_id }, provider);
-      return provider.updateProductSetFilter({ product_set_id, filter });
+      // Older approvals carry no expected_filter: they keep the unchecked write.
+      const expected =
+        "expected_filter" in args && (typeof args.expected_filter === "string" || args.expected_filter === null)
+          ? { expected_filter: args.expected_filter }
+          : {};
+      return provider.updateProductSetFilter({ product_set_id, filter, ...expected });
     }
     case "request_feed_refresh": {
       const feed_id = requireString(args, "feed_id", toolName);

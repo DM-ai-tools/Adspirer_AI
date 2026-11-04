@@ -443,6 +443,11 @@ export type UpdateAdSetAudienceExclusionsResult = MetaAdSet & {
 export interface UpdateProductSetFilterInput {
   product_set_id: string;
   filter: string;
+  /**
+   * The filter the fix was built from (null: the set had none). When given, a set whose live
+   * filter differs is refused before anything is sent. Absent on older approvals: no check.
+   */
+  expected_filter?: string | null;
 }
 
 export type UpdateProductSetFilterResult = {
