@@ -251,6 +251,7 @@ export async function executeApprovedAction(input: {
       result = await dispatchToProvider(approval.tool_name, enrichedArgs, provider, {
         resume: priorProgress ?? undefined,
         onProgress: checkpoint,
+        clientId: approval.client_id,
       });
     } catch (error) {
       if (error instanceof PartialCreateError && hasProgress(error.progress)) {
@@ -656,9 +657,22 @@ async function liveResumeBudgetCents(
 }
 
 type DispatchOptions = {
+  /** The approval's client: catalogue fixes may only touch this client's product sets and feeds. */
+  clientId?: string;
   resume?: CreateProgress;
   onProgress?: (progress: CreateProgress) => Promise<void>;
 };
+
+/** Never write to a catalogue without knowing whose approval this is. */
+async function assertCatalogOwnership(
+  clientId: string | undefined,
+  target: { product_set_id: string } | { feed_id: string },
+  provider: MetaAdsProvider,
+): Promise<void> {
+  if (!clientId) throw new ApprovalValidationError("A catalogue change needs the approval's client. Nothing was changed.");
+  const { assertCatalogTargetOwned } = await import("@/lib/meta/catalog/ownership");
+  await assertCatalogTargetOwned({ clientId, target, provider });
+}
 
 async function dispatchToProvider(
   toolName: string,
@@ -722,17 +736,20 @@ async function dispatchToProvider(
         clear_end_time: args.clear_end_time === true,
         start_time: optionalString(args.start_time),
       });
-    // Catalogue fixes: the provider reads the set or feed before writing, and refuses on
-    // missing permission with a CatalogAccessError whose message lands on the approval.
-    case "update_product_set_filter":
-      return provider.updateProductSetFilter({
-        product_set_id: requireString(args, "product_set_id", toolName),
-        filter: requireString(args, "filter", toolName),
-      });
-    case "request_feed_refresh":
-      return provider.requestFeedRefresh({
-        feed_id: requireString(args, "feed_id", toolName),
-      });
+    // Catalogue fixes: first confirm the set or feed is this client's (reads only), then the
+    // provider reads it again before writing. Missing permission is a CatalogAccessError whose
+    // message lands on the approval.
+    case "update_product_set_filter": {
+      const product_set_id = requireString(args, "product_set_id", toolName);
+      const filter = requireString(args, "filter", toolName);
+      await assertCatalogOwnership(options.clientId, { product_set_id }, provider);
+      return provider.updateProductSetFilter({ product_set_id, filter });
+    }
+    case "request_feed_refresh": {
+      const feed_id = requireString(args, "feed_id", toolName);
+      await assertCatalogOwnership(options.clientId, { feed_id }, provider);
+      return provider.requestFeedRefresh({ feed_id });
+    }
     case "pause_adset":
       return provider.pauseAdSet(
         requireString(args, "account_id", toolName),

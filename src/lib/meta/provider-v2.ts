@@ -46,7 +46,7 @@ import {
   sameIds,
 } from "@/lib/meta/adset-edits";
 import { MetaGraphClient } from "@/lib/meta/graph-client";
-import { CatalogAccessError, catalogAccessReason } from "@/lib/meta/catalog/errors";
+import { CATALOG_PERMISSION_MESSAGE, CatalogAccessError, catalogAccessReason } from "@/lib/meta/catalog/errors";
 import { compactInsightsRow, insightsParams } from "@/lib/meta/insights-report";
 import { fetchMetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
 import type {
@@ -1603,6 +1603,37 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
         ? {}
         : { verification_error: "Meta reads back a filter written differently from the one sent; check the product set in Commerce Manager." }),
     };
+  }
+
+  /** The catalogue a product set belongs to (read-only; used by the ownership check). */
+  async productSetCatalogId(productSetId: string): Promise<string | null> {
+    const row = await catalogCall(`product set ${productSetId}`, () =>
+      this.graph.get<{ product_catalog?: { id?: string | number } | null }>(productSetId, { fields: "product_catalog{id}" }),
+    );
+    const id = row.product_catalog?.id;
+    return id != null && String(id).trim() ? String(id) : null;
+  }
+
+  /**
+   * Which of these catalogues holds the feed, by listing each one's feeds (read-only; used by the
+   * ownership check). Graph does not reliably expose a feed's catalogue on the feed itself.
+   */
+  async feedCatalogId(feedId: string, catalogIds: string[]): Promise<string | null> {
+    for (const catalogId of catalogIds) {
+      let after: string | undefined;
+      for (let page = 0; page < 5; page += 1) {
+        const list = await catalogCall(`catalogue ${catalogId}`, () =>
+          this.graph.get<{ data?: Array<{ id?: string | number }>; paging?: { cursors?: { after?: string }; next?: string } }>(
+            `${catalogId}/product_feeds`,
+            { fields: "id", limit: 100, ...(after ? { after } : {}) },
+          ),
+        );
+        if ((list.data ?? []).some((f) => String(f.id) === feedId)) return catalogId;
+        after = list.paging?.next ? list.paging.cursors?.after : undefined;
+        if (!after) break;
+      }
+    }
+    return null;
   }
 
   /**
@@ -3315,9 +3346,6 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
   }
 }
 
-
-const CATALOG_PERMISSION_MESSAGE =
-  "The approver's Facebook connection cannot manage this catalogue: reconnect Facebook, or have someone with access approve.";
 
 /** A catalogue Graph call whose access failures become CatalogAccessError with an operator-readable message. */
 async function catalogCall<T>(what: string, call: () => Promise<T>): Promise<T> {

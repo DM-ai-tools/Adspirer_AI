@@ -299,3 +299,145 @@ describe("MetaGraphProviderV2.requestFeedRefresh", () => {
     expect(post).not.toHaveBeenCalled();
   });
 });
+
+describe("catalogue fix tools: client ownership", () => {
+  const NOT_LINKED = "This product set / feed is not linked to this client's ad accounts. Nothing was changed.";
+  const commerce = (catalogIds: string[], productSetIds: string[] = []) => async () =>
+    ({
+      state: "ok" as const,
+      catalogs: catalogIds.map((id) => ({ id, name: id, productCount: 1 })),
+      uses: productSetIds.map((productSetId, i) => ({
+        accountId: "act_1",
+        adSetId: `as_${i}`,
+        adSetName: "DPA",
+        campaignId: "c1",
+        productSetId,
+        effectiveStatus: "ACTIVE",
+        learningStatus: null,
+        spendCents: 0,
+        catalogId: catalogIds[0]!,
+      })),
+    });
+
+  it("refuses a product set that is not the client's, and never calls the write", async () => {
+    const spy = vi.spyOn(provider(), "updateProductSetFilter");
+    spy.mockClear();
+    const pending = await createPendingApproval({
+      clientId: CLIENT_ID,
+      toolName: "update_product_set_filter",
+      proposedArgs: { product_set_id: "someone_elses_set", filter: IN_STOCK },
+    });
+    await approve({ approvalId: pending.id, reviewedBy: REVIEWER });
+    await expect(executeApprovedAction({ approvalId: pending.id, executedBy: REVIEWER })).rejects.toThrow(NOT_LINKED);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("refuses a feed that is not in the client's catalogues, and never calls the refresh", async () => {
+    const spy = vi.spyOn(provider(), "requestFeedRefresh");
+    spy.mockClear();
+    const pending = await createPendingApproval({ clientId: CLIENT_ID, toolName: "request_feed_refresh", proposedArgs: { feed_id: "foreign_feed" } });
+    await approve({ approvalId: pending.id, reviewedBy: REVIEWER });
+    await expect(executeApprovedAction({ approvalId: pending.id, executedBy: REVIEWER })).rejects.toThrow(NOT_LINKED);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("a set one of the client's ad sets sells passes without any Graph read", async () => {
+    const { assertCatalogTargetOwned } = await import("@/lib/meta/catalog/ownership");
+    const { provider: live, get, post } = providerWith({ get: () => ({}) });
+    await assertCatalogTargetOwned({ clientId: CLIENT_ID, target: { product_set_id: "PS1" }, provider: live, loadCommerce: commerce(["CAT1"], ["PS1"]) });
+    expect(get).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("a set in one of the client's catalogues passes; one in a foreign catalogue is refused with no POST", async () => {
+    const { assertCatalogTargetOwned } = await import("@/lib/meta/catalog/ownership");
+    const { provider: live, get, post } = providerWith({
+      get: (path, params) => {
+        expect(String(params.fields)).toBe("product_catalog{id}");
+        return { product_catalog: { id: path === "PS_OWNED" ? "CAT1" : "CAT_OTHER" } };
+      },
+    });
+    await assertCatalogTargetOwned({ clientId: CLIENT_ID, target: { product_set_id: "PS_OWNED" }, provider: live, loadCommerce: commerce(["CAT1"]) });
+    await expect(
+      assertCatalogTargetOwned({ clientId: CLIENT_ID, target: { product_set_id: "PS_FOREIGN" }, provider: live, loadCommerce: commerce(["CAT1"]) }),
+    ).rejects.toThrow(NOT_LINKED);
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("a feed is the client's only when one of its catalogues lists it", async () => {
+    const { assertCatalogTargetOwned } = await import("@/lib/meta/catalog/ownership");
+    const { provider: live, post } = providerWith({
+      get: (path) => {
+        if (path === "CAT1/product_feeds") return { data: [{ id: "F_OWNED" }] };
+        if (path === "CAT2/product_feeds") return { data: [{ id: "F_ALSO" }] };
+        throw new Error(`unexpected GET ${path}`);
+      },
+    });
+    await assertCatalogTargetOwned({ clientId: CLIENT_ID, target: { feed_id: "F_ALSO" }, provider: live, loadCommerce: commerce(["CAT1", "CAT2"]) });
+    await expect(
+      assertCatalogTargetOwned({ clientId: CLIENT_ID, target: { feed_id: "F_FOREIGN" }, provider: live, loadCommerce: commerce(["CAT1", "CAT2"]) }),
+    ).rejects.toThrow(NOT_LINKED);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("missing permission on the ownership lookup is the approver-permission message", async () => {
+    const { assertCatalogTargetOwned } = await import("@/lib/meta/catalog/ownership");
+    const { provider: live } = providerWith({
+      get: () => {
+        throw permissionError();
+      },
+    });
+    await expect(
+      assertCatalogTargetOwned({
+        clientId: CLIENT_ID,
+        target: { product_set_id: "PS1" },
+        provider: live,
+        loadCommerce: async () => ({ state: "missing_permission", message: "x" }),
+      }),
+    ).rejects.toThrow(PERMISSION_MESSAGE);
+    await expect(
+      assertCatalogTargetOwned({ clientId: CLIENT_ID, target: { product_set_id: "PS1" }, provider: live, loadCommerce: commerce(["CAT1"]) }),
+    ).rejects.toThrow(PERMISSION_MESSAGE);
+  });
+});
+
+describe("catalogue fix tools: error mapping and the writer's list", () => {
+  it.each([
+    [190, "Error validating access token: Session has expired"],
+    [10, "Application does not have permission for this action"],
+  ])("Graph code %i is the approver-permission message", async (code, message) => {
+    const { provider: live, post } = providerWith({
+      get: () => {
+        throw new MetaGraphError(message, code, 400);
+      },
+    });
+    await expect(live.updateProductSetFilter({ product_set_id: "PS1", filter: IN_STOCK })).rejects.toThrow(PERMISSION_MESSAGE);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("a set Meta cannot find says so, and that nothing was changed", async () => {
+    const { provider: live, post } = providerWith({
+      get: () => {
+        throw new MetaGraphError("Unsupported get request. Object with ID 'PS1' does not exist", 100, 400);
+      },
+    });
+    const error = await live.updateProductSetFilter({ product_set_id: "PS1", filter: IN_STOCK }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(CatalogAccessError);
+    expect((error as CatalogAccessError).reason).toBe("not_found");
+    expect((error as Error).message).toBe(
+      "Meta could not find product set PS1, or the approver's Facebook connection cannot see it. Nothing was changed.",
+    );
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("the writer is not offered the catalogue fixes as things it can queue", async () => {
+    const { capabilityPromptBlock } = await import("@/lib/agent/optimization-capabilities");
+    const block = capabilityPromptBlock();
+    const queueable = block.split("Queued from the Commerce page")[0]!;
+    expect(queueable).not.toContain("update_product_set_filter");
+    expect(queueable).not.toContain("request_feed_refresh");
+    expect(queueable).not.toContain("product set's filter");
+    expect(block).toMatch(/Queued from the Commerce page's suggestions[\s\S]*product set's filter/);
+  });
+});

@@ -29,7 +29,7 @@ import type {
   RequestFeedRefreshInput,
   RequestFeedRefreshResult,
 } from "./provider";
-import { demoCatalogSnapshot } from "@/lib/meta/catalog/demo";
+import { DEMO_CATALOG_ID, demoCatalogSnapshot } from "@/lib/meta/catalog/demo";
 import {
   excludedIdsOf,
   mergeExclusions,
@@ -527,6 +527,15 @@ export class MockMetaAdsProvider implements MetaAdsProvider {
       product_count_after: null,
       verified: true,
     };
+  }
+
+  async productSetCatalogId(productSetId: string): Promise<string | null> {
+    return demoCatalogSnapshot().productSets.some((s) => s.id === productSetId) ? DEMO_CATALOG_ID : null;
+  }
+
+  async feedCatalogId(feedId: string, catalogIds: string[]): Promise<string | null> {
+    const inDemo = demoCatalogSnapshot().feeds.some((f) => f.id === feedId);
+    return inDemo && catalogIds.includes(DEMO_CATALOG_ID) ? DEMO_CATALOG_ID : null;
   }
 
   async requestFeedRefresh(input: RequestFeedRefreshInput): Promise<RequestFeedRefreshResult> {

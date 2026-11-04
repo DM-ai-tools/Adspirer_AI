@@ -506,6 +506,10 @@ export interface MetaAdsProvider {
   /** Catalogue fixes: read first, then write; a permission failure is a CatalogAccessError. */
   updateProductSetFilter(input: UpdateProductSetFilterInput): Promise<UpdateProductSetFilterResult>;
   requestFeedRefresh(input: RequestFeedRefreshInput): Promise<RequestFeedRefreshResult>;
+  /** Read-only lookups for the catalogue ownership check: the owning catalogue, or null. */
+  productSetCatalogId?(productSetId: string): Promise<string | null>;
+  /** Which of `catalogIds` holds the feed, or null. */
+  feedCatalogId?(feedId: string, catalogIds: string[]): Promise<string | null>;
   pauseCampaign(accountId: string, campaignId: string): Promise<MetaCampaign>;
   resumeCampaign(accountId: string, campaignId: string): Promise<MetaCampaign>;
   pauseAdSet(accountId: string, adSetId: string): Promise<MetaAdSet>;

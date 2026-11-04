@@ -29,6 +29,11 @@ export type Capability = {
   owner: ActionOwner;
   /** The execute tool that does it; only for `owner: "app"` entries that map to one. */
   tool?: string;
+  /**
+   * Where the change is queued from when it is not the chat. "commerce_page": only from the
+   * Commerce page's suggestions, so the writer never queues it itself.
+   */
+  queuedFrom?: "commerce_page";
   note: string;
 };
 
@@ -46,8 +51,8 @@ export const CAPABILITIES: readonly Capability[] = [
   { id: "placements", label: "Change an ad set's placements", focus: "placements", owner: "app", tool: "update_adset_placements", note: "Choose platforms and positions, or switch to automatic (Advantage+) placements; the rest of the targeting is kept." },
   { id: "bid_adset", label: "Change an ad set's bid strategy and cap", focus: "bids", owner: "app", tool: "update_adset_bid", note: "Cost cap, bid cap, minimum ROAS or no cap, for ad sets that hold their own budget; Meta restarts learning after a bid change." },
   { id: "schedule", label: "Change an ad set's end date or start", focus: "schedule", owner: "app", tool: "update_adset_schedule", note: "Move or clear an end date, or move the start of an ad set that has not started." },
-  { id: "product_set_filter", label: "Change a catalogue product set's filter", focus: "structure", owner: "app", tool: "update_product_set_filter", note: "For example keep only in-stock items; the set is shared, so every ad set that uses it changes, in any ad account." },
-  { id: "feed_refresh", label: "Refresh a scheduled catalogue feed now", focus: "structure", owner: "app", tool: "request_feed_refresh", note: "Only feeds with a schedule URL; Meta re-fetches it and the whole catalogue updates." },
+  { id: "product_set_filter", label: "Change a catalogue product set's filter", focus: "structure", owner: "app", tool: "update_product_set_filter", queuedFrom: "commerce_page", note: "For example keep only in-stock items; the set is shared, so every ad set that uses it changes, in any ad account." },
+  { id: "feed_refresh", label: "Refresh a scheduled catalogue feed now", focus: "structure", owner: "app", tool: "request_feed_refresh", queuedFrom: "commerce_page", note: "Only feeds with a schedule URL; Meta re-fetches it and the whole catalogue updates." },
   { id: "create_adset", label: "Create an ad set", focus: "structure", owner: "app", tool: "create_adset", note: "New ad sets are created PAUSED." },
   { id: "create_ad", label: "Create an ad", focus: "creative", owner: "app", tool: "create_ad", note: "New ads are created PAUSED; an existing ad's creative cannot be edited in place, so a replacement is a new ad plus pausing the old one." },
   { id: "create_image_campaign", label: "Create an image campaign", focus: "structure", owner: "app", tool: "create_meta_image_campaign", note: "Campaign, ad set and ad, created PAUSED." },
@@ -199,7 +204,8 @@ export function ownerLabel(owner: ActionOwner): string {
 
 /** The capability list the writer is given: what Approvals can change, and what needs someone else. */
 export function capabilityPromptBlock(): string {
-  const app = CAPABILITIES.filter((c) => c.owner === "app");
+  const app = CAPABILITIES.filter((c) => c.owner === "app" && !c.queuedFrom);
+  const commerce = CAPABILITIES.filter((c) => c.owner === "app" && c.queuedFrom === "commerce_page");
   const others = CAPABILITIES.filter((c) => c.owner !== "app");
   return [
     "## What can be done, and by whom",
@@ -207,6 +213,9 @@ export function capabilityPromptBlock(): string {
     "",
     "Changes this app can queue in Approvals (nothing changes in Meta until approved):",
     ...app.map((c) => `- ${c.label}${c.tool ? ` (\`${c.tool}\`)` : ""}: ${c.note}`),
+    "",
+    "Queued from the Commerce page's suggestions, not from here (point the operator there; never queue these yourself):",
+    ...commerce.map((c) => `- ${c.label}: ${c.note}`),
     "",
     "Needs someone else (name who):",
     ...others.map((c) => `- ${c.label} — ${ownerLabel(c.owner)}. ${c.note}`),
