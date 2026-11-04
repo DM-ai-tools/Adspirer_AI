@@ -1063,7 +1063,7 @@ export function ChatPanel({
         onScroll={handleMessagesScroll}
         className="min-h-0 flex-1 overflow-y-auto px-3 pt-5 sm:px-6"
       >
-        <div className="mx-auto w-full max-w-4xl space-y-6 pb-6">
+        <div className="mx-auto w-full max-w-5xl space-y-6 pb-6">
           {messages.length === 0 ? (
             <div className="flex flex-col items-center px-2 pt-[8vh] text-center">
               <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-accent/15 text-accent">
