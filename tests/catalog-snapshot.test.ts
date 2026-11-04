@@ -199,6 +199,63 @@ describe("catalogAccessReason", () => {
     expect(catalogAccessReason(new MetaGraphError("rate limit", 4, 400))).toBeNull();
     expect(catalogAccessReason(new Error("x"))).toBeNull();
   });
+
+  const SUBCODE_33 = new MetaGraphError(
+    "Unsupported get request. Object with ID '30227494536896319' does not exist, cannot be loaded due to missing permissions, or does not support this operation",
+    100,
+    400,
+    33,
+  );
+
+  it("classifies Meta's code 100 / subcode 33 unreadable-object error as not_found, not a permission problem", () => {
+    expect(catalogAccessReason(SUBCODE_33)).toBe("not_found");
+    // The wording alone is enough, even without the subcode.
+    expect(catalogAccessReason(new MetaGraphError(SUBCODE_33.message, 100, 400))).toBe("not_found");
+  });
+
+  it("still classifies a real permission error as missing_permission", () => {
+    expect(
+      catalogAccessReason(new MetaGraphError("(#100) This application has not been approved to use this api", 100, 400)),
+    ).toBe("missing_permission");
+    expect(catalogAccessReason(new MetaGraphError("expired", 190, 401))).toBe("missing_permission");
+    expect(catalogAccessReason(new MetaGraphError("denied", 10, 403))).toBe("missing_permission");
+  });
+});
+
+describe("diagnostic text from Meta", () => {
+  it("strips HTML and decodes entities in titles and descriptions", async () => {
+    const { graph } = fakeGraph({
+      [`${CATALOG}/diagnostics`]: {
+        data: [
+          {
+            type: "DA_VISIBILITY_ISSUES",
+            severity: "MUST_FIX",
+            title: "Items &amp; sets",
+            number_of_affected_items: 3,
+            diagnostics: [
+              {
+                type: "PRODUCT_OUT_OF_STOCK",
+                description: "This item is marked as <strong>out of stock</strong>. Items that aren&#039;t in stock won&#039;t show.",
+                number_of_affected_items: 2,
+              },
+              {
+                type: "OTHER",
+                description:
+                  'Fix it in the <a href="https://facebook.com/x?a=1&amp;b=2">feed</a>.<br />Then &quot;refresh&quot; &lt;now&gt;&nbsp;&#8211; ok',
+                number_of_affected_items: 1,
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const snap = await fetchCatalogSnapshot(graph, CATALOG);
+    expect(snap.diagnostics[0].title).toBe("Items & sets");
+    expect(snap.diagnostics[0].children[0].description).toBe(
+      "This item is marked as out of stock. Items that aren't in stock won't show.",
+    );
+    expect(snap.diagnostics[0].children[1].description).toBe('Fix it in the feed. Then "refresh" <now> – ok');
+  });
 });
 
 describe("listCatalogProducts", () => {

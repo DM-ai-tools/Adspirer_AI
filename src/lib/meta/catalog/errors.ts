@@ -22,6 +22,12 @@ export function catalogAccessReason(error: unknown): CatalogAccessReason | null 
   if (!(error instanceof MetaGraphError)) return null;
   // 190: the token expired or was revoked; 10: the app lacks the permission.
   if (error.code === 190 || error.code === 10) return "missing_permission";
+  // Meta's "Unsupported get request. Object with ID ... does not exist, cannot be loaded due to missing
+  // permissions, or does not support this operation" (code 100, subcode 33) mentions "permission" but
+  // means this one object is unreadable. It must not be mistaken for a broken Facebook connection.
+  if ((error.code === 100 && error.subcode === 33) || /does not exist, cannot be loaded/i.test(error.message)) {
+    return "not_found";
+  }
   if ((error.code === 100 || error.code === 200) && /not been approved|permission/i.test(error.message)) {
     return "missing_permission";
   }

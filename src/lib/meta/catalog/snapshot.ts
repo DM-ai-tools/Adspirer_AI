@@ -37,16 +37,34 @@ async function settle<T>(label: string, warnings: string[], p: Promise<T>): Prom
   }
 }
 
+const NAMED_ENTITIES: Record<string, string> = { amp: "&", quot: '"', apos: "'", lt: "<", gt: ">", nbsp: " " };
+
+/** Meta's diagnostic text carries HTML (<strong>, <a>, <br />) and entities; reduce it to plain text. */
+export function cleanMetaText(text: string): string {
+  return text
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&(?:#(\d+)|#x([0-9a-f]+)|([a-z]+));/gi, (whole, dec?: string, hex?: string, name?: string) => {
+      if (dec || hex) {
+        const code = dec ? Number(dec) : parseInt(hex!, 16);
+        return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : whole;
+      }
+      return NAMED_ENTITIES[name!.toLowerCase()] ?? whole;
+    })
+    .replace(/\s+/g, " ")
+    .replace(/\s+([.,;:!?])/g, "$1")
+    .trim();
+}
+
 function diagnosticFrom(row: Row): CatalogDiagnostic {
   return {
     type: str(row.type) ?? "UNKNOWN",
     severity: str(row.severity) ?? "UNKNOWN",
-    title: str(row.title) ?? "",
+    title: cleanMetaText(str(row.title) ?? ""),
     errorCode: row.error_code != null && Number.isFinite(Number(row.error_code)) ? Number(row.error_code) : null,
     affectedItems: num(row.number_of_affected_items),
     children: rows(row.diagnostics).map((c) => ({
       type: str(c.type) ?? "UNKNOWN",
-      description: str(c.description) ?? "",
+      description: cleanMetaText(str(c.description) ?? ""),
       affectedItems: num(c.number_of_affected_items),
     })),
   };

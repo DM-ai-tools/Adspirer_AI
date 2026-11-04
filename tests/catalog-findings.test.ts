@@ -351,6 +351,22 @@ describe("match findings", () => {
     expect(find(findings, "matched_other_catalog")?.severity).toBe("low");
   });
 
+  it("prints a share under 0.1% as 'under 0.1%', and keeps one decimal otherwise", () => {
+    const tiny = evaluateCatalog(
+      healthySnapshot({ events: [ev({ matched: 148889, unmatched: 0, matchedOtherCatalogs: 11 })] }),
+      [],
+    );
+    const tinyEvidence = find(tiny.findings, "matched_other_catalog")!.evidence.join(" ");
+    expect(tinyEvidence).toContain("under 0.1% of matches");
+    expect(tinyEvidence).not.toContain("0.0%");
+
+    const normal = evaluateCatalog(
+      healthySnapshot({ events: [ev({ matched: 910, unmatched: 0, matchedOtherCatalogs: 90 })] }),
+      [],
+    );
+    expect(find(normal.findings, "matched_other_catalog")!.evidence.join(" ")).toContain("(9.0% of matches)");
+  });
+
   it("does not flag an event with no cross-catalogue matches", () => {
     const { findings } = evaluateCatalog(healthySnapshot({ events: [ev()] }), []);
     expect(find(findings, "matched_other_catalog")).toBeUndefined();

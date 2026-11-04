@@ -143,6 +143,53 @@ describe("discoverClientCatalogs", () => {
       reason: "missing_permission",
     });
   });
+
+  it("skips a product set the token cannot read and keeps the other set's catalogue", async () => {
+    const BAD_SET = "30227494536896319";
+    const unreadable = new MetaGraphError(
+      `Unsupported get request. Object with ID '${BAD_SET}' does not exist, cannot be loaded due to missing permissions, or does not support this operation`,
+      100,
+      400,
+      33,
+    );
+    const graph = {
+      get: async <T,>(path: string): Promise<T> => {
+        if (path === "act_1/adsets") return { data: [adSet("A1", SET), adSet("A2", BAD_SET)] } as T;
+        if (path === BAD_SET) throw unreadable;
+        return { id: SET, product_catalog: { id: CATALOG, name: "During Days", product_count: 10 } } as T;
+      },
+    };
+    const out = await discoverClientCatalogs(graph, ["act_1"]);
+    expect(out.catalogs).toEqual([{ id: CATALOG, name: "During Days", productCount: 10 }]);
+    expect(out.uses.map((u) => u.adSetId)).toEqual(["A1"]);
+    expect(out.skippedProductSets).toBe(1);
+    expect(out.complete).toBe(true);
+  });
+
+  it("a real permission error on one set still fails with missing_permission", async () => {
+    const graph = {
+      get: async <T,>(path: string): Promise<T> => {
+        if (path === "act_1/adsets") return { data: [adSet("A1", SET), adSet("A2", "999")] } as T;
+        if (path === "999") throw new MetaGraphError("(#100) This application has not been approved to use this api", 100, 400);
+        return { id: SET, product_catalog: { id: CATALOG, name: "C", product_count: 1 } } as T;
+      },
+    };
+    await expect(discoverClientCatalogs(graph, ["act_1"])).rejects.toMatchObject({ reason: "missing_permission" });
+  });
+
+  it("skips a set that fails for another reason but marks the result incomplete", async () => {
+    const graph = {
+      get: async <T,>(path: string): Promise<T> => {
+        if (path === "act_1/adsets") return { data: [adSet("A1", SET), adSet("A2", "999")] } as T;
+        if (path === "999") throw new MetaGraphError("rate limit", 4, 400);
+        return { id: SET, product_catalog: { id: CATALOG, name: "C", product_count: 1 } } as T;
+      },
+    };
+    const out = await discoverClientCatalogs(graph, ["act_1"]);
+    expect(out.catalogs).toHaveLength(1);
+    expect(out.skippedProductSets).toBe(1);
+    expect(out.complete).toBe(false);
+  });
 });
 
 function resetMocks() {

@@ -332,13 +332,15 @@ function checkEvents(events: CatalogEventMatch[], t: CatalogThresholds): Interna
 
     if (e.matchedOtherCatalogs > 0) {
       const share = e.matchedOtherCatalogs / (e.matched + e.matchedOtherCatalogs);
+      // A tiny share would otherwise print as "0.0%".
+      const shareText = share < 0.001 ? "under 0.1%" : pct(share);
       out.push({
         finding: {
           id: `matched_other_catalog:${e.event}`,
           severity: share >= t.matchedOtherShareMedium ? "medium" : "low",
           title: `${e.event} events are also matching other catalogues`,
           evidence: [
-            `${e.event}: ${n(e.matchedOtherCatalogs)} events matched other catalogues vs ${n(e.matched)} matched to this one (${pct(share)} of matches)`,
+            `${e.event}: ${n(e.matchedOtherCatalogs)} events matched other catalogues vs ${n(e.matched)} matched to this one (${shareText} of matches)`,
           ],
           productSetIds: [],
           adSetIds: [],

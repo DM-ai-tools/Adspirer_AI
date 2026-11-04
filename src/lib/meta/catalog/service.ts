@@ -82,7 +82,14 @@ async function listAdSets(graph: CatalogGraph, accountId: string): Promise<Row[]
 export async function discoverClientCatalogs(
   graph: CatalogGraph,
   accountIds: string[],
-): Promise<{ catalogs: ClientCatalog[]; uses: ClientCatalogUse[] }> {
+): Promise<{
+  catalogs: ClientCatalog[];
+  uses: ClientCatalogUse[];
+  /** Product sets whose catalogue could not be read and were left out. */
+  skippedProductSets: number;
+  /** False when a set was skipped for a reason other than being unreadable, so the result should not be cached. */
+  complete: boolean;
+}> {
   const accounts = [...new Set(accountIds.map(normalizeAct))];
   const perAccount = await Promise.all(
     accounts.map(async (accountId) => ({ accountId, adSets: await listAdSets(graph, accountId) })),
@@ -108,6 +115,8 @@ export async function discoverClientCatalogs(
 
   const setIds = [...new Set(pending.map((u) => u.productSetId))];
   const catalogOfSet = new Map<string, ClientCatalog>();
+  let skippedProductSets = 0;
+  let complete = true;
   await Promise.all(
     setIds.map(async (setId) => {
       try {
@@ -120,8 +129,12 @@ export async function discoverClientCatalogs(
         if (reason === "missing_permission") {
           throw new CatalogAccessError(reason, error instanceof Error ? error.message : String(error));
         }
-        // A set that no longer exists simply has no catalogue to report on.
-        if (reason !== "not_found") throw error;
+        // One set the token cannot read (deleted, or owned elsewhere) must not fail the client's whole
+        // discovery: skip it and keep the other sets' catalogues. A failure that is not a clear
+        // "unreadable set" (rate limit, network) is skipped too but marks the result incomplete, so
+        // it is not cached and the next load tries again.
+        skippedProductSets += 1;
+        if (reason !== "not_found") complete = false;
       }
     }),
   );
@@ -134,7 +147,7 @@ export async function discoverClientCatalogs(
     catalogs.set(catalog.id, catalog);
     uses.push({ ...u, catalogId: catalog.id });
   }
-  return { catalogs: [...catalogs.values()], uses };
+  return { catalogs: [...catalogs.values()], uses, skippedProductSets, complete };
 }
 
 async function connectedGraph(
@@ -157,7 +170,7 @@ async function connectedGraph(
   };
 }
 
-type Discovered = { catalogs: ClientCatalog[]; uses: ClientCatalogUse[] };
+type Discovered = Awaited<ReturnType<typeof discoverClientCatalogs>>;
 type Connected = Extract<Awaited<ReturnType<typeof connectedGraph>>, { ok: true }>;
 
 /**
@@ -173,7 +186,7 @@ async function discoverCached(conn: Connected, clientId: string): Promise<Discov
   const hit = key ? commerceCache.get(key) : undefined;
   if (hit && Date.now() - hit.at < COMMERCE_TTL_MS) return hit.value;
   const value = await discoverClientCatalogs(conn.graph, conn.accountIds);
-  if (key) commerceCache.set(key, { at: Date.now(), value });
+  if (key && value.complete) commerceCache.set(key, { at: Date.now(), value });
   return value;
 }
 
