@@ -1,5 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const service = vi.hoisted(() => ({ commerce: vi.fn(), report: vi.fn() }));
+vi.mock("@/lib/meta/catalog/service", () => ({
+  getClientCommerce: (...a: unknown[]) => service.commerce(...a),
+  getCatalogReport: (...a: unknown[]) => service.report(...a),
+}));
+
 import { META_AUDIT_FRAMEWORK } from "@/lib/agent/meta-audit-framework";
+import { CATALOG_EVIDENCE_TIMEOUT_MS, loadCatalogEvidence } from "@/lib/meta/catalog/audit-evidence";
 import type { AuditAdSet } from "@/lib/audit/meta-audit-data";
 import { renderCatalogEvidence, type CatalogEvidenceInput } from "@/lib/audit/render";
 import type { CatalogFinding, LearningLink } from "@/lib/meta/catalog/findings";
@@ -140,6 +148,80 @@ describe("renderCatalogEvidence", () => {
     );
     expect(text).toContain("Main shop");
     expect(text).toContain("Catalogue not read: gone");
+    // One catalogue was read, so the section stays authoritative.
+    expect(text).toContain("— live Meta data, authoritative");
+  });
+
+  it("heads the section as not read when no catalogue was read", () => {
+    const text = renderCatalogEvidence([{ catalogId: "", missing: "no_catalog", message: "Meta was slow to respond" }], []);
+    expect(text.split("\n")[0]).toBe("### Catalogue (Commerce Manager) — not read");
+    expect(text).not.toContain("authoritative");
+    expect(text).toContain("Catalogue not read: Meta was slow to respond");
+  });
+
+  it("renders catalogs_unreadable with its message", () => {
+    const text = renderCatalogEvidence(
+      [{ catalogId: "", missing: "catalogs_unreadable", message: "2 catalogue ad sets found, but your Facebook login can't read their product sets" }],
+      [],
+    );
+    expect(text).toContain("Catalogue not read: 2 catalogue ad sets found");
+  });
+
+  it("counts catalogues past the cap that were not checked", () => {
+    expect(renderCatalogEvidence([ok([])], [], { notChecked: 2 })).toContain("2 more catalogues not checked");
+    expect(renderCatalogEvidence([ok([])], [], { notChecked: 1 })).toContain("1 more catalogue not checked");
+    expect(renderCatalogEvidence([ok([])], [])).not.toContain("not checked");
+  });
+});
+
+describe("loadCatalogEvidence", () => {
+  const set = (catalogId: string, i: number) => ({
+    adSetId: `as${i}`,
+    adSetName: `A${i}`,
+    campaignId: "c1",
+    accountId: "act_1",
+    productSetId: `ps${i}`,
+    learningStatus: null,
+    effectiveStatus: "ACTIVE",
+    catalogId,
+  });
+
+  beforeEach(() => {
+    service.commerce.mockReset();
+    service.report.mockReset();
+  });
+
+  it("falls back to 'Meta was slow to respond' when the catalogue reads take too long", async () => {
+    service.commerce.mockReturnValue(new Promise(() => {}));
+    const started = Date.now();
+    const text = await loadCatalogEvidence("c1", [adSet()], 20);
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(text).toContain("### Catalogue (Commerce Manager) — not read");
+    expect(text).toContain("Catalogue not read: Meta was slow to respond");
+    expect(CATALOG_EVIDENCE_TIMEOUT_MS).toBe(20_000);
+  });
+
+  it("reads at most three catalogues and counts the rest", async () => {
+    const uses = ["cA", "cB", "cC", "cD", "cE"].map((c, i) => set(c, i + 1));
+    service.commerce.mockResolvedValue({ state: "ok", catalogs: [], uses });
+    service.report.mockImplementation(async (_client: string, catalogId: string) => ({
+      state: "ok",
+      snapshot: snapshot({ id: catalogId, name: `Shop ${catalogId}` }),
+      findings: [],
+      learningLinks: [],
+      uses: [],
+    }));
+    const scope = uses.map((u, i) => adSet({ id: u.adSetId, productSetId: `ps${i + 1}` }));
+    const text = (await loadCatalogEvidence("c1", scope))!;
+    expect(service.report).toHaveBeenCalledTimes(3);
+    expect(text).toContain("2 more catalogues not checked");
+  });
+
+  it("passes catalogs_unreadable through as its own state", async () => {
+    service.commerce.mockResolvedValue({ state: "catalogs_unreadable", message: "1 catalogue ad set found, but no access" });
+    const text = await loadCatalogEvidence("c1", [adSet()]);
+    expect(text).toContain("— not read");
+    expect(text).toContain("Catalogue not read: 1 catalogue ad set found, but no access");
   });
 });
 

@@ -679,7 +679,10 @@ export type CatalogEvidenceInput =
       findings: CatalogFinding[];
       learningLinks: LearningLink[];
     }
-  | { catalogId: string; missing: "missing_permission" | "no_catalog"; message: string };
+  | { catalogId: string; missing: CatalogEvidenceMissing; message: string };
+
+/** Why a catalogue was not read for the audit. */
+export type CatalogEvidenceMissing = "missing_permission" | "no_catalog" | "catalogs_unreadable";
 
 const CATALOG_SEVERITY_LABEL: Record<CatalogFinding["severity"], string> = {
   critical: "Critical",
@@ -694,10 +697,19 @@ const CATALOG_SEVERITY_LABEL: Record<CatalogFinding["severity"], string> = {
  * learning link for any other ad set is left out, and names come from these ad sets.
  * Returns "" when there is nothing to report.
  */
-export function renderCatalogEvidence(reports: CatalogEvidenceInput[], scope: AuditAdSet[]): string {
+export function renderCatalogEvidence(
+  reports: CatalogEvidenceInput[],
+  scope: AuditAdSet[],
+  opts: { notChecked?: number } = {},
+): string {
   if (!reports.length) return "";
   const inScope = new Map(scope.map((a) => [a.id, a]));
-  const lines: string[] = ["### Catalogue (Commerce Manager) — live Meta data, authoritative"];
+  const anyRead = reports.some((r) => !("missing" in r));
+  const lines: string[] = [
+    anyRead
+      ? "### Catalogue (Commerce Manager) — live Meta data, authoritative"
+      : "### Catalogue (Commerce Manager) — not read",
+  ];
 
   for (const report of reports) {
     if ("missing" in report) {
@@ -739,6 +751,10 @@ export function renderCatalogEvidence(reports: CatalogEvidenceInput[], scope: Au
         );
       }
     }
+  }
+  const notChecked = opts.notChecked ?? 0;
+  if (notChecked > 0) {
+    lines.push("", `${notChecked} more catalogue${notChecked === 1 ? "" : "s"} not checked`);
   }
   return lines.join("\n");
 }
