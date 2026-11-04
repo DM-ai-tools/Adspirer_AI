@@ -520,13 +520,13 @@ function CreativesInner() {
                     concept.image_status === "pending" ? (
                       // A rework keeps the previous still visible underneath so
                       // the card does not go blank while the new one renders.
-                      <div className="relative flex aspect-square items-center justify-center overflow-hidden rounded-lg border border-dashed border-accent/40 bg-accent/5">
+                      <div className="relative flex aspect-[4/5] items-center justify-center overflow-hidden rounded-lg border border-dashed border-accent/40 bg-accent/5">
                         {concept.image_url ? (
                           // eslint-disable-next-line @next/next/no-img-element
                           <img
                             src={concept.image_url}
                             alt={concept.headline}
-                            className="absolute inset-0 h-full w-full object-cover opacity-25"
+                            className="absolute inset-0 h-full w-full object-contain opacity-25"
                           />
                         ) : null}
                         <div className="relative flex flex-col items-center gap-2 text-xs text-muted">
@@ -543,10 +543,10 @@ function CreativesInner() {
                       <img
                         src={concept.image_url}
                         alt={concept.headline}
-                        className="aspect-square w-full rounded-lg border border-border object-cover"
+                        className="block h-auto w-full rounded-lg border border-border bg-secondary/30 object-contain"
                       />
                     ) : concept.image_status === "failed" ? (
-                      <div className="flex aspect-square flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-destructive/40 bg-destructive/5 p-4 text-center text-xs text-destructive">
+                      <div className="flex aspect-[4/5] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-destructive/40 bg-destructive/5 p-4 text-center text-xs text-destructive">
                         <span>Image failed</span>
                         {concept.image_error ? (
                           <span className="text-[10px] opacity-80">

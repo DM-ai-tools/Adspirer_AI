@@ -124,13 +124,13 @@ export function InlineCreativeCards({
           draft.image_status === "pending" ? (
             // A rework keeps the previous still underneath so the card does not
             // go blank while the replacement renders.
-            <div className="relative flex aspect-square items-center justify-center border-b border-border bg-secondary/30 text-xs text-muted">
+            <div className="relative flex aspect-[4/5] items-center justify-center border-b border-border bg-secondary/30 text-xs text-muted">
               {draft.image_url ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
                   src={draft.image_url}
                   alt={draft.headline}
-                  className="absolute inset-0 h-full w-full object-cover opacity-25"
+                  className="absolute inset-0 h-full w-full object-contain opacity-25"
                 />
               ) : null}
               <span className="relative inline-flex items-center gap-2">
@@ -143,10 +143,10 @@ export function InlineCreativeCards({
             <img
               src={draft.image_url}
               alt={draft.headline}
-              className="aspect-square w-full border-b border-border object-cover"
+              className="block h-auto w-full border-b border-border bg-secondary/30 object-contain"
             />
           ) : (
-            <div className="flex aspect-square items-center justify-center border-b border-border bg-secondary/30 text-xs text-muted">
+            <div className="flex aspect-[4/5] items-center justify-center border-b border-border bg-secondary/30 text-xs text-muted">
               {draft.image_status === "failed"
                 ? "Image failed"
                 : "Waiting for image…"}
