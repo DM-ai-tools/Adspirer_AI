@@ -16,6 +16,9 @@ const SCOPES = [
   // makes Meta reject the whole connect dialog.
   "leads_retrieval",
   "pages_manage_ads",
+  // Commerce Manager: catalogues, products, feeds and product sets. Needs the
+  // Catalog API use case on the Meta app (Standard access works for app-role users).
+  "catalog_management",
 ].join(",");
 
 /**
