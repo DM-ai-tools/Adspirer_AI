@@ -218,7 +218,7 @@ export default function CommercePage() {
             />
           </TabsContent>
           <TabsContent value="pixel">
-            <PixelMatching events={ok.snapshot.events} />
+            <PixelMatching events={ok.snapshot.events} pixelIds={ok.snapshot.pixelIds} />
           </TabsContent>
         </Tabs>
       </div>
@@ -232,7 +232,7 @@ export default function CommercePage() {
         description="Check that your product catalogue is healthy, so Meta can show your products in ads."
         actions={
           <>
-            <Select value={selectedClientId ?? undefined} onValueChange={setSelectedClientId}>
+            <Select value={selectedClientId ?? ""} onValueChange={setSelectedClientId}>
               <SelectTrigger className="w-[200px]" aria-label="Client">
                 <SelectValue placeholder="Select client" />
               </SelectTrigger>

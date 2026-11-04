@@ -10,6 +10,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { StatCard } from "@/components/shared/stat-card";
 import { apiFetch } from "@/lib/api-client";
 import type { CatalogFinding } from "@/lib/meta/catalog/findings";
+import { CATALOG_THRESHOLDS } from "@/lib/meta/catalog/findings";
+import { feedHealth, overallMatchRate, problemFigures } from "@/lib/meta/catalog/health-figures";
 import type { CatalogReport } from "@/lib/meta/catalog/service";
 
 export type OkReport = Extract<CatalogReport, { state: "ok" }>;
@@ -32,56 +34,6 @@ const FIX_SUMMARY: Record<string, string> = {
   pause_adset: "Pauses the ad set until you turn it back on.",
 };
 
-/** Products Meta flagged as must-fix, leaving out the out-of-stock ones (they have their own card). */
-function rejectedCount(report: OkReport): number {
-  let total = 0;
-  for (const d of report.snapshot.diagnostics) {
-    if (d.severity !== "MUST_FIX") continue;
-    const outOfStock = d.children
-      .filter((c) => c.type === "PRODUCT_OUT_OF_STOCK")
-      .reduce((sum, c) => sum + c.affectedItems, 0);
-    total += Math.max(0, d.affectedItems - outOfStock);
-  }
-  return total;
-}
-
-function feedHealth(report: OkReport): {
-  value: string;
-  hint: string;
-  tone: "success" | "warning" | "default";
-} {
-  const { feeds } = report.snapshot;
-  if (feeds.length === 0) {
-    return {
-      value: "No feed",
-      hint: "Products are added by hand or through an integration",
-      tone: "default",
-    };
-  }
-  const flagged = report.findings.some((f) => f.id.startsWith("feed_"));
-  return flagged
-    ? {
-        value: "Needs attention",
-        hint: "Your product list is stale or has upload errors",
-        tone: "warning",
-      }
-    : {
-        value: "Healthy",
-        hint: "Your product list is uploading on schedule",
-        tone: "success",
-      };
-}
-
-function matchRate(report: OkReport): number | null {
-  let matched = 0;
-  let total = 0;
-  for (const e of report.snapshot.events) {
-    matched += e.matched;
-    total += e.matched + e.unmatched;
-  }
-  return total > 0 ? matched / total : null;
-}
-
 export function CommerceOverview({
   report,
   clientId,
@@ -95,9 +47,9 @@ export function CommerceOverview({
   const [queued, setQueued] = useState<Set<string>>(new Set());
   const { snapshot, findings } = report;
 
-  const feed = feedHealth(report);
-  const rate = matchRate(report);
-  const rejected = rejectedCount(report);
+  const feed = feedHealth(snapshot.feeds, findings);
+  const rate = overallMatchRate(snapshot.events);
+  const { rejected, otherProblems } = problemFigures(snapshot.diagnostics);
 
   async function queueFix(findingId: string) {
     setQueueing((prev) => new Set(prev).add(findingId));
@@ -133,7 +85,7 @@ export function CommerceOverview({
 
   return (
     <div className="space-y-6">
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         <StatCard
           label="Products"
           value={nf(snapshot.productCount)}
@@ -152,15 +104,21 @@ export function CommerceOverview({
         <StatCard
           label="Rejected"
           value={nf(rejected)}
-          hint="Products Meta flagged with a problem and may not show"
+          hint="Products Meta turned down, for example for breaking a policy"
           tone={rejected > 0 ? "danger" : "default"}
+        />
+        <StatCard
+          label="Other problems"
+          value={nf(otherProblems)}
+          hint="Other problems Meta flags, such as a missing title or an image that will not load"
+          tone={otherProblems > 0 ? "warning" : "default"}
         />
         <StatCard label="Feed" value={feed.value} hint={feed.hint} tone={feed.tone} />
         <StatCard
           label="Match rate"
           value={rate === null ? "—" : `${(rate * 100).toFixed(1)}%`}
           hint="Shopper activity on your site that Meta can tie to a product"
-          tone={rate === null ? "default" : rate < 0.9 ? "warning" : "success"}
+          tone={rate === null ? "default" : rate < CATALOG_THRESHOLDS.matchRateLow ? "warning" : "success"}
         />
       </div>
 

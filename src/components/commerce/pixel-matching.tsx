@@ -10,11 +10,18 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { CATALOG_THRESHOLDS } from "@/lib/meta/catalog/findings";
 import type { CatalogEventMatch } from "@/lib/meta/catalog/types";
 
 const nf = (value: number) => value.toLocaleString("en-US");
 
-export function PixelMatching({ events }: { events: CatalogEventMatch[] }) {
+export function PixelMatching({
+  events,
+  pixelIds,
+}: {
+  events: CatalogEventMatch[];
+  pixelIds: string[];
+}) {
   if (events.length === 0) {
     return (
       <EmptyState
@@ -26,6 +33,12 @@ export function PixelMatching({ events }: { events: CatalogEventMatch[] }) {
 
   return (
     <div className="space-y-3">
+      <p className="text-sm text-muted">
+        Connected pixel:{" "}
+        <span className="font-mono text-foreground">
+          {pixelIds.length > 0 ? pixelIds.join(", ") : "none found"}
+        </span>
+      </p>
       <p className="text-sm text-muted">
         When a shopper views or buys something, your Meta pixel reports it. A match
         means Meta could tie that activity to a product in this catalogue. Low
@@ -55,7 +68,7 @@ export function PixelMatching({ events }: { events: CatalogEventMatch[] }) {
                     {rate === null ? (
                       "—"
                     ) : (
-                      <Badge variant={rate < 0.9 ? "warning" : "success"}>
+                      <Badge variant={rate < CATALOG_THRESHOLDS.matchRateLow ? "warning" : "success"}>
                         {(rate * 100).toFixed(1)}%
                       </Badge>
                     )}

@@ -96,6 +96,7 @@ export const config = {
     "/approvals/:path*",
     "/monitoring/:path*",
     "/creatives/:path*",
+    "/commerce/:path*",
     "/audit/:path*",
     "/admin/:path*",
   ],
