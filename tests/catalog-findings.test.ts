@@ -59,6 +59,7 @@ describe("CATALOG_THRESHOLDS", () => {
       outOfStockShareHigh: 0.2,
       feedStaleHours: 48,
       matchRateLow: 0.9,
+      matchedOtherShareMedium: 0.1,
     });
   });
 });
@@ -224,6 +225,19 @@ describe("small_product_set", () => {
   });
 });
 
+describe("small set with high out-of-stock share", () => {
+  it("reports both findings but attaches no in-stock filter fix", () => {
+    const snap = healthySnapshot({
+      productSets: [{ id: "SET_S", name: "Tiny", filter: null, productCount: 90, inStockCount: 4 }],
+    });
+    const { findings } = evaluateCatalog(snap, [use({ productSetId: "SET_S" })]);
+    expect(find(findings, "small_product_set")).toBeDefined();
+    const oos = find(findings, "out_of_stock_in_used_set")!;
+    expect(oos).toBeDefined();
+    expect(oos.fix).toBeNull();
+  });
+});
+
 describe("feed findings", () => {
   const feed = (over: Record<string, unknown> = {}) => ({
     id: "FEED1",
@@ -306,8 +320,35 @@ describe("match findings", () => {
       [],
     );
     const f = find(findings, "matched_other_catalog")!;
+    expect(f.severity).toBe("medium");
     expect(f.evidence.join("\n")).toContain("Purchase");
     expect(f.evidence.join("\n")).toContain("2,103");
+  });
+
+  it("rates a 9% cross-catalogue share as low", () => {
+    const { findings } = evaluateCatalog(
+      healthySnapshot({ events: [ev({ matched: 910, unmatched: 0, matchedOtherCatalogs: 90 })] }),
+      [],
+    );
+    const f = find(findings, "matched_other_catalog")!;
+    expect(f).toBeDefined();
+    expect(f.severity).toBe("low");
+  });
+
+  it("rates a 10% cross-catalogue share as medium", () => {
+    const { findings } = evaluateCatalog(
+      healthySnapshot({ events: [ev({ matched: 900, unmatched: 0, matchedOtherCatalogs: 100 })] }),
+      [],
+    );
+    expect(find(findings, "matched_other_catalog")?.severity).toBe("medium");
+  });
+
+  it("flags even a tiny cross-catalogue count", () => {
+    const { findings } = evaluateCatalog(
+      healthySnapshot({ events: [ev({ matched: 5000, unmatched: 0, matchedOtherCatalogs: 1 })] }),
+      [],
+    );
+    expect(find(findings, "matched_other_catalog")?.severity).toBe("low");
   });
 
   it("does not flag an event with no cross-catalogue matches", () => {
@@ -379,6 +420,36 @@ describe("learningLinks", () => {
     ]);
     expect(learningLinks.find((l) => l.adSetId === "A")?.verdict).toBe("healthy");
     expect(learningLinks.find((l) => l.adSetId === "B")?.verdict).toBe("likely_contributor");
+  });
+
+  it("does not claim health when the stock count is unavailable", () => {
+    const snap = healthySnapshot({
+      productSets: [{ id: "SET_X", name: "X", filter: null, productCount: 1000, inStockCount: null }],
+    });
+    const { learningLinks } = evaluateCatalog(snap, [use({ productSetId: "SET_X", learningStatus: "FAIL" })]);
+    expect(learningLinks[0].verdict).toBe("healthy");
+    const text = learningLinks[0].reasons.join("\n");
+    expect(text).toContain("SET_X could not be checked");
+    expect(text).toContain("stock count unavailable");
+    expect(text).not.toContain("No catalogue problem found");
+  });
+
+  it("does not claim health when the product set is missing from the snapshot", () => {
+    const { learningLinks } = evaluateCatalog(
+      healthySnapshot(),
+      [use({ productSetId: "SET_GONE", learningStatus: "FAIL" })],
+    );
+    expect(learningLinks[0].verdict).toBe("healthy");
+    expect(learningLinks[0].reasons.join("\n")).toContain("SET_GONE could not be checked");
+    expect(learningLinks[0].reasons.join("\n")).not.toContain("No catalogue problem found");
+  });
+
+  it("does not let a low-share cross-catalogue match explain a learning failure", () => {
+    const snap = healthySnapshot({
+      events: [{ event: "Purchase", pixelId: "1", matched: 5000, unmatched: 0, matchedOtherCatalogs: 1 }],
+    });
+    const { learningLinks } = evaluateCatalog(snap, [use({ learningStatus: "FAIL" })]);
+    expect(learningLinks[0].verdict).toBe("healthy");
   });
 
   it("produces no link for non-FAIL ad sets", () => {

@@ -30,15 +30,15 @@ export const CATALOG_THRESHOLDS = {
    * items. Healthy shops sit near 99%; under 90% dynamic ads lose their product signal.
    */
   matchRateLow: 0.9,
+  /**
+   * Share of an event's matches (this catalogue + others) that went to other catalogues
+   * at which the cross-match is rated medium instead of low. Below it the shared pixel
+   * is mostly attributing correctly; at or above it a visible slice of signal is misrouted.
+   */
+  matchedOtherShareMedium: 0.1,
 } as const;
 
 export type CatalogThresholds = { -readonly [K in keyof typeof CATALOG_THRESHOLDS]: number };
-
-/**
- * Share of an event's matches (this catalogue + others) that went to other catalogues
- * before it is worth flagging. Below this it is noise from a shared pixel.
- */
-const MATCHED_OTHER_SHARE_MIN = 0.1;
 
 export type CatalogAdSetUse = {
   adSetId: string;
@@ -183,11 +183,11 @@ function checkProductSets(sets: CatalogProductSet[], uses: CatalogAdSetUse[], t:
   const out: Internal[] = [];
   for (const set of sets) {
     const adSetIds = adSetsOn(uses, set.id);
-    const used = set.inStockCount !== null || adSetIds.length > 0;
-    if (!used || set.inStockCount === null) continue;
+    if (set.inStockCount === null) continue;
     const inStock = set.inStockCount;
+    const small = inStock < t.minDeliverableItems;
 
-    if (inStock < t.minDeliverableItems) {
+    if (small) {
       out.push({
         finding: {
           id: `small_product_set:${set.id}`,
@@ -213,6 +213,8 @@ function checkProductSets(sets: CatalogProductSet[], uses: CatalogAdSetUse[], t:
       const share = outOfStock / set.productCount;
       if (share > t.outOfStockShareHigh) {
         const alreadyFiltered = hasInStockFilter(set.filter);
+        // A set already starved of deliverable items gains nothing from a narrower filter.
+        const noFix = alreadyFiltered || small;
         out.push({
           finding: {
             id: `out_of_stock_in_used_set:${set.id}`,
@@ -223,10 +225,12 @@ function checkProductSets(sets: CatalogProductSet[], uses: CatalogAdSetUse[], t:
             ],
             productSetIds: [set.id],
             adSetIds,
-            howToFix: alreadyFiltered
+            howToFix: small
+              ? "Narrowing this set to in-stock items would not help; widen its filter first (see the small product set finding)."
+              : alreadyFiltered
               ? "The set already filters to in-stock items; check the feed's availability values, as the stock counts disagree with the filter."
               : "Add an availability = in stock condition to the product set's filter so ads only show items that can be bought.",
-            fix: alreadyFiltered
+            fix: noFix
               ? null
               : {
                   toolName: "update_product_set_filter",
@@ -326,15 +330,15 @@ function checkEvents(events: CatalogEventMatch[], t: CatalogThresholds): Interna
       }
     }
 
-    const withOthers = e.matched + e.matchedOtherCatalogs;
-    if (e.matchedOtherCatalogs > 0 && withOthers > 0 && e.matchedOtherCatalogs / withOthers >= MATCHED_OTHER_SHARE_MIN) {
+    if (e.matchedOtherCatalogs > 0) {
+      const share = e.matchedOtherCatalogs / (e.matched + e.matchedOtherCatalogs);
       out.push({
         finding: {
           id: `matched_other_catalog:${e.event}`,
-          severity: "medium",
+          severity: share >= t.matchedOtherShareMedium ? "medium" : "low",
           title: `${e.event} events are also matching other catalogues`,
           evidence: [
-            `${e.event}: ${n(e.matchedOtherCatalogs)} events matched other catalogues vs ${n(e.matched)} matched to this one`,
+            `${e.event}: ${n(e.matchedOtherCatalogs)} events matched other catalogues vs ${n(e.matched)} matched to this one (${pct(share)} of matches)`,
           ],
           productSetIds: [],
           adSetIds: [],
@@ -344,7 +348,11 @@ function checkEvents(events: CatalogEventMatch[], t: CatalogThresholds): Interna
         },
         affected: e.matchedOtherCatalogs,
         catalogWide: true,
-        reason: `${n(e.matchedOtherCatalogs)} ${e.event} events matched other catalogues instead of this one.`,
+        // A low-share cross-match is reported but is too small to explain a learning failure.
+        reason:
+          share >= t.matchedOtherShareMedium
+            ? `${n(e.matchedOtherCatalogs)} ${e.event} events matched other catalogues instead of this one.`
+            : null,
       });
     }
   }
@@ -378,16 +386,32 @@ export function evaluateCatalog(
     const reasons = internals
       .filter((i) => i.reason && (i.catalogWide || i.finding.productSetIds.includes(u.productSetId)))
       .map((i) => i.reason as string);
-    learningLinks.push(
-      reasons.length > 0
-        ? { adSetId: u.adSetId, productSetId: u.productSetId, verdict: "likely_contributor", reasons }
-        : {
-            adSetId: u.adSetId,
-            productSetId: u.productSetId,
-            verdict: "healthy",
-            reasons: ["No catalogue problem found for this ad set's product set, feeds or event matching."],
-          },
-    );
+    const set = snapshot.productSets.find((s) => s.id === u.productSetId);
+    const unchecked =
+      set === undefined
+        ? `Product set ${u.productSetId} could not be checked (not found in the catalogue snapshot)`
+        : set.inStockCount === null
+          ? `Product set ${u.productSetId} could not be checked (stock count unavailable)`
+          : null;
+    if (reasons.length > 0) {
+      learningLinks.push({
+        adSetId: u.adSetId,
+        productSetId: u.productSetId,
+        verdict: "likely_contributor",
+        reasons: unchecked ? [...reasons, unchecked] : reasons,
+      });
+    } else {
+      learningLinks.push({
+        adSetId: u.adSetId,
+        productSetId: u.productSetId,
+        verdict: "healthy",
+        reasons: [
+          unchecked
+            ? `${unchecked}; no catalogue-wide problem found`
+            : "No catalogue problem found for this ad set's product set, feeds or event matching.",
+        ],
+      });
+    }
   }
 
   return { findings: internals.map((i) => i.finding), learningLinks };
