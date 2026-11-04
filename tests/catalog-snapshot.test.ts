@@ -246,7 +246,11 @@ describe("catalogAccessReason", () => {
     expect(
       catalogAccessReason(new MetaGraphError("(#100) This application has not been approved to use this api", 100, 400)),
     ).toBe("missing_permission");
-    expect(catalogAccessReason(new MetaGraphError("expired", 190, 401))).toBe("missing_permission");
+    expect(catalogAccessReason(new MetaGraphError("denied", 10, 403))).toBe("missing_permission");
+  });
+
+  it("classifies an expired token (190) as expired, not as missing permission", () => {
+    expect(catalogAccessReason(new MetaGraphError("expired", 190, 401))).toBe("expired");
     expect(catalogAccessReason(new MetaGraphError("denied", 10, 403))).toBe("missing_permission");
   });
 });

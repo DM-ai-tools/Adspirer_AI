@@ -1,7 +1,7 @@
 import type { MetaAdsProvider } from "@/lib/adspirer/provider";
 import { ApprovalValidationError } from "@/lib/errors";
 import { CATALOG_PERMISSION_MESSAGE, CatalogAccessError } from "@/lib/meta/catalog/errors";
-import { getClientCommerce, type CommerceState } from "@/lib/meta/catalog/service";
+import { EXPIRED_MESSAGE, getClientCommerce, type CommerceState } from "@/lib/meta/catalog/service";
 
 export const NOT_LINKED_MESSAGE = "This product set / feed is not linked to this client's ad accounts. Nothing was changed.";
 
@@ -23,7 +23,11 @@ export async function assertCatalogTargetOwned(input: {
   loadCommerce?: (clientId: string) => Promise<CommerceState>;
 }): Promise<void> {
   const commerce = await (input.loadCommerce ?? getClientCommerce)(input.clientId);
-  if (commerce.state === "missing_permission") throw new CatalogAccessError("missing_permission", CATALOG_PERMISSION_MESSAGE);
+  // An expired token reads as not_connected in the service; on the fix path it is the approver's
+  // connection, so it keeps the approver-permission message.
+  if (commerce.state === "missing_permission" || (commerce.state === "not_connected" && commerce.message === EXPIRED_MESSAGE)) {
+    throw new CatalogAccessError("missing_permission", CATALOG_PERMISSION_MESSAGE);
+  }
   if (commerce.state === "no_catalog") throw new ApprovalValidationError(NOT_LINKED_MESSAGE);
   if (commerce.state !== "ok") throw new ApprovalValidationError(`${commerce.message} Nothing was changed.`);
 

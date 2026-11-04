@@ -129,10 +129,37 @@ export function buildWorkspaceReadToolSet(ctx: ToolContext): ToolSet {
   return buildToolSet(ctx, WORKSPACE_READ_ALLOWLIST);
 }
 
+/** Longest the chat waits on catalogue discovery before deciding whether to offer the catalogue tools. */
+export const CATALOG_GATE_TIMEOUT_MS = 2000;
+
+/**
+ * Whether to offer the catalogue tools, without holding the chat up on a slow discovery: an ok
+ * discovery within CATALOG_GATE_TIMEOUT_MS offers them, a failure state or a thrown error leaves
+ * them out, and a timeout offers them anyway (they return typed failure states themselves) while
+ * the discovery carries on in the background and warms the cache.
+ */
+export async function catalogueToolsOffered(clientId: string, timeoutMs: number = CATALOG_GATE_TIMEOUT_MS): Promise<boolean> {
+  const discovery = (async () => {
+    const { getClientCommerce } = await import("@/lib/meta/catalog/service");
+    return (await getClientCommerce(clientId)).state === "ok";
+  })().catch(() => false);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), timeoutMs);
+  });
+  try {
+    const outcome = await Promise.race([discovery, timedOut]);
+    return outcome === "timeout" ? true : outcome;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * The base read set plus the Shopify tools when the client has a connected
  * store, and the catalogue tools when the client sells from a Meta catalogue.
- * The two checks run in parallel; if either can't be read its tools are left out.
+ * The two checks run in parallel; if either can't be read its tools are left out
+ * (a slow catalogue discovery offers its tools anyway: see catalogueToolsOffered).
  */
 export async function buildWorkspaceReadToolSetForClient(ctx: ToolContext): Promise<ToolSet> {
   const base = buildWorkspaceReadToolSet(ctx);
@@ -145,14 +172,7 @@ export async function buildWorkspaceReadToolSetForClient(ctx: ToolContext): Prom
         return false;
       }
     })(),
-    (async () => {
-      try {
-        const { getClientCommerce } = await import("@/lib/meta/catalog/service");
-        return (await getClientCommerce(ctx.clientId)).state === "ok";
-      } catch {
-        return false;
-      }
-    })(),
+    catalogueToolsOffered(ctx.clientId),
   ]);
   return {
     ...base,

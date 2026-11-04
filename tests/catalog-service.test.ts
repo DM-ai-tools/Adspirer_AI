@@ -24,6 +24,9 @@ vi.mock("@/lib/meta/graph-client", async (importOriginal) => {
 
 import { MetaGraphError } from "@/lib/meta/graph-client";
 import {
+  DISCOVERY_INCOMPLETE_MESSAGE,
+  EXPIRED_MESSAGE,
+  PRODUCT_SET_CONCURRENCY,
   discoverClientCatalogs,
   getCatalogReport,
   getClientCommerce,
@@ -512,5 +515,156 @@ describe("discovery cache", () => {
     resetCatalogReportCache();
     await getClientCommerce("c1");
     expect(discoveryCalls()).toBe(2);
+  });
+});
+
+describe("unreadable and incomplete discovery", () => {
+  const unreadable = (id: string) =>
+    new MetaGraphError(
+      `Unsupported get request. Object with ID '${id}' does not exist, cannot be loaded due to missing permissions, or does not support this operation`,
+      100,
+      400,
+      33,
+    );
+  const adSetCalls = () => mocks.graphGet.mock.calls.filter(([path]) => path === "act_1/adsets").length;
+
+  beforeEach(() => {
+    resetMocks();
+  });
+
+  it("catalogue ad sets whose sets are all unreadable report catalogs_unreadable, not no_catalog", async () => {
+    mocks.graphGet.mockImplementation(async (path: string) => {
+      if (path === "act_1/adsets") return { data: [adSet("A1", "S1"), adSet("A2", "S2"), adSet("A3", null)] };
+      throw unreadable(path);
+    });
+    const out = await getClientCommerce("c1");
+    expect(out).toEqual({
+      state: "catalogs_unreadable",
+      message:
+        "2 catalogue ad sets found, but your Facebook login can't read their product sets (they may belong to another business you don't have access to).",
+    });
+    // The report and products reads say the same thing rather than "no catalogue".
+    expect((await getCatalogReport("c1", CATALOG)).state).toBe("catalogs_unreadable");
+    expect((await listClientCatalogProducts("c1", CATALOG)).state).toBe("catalogs_unreadable");
+  });
+
+  it("never caches catalogs_unreadable", async () => {
+    mocks.graphGet.mockImplementation(async (path: string) => {
+      if (path === "act_1/adsets") return { data: [adSet("A1", "S1")] };
+      throw unreadable(path);
+    });
+    expect((await getClientCommerce("c1")).state).toBe("catalogs_unreadable");
+    expect((await getClientCommerce("c1")).state).toBe("catalogs_unreadable");
+    expect(adSetCalls()).toBe(2);
+  });
+
+  it("an incomplete discovery with no catalogue throws, so callers show their retry state", async () => {
+    mocks.graphGet.mockImplementation(async (path: string) => {
+      if (path === "act_1/adsets") return { data: [adSet("A1", "S1")] };
+      throw new MetaGraphError("(#4) Application request limit reached", 4, 429);
+    });
+    await expect(getClientCommerce("c1")).rejects.toThrow(DISCOVERY_INCOMPLETE_MESSAGE);
+    await expect(getCatalogReport("c1", CATALOG)).rejects.toThrow(DISCOVERY_INCOMPLETE_MESSAGE);
+  });
+
+  it("an expired token (190) reads as not_connected with a reconnect message", async () => {
+    mocks.graphGet.mockRejectedValue(new MetaGraphError("Error validating access token: Session has expired", 190, 401));
+    expect(await getClientCommerce("c1")).toEqual({ state: "not_connected", message: EXPIRED_MESSAGE });
+    expect(EXPIRED_MESSAGE).toBe("Your Facebook connection has expired. Reconnect Facebook.");
+
+    // On a product set too.
+    resetMocks();
+    mocks.graphGet.mockImplementation(async (path: string) => {
+      if (path === "act_1/adsets") return { data: [adSet("A1", SET)] };
+      throw new MetaGraphError("expired", 190, 401);
+    });
+    expect(await getClientCommerce("c1")).toEqual({ state: "not_connected", message: EXPIRED_MESSAGE });
+  });
+
+  it("a 10/200 permission error on one set is skipped like an unreadable set", async () => {
+    mocks.graphGet.mockImplementation(async (path: string) => {
+      if (path === "act_1/adsets") return { data: [adSet("A1", SET), adSet("A2", "S_OTHER_BM")] };
+      if (path === "S_OTHER_BM") throw new MetaGraphError("(#10) Requires business_management permission", 10, 403);
+      return { id: SET, product_catalog: { id: CATALOG, name: "During Days", product_count: 10 } };
+    });
+    const out = await getClientCommerce("c1");
+    expect(out).toMatchObject({ state: "ok", catalogs: [{ id: CATALOG }], uses: [{ adSetId: "A1" }] });
+  });
+
+  it("when every set fails with 10/200, that is missing_permission", async () => {
+    mocks.graphGet.mockImplementation(async (path: string) => {
+      if (path === "act_1/adsets") return { data: [adSet("A1", "S1"), adSet("A2", "S2")] };
+      if (path === "S1") throw new MetaGraphError("(#10) Requires permission", 10, 403);
+      throw permissionError();
+    });
+    expect((await getClientCommerce("c1")).state).toBe("missing_permission");
+  });
+
+  it("a mix of permission-skipped and unreadable sets is catalogs_unreadable", async () => {
+    mocks.graphGet.mockImplementation(async (path: string) => {
+      if (path === "act_1/adsets") return { data: [adSet("A1", "S1"), adSet("A2", "S2")] };
+      if (path === "S1") throw permissionError();
+      throw unreadable(path);
+    });
+    expect((await getClientCommerce("c1")).state).toBe("catalogs_unreadable");
+  });
+
+  it("'(#100) not been approved' on the ad set call stays missing_permission", async () => {
+    mocks.graphGet.mockRejectedValue(new MetaGraphError("(#100) This application has not been approved to use this api", 100, 400));
+    expect((await getClientCommerce("c1")).state).toBe("missing_permission");
+  });
+});
+
+describe("discovery dedupe and concurrency", () => {
+  beforeEach(() => {
+    resetMocks();
+  });
+
+  it("concurrent callers share one in-flight discovery", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    mocks.graphGet.mockImplementation(async (path: string) => {
+      if (path === "act_1/adsets") {
+        await gate;
+        return { data: [adSet("A1", SET)] };
+      }
+      return { id: SET, product_catalog: { id: CATALOG, name: "During Days", product_count: 10 } };
+    });
+    const all = Promise.all([getClientCommerce("c1"), getClientCommerce("c1"), getClientCommerce("c1")]);
+    await new Promise((r) => setTimeout(r, 0));
+    release();
+    const results = await all;
+    expect(results.every((r) => r.state === "ok")).toBe(true);
+    expect(mocks.graphGet.mock.calls.filter(([p]) => p === "act_1/adsets")).toHaveLength(1);
+  });
+
+  it("a failed in-flight discovery is not kept: the next call tries again", async () => {
+    mocks.graphGet.mockRejectedValueOnce(new MetaGraphError("(#4) Application request limit reached", 4, 429));
+    await expect(Promise.all([getClientCommerce("c1"), getClientCommerce("c1")])).rejects.toThrow(/request limit/);
+    mocks.graphGet.mockImplementation(async (path: string) => {
+      if (path === "act_1/adsets") return { data: [adSet("A1", SET)] };
+      return { id: SET, product_catalog: { id: CATALOG, name: "During Days", product_count: 10 } };
+    });
+    expect((await getClientCommerce("c1")).state).toBe("ok");
+  });
+
+  it("looks up at most PRODUCT_SET_CONCURRENCY (6) product sets at once", async () => {
+    expect(PRODUCT_SET_CONCURRENCY).toBe(6);
+    const setIds = Array.from({ length: 20 }, (_, i) => `S${i}`);
+    let running = 0;
+    let peak = 0;
+    const graph = {
+      get: async <T,>(path: string): Promise<T> => {
+        if (path === "act_1/adsets") return { data: setIds.map((s, i) => adSet(`A${i}`, s)) } as T;
+        running += 1;
+        peak = Math.max(peak, running);
+        await new Promise((r) => setTimeout(r, 1));
+        running -= 1;
+        return { id: path, product_catalog: { id: CATALOG, name: "C", product_count: 1 } } as T;
+      },
+    };
+    const out = await discoverClientCatalogs(graph, ["act_1"]);
+    expect(out.uses).toHaveLength(20);
+    expect(peak).toBe(6);
   });
 });

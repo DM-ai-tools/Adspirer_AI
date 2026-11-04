@@ -17,7 +17,13 @@ vi.mock("@/lib/meta/catalog/service", () => ({
 }));
 vi.mock("@/lib/shopify/store", () => ({ getConnection: (...a: unknown[]) => mocks.shopify(...a) }));
 
-import { buildWorkspaceReadToolSet, buildWorkspaceReadToolSetForClient, workspaceReadToolNames } from "@/lib/agent/diagnose-tools-ai";
+import {
+  CATALOG_GATE_TIMEOUT_MS,
+  buildWorkspaceReadToolSet,
+  buildWorkspaceReadToolSetForClient,
+  catalogueToolsOffered,
+  workspaceReadToolNames,
+} from "@/lib/agent/diagnose-tools-ai";
 import { buildStaticSystemPromptV2 } from "@/lib/agent/prompts-v2";
 import { demoCatalogSnapshot } from "@/lib/meta/catalog/demo";
 import { humanToolLabel, humanToolProgressLabel } from "@/lib/tools/display-labels";
@@ -275,6 +281,40 @@ describe("tool set", () => {
     names = Object.keys(await buildWorkspaceReadToolSetForClient(ctx()));
     for (const n of NAMES) expect(names).toContain(n);
     expect(names).not.toContain("shopify_products");
+  });
+
+  it("a slow discovery offers the four anyway after the timeout, and its later failure is caught", async () => {
+    let reject!: (e: Error) => void;
+    mocks.commerce.mockReturnValue(new Promise((_, r) => (reject = r)));
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    try {
+      expect(CATALOG_GATE_TIMEOUT_MS).toBe(2000);
+      const started = Date.now();
+      expect(await catalogueToolsOffered(CT, 20)).toBe(true);
+      expect(Date.now() - started).toBeLessThan(1000);
+      // The discovery goes on in the background; when it fails nothing is left unhandled.
+      reject(new Error("rate limited"));
+      await new Promise((r) => setTimeout(r, 10));
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
+  });
+
+  it("a discovery that finishes in time decides: ok offers them, a failure state leaves them out", async () => {
+    expect(await catalogueToolsOffered(CT, 1000)).toBe(true);
+    mocks.commerce.mockResolvedValue({ state: "catalogs_unreadable", message: "2 catalogue ad sets found, but ..." });
+    expect(await catalogueToolsOffered(CT, 1000)).toBe(false);
+    mocks.commerce.mockResolvedValue(NO_CATALOG);
+    expect(await catalogueToolsOffered(CT, 1000)).toBe(false);
+  });
+
+  it("passes a catalogs_unreadable state through to the model as a typed error", async () => {
+    mocks.commerce.mockResolvedValue({ state: "catalogs_unreadable", message: "2 catalogue ad sets found, but no access." });
+    const out = await call("meta_catalogs", {});
+    expect(out).toMatchObject({ error: true, message: "2 catalogue ad sets found, but no access." });
+    expect(out.missing_permission).toBeUndefined();
   });
 
   it("keeps the base allowlist unchanged", () => {

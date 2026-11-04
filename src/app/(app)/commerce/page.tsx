@@ -29,14 +29,25 @@ const RECONNECT_URL = "/api/auth/meta?returnTo=/commerce";
 
 type Failure = Exclude<CommerceState, { state: "ok" }>;
 
-/** Explains a failure state; permission and connection problems get a reconnect button. */
-function FailureNotice({ failure }: { failure: Failure | Exclude<CatalogReport, { state: "ok" }> }) {
+/**
+ * Explains a failure state; permission and connection problems get a reconnect button, and
+ * unreadable catalogues a retry (access may be granted in Business Manager meanwhile).
+ */
+function FailureNotice({
+  failure,
+  onRetry,
+}: {
+  failure: Failure | Exclude<CatalogReport, { state: "ok" }>;
+  onRetry?: () => void;
+}) {
   const reconnect = failure.state === "missing_permission" || failure.state === "not_connected";
+  const retryable = failure.state === "catalogs_unreadable" && onRetry;
   const title = {
     not_connected: "Facebook is not connected",
     missing_permission: "Catalogue access is needed",
     no_ad_account: "No ad account for this client",
     no_catalog: "No catalogue found",
+    catalogs_unreadable: "Catalogues can't be read",
   }[failure.state];
   return (
     <EmptyState
@@ -48,6 +59,8 @@ function FailureNotice({ failure }: { failure: Failure | Exclude<CatalogReport, 
           <Button asChild>
             <a href={RECONNECT_URL}>Reconnect Facebook</a>
           </Button>
+        ) : retryable ? (
+          <Button onClick={onRetry}>Retry</Button>
         ) : undefined
       }
     />
@@ -162,7 +175,7 @@ export default function CommercePage() {
       return <ErrorState title="Could not load catalogues" description={commerceError} onRetry={retry} />;
     }
     if (!commerce) return <LoadingState label="Loading catalogues…" />;
-    if (commerce.state !== "ok") return <FailureNotice failure={commerce} />;
+    if (commerce.state !== "ok") return <FailureNotice failure={commerce} onRetry={retry} />;
     if (!catalogId) {
       return (
         <FailureNotice
@@ -174,7 +187,7 @@ export default function CommercePage() {
       return <ErrorState title="Could not load this catalogue" description={reportError} onRetry={retry} />;
     }
     if (!report) return <LoadingState label="Reading the catalogue from Meta…" />;
-    if (report.state !== "ok") return <FailureNotice failure={report} />;
+    if (report.state !== "ok") return <FailureNotice failure={report} onRetry={retry} />;
 
     const ok: OkReport = report;
     return (

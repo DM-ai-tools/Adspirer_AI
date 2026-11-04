@@ -1,7 +1,7 @@
 import { loadMappedMetaAccounts } from "@/lib/adspirer/resolve-meta-account";
 import { getConfig } from "@/lib/config";
 import { DEMO_CATALOGS, demoCatalogProducts, demoCatalogSnapshot, demoCatalogUses } from "@/lib/meta/catalog/demo";
-import { CatalogAccessError, catalogAccessReason } from "@/lib/meta/catalog/errors";
+import { CatalogAccessError, catalogAccessReason, isPerObjectPermissionError } from "@/lib/meta/catalog/errors";
 import { evaluateCatalog, isDeliveringStatus, type CatalogAdSetUse, type CatalogFinding, type LearningLink } from "@/lib/meta/catalog/findings";
 import { fetchCatalogSnapshot, listCatalogProducts } from "@/lib/meta/catalog/snapshot";
 import type { CatalogGraph, CatalogProduct, CatalogProductIssue, CatalogSnapshot } from "@/lib/meta/catalog/types";
@@ -15,7 +15,7 @@ export type ClientCatalog = { id: string; name: string; productCount: number };
 /** An ad set selling a product set, with the catalogue that set belongs to. */
 export type ClientCatalogUse = CatalogAdSetUse & { catalogId: string };
 
-type FailureState = "not_connected" | "missing_permission" | "no_ad_account" | "no_catalog";
+type FailureState = "not_connected" | "missing_permission" | "no_ad_account" | "no_catalog" | "catalogs_unreadable";
 type Failure = { state: FailureState; message: string };
 
 export type CommerceState = { state: "ok"; catalogs: ClientCatalog[]; uses: ClientCatalogUse[] } | Failure;
@@ -30,7 +30,7 @@ export type CatalogReport =
     }
   | Failure;
 
-const MESSAGES: Record<FailureState, string> = {
+const MESSAGES: Record<Exclude<FailureState, "catalogs_unreadable">, string> = {
   missing_permission:
     "Facebook is connected without catalogue access. Reconnect Facebook and allow catalogue (Commerce Manager) access.",
   not_connected: "Facebook is not connected. Connect it under Admin → Connections.",
@@ -38,12 +38,35 @@ const MESSAGES: Record<FailureState, string> = {
   no_catalog: "No catalogue is linked to this client's ad accounts.",
 };
 
-const failure = (state: FailureState): Failure => ({ state, message: MESSAGES[state] });
+const failure = (state: Exclude<FailureState, "catalogs_unreadable">): Failure => ({ state, message: MESSAGES[state] });
+
+export const EXPIRED_MESSAGE = "Your Facebook connection has expired. Reconnect Facebook.";
+export const DISCOVERY_INCOMPLETE_MESSAGE =
+  "Meta did not answer for every product set, so this client's catalogues could not be listed. Try again in a minute.";
+
+/** Catalogue ad sets were found but none of their product sets could be read. */
+export function catalogsUnreadable(adSetCount: number): Failure {
+  const found = adSetCount === 1 ? "1 catalogue ad set found" : `${adSetCount} catalogue ad sets found`;
+  return {
+    state: "catalogs_unreadable",
+    message: `${found}, but your Facebook login can't read their product sets (they may belong to another business you don't have access to).`,
+  };
+}
+
+/** The failure an access error shows (an expired token reads as not connected), or null when it is not one. */
+function accessFailure(error: unknown): Failure | null {
+  const reason = error instanceof CatalogAccessError ? error.reason : catalogAccessReason(error);
+  if (reason === "expired") return { state: "not_connected", message: EXPIRED_MESSAGE };
+  if (reason === "missing_permission") return failure("missing_permission");
+  return null;
+}
 
 const ADSET_PAGE_SIZE = 500;
 const MAX_ADSET_PAGES = 5;
 const REPORT_TTL_MS = 5 * 60_000;
 const COMMERCE_TTL_MS = 5 * 60_000;
+/** Most product set lookups in flight at once during discovery. */
+export const PRODUCT_SET_CONCURRENCY = 6;
 
 const normalizeAct = (id: string): string => (id.startsWith("act_") ? id : `act_${id}`);
 const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
@@ -74,10 +97,30 @@ async function listAdSets(graph: CatalogGraph, accountId: string): Promise<Row[]
   return out;
 }
 
+/** Runs `fn` over `items` with at most `limit` running at once; stops starting new ones after a throw. */
+async function forEachLimited<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  let failed = false;
+  const worker = async () => {
+    while (!failed && next < items.length) {
+      const item = items[next++]!;
+      try {
+        await fn(item);
+      } catch (error) {
+        failed = true;
+        throw error;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+}
+
 /**
  * Finds the catalogues a client sells from, by reading which product sets its ad sets promote.
- * Ad sets with no product set are ignored. Missing catalogue permission while reading a
- * product set throws CatalogAccessError.
+ * Ad sets with no product set are ignored. Product sets are looked up at most
+ * PRODUCT_SET_CONCURRENCY at a time. An app-level permission failure (or an expired token) while
+ * reading a product set throws CatalogAccessError; a 10/200 permission error on one set is skipped
+ * like an unreadable set, unless every set fails that way.
  */
 export async function discoverClientCatalogs(
   graph: CatalogGraph,
@@ -89,6 +132,8 @@ export async function discoverClientCatalogs(
   skippedProductSets: number;
   /** False when a set was skipped for a reason other than being unreadable, so the result should not be cached. */
   complete: boolean;
+  /** Ad sets that sell from a product set, whether or not its catalogue could be read. */
+  catalogAdSets: number;
 }> {
   const accounts = [...new Set(accountIds.map(normalizeAct))];
   const perAccount = await Promise.all(
@@ -117,27 +162,39 @@ export async function discoverClientCatalogs(
   const catalogOfSet = new Map<string, ClientCatalog>();
   let skippedProductSets = 0;
   let complete = true;
-  await Promise.all(
-    setIds.map(async (setId) => {
-      try {
-        const res = await graph.get<Row>(setId, { fields: "product_catalog{id,name,product_count}" });
-        const catalog = res.product_catalog as Row | undefined;
-        const id = str(catalog?.id);
-        if (id) catalogOfSet.set(setId, { id, name: str(catalog?.name) ?? id, productCount: num(catalog?.product_count) });
-      } catch (error) {
-        const reason = catalogAccessReason(error);
-        if (reason === "missing_permission") {
-          throw new CatalogAccessError(reason, error instanceof Error ? error.message : String(error));
-        }
-        // One set the token cannot read (deleted, or owned elsewhere) must not fail the client's whole
-        // discovery: skip it and keep the other sets' catalogues. A failure that is not a clear
-        // "unreadable set" (rate limit, network) is skipped too but marks the result incomplete, so
-        // it is not cached and the next load tries again.
-        skippedProductSets += 1;
-        if (reason !== "not_found") complete = false;
+  let permissionSkipped = 0;
+  let lastPermissionMessage = "";
+  await forEachLimited(setIds, PRODUCT_SET_CONCURRENCY, async (setId) => {
+    try {
+      const res = await graph.get<Row>(setId, { fields: "product_catalog{id,name,product_count}" });
+      const catalog = res.product_catalog as Row | undefined;
+      const id = str(catalog?.id);
+      if (id) catalogOfSet.set(setId, { id, name: str(catalog?.name) ?? id, productCount: num(catalog?.product_count) });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const reason = catalogAccessReason(error);
+      if (reason === "expired") throw new CatalogAccessError("expired", message);
+      if (reason === "missing_permission" && !isPerObjectPermissionError(error)) {
+        // For example "(#100) This application has not been approved to use this api": app-wide.
+        throw new CatalogAccessError(reason, message);
       }
-    }),
-  );
+      // One set the token cannot read (deleted, owned by another business, or a 10/200 permission
+      // error on that set alone) must not fail the client's whole discovery: skip it and keep the
+      // other sets' catalogues. A failure that is not a clear "unreadable set" (rate limit, network)
+      // is skipped too but marks the result incomplete, so it is not cached and the next load retries.
+      skippedProductSets += 1;
+      if (reason === "missing_permission") {
+        permissionSkipped += 1;
+        lastPermissionMessage = message;
+      } else if (reason !== "not_found") {
+        complete = false;
+      }
+    }
+  });
+  // Every set refused with a permission error: that is the connection, not one set.
+  if (setIds.length > 0 && permissionSkipped === setIds.length) {
+    throw new CatalogAccessError("missing_permission", lastPermissionMessage);
+  }
 
   const catalogs = new Map<string, ClientCatalog>();
   const uses: ClientCatalogUse[] = [];
@@ -147,7 +204,7 @@ export async function discoverClientCatalogs(
     catalogs.set(catalog.id, catalog);
     uses.push({ ...u, catalogId: catalog.id });
   }
-  return { catalogs: [...catalogs.values()], uses, skippedProductSets, complete };
+  return { catalogs: [...catalogs.values()], uses, skippedProductSets, complete, catalogAdSets: pending.length };
 }
 
 async function connectedGraph(
@@ -174,20 +231,48 @@ type Discovered = Awaited<ReturnType<typeof discoverClientCatalogs>>;
 type Connected = Extract<Awaited<ReturnType<typeof connectedGraph>>, { ok: true }>;
 
 /**
- * Catalogue discovery per client and Meta user, kept for COMMERCE_TTL_MS. Holds only successful
- * discoveries (including "no catalogue"); permission failures and thrown errors are never cached,
- * so a reconnect shows up at once. Keyed by client, so one client never reads another's entry.
+ * Catalogue discovery per client and Meta user, kept for COMMERCE_TTL_MS. Holds only complete
+ * discoveries (including "no catalogue"); permission failures, "catalogues unreadable" and thrown
+ * errors are never cached, so a reconnect or newly granted access shows up at once. Keyed by
+ * client, so one client never reads another's entry.
  */
 const commerceCache = new Map<string, { at: number; value: Discovered }>();
+/** Discoveries running now, keyed like commerceCache, so concurrent callers share one. */
+const commerceInFlight = new Map<string, Promise<Discovered>>();
+
+const cacheable = (d: Discovered): boolean => d.complete && !(d.catalogs.length === 0 && d.skippedProductSets > 0);
 
 async function discoverCached(conn: Connected, clientId: string): Promise<Discovered> {
   // Without a known Meta user there is nothing safe to key on, so skip the cache.
   const key = conn.userId ? `${clientId}:${conn.userId}` : null;
-  const hit = key ? commerceCache.get(key) : undefined;
+  if (!key) return discoverClientCatalogs(conn.graph, conn.accountIds);
+  const hit = commerceCache.get(key);
   if (hit && Date.now() - hit.at < COMMERCE_TTL_MS) return hit.value;
-  const value = await discoverClientCatalogs(conn.graph, conn.accountIds);
-  if (key && value.complete) commerceCache.set(key, { at: Date.now(), value });
-  return value;
+  const running = commerceInFlight.get(key);
+  if (running) return running;
+  const run = (async () => {
+    try {
+      const value = await discoverClientCatalogs(conn.graph, conn.accountIds);
+      if (cacheable(value)) commerceCache.set(key, { at: Date.now(), value });
+      return value;
+    } finally {
+      commerceInFlight.delete(key);
+    }
+  })();
+  commerceInFlight.set(key, run);
+  return run;
+}
+
+/**
+ * Why a discovery with no readable catalogue shows nothing. Throws when the discovery was
+ * incomplete (a rate limit or network failure), so callers show an error with a retry rather
+ * than "no catalogue". Null when there are catalogues.
+ */
+function emptyDiscovery(d: Discovered): Failure | null {
+  if (d.catalogs.length > 0) return null;
+  if (!d.complete) throw new Error(DISCOVERY_INCOMPLETE_MESSAGE);
+  if (d.skippedProductSets > 0) return catalogsUnreadable(d.catalogAdSets);
+  return failure("no_catalog");
 }
 
 function demoCommerce(): CommerceState {
@@ -200,11 +285,13 @@ export async function getClientCommerce(clientId: string): Promise<CommerceState
   const conn = await connectedGraph(clientId);
   if (!conn.ok) return conn.result;
   try {
-    const { catalogs, uses } = await discoverCached(conn, clientId);
-    if (catalogs.length === 0) return failure("no_catalog");
-    return { state: "ok", catalogs, uses };
+    const discovered = await discoverCached(conn, clientId);
+    const empty = emptyDiscovery(discovered);
+    if (empty) return empty;
+    return { state: "ok", catalogs: discovered.catalogs, uses: discovered.uses };
   } catch (error) {
-    if (error instanceof CatalogAccessError && error.reason === "missing_permission") return failure("missing_permission");
+    const access = accessFailure(error);
+    if (access) return access;
     throw error;
   }
 }
@@ -215,6 +302,7 @@ const reportCache = new Map<string, { at: number; setKey: string; snapshot: Cata
 export function resetCatalogReportCache(): void {
   reportCache.clear();
   commerceCache.clear();
+  commerceInFlight.clear();
 }
 
 export async function getCatalogReport(clientId: string, catalogId: string): Promise<CatalogReport> {
@@ -231,7 +319,10 @@ export async function getCatalogReport(clientId: string, catalogId: string): Pro
 
   try {
     // Discover first: the catalogue must belong to this client. The discovery cache is per client.
-    const { catalogs, uses: allUses } = await discoverCached(conn, clientId);
+    const discovered = await discoverCached(conn, clientId);
+    const empty = emptyDiscovery(discovered);
+    if (empty) return empty;
+    const { catalogs, uses: allUses } = discovered;
     if (!catalogs.some((c) => c.id === catalogId)) return failure("no_catalog");
 
     const uses = allUses.filter((u) => u.catalogId === catalogId);
@@ -251,9 +342,9 @@ export async function getCatalogReport(clientId: string, catalogId: string): Pro
     }
     return { state: "ok", snapshot, uses, ...evaluateCatalog(snapshot, uses) };
   } catch (error) {
-    if (error instanceof CatalogAccessError) {
-      return error.reason === "missing_permission" ? failure("missing_permission") : failure("no_catalog");
-    }
+    const access = accessFailure(error);
+    if (access) return access;
+    if (error instanceof CatalogAccessError) return failure("no_catalog");
     throw error;
   }
 }
@@ -279,15 +370,16 @@ export async function listClientCatalogProducts(
   if (!conn.ok) return conn.result;
 
   try {
-    const { catalogs } = await discoverCached(conn, clientId);
-    if (!catalogs.some((c) => c.id === catalogId)) return failure("no_catalog");
+    const discovered = await discoverCached(conn, clientId);
+    const empty = emptyDiscovery(discovered);
+    if (empty) return empty;
+    if (!discovered.catalogs.some((c) => c.id === catalogId)) return failure("no_catalog");
     const page = await listCatalogProducts(conn.graph, catalogId, opts);
     return { state: "ok", ...page };
   } catch (error) {
-    if (error instanceof CatalogAccessError) {
-      return error.reason === "missing_permission" ? failure("missing_permission") : failure("no_catalog");
-    }
-    if (catalogAccessReason(error) === "missing_permission") return failure("missing_permission");
+    const access = accessFailure(error);
+    if (access) return access;
+    if (error instanceof CatalogAccessError) return failure("no_catalog");
     throw error;
   }
 }
