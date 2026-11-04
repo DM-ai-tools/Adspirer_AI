@@ -150,27 +150,40 @@ export async function fetchCatalogSnapshot(
     settle("pixels", warnings, graph.get<List>(`${catalogId}/external_event_sources`)),
   ]);
 
+  const countInStock = async (id: string): Promise<number | null> => {
+    const counted = await settle(
+      `in-stock count for product set ${id}`,
+      warnings,
+      graph.get<List>(`${id}/products`, { filter: IN_STOCK_FILTER, summary: "true", limit: 1 }),
+    );
+    return counted?.summary?.total_count != null ? num(counted.summary.total_count) : null;
+  };
+  const toSet = (s: Row & { id: string }, inStockCount: number | null): CatalogProductSet => ({
+    id: s.id,
+    name: str(s.name) ?? s.id,
+    filter: str(s.filter),
+    productCount: num(s.product_count),
+    inStockCount,
+  });
+
+  const listed = withId(sets?.data);
+  const listedIds = new Set(listed.map((s) => s.id));
   const productSets: CatalogProductSet[] = await Promise.all(
-    withId(sets?.data).map(async (s): Promise<CatalogProductSet> => {
-      const id = s.id;
-      let inStockCount: number | null = null;
-      if (used.has(id)) {
-        const counted = await settle(
-          `in-stock count for product set ${id}`,
-          warnings,
-          graph.get<List>(`${id}/products`, { filter: IN_STOCK_FILTER, summary: "true", limit: 1 }),
-        );
-        if (counted?.summary?.total_count != null) inStockCount = num(counted.summary.total_count);
-      }
-      return {
-        id,
-        name: str(s.name) ?? id,
-        filter: str(s.filter),
-        productCount: num(s.product_count),
-        inStockCount,
-      };
-    }),
+    listed.map(async (s) => toSet(s, used.has(s.id) ? await countInStock(s.id) : null)),
   );
+
+  // A used set can be missing from /product_sets (the listing is capped, or Meta omits it). Read it
+  // directly so the ad sets selling it still get checked.
+  const direct = await Promise.all(
+    [...used]
+      .filter((id) => !listedIds.has(id))
+      .map(async (id): Promise<CatalogProductSet | null> => {
+        const row = await settle(`product set ${id}`, warnings, graph.get<Row>(id, { fields: "id,name,filter,product_count" }));
+        if (!row) return null;
+        return toSet({ ...row, id: str(row.id) ?? id }, await countInStock(id));
+      }),
+  );
+  productSets.push(...direct.filter((s): s is CatalogProductSet => s !== null));
 
   for (const [label, list] of [
     ["product sets", sets],

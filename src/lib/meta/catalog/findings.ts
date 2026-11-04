@@ -111,8 +111,17 @@ function inStockFilter(existing: string | null): string {
   return `{"and":[${trimmed},${IN_STOCK_CONDITION}]}`;
 }
 
+/** Effective statuses of ad sets that can deliver; paused and campaign-paused ad sets cannot. */
+const DELIVERING_STATUSES = new Set(["ACTIVE", "IN_PROCESS", "WITH_ISSUES", "PENDING_REVIEW"]);
+
+/** True when an ad set with this effective status is live, so its product set's health matters now. */
+export function isDeliveringStatus(status: string): boolean {
+  return DELIVERING_STATUSES.has(status);
+}
+
+/** Ad sets selling this product set that are delivering. */
 function adSetsOn(uses: CatalogAdSetUse[], productSetId: string): string[] {
-  return uses.filter((u) => u.productSetId === productSetId).map((u) => u.adSetId);
+  return uses.filter((u) => u.productSetId === productSetId && isDeliveringStatus(u.effectiveStatus)).map((u) => u.adSetId);
 }
 
 function checkDiagnostics(diagnostics: CatalogDiagnostic[]): Internal[] {
@@ -183,6 +192,9 @@ function checkProductSets(sets: CatalogProductSet[], uses: CatalogAdSetUse[], t:
   const out: Internal[] = [];
   for (const set of sets) {
     const adSetIds = adSetsOn(uses, set.id);
+    // Only product sets that a delivering ad set sells are judged: a switched-off campaign
+    // pointing at an empty set is not a problem worth reporting.
+    if (adSetIds.length === 0) continue;
     if (set.inStockCount === null) continue;
     const inStock = set.inStockCount;
     const small = inStock < t.minDeliverableItems;

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   CATALOG_THRESHOLDS,
   evaluateCatalog,
+  isDeliveringStatus,
   type CatalogAdSetUse,
   type CatalogFinding,
 } from "@/lib/meta/catalog/findings";
@@ -198,6 +199,42 @@ describe("out_of_stock_in_used_set", () => {
       outOfStockShareHigh: 0.1,
     });
     expect(find(findings, "out_of_stock_in_used_set")).toBeDefined();
+  });
+});
+
+describe("delivering ad sets only", () => {
+  const empty = { id: "SET_E", name: "Empty", filter: null, productCount: 50, inStockCount: 0 };
+
+  it("raises no small or out-of-stock finding for a set used only by paused ad sets", () => {
+    const { findings } = evaluateCatalog(healthySnapshot({ productSets: [empty] }), [
+      use({ adSetId: "P1", productSetId: "SET_E", effectiveStatus: "PAUSED" }),
+      use({ adSetId: "P2", productSetId: "SET_E", effectiveStatus: "CAMPAIGN_PAUSED" }),
+    ]);
+    expect(find(findings, "small_product_set")).toBeUndefined();
+    expect(find(findings, "out_of_stock_in_used_set")).toBeUndefined();
+  });
+
+  it("flags the same set when one ad set is ACTIVE, listing only the delivering ad set", () => {
+    const { findings } = evaluateCatalog(healthySnapshot({ productSets: [empty] }), [
+      use({ adSetId: "P1", productSetId: "SET_E", effectiveStatus: "PAUSED" }),
+      use({ adSetId: "LIVE", productSetId: "SET_E", effectiveStatus: "ACTIVE" }),
+    ]);
+    const f = find(findings, "small_product_set")!;
+    expect(f.severity).toBe("critical");
+    expect(f.adSetIds).toEqual(["LIVE"]);
+    expect(find(findings, "out_of_stock_in_used_set")?.adSetIds).toEqual(["LIVE"]);
+  });
+
+  it("isDeliveringStatus accepts live statuses only", () => {
+    for (const s of ["ACTIVE", "IN_PROCESS", "WITH_ISSUES", "PENDING_REVIEW"]) expect(isDeliveringStatus(s)).toBe(true);
+    for (const s of ["PAUSED", "CAMPAIGN_PAUSED", "ADSET_PAUSED", "DISAPPROVED", ""]) expect(isDeliveringStatus(s)).toBe(false);
+  });
+
+  it("still links a FAIL ad set's learning even when it is paused", () => {
+    const { learningLinks } = evaluateCatalog(healthySnapshot(), [
+      use({ adSetId: "F", learningStatus: "FAIL", effectiveStatus: "PAUSED" }),
+    ]);
+    expect(learningLinks.map((l) => l.adSetId)).toEqual(["F"]);
   });
 });
 

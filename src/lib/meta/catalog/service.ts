@@ -2,7 +2,7 @@ import { loadMappedMetaAccounts } from "@/lib/adspirer/resolve-meta-account";
 import { getConfig } from "@/lib/config";
 import { DEMO_CATALOGS, demoCatalogProducts, demoCatalogSnapshot, demoCatalogUses } from "@/lib/meta/catalog/demo";
 import { CatalogAccessError, catalogAccessReason } from "@/lib/meta/catalog/errors";
-import { evaluateCatalog, type CatalogAdSetUse, type CatalogFinding, type LearningLink } from "@/lib/meta/catalog/findings";
+import { evaluateCatalog, isDeliveringStatus, type CatalogAdSetUse, type CatalogFinding, type LearningLink } from "@/lib/meta/catalog/findings";
 import { fetchCatalogSnapshot, listCatalogProducts } from "@/lib/meta/catalog/snapshot";
 import type { CatalogGraph, CatalogProduct, CatalogProductIssue, CatalogSnapshot } from "@/lib/meta/catalog/types";
 import { getUserMetaToken } from "@/lib/meta/get-user-token";
@@ -235,7 +235,8 @@ export async function getCatalogReport(clientId: string, catalogId: string): Pro
     if (!catalogs.some((c) => c.id === catalogId)) return failure("no_catalog");
 
     const uses = allUses.filter((u) => u.catalogId === catalogId);
-    const productSetIds = [...new Set(uses.map((u) => u.productSetId))].sort();
+    // Only product sets that delivering ad sets sell are counted (and judged); paused ones are skipped.
+    const productSetIds = [...new Set(uses.filter((u) => isDeliveringStatus(u.effectiveStatus)).map((u) => u.productSetId))].sort();
     const setKey = productSetIds.join(",");
     // Without a known user there is nothing safe to key the cache on, so skip it.
     const key = conn.userId ? `${conn.userId}:${catalogId}` : null;

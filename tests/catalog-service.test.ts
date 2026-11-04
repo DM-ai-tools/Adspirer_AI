@@ -309,6 +309,37 @@ describe("getCatalogReport", () => {
     expect(catalogCalls()).toBe(first * 2);
   });
 
+  it("counts in-stock items only for product sets that delivering ad sets sell", async () => {
+    const PAUSED_SET = "555";
+    mocks.graphGet.mockImplementation(async (path: string) => {
+      if (path === "act_1/adsets") {
+        return {
+          data: [adSet("A1", SET), adSet("A2", PAUSED_SET, { effective_status: "CAMPAIGN_PAUSED" })],
+        };
+      }
+      if (path === SET || path === PAUSED_SET) {
+        return { id: path, product_catalog: { id: CATALOG, name: "During Days", product_count: 10 } };
+      }
+      if (path === CATALOG) return { id: CATALOG, name: "During Days", vertical: "commerce", product_count: 10 };
+      if (path === `${CATALOG}/product_sets`) {
+        return {
+          data: [
+            { id: SET, name: "Live", product_count: 10, filter: "{}" },
+            { id: PAUSED_SET, name: "Off", product_count: 10, filter: "{}" },
+          ],
+        };
+      }
+      return { data: [] };
+    });
+    const out = await getCatalogReport("c1", CATALOG);
+    expect(out.state).toBe("ok");
+    const countedPaths = mocks.graphGet.mock.calls.map(([p]) => p);
+    expect(countedPaths).toContain(`${SET}/products`);
+    expect(countedPaths).not.toContain(`${PAUSED_SET}/products`);
+    // The display still lists both uses.
+    if (out.state === "ok") expect(out.uses.map((u) => u.adSetId).sort()).toEqual(["A1", "A2"]);
+  });
+
   it("maps a CatalogAccessError from the snapshot to its state", async () => {
     liveGraph();
     const base = mocks.graphGet.getMockImplementation()!;

@@ -151,6 +151,35 @@ describe("fetchCatalogSnapshot", () => {
     expect(snap.productSets.find((s) => s.id === "3242348256072599")?.inStockCount).toBeNull();
   });
 
+  it("reads a used set missing from the listing directly, with its in-stock count", async () => {
+    const MISSING = "1582553996612911";
+    const { graph, calls } = fakeGraph({
+      [MISSING]: { id: MISSING, name: "Hidden set", filter: '{"brand":{"eq":"X"}}', product_count: "40" },
+      [`${MISSING}/products`]: { data: [], summary: { total_count: 7 } },
+    });
+    const snap = await fetchCatalogSnapshot(graph, CATALOG, { productSetIds: [SET_ID, MISSING] });
+    const direct = calls.find((c) => c.path === MISSING)!;
+    expect(direct.params.fields).toBe("id,name,filter,product_count");
+    expect(snap.productSets.find((s) => s.id === MISSING)).toEqual({
+      id: MISSING,
+      name: "Hidden set",
+      filter: '{"brand":{"eq":"X"}}',
+      productCount: 40,
+      inStockCount: 7,
+    });
+    // Sets present in the listing are not fetched again.
+    expect(calls.some((c) => c.path === SET_ID)).toBe(false);
+    expect(snap.warnings).toEqual([]);
+  });
+
+  it("turns a failed direct fetch of a missing set into a warning", async () => {
+    const MISSING = "1582553996612911";
+    const { graph } = fakeGraph({ [MISSING]: new Error("gone") });
+    const snap = await fetchCatalogSnapshot(graph, CATALOG, { productSetIds: [MISSING] });
+    expect(snap.productSets.some((s) => s.id === MISSING)).toBe(false);
+    expect(snap.warnings.some((w) => w.includes(`product set ${MISSING}`))).toBe(true);
+  });
+
   it("never pages /products for counts", async () => {
     const { graph, calls } = fakeGraph();
     await fetchCatalogSnapshot(graph, CATALOG, { productSetIds: [SET_ID] });
