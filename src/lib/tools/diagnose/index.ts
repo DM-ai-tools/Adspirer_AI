@@ -8,6 +8,8 @@ import "./data-tools";
 import "./health-tool";
 // Read-only Shopify tools: live products / variants, synced sales (offered only when the client has a store).
 import "./shopify-tools";
+// Read-only Meta catalogue (Commerce Manager) tools (offered only when the client sells from a catalogue).
+import "./catalog-tools";
 // Image generation: writes creative drafts only, never Meta.
 import "./creative-tools";
 

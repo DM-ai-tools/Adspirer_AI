@@ -1,10 +1,10 @@
 import { loadMappedMetaAccounts } from "@/lib/adspirer/resolve-meta-account";
 import { getConfig } from "@/lib/config";
-import { DEMO_CATALOGS, demoCatalogSnapshot, demoCatalogUses } from "@/lib/meta/catalog/demo";
+import { DEMO_CATALOGS, demoCatalogProducts, demoCatalogSnapshot, demoCatalogUses } from "@/lib/meta/catalog/demo";
 import { CatalogAccessError, catalogAccessReason } from "@/lib/meta/catalog/errors";
 import { evaluateCatalog, type CatalogAdSetUse, type CatalogFinding, type LearningLink } from "@/lib/meta/catalog/findings";
-import { fetchCatalogSnapshot } from "@/lib/meta/catalog/snapshot";
-import type { CatalogGraph, CatalogSnapshot } from "@/lib/meta/catalog/types";
+import { fetchCatalogSnapshot, listCatalogProducts } from "@/lib/meta/catalog/snapshot";
+import type { CatalogGraph, CatalogProduct, CatalogProductIssue, CatalogSnapshot } from "@/lib/meta/catalog/types";
 import { getUserMetaToken } from "@/lib/meta/get-user-token";
 import { MetaGraphClient } from "@/lib/meta/graph-client";
 
@@ -218,6 +218,40 @@ export async function getCatalogReport(clientId: string, catalogId: string): Pro
     if (error instanceof CatalogAccessError) {
       return error.reason === "missing_permission" ? failure("missing_permission") : failure("no_catalog");
     }
+    throw error;
+  }
+}
+
+export type CatalogProductsResult = { state: "ok"; products: CatalogProduct[]; next: string | null } | Failure;
+
+/**
+ * One page of a catalogue's products. Same ownership check as getCatalogReport: the
+ * catalogue must be one this client's ad sets sell from.
+ */
+export async function listClientCatalogProducts(
+  clientId: string,
+  catalogId: string,
+  opts: { issue?: CatalogProductIssue; after?: string; limit?: number } = {},
+): Promise<CatalogProductsResult> {
+  if (getConfig().isDemoMode) {
+    const demo = demoCommerce();
+    if (demo.state !== "ok" || !demo.catalogs.some((c) => c.id === catalogId)) return failure("no_catalog");
+    return { state: "ok", products: demoCatalogProducts(opts.issue), next: null };
+  }
+
+  const conn = await connectedGraph(clientId);
+  if (!conn.ok) return conn.result;
+
+  try {
+    const { catalogs } = await discoverClientCatalogs(conn.graph, conn.accountIds);
+    if (!catalogs.some((c) => c.id === catalogId)) return failure("no_catalog");
+    const page = await listCatalogProducts(conn.graph, catalogId, opts);
+    return { state: "ok", ...page };
+  } catch (error) {
+    if (error instanceof CatalogAccessError) {
+      return error.reason === "missing_permission" ? failure("missing_permission") : failure("no_catalog");
+    }
+    if (catalogAccessReason(error) === "missing_permission") return failure("missing_permission");
     throw error;
   }
 }

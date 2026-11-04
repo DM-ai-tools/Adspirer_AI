@@ -32,6 +32,10 @@ const TOOL_LABELS: Record<string, string> = {
   shopify_products: "Shopify products (live)",
   shopify_variants: "Shopify variants / SKUs (live)",
   shopify_sales: "Shopify sales",
+  meta_catalogs: "Meta catalogues",
+  meta_catalog_health: "Catalogue health",
+  meta_catalog_products: "Catalogue products",
+  meta_catalog_feeds: "Catalogue feeds",
 
   // Execute
   update_adset_budget: "Update ad set budget",
@@ -85,6 +89,10 @@ const TOOL_PROGRESS_LABELS: Record<string, string> = {
   shopify_products: "Reading Shopify…",
   shopify_variants: "Reading Shopify…",
   shopify_sales: "Reading Shopify sales…",
+  meta_catalogs: "Finding the client's catalogues…",
+  meta_catalog_health: "Checking catalogue health…",
+  meta_catalog_products: "Reading catalogue products…",
+  meta_catalog_feeds: "Reading catalogue feeds…",
   update_adset_budget: "Preparing budget update…",
   pause_campaign: "Preparing pause…",
   resume_campaign: "Preparing resume…",

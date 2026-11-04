@@ -37,6 +37,11 @@ const TOOL_POLICY: Record<string, ToolSafetyClass> = {
   shopify_products: "diagnose",
   shopify_variants: "diagnose",
   shopify_sales: "diagnose",
+  // Meta catalogue (Commerce Manager) reads; offered only when the client sells from a catalogue.
+  meta_catalogs: "diagnose",
+  meta_catalog_health: "diagnose",
+  meta_catalog_products: "diagnose",
+  meta_catalog_feeds: "diagnose",
   // Strategy plan engine: reads the snapshot, recommends only.
   strategy_plan: "diagnose",
   // Settings typed in the chat: writes the client's own settings (goals,

@@ -1,5 +1,5 @@
 import type { CatalogAdSetUse } from "@/lib/meta/catalog/findings";
-import type { CatalogSnapshot } from "@/lib/meta/catalog/types";
+import type { CatalogProduct, CatalogProductIssue, CatalogSnapshot } from "@/lib/meta/catalog/types";
 
 export const DEMO_CATALOG_ID = "demo_catalog_1";
 
@@ -74,3 +74,33 @@ export function demoCatalogUses(): DemoCatalogUse[] {
 }
 
 export const DEMO_CATALOGS = [{ id: DEMO_CATALOG_ID, name: "Demo Store catalogue", productCount: 12400 }];
+
+const demoProduct = (n: number, over: Partial<CatalogProduct> = {}): CatalogProduct => ({
+  id: `demo_product_${n}`,
+  retailerId: `DEMO-${String(n).padStart(3, "0")}`,
+  name: `Demo product ${n}`,
+  availability: "in stock",
+  reviewStatus: "approved",
+  visibility: "published",
+  url: `https://demo.example.com/products/${n}`,
+  imageUrl: `https://demo.example.com/images/${n}.jpg`,
+  price: "49.00 USD",
+  errors: [],
+  ...over,
+});
+
+/** A small product page for demo mode, narrowed the same way the live listing is. */
+export function demoCatalogProducts(issue?: CatalogProductIssue): CatalogProduct[] {
+  const all = [
+    demoProduct(1),
+    demoProduct(2, { availability: "out of stock" }),
+    demoProduct(3, {
+      reviewStatus: "rejected",
+      errors: [{ type: "POLICY_VIOLATION", priority: "HIGH", title: "Product rejected by policy review" }],
+    }),
+  ];
+  if (issue === "out_of_stock") return all.filter((p) => p.availability === "out of stock");
+  if (issue === "rejected") return all.filter((p) => p.reviewStatus === "rejected");
+  if (issue === "any_error") return all.filter((p) => p.errors.length > 0);
+  return all;
+}

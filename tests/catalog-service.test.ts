@@ -27,6 +27,7 @@ import {
   discoverClientCatalogs,
   getCatalogReport,
   getClientCommerce,
+  listClientCatalogProducts,
   resetCatalogReportCache,
 } from "@/lib/meta/catalog/service";
 import { DEMO_CATALOG_ID } from "@/lib/meta/catalog/demo";
@@ -284,5 +285,57 @@ describe("getCatalogReport", () => {
 
     const missing = await getCatalogReport("c1", "nope");
     expect(missing.state).toBe("no_catalog");
+  });
+});
+
+describe("listClientCatalogProducts", () => {
+  beforeEach(() => {
+    resetMocks();
+    mocks.graphGet.mockImplementation(async (path: string) => {
+      if (path === "act_1/adsets") return { data: [adSet("A1", SET)] };
+      if (path === SET) return { id: SET, product_catalog: { id: CATALOG, name: "During Days", product_count: 10 } };
+      if (path === `${CATALOG}/products`) return { data: [{ id: "p1", retailer_id: "R1", name: "Shoe" }] };
+      return { data: [] };
+    });
+  });
+
+  it("lists one page for a catalogue the client sells from", async () => {
+    const out = await listClientCatalogProducts("c1", CATALOG, { limit: 25 });
+    expect(out).toMatchObject({ state: "ok", next: null, products: [{ id: "p1", retailerId: "R1" }] });
+  });
+
+  it("refuses a catalogue that is not this client's without reading its products", async () => {
+    const out = await listClientCatalogProducts("c1", "999");
+    expect(out.state).toBe("no_catalog");
+    expect(mocks.graphGet.mock.calls.some(([path]) => path === "999/products")).toBe(false);
+  });
+
+  it("maps a permission error from the products read to missing_permission", async () => {
+    mocks.graphGet.mockImplementation(async (path: string) => {
+      if (path === "act_1/adsets") return { data: [adSet("A1", SET)] };
+      if (path === SET) return { id: SET, product_catalog: { id: CATALOG, name: "x", product_count: 1 } };
+      throw permissionError();
+    });
+    expect((await listClientCatalogProducts("c1", CATALOG)).state).toBe("missing_permission");
+  });
+
+  it("lets other Graph errors (rate limits) propagate", async () => {
+    mocks.graphGet.mockImplementation(async (path: string) => {
+      if (path === "act_1/adsets") return { data: [adSet("A1", SET)] };
+      if (path === SET) return { id: SET, product_catalog: { id: CATALOG, name: "x", product_count: 1 } };
+      throw new MetaGraphError("(#4) Application request limit reached", 4, 429);
+    });
+    await expect(listClientCatalogProducts("c1", CATALOG)).rejects.toThrow(/request limit/);
+  });
+
+  it("serves demo products in demo mode, narrowed by issue", async () => {
+    mocks.demo = true;
+    try {
+      const out = await listClientCatalogProducts("c1", DEMO_CATALOG_ID, { issue: "out_of_stock" });
+      expect(out).toMatchObject({ state: "ok", products: [{ availability: "out of stock" }] });
+      expect((await listClientCatalogProducts("c1", "other")).state).toBe("no_catalog");
+    } finally {
+      mocks.demo = false;
+    }
   });
 });

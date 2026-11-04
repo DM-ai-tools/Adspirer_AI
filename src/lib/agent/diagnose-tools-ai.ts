@@ -91,6 +91,9 @@ async function metaAccountRefusal(args: unknown, ctx: ToolContext): Promise<stri
 /** Offered only when the client has a connected Shopify store (products and variants live, sales synced). */
 const SHOPIFY_TOOLS = ["shopify_products", "shopify_variants", "shopify_sales"] as const;
 
+/** Offered only when the client sells from a Meta catalogue (Commerce Manager) and catalogue access works. */
+const CATALOG_TOOLS = ["meta_catalogs", "meta_catalog_health", "meta_catalog_products", "meta_catalog_feeds"] as const;
+
 function buildToolSet(ctx: ToolContext, names: readonly string[]): ToolSet {
   const tools: ToolSet = {};
 
@@ -128,18 +131,34 @@ export function buildWorkspaceReadToolSet(ctx: ToolContext): ToolSet {
 
 /**
  * The base read set plus the Shopify tools when the client has a connected
- * store. If the connection can't be read the Shopify tools are left out.
+ * store, and the catalogue tools when the client sells from a Meta catalogue.
+ * The two checks run in parallel; if either can't be read its tools are left out.
  */
 export async function buildWorkspaceReadToolSetForClient(ctx: ToolContext): Promise<ToolSet> {
   const base = buildWorkspaceReadToolSet(ctx);
-  let connected = false;
-  try {
-    const { getConnection } = await import("@/lib/shopify/store");
-    connected = (await getConnection(ctx.clientId)) !== null;
-  } catch {
-    connected = false;
-  }
-  return connected ? { ...base, ...buildToolSet(ctx, SHOPIFY_TOOLS) } : base;
+  const [shopify, catalogue] = await Promise.all([
+    (async () => {
+      try {
+        const { getConnection } = await import("@/lib/shopify/store");
+        return (await getConnection(ctx.clientId)) !== null;
+      } catch {
+        return false;
+      }
+    })(),
+    (async () => {
+      try {
+        const { getClientCommerce } = await import("@/lib/meta/catalog/service");
+        return (await getClientCommerce(ctx.clientId)).state === "ok";
+      } catch {
+        return false;
+      }
+    })(),
+  ]);
+  return {
+    ...base,
+    ...(shopify ? buildToolSet(ctx, SHOPIFY_TOOLS) : {}),
+    ...(catalogue ? buildToolSet(ctx, CATALOG_TOOLS) : {}),
+  };
 }
 
 export function workspaceReadToolNames(): string[] {

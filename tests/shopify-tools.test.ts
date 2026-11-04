@@ -3,6 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/observability/logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
+// These tests are about the Shopify tools: the client has no Meta catalogue.
+vi.mock("@/lib/meta/catalog/service", () => ({
+  getClientCommerce: vi.fn(async () => ({ state: "no_catalog", message: "none" })),
+}));
 vi.mock("@/lib/shopify/live", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/shopify/live")>();
   return {
