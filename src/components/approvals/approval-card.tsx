@@ -243,6 +243,16 @@ function summarizeArgs(
       if (args.start_time) rows.push(["Start", formatDate(args.start_time) ?? String(args.start_time)]);
       break;
     }
+    case "update_product_set_filter":
+      rows.push(["Product set", formatArgValue(args.product_set_name ?? args.product_set_id)]);
+      rows.push(["New filter", formatArgValue(args.filter)]);
+      rows.push(["Note", "The set is shared: every ad set that uses it changes, including ones in other ad accounts"]);
+      break;
+    case "request_feed_refresh":
+      rows.push(["Feed", formatArgValue(args.feed_name ?? args.feed_id)]);
+      rows.push(["Action", "Re-fetch the feed from its schedule URL now"]);
+      rows.push(["Note", "Every ad set using the catalogue picks up the new data, including ones in other ad accounts"]);
+      break;
     case "pause_ad":
     case "resume_ad":
       rows.push(["Ad", formatArgValue(args.ad_name ?? args.ad_id)]);
@@ -341,6 +351,10 @@ function successHint(toolName: string): string {
       return "Ad set placements updated in Meta.";
     case "update_adset_audience_exclusions":
       return "Ad set audience exclusions updated in Meta.";
+    case "update_product_set_filter":
+      return "Product set filter updated in Meta.";
+    case "request_feed_refresh":
+      return "Feed refresh requested from Meta.";
     default:
       return "Created in Meta as PAUSED (not published/live).";
   }

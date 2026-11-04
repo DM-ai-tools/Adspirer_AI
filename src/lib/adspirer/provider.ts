@@ -439,6 +439,35 @@ export type UpdateAdSetAudienceExclusionsResult = MetaAdSet & {
   verification_error?: string;
 };
 
+/** Replace a catalogue product set's filter (a JSON object rule, as a string). */
+export interface UpdateProductSetFilterInput {
+  product_set_id: string;
+  filter: string;
+}
+
+export type UpdateProductSetFilterResult = {
+  product_set_id: string;
+  /** The filter before the change; null when the set had none (it held every product). */
+  before_filter: string | null;
+  /** The filter read back after the change (the requested one when the read-back failed). */
+  after_filter: string;
+  product_count_after: number | null;
+  /** False when the read-back failed or Meta reads back a different rule than was sent. */
+  verified?: boolean;
+  verification_error?: string;
+};
+
+/** Ask Meta to re-fetch a scheduled catalogue feed now. */
+export interface RequestFeedRefreshInput {
+  feed_id: string;
+}
+
+export type RequestFeedRefreshResult = {
+  feed_id: string;
+  /** The upload session Meta started, when it returns one. */
+  upload_session_id: string | null;
+};
+
 /**
  * Domain-oriented Meta Ads provider.
  * Implementations: MockMetaAdsProvider, AdspirerMCPProvider.
@@ -474,6 +503,9 @@ export interface MetaAdsProvider {
   updateAdSetBid(input: UpdateAdSetBidInput): Promise<UpdateAdSetBidResult>;
   updateAdSetPlacements(input: UpdateAdSetPlacementsInput): Promise<UpdateAdSetPlacementsResult>;
   updateAdSetAudienceExclusions(input: UpdateAdSetAudienceExclusionsInput): Promise<UpdateAdSetAudienceExclusionsResult>;
+  /** Catalogue fixes: read first, then write; a permission failure is a CatalogAccessError. */
+  updateProductSetFilter(input: UpdateProductSetFilterInput): Promise<UpdateProductSetFilterResult>;
+  requestFeedRefresh(input: RequestFeedRefreshInput): Promise<RequestFeedRefreshResult>;
   pauseCampaign(accountId: string, campaignId: string): Promise<MetaCampaign>;
   resumeCampaign(accountId: string, campaignId: string): Promise<MetaCampaign>;
   pauseAdSet(accountId: string, adSetId: string): Promise<MetaAdSet>;

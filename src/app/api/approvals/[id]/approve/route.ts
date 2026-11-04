@@ -70,6 +70,17 @@ function outcomeLine(approval: Approval): string {
       const end = typeof proof.end_time === "string" ? proof.end_time : null;
       return `The ad set's end date is now **${end ?? "none (it runs until paused)"}**.${unverified}`;
     }
+    case "update_product_set_filter": {
+      const proof = (result.proof ?? {}) as Record<string, unknown>;
+      const count = typeof proof.product_count_after === "number" ? ` It now holds **${proof.product_count_after.toLocaleString("en-US")} products**.` : "";
+      const check =
+        result.verified === false
+          ? " Meta accepted it, but the read-back did not confirm the new filter: check the product set in Commerce Manager."
+          : "";
+      return `The product set's filter is updated for every ad set that uses it.${count}${check}`;
+    }
+    case "request_feed_refresh":
+      return "Meta is re-fetching the feed from its schedule URL; the catalogue updates when the upload finishes.";
     case "update_campaign_budget":
     case "update_adset_budget": {
       const money = formatMoneyCents(result.daily_budget_cents, result.currency);

@@ -14,6 +14,7 @@ import {
   pauseAdSchema,
   pauseAdSetSchema,
   pauseCampaignSchema,
+  requestFeedRefreshSchema,
   resumeAdSchema,
   resumeAdSetSchema,
   resumeCampaignSchema,
@@ -23,6 +24,7 @@ import {
   updateAdsetPlacementsSchema,
   updateAdsetScheduleSchema,
   updateCampaignBudgetSchema,
+  updateProductSetFilterSchema,
 } from "@/lib/tools/execute/schemas";
 
 export { EXECUTE_TOOL_SCHEMAS, getExecuteToolSchema } from "@/lib/tools/execute/schemas";
@@ -251,5 +253,25 @@ export const resumeAdSetTool = registerTool({
   inputSchema: resumeAdSetSchema,
   async execute(args, ctx) {
     return requireAndExecute("resume_adset", args, ctx);
+  },
+});
+
+export const updateProductSetFilterTool = registerTool({
+  name: "update_product_set_filter",
+  description:
+    "Replace a catalogue product set's filter, for example to keep only in-stock items (requires approval). filter is the whole new rule as a JSON object string. The set is shared: every ad set that uses it, in any ad account, changes.",
+  inputSchema: updateProductSetFilterSchema,
+  async execute(args, ctx) {
+    return requireAndExecute("update_product_set_filter", args, ctx);
+  },
+});
+
+export const requestFeedRefreshTool = registerTool({
+  name: "request_feed_refresh",
+  description:
+    "Ask Meta to re-fetch a scheduled catalogue feed from its schedule URL now (requires approval). Only feeds with a schedule URL can be refreshed; the whole catalogue, and every ad set using it, picks up the new data.",
+  inputSchema: requestFeedRefreshSchema,
+  async execute(args, ctx) {
+    return requireAndExecute("request_feed_refresh", args, ctx);
   },
 });

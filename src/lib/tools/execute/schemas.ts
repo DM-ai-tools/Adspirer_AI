@@ -425,6 +425,32 @@ export const updateAdsetAudienceExclusionsSchema = z
     }
   });
 
+/** A string that parses as a JSON object (Meta's product set filter rule). */
+const jsonObjectString = z.string().refine((v) => {
+  try {
+    const parsed: unknown = JSON.parse(v);
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed);
+  } catch {
+    return false;
+  }
+}, "must be a JSON object written as a string, e.g. {\"availability\":{\"eq\":\"in stock\"}}");
+
+/**
+ * Replace a catalogue product set's filter. The set is shared: every ad set that uses it, in any
+ * ad account, shows the new selection. account_id is optional (catalogues are not owned by one ad account).
+ */
+export const updateProductSetFilterSchema = z.object({
+  account_id: accountId.optional(),
+  product_set_id: z.string().min(1, "product_set_id is required"),
+  filter: jsonObjectString,
+});
+
+/** Ask Meta to re-fetch a scheduled catalogue feed from its schedule URL now. */
+export const requestFeedRefreshSchema = z.object({
+  account_id: accountId.optional(),
+  feed_id: z.string().min(1, "feed_id is required"),
+});
+
 /** Every tool the approval executor can actually dispatch to Meta. */
 export const EXECUTE_TOOL_SCHEMAS: Readonly<Record<string, z.ZodType>> = {
   update_adset_budget: updateAdsetBudgetSchema,
@@ -444,6 +470,8 @@ export const EXECUTE_TOOL_SCHEMAS: Readonly<Record<string, z.ZodType>> = {
   update_adset_bid: updateAdsetBidSchema,
   update_adset_placements: updateAdsetPlacementsSchema,
   update_adset_audience_exclusions: updateAdsetAudienceExclusionsSchema,
+  update_product_set_filter: updateProductSetFilterSchema,
+  request_feed_refresh: requestFeedRefreshSchema,
 };
 
 export function getExecuteToolSchema(toolName: string): z.ZodType | undefined {

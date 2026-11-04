@@ -16,8 +16,18 @@ function stateText(state: ChangeState | null, currency: string): string {
       ? "no daily budget"
       : `${formatCents(state.daily_budget_cents, currency, { exact: true })}/day`;
   }
+  if (state.filter !== undefined) return state.filter ?? "no filter (all products)";
+  if (state.upload_session_id !== undefined) return "feed refresh requested";
   return state.status ? state.status.toLowerCase() : "—";
 }
+
+const ENTITY_LABEL: Record<ChangeLogEntry["entity_type"], string> = {
+  campaign: "campaign",
+  adset: "ad set",
+  ad: "ad",
+  product_set: "product set",
+  feed: "feed",
+};
 
 /** Every change applied to Meta for this client, newest first. */
 export function ChangeLogCard({ clientId, currency }: { clientId: string; currency: string }) {
@@ -107,7 +117,7 @@ export function ChangeLogCard({ clientId, currency }: { clientId: string; curren
                 {c.entity_id ? (
                   <span className="text-xs text-muted">
                     {" "}
-                    · {c.entity_type === "adset" ? "ad set" : c.entity_type} {c.entity_id}
+                    · {ENTITY_LABEL[c.entity_type] ?? c.entity_type} {c.entity_id}
                   </span>
                 ) : null}
               </p>

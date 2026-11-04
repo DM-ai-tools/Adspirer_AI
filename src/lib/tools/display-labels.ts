@@ -57,6 +57,8 @@ const TOOL_LABELS: Record<string, string> = {
   update_adset_bid: "Update ad set bid",
   update_adset_placements: "Update ad set placements",
   update_adset_audience_exclusions: "Update audience exclusions",
+  update_product_set_filter: "Update product set filter",
+  request_feed_refresh: "Refresh catalogue feed",
   pause_adset: "Pause ad set",
   resume_adset: "Resume ad set",
 };
@@ -112,6 +114,8 @@ const TOOL_PROGRESS_LABELS: Record<string, string> = {
   update_adset_bid: "Preparing bid update…",
   update_adset_placements: "Preparing placement update…",
   update_adset_audience_exclusions: "Preparing audience exclusion update…",
+  update_product_set_filter: "Preparing product set filter update…",
+  request_feed_refresh: "Preparing feed refresh…",
   pause_adset: "Preparing ad set pause…",
   resume_adset: "Preparing ad set resume…",
 };

@@ -396,7 +396,7 @@ export async function prepareApprovalArgs(input: {
   const schema = getExecuteToolSchema(toolName);
   if (!schema) {
     fail(
-      `"${toolName}" cannot be executed from an approval — CampaignForge has no executor for it. Use create_meta_image_campaign / create_meta_video_campaign, create_adset, create_ad, update_adset_budget, update_campaign_budget, update_adset_schedule, update_adset_bid, update_adset_placements, update_adset_audience_exclusions, pause_campaign, resume_campaign, pause_adset, resume_adset, pause_ad or resume_ad.`,
+      `"${toolName}" cannot be executed from an approval — CampaignForge has no executor for it. Use create_meta_image_campaign / create_meta_video_campaign, create_adset, create_ad, update_adset_budget, update_campaign_budget, update_adset_schedule, update_adset_bid, update_adset_placements, update_adset_audience_exclusions, pause_campaign, resume_campaign, pause_adset, resume_adset, pause_ad, resume_ad, update_product_set_filter or request_feed_refresh.`,
       { toolName },
     );
   }

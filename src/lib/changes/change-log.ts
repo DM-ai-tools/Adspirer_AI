@@ -25,6 +25,16 @@ export type ChangeState = {
   placements?: PlacementState;
   /** Ids of the custom audiences the ad set excludes. */
   excluded_custom_audiences?: string[];
+  /** A catalogue product set's filter rule (JSON text); null = no filter. */
+  filter?: string | null;
+  /** The feed upload Meta started for a feed refresh. */
+  upload_session_id?: string | null;
+};
+
+/** Catalogue tools change a shared product set or feed, not an ad account entity. */
+const CATALOG_ENTITY: Record<string, "product_set" | "feed"> = {
+  update_product_set_filter: "product_set",
+  request_feed_refresh: "feed",
 };
 
 export type ChangeLogEntry = {
@@ -33,7 +43,7 @@ export type ChangeLogEntry = {
   approval_id: string;
   tool_name: string;
   account_id: string | null;
-  entity_type: "campaign" | "adset" | "ad";
+  entity_type: "campaign" | "adset" | "ad" | "product_set" | "feed";
   entity_id: string | null;
   before: ChangeState | null;
   after: ChangeState | null;
@@ -49,6 +59,7 @@ const str = (v: unknown) => (typeof v === "string" && v ? v : null);
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
 function entityTypeOf(toolName: string): ChangeLogEntry["entity_type"] {
+  if (CATALOG_ENTITY[toolName]) return CATALOG_ENTITY[toolName];
   if (/adset|ad_set/.test(toolName)) return "adset";
   if (/_ad$|create_ad$/.test(toolName)) return "ad";
   return "campaign";
@@ -65,7 +76,11 @@ export function buildChangeEntry(
   const tool = approval.tool_name;
   const entityType = entityTypeOf(tool);
   const entityId =
-    entityType === "adset"
+    entityType === "product_set"
+      ? (str(proof.product_set_id) ?? str(args.product_set_id))
+      : entityType === "feed"
+        ? (str(proof.feed_id) ?? str(args.feed_id))
+        : entityType === "adset"
       ? (str(proof.ad_set_id) ?? str(args.adset_id) ?? str(args.ad_set_id))
       : entityType === "ad"
         ? (str(proof.ad_id) ?? str(args.ad_id))
@@ -104,6 +119,12 @@ export function buildChangeEntry(
       bid_amount_cents: num(proof.bid_amount_cents),
       roas_average_floor: num(proof.roas_average_floor),
     };
+  } else if (tool === "update_product_set_filter") {
+    // The provider read the set right before writing it: its before is the truth.
+    before = { filter: typeof proof.before_filter === "string" ? proof.before_filter : null };
+    after = { filter: str(proof.after_filter) ?? str(args.filter) };
+  } else if (tool === "request_feed_refresh") {
+    after = { upload_session_id: str(proof.upload_session_id) };
   } else if (tool === "update_adset_schedule") {
     before = liveBefore ? { start_time: liveBefore.start_time ?? null, end_time: liveBefore.end_time ?? null } : null;
     after = { start_time: str(proof.start_time), end_time: str(proof.end_time) };

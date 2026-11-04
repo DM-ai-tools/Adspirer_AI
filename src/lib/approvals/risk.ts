@@ -138,6 +138,20 @@ export function assessRisk(
     return { level: "medium", reason: "Moves when the ad set starts spending." };
   }
 
+  // Catalogues are shared: one change reaches every ad set that uses it, in any ad account.
+  if (toolName === "update_product_set_filter") {
+    return {
+      level: "high",
+      reason: "Changes which products are in the product set for every ad set that uses it, including ones in other ad accounts. The new filter replaces the old one.",
+    };
+  }
+  if (toolName === "request_feed_refresh") {
+    return {
+      level: "high",
+      reason: "Re-fetches the feed now, which updates the catalogue's products for every ad set that uses the catalogue, including ones in other ad accounts.",
+    };
+  }
+
   if (toolName.startsWith("create_")) {
     return args.status === "ACTIVE"
       ? { level: "high", reason: "Creates a campaign that starts spending immediately." }

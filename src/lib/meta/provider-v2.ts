@@ -23,6 +23,10 @@ import type {
   UpdateAdSetScheduleInput,
   UpdateAdSetScheduleResult,
   UpdateCampaignBudgetInput,
+  UpdateProductSetFilterInput,
+  UpdateProductSetFilterResult,
+  RequestFeedRefreshInput,
+  RequestFeedRefreshResult,
   TextOptions,
   AdPreviewInput,
   AdPreview,
@@ -42,6 +46,7 @@ import {
   sameIds,
 } from "@/lib/meta/adset-edits";
 import { MetaGraphClient } from "@/lib/meta/graph-client";
+import { CatalogAccessError, catalogAccessReason } from "@/lib/meta/catalog/errors";
 import { compactInsightsRow, insightsParams } from "@/lib/meta/insights-report";
 import { fetchMetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
 import type {
@@ -1553,6 +1558,71 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       effective_status: after.effective_status,
       placements: now,
       verified: true,
+    };
+  }
+
+  /**
+   * Replace a product set's filter. The set is read first (nothing is sent if that fails), the
+   * filter is written, then read back. A permission failure is a CatalogAccessError.
+   */
+  async updateProductSetFilter(input: UpdateProductSetFilterInput): Promise<UpdateProductSetFilterResult> {
+    type ProductSetRow = { id?: string; name?: string; filter?: string | null; product_count?: number | string };
+    const fields = "id,name,filter,product_count";
+    const before = await catalogCall(`product set ${input.product_set_id}`, () =>
+      this.graph.get<ProductSetRow>(input.product_set_id, { fields }),
+    );
+    await catalogCall(`product set ${input.product_set_id}`, () =>
+      this.graph.post(input.product_set_id, { filter: input.filter }),
+    );
+    const beforeFilter = typeof before.filter === "string" && before.filter.trim() ? before.filter : null;
+
+    // Meta accepted the change: a failed re-read is reported as unverified, never as a failure that invites a retry.
+    let after: ProductSetRow;
+    try {
+      after = await this.graph.get<ProductSetRow>(input.product_set_id, { fields });
+    } catch (error) {
+      return {
+        product_set_id: input.product_set_id,
+        before_filter: beforeFilter,
+        after_filter: input.filter,
+        product_count_after: null,
+        verified: false,
+        verification_error: error instanceof Error ? error.message : "Read-back failed",
+      };
+    }
+    const afterFilter = typeof after.filter === "string" && after.filter.trim() ? after.filter : null;
+    const count = Number(after.product_count);
+    const same = afterFilter != null && canonicalJson(afterFilter) === canonicalJson(input.filter);
+    return {
+      product_set_id: input.product_set_id,
+      before_filter: beforeFilter,
+      after_filter: afterFilter ?? input.filter,
+      product_count_after: Number.isFinite(count) && after.product_count != null ? count : null,
+      verified: same,
+      ...(same
+        ? {}
+        : { verification_error: "Meta reads back a filter written differently from the one sent; check the product set in Commerce Manager." }),
+    };
+  }
+
+  /**
+   * Ask Meta to re-fetch a scheduled feed from its schedule URL. The feed is read first; a feed
+   * with no schedule URL is refused before anything is sent.
+   */
+  async requestFeedRefresh(input: RequestFeedRefreshInput): Promise<RequestFeedRefreshResult> {
+    const feed = await catalogCall(`feed ${input.feed_id}`, () =>
+      this.graph.get<{ id?: string; name?: string; schedule?: { url?: string } | null }>(input.feed_id, {
+        fields: "id,name,schedule",
+      }),
+    );
+    const url = typeof feed.schedule?.url === "string" ? feed.schedule.url.trim() : "";
+    if (!url) throw new Error("This feed has no schedule URL to re-fetch");
+    const upload = await catalogCall(`feed ${input.feed_id}`, () =>
+      this.graph.post<{ id?: string | number }>(`${input.feed_id}/uploads`, { url }),
+    );
+    return {
+      feed_id: input.feed_id,
+      upload_session_id: upload?.id != null && String(upload.id).trim() ? String(upload.id) : null,
     };
   }
 
@@ -3245,3 +3315,42 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
   }
 }
 
+
+const CATALOG_PERMISSION_MESSAGE =
+  "The approver's Facebook connection cannot manage this catalogue: reconnect Facebook, or have someone with access approve.";
+
+/** A catalogue Graph call whose access failures become CatalogAccessError with an operator-readable message. */
+async function catalogCall<T>(what: string, call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    const reason = catalogAccessReason(error);
+    if (reason === "missing_permission") throw new CatalogAccessError("missing_permission", CATALOG_PERMISSION_MESSAGE);
+    if (reason === "not_found") {
+      throw new CatalogAccessError(
+        "not_found",
+        `Meta could not find ${what}, or the approver's Facebook connection cannot see it. Nothing was changed.`,
+      );
+    }
+    throw error;
+  }
+}
+
+/** A JSON text with its object keys sorted, so two spellings of the same rule compare equal. */
+function canonicalJson(text: string): string {
+  const sort = (value: unknown): unknown =>
+    Array.isArray(value)
+      ? value.map(sort)
+      : value && typeof value === "object"
+        ? Object.fromEntries(
+            Object.keys(value as Record<string, unknown>)
+              .sort()
+              .map((key) => [key, sort((value as Record<string, unknown>)[key])]),
+          )
+        : value;
+  try {
+    return JSON.stringify(sort(JSON.parse(text)));
+  } catch {
+    return text;
+  }
+}

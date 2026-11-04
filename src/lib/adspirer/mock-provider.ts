@@ -24,7 +24,12 @@ import type {
   UpdateAdSetScheduleInput,
   UpdateAdSetScheduleResult,
   UpdateCampaignBudgetInput,
+  UpdateProductSetFilterInput,
+  UpdateProductSetFilterResult,
+  RequestFeedRefreshInput,
+  RequestFeedRefreshResult,
 } from "./provider";
+import { demoCatalogSnapshot } from "@/lib/meta/catalog/demo";
 import {
   excludedIdsOf,
   mergeExclusions,
@@ -50,6 +55,10 @@ type MutableState = {
   schedules?: Record<string, { start_time: string | null; end_time: string | null }>;
   /** Ad set bid settings by id (the seed ad sets bid with no cap). */
   bids?: Record<string, { bid_strategy: string; bid_amount_cents: number | null; roas_average_floor: number | null }>;
+  /** Demo catalogue product set filters by id (seeded from the demo catalogue). */
+  productSetFilters?: Record<string, string | null>;
+  /** Feed refreshes requested, by feed id. */
+  feedUploads?: Record<string, number>;
 };
 
 function seedState(): MutableState {
@@ -501,6 +510,34 @@ export class MockMetaAdsProvider implements MetaAdsProvider {
       previous_roas_average_floor: previous.roas_average_floor,
       verified: true,
     };
+  }
+
+  async updateProductSetFilter(input: UpdateProductSetFilterInput): Promise<UpdateProductSetFilterResult> {
+    const state = getState();
+    const snapshot = demoCatalogSnapshot();
+    state.productSetFilters ??= Object.fromEntries(snapshot.productSets.map((s) => [s.id, s.filter]));
+    if (!(input.product_set_id in state.productSetFilters)) throw new Error(`Product set not found: ${input.product_set_id}`);
+    const before = state.productSetFilters[input.product_set_id] ?? null;
+    state.productSetFilters[input.product_set_id] = input.filter;
+    return {
+      product_set_id: input.product_set_id,
+      before_filter: before,
+      after_filter: input.filter,
+      // The demo has no products to re-count against a new rule.
+      product_count_after: null,
+      verified: true,
+    };
+  }
+
+  async requestFeedRefresh(input: RequestFeedRefreshInput): Promise<RequestFeedRefreshResult> {
+    const feed = demoCatalogSnapshot().feeds.find((f) => f.id === input.feed_id);
+    if (!feed) throw new Error(`Feed not found: ${input.feed_id}`);
+    if (!feed.scheduleUrl) throw new Error("This feed has no schedule URL to re-fetch");
+    const state = getState();
+    state.feedUploads ??= {};
+    const n = (state.feedUploads[input.feed_id] ?? 0) + 1;
+    state.feedUploads[input.feed_id] = n;
+    return { feed_id: input.feed_id, upload_session_id: `demo_upload_${input.feed_id}_${n}` };
   }
 
   async updateAdSetSchedule(input: UpdateAdSetScheduleInput): Promise<UpdateAdSetScheduleResult> {

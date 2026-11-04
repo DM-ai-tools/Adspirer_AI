@@ -7,10 +7,25 @@ import { getChange, listChanges, type ChangeLogEntry } from "@/lib/changes/chang
 import { ApprovalValidationError, AuthorizationError, DuplicateExecutionError } from "@/lib/errors";
 import { humanToolLabel } from "@/lib/tools/display-labels";
 
-const ID_FIELD = { campaign: "campaign_id", adset: "adset_id", ad: "ad_id" } as const;
+const ID_FIELD = {
+  campaign: "campaign_id",
+  adset: "adset_id",
+  ad: "ad_id",
+  product_set: "product_set_id",
+  feed: "feed_id",
+} as const;
 
 /** The approval that undoes a change, or why it can't be undone in one action. */
 export function inverseOf(change: ChangeLogEntry): { toolName: string; args: Record<string, unknown> } {
+  // Not supported: a product set or feed is shared across ad sets and ad accounts, and a feed
+  // refresh has no inverse. Say so rather than queueing something half-right.
+  if (change.entity_type === "product_set" || change.entity_type === "feed") {
+    throw new ApprovalValidationError(
+      change.entity_type === "product_set"
+        ? "Catalogue changes can't be rolled back in one click. To restore the product set, ask for a new filter change using the before filter shown in the change log, or edit it in Commerce Manager."
+        : "Catalogue changes can't be rolled back in one click, and a feed refresh has nothing to undo: the catalogue now holds what the feed URL served.",
+    );
+  }
   const idArg = change.entity_id ? { [ID_FIELD[change.entity_type]]: change.entity_id } : {};
   const base = { account_id: change.account_id, ...idArg, __rollback_of: change.id };
   const isBudget = change.tool_name === "update_adset_budget" || change.tool_name === "update_campaign_budget";

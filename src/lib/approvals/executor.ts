@@ -471,6 +471,14 @@ function buildExecutionResult(
     if (typeof obj.id === "string") proof.ad_set_id = obj.id;
     proof.start_time = typeof obj.start_time === "string" ? obj.start_time : null;
     proof.end_time = typeof obj.end_time === "string" ? obj.end_time : null;
+  } else if (toolName === "update_product_set_filter") {
+    if (typeof obj.product_set_id === "string") proof.product_set_id = obj.product_set_id;
+    proof.before_filter = typeof obj.before_filter === "string" ? obj.before_filter : null;
+    if (typeof obj.after_filter === "string") proof.after_filter = obj.after_filter;
+    proof.product_count_after = typeof obj.product_count_after === "number" ? obj.product_count_after : null;
+  } else if (toolName === "request_feed_refresh") {
+    if (typeof obj.feed_id === "string") proof.feed_id = obj.feed_id;
+    proof.upload_session_id = typeof obj.upload_session_id === "string" ? obj.upload_session_id : null;
   } else if (toolName === "pause_ad" || toolName === "resume_ad") {
     if (typeof obj.id === "string") proof.ad_id = obj.id;
     if (typeof obj.status === "string") proof.status = obj.status;
@@ -713,6 +721,17 @@ async function dispatchToProvider(
         end_time: optionalString(args.end_time),
         clear_end_time: args.clear_end_time === true,
         start_time: optionalString(args.start_time),
+      });
+    // Catalogue fixes: the provider reads the set or feed before writing, and refuses on
+    // missing permission with a CatalogAccessError whose message lands on the approval.
+    case "update_product_set_filter":
+      return provider.updateProductSetFilter({
+        product_set_id: requireString(args, "product_set_id", toolName),
+        filter: requireString(args, "filter", toolName),
+      });
+    case "request_feed_refresh":
+      return provider.requestFeedRefresh({
+        feed_id: requireString(args, "feed_id", toolName),
       });
     case "pause_adset":
       return provider.pauseAdSet(

@@ -71,6 +71,9 @@ const TOOL_POLICY: Record<string, ToolSafetyClass> = {
   update_adset_bid: "execute",
   update_adset_placements: "execute",
   update_adset_audience_exclusions: "execute",
+  // Catalogue fixes: change a product set or a feed for every ad set that uses it (read first, all through Approvals).
+  update_product_set_filter: "execute",
+  request_feed_refresh: "execute",
 };
 
 export function classify(toolName: string): ToolSafetyClass {
