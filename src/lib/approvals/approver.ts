@@ -2,6 +2,7 @@ import type { Approval, UserRole } from "@/types";
 import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
 import { AuthorizationError } from "@/lib/errors";
+import { ADMIN_APPROVAL_TOOLS, CATALOG_FIX_ADMIN_MESSAGE } from "@/lib/authz/assert";
 
 /** A profile's role, or null when the profile doesn't exist. */
 export async function getUserRole(userId: string): Promise<UserRole | null> {
@@ -19,11 +20,16 @@ export async function getUserRole(userId: string): Promise<UserRole | null> {
   return (data?.role as UserRole | undefined) ?? null;
 }
 
-/** High-risk changes are approved by admins only. */
+/** High-risk changes, and catalogue fixes whatever their risk, are approved by admins only. */
 export async function assertMayApprove(
-  approval: Pick<Approval, "risk_level" | "risk_reason">,
+  approval: Pick<Approval, "risk_level" | "risk_reason"> & { tool_name?: string },
   reviewerId: string | null,
 ): Promise<void> {
+  if (approval.tool_name && ADMIN_APPROVAL_TOOLS.has(approval.tool_name)) {
+    const role = reviewerId ? await getUserRole(reviewerId) : null;
+    if (role !== "admin") throw new AuthorizationError(CATALOG_FIX_ADMIN_MESSAGE, { toolName: approval.tool_name });
+    return;
+  }
   if (approval.risk_level !== "high" && approval.risk_level !== "critical") return;
   const role = reviewerId ? await getUserRole(reviewerId) : null;
   if (role !== "admin") {

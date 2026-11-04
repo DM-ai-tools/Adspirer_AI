@@ -354,7 +354,7 @@ function successHint(toolName: string): string {
     case "update_product_set_filter":
       return "Product set filter updated in Meta.";
     case "request_feed_refresh":
-      return "Feed refresh requested from Meta.";
+      return "Refresh requested; check the upload in Commerce Manager.";
     default:
       return "Created in Meta as PAUSED (not published/live).";
   }

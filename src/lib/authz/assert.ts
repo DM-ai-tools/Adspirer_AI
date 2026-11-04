@@ -25,6 +25,24 @@ export function assertAdmin(
   }
 }
 
+/** Tools whose approval needs an admin: they change a catalogue for every ad set using it. */
+export const ADMIN_APPROVAL_TOOLS: ReadonlySet<string> = new Set(["update_product_set_filter", "request_feed_refresh"]);
+
+export const CATALOG_FIX_ADMIN_MESSAGE =
+  "Catalogue fixes change product sets for every ad set that uses them, so an admin has to approve them.";
+
+/** Refuses (403) a non-admin approving or executing a catalogue fix; every other tool passes. */
+export function assertCanApproveTool(
+  user: AuthUser | Pick<Profile, "role"> | null | undefined,
+  toolName: string,
+): void {
+  if (!ADMIN_APPROVAL_TOOLS.has(toolName)) return;
+  const profile = user && "profile" in user ? user.profile : user;
+  if (!isAdmin(profile as Profile | null)) {
+    throw new AuthorizationError(CATALOG_FIX_ADMIN_MESSAGE, { toolName });
+  }
+}
+
 /**
  * Ensure the user is assigned to the client (admins bypass).
  */

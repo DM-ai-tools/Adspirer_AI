@@ -1,5 +1,5 @@
 import { getCurrentUser } from "@/lib/security/auth";
-import { assertAuthenticated, assertClientAccess } from "@/lib/authz/assert";
+import { assertAuthenticated, assertCanApproveTool, assertClientAccess } from "@/lib/authz/assert";
 import { approve, getApproval } from "@/lib/approvals/service";
 import { executeApprovedAction } from "@/lib/approvals/executor";
 import { appendWorkflowMessage, resolveConversationForTask } from "@/lib/workflow/events";
@@ -80,7 +80,7 @@ function outcomeLine(approval: Approval): string {
       return `The product set's filter is updated for every ad set that uses it.${count}${check}`;
     }
     case "request_feed_refresh":
-      return "Meta is re-fetching the feed from its schedule URL; the catalogue updates when the upload finishes.";
+      return "Refresh requested; check the upload in Commerce Manager.";
     case "update_campaign_budget":
     case "update_adset_budget": {
       const money = formatMoneyCents(result.daily_budget_cents, result.currency);
@@ -126,6 +126,9 @@ export async function POST(_request: Request, context: RouteContext) {
 
     const existing = await getApproval(id);
     await assertClientAccess(user.id, existing.client_id);
+    // Catalogue fixes reach every ad set using the set or feed: admins only. Checked before the
+    // "already approved" shortcut too, so a non-admin cannot run one left approved.
+    assertCanApproveTool(user, existing.tool_name);
 
     // An approval left in "approved" by an earlier failed run goes straight to
     // execution; approving it again would be an invalid transition.
