@@ -58,40 +58,105 @@ async function pixel(b64: string, x: number, y: number): Promise<[number, number
   return [data[i]!, data[i + 1]!, data[i + 2]!];
 }
 
+/** A logo with a white backdrop and a dark bar, like most scraped logos. */
+async function whiteBackedLogo(): Promise<string> {
+  const bar = await sharp({ create: { width: 40, height: 14, channels: 3, background: { r: 10, g: 10, b: 10 } } }).png().toBuffer();
+  const logo = await sharp({ create: { width: 64, height: 32, channels: 3, background: { r: 255, g: 255, b: 255 } } })
+    .composite([{ input: bar, left: 12, top: 9 }])
+    .png()
+    .toBuffer();
+  return `data:image/png;base64,${logo.toString("base64")}`;
+}
+
 describe("generateOpenAIImage with a logo", () => {
-  it("renders plainly with the top-left kept clear, then places the real logo on the finished image", async () => {
+  it("hands the model the logo to place naturally, and uses its image as it is", async () => {
     const calls: Call[] = [];
     stubFetch(
-      [(url) => (url.endsWith("/images/generations") ? json({ data: [{ b64_json: generated.toString("base64") }] }) : null)],
+      [(url) => (url.endsWith("/images/edits") ? json({ data: [{ b64_json: generated.toString("base64") }] }) : null)],
       calls,
     );
 
-    const result = await generateOpenAIImage({ prompt: "Ad for Acme.", logoUrl: logoDataUri, format: "1:1" });
+    const result = await generateOpenAIImage({ prompt: "Ad for Acme.", logoUrl: await whiteBackedLogo(), format: "1:1" });
 
     expect(result.status).toBe("succeeded");
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.url).toMatch(/\/images\/generations$/);
-    const sent = JSON.parse(String(calls[0]!.body)) as { prompt: string };
+    expect(calls[0]!.url).toMatch(/\/images\/edits$/);
+    const form = calls[0]!.body as FormData;
+    const prompt = String(form.get("prompt"));
+    expect(prompt).toMatch(/attached image is this brand's official logo on a transparent background/i);
+    expect(prompt).toMatch(/wherever it sits most naturally/i);
+    expect(prompt).toMatch(/never put it inside a black or dark box/i);
+    expect(prompt).not.toMatch(/top-left corner clear/i);
+    // The logo sent to the model has had its white backdrop removed.
+    const sent = form.get("image[]") as Blob;
+    const meta = await sharp(Buffer.from(await sent.arrayBuffer())).metadata();
+    expect(meta.hasAlpha).toBe(true);
+    expect([meta.width, meta.height]).toEqual([40, 14]);
+    // Nothing is pasted over the model's own placement.
+    expect(result.b64).toBe(generated.toString("base64"));
+  });
+
+  it("falls back to a plain render with the real logo pasted on when the edit is refused", async () => {
+    const calls: Call[] = [];
+    stubFetch(
+      [
+        (url) => (url.endsWith("/images/edits") ? json({ error: { message: "nope" } }, 400) : null),
+        (url) => (url.endsWith("/images/generations") ? json({ data: [{ b64_json: generated.toString("base64") }] }) : null),
+      ],
+      calls,
+    );
+
+    const result = await generateOpenAIImage({ prompt: "Ad for Acme.", logoUrl: await whiteBackedLogo(), format: "1:1" });
+
+    expect(result.status).toBe("succeeded");
+    expect(calls.map((c) => c.url.split("/").pop())).toEqual(["edits", "generations"]);
+    const sent = JSON.parse(String(calls[1]!.body)) as { prompt: string };
     expect(sent.prompt).toMatch(/top-left corner clear/i);
     expect(sent.prompt).toMatch(/do not draw, invent or imitate any logo/i);
-    expect(sent.prompt).not.toMatch(/attached/i);
-    // The logo plate changed the pixels.
     expect(result.b64).not.toBe(generated.toString("base64"));
   });
 
-  it("puts a dark logo on a light plate and a light logo on a dark plate", async () => {
-    const onGrey = await png({ r: 120, g: 120, b: 120 }, 1024);
-    const dark = `data:image/png;base64,${(await png({ r: 10, g: 10, b: 10 }, 64)).toString("base64")}`;
-    const light = `data:image/png;base64,${(await png({ r: 250, g: 250, b: 250 }, 64)).toString("base64")}`;
-    for (const [logo, expectLight] of [
-      [dark, true],
-      [light, false],
-    ] as const) {
-      stubFetch([(url) => (url.endsWith("/images/generations") ? json({ data: [{ b64_json: onGrey.toString("base64") }] }) : null)], []);
-      const result = await generateOpenAIImage({ prompt: "Ad.", logoUrl: logo, format: "1:1" });
-      // A point inside the plate's corner (the plate starts 4% in from the edges).
-      const [r] = await pixel(result.b64!, 48, 48);
-      expect(expectLight ? r > 200 : r < 60).toBe(true);
+  it("pastes the exact logo when the logo mode is paste, without asking the model to draw it", async () => {
+    process.env.OPENAI_LOGO_MODE = "paste";
+    resetConfigCache();
+    try {
+      const calls: Call[] = [];
+      stubFetch(
+        [(url) => (url.endsWith("/images/generations") ? json({ data: [{ b64_json: generated.toString("base64") }] }) : null)],
+        calls,
+      );
+      const result = await generateOpenAIImage({ prompt: "Ad.", logoUrl: await whiteBackedLogo(), format: "1:1" });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.url).toMatch(/\/images\/generations$/);
+      expect(result.b64).not.toBe(generated.toString("base64"));
+    } finally {
+      delete process.env.OPENAI_LOGO_MODE;
+      resetConfigCache();
+    }
+  });
+
+  it("pasted logo: straight on a light spot, on a white plate (never black) on a dark one", async () => {
+    process.env.OPENAI_LOGO_MODE = "paste";
+    resetConfigCache();
+    try {
+      const logo = await whiteBackedLogo();
+      const place = async (bg: { r: number; g: number; b: number }) => {
+        const image = await png(bg, 1024);
+        stubFetch([(url) => (url.endsWith("/images/generations") ? json({ data: [{ b64_json: image.toString("base64") }] }) : null)], []);
+        return (await generateOpenAIImage({ prompt: "Ad.", logoUrl: logo, format: "1:1" })).b64!;
+      };
+      // The logo is a dark bar pasted 5% in from the corner (about x 51, y 51, 245 wide).
+      const onLight = await place({ r: 245, g: 245, b: 245 });
+      expect((await pixel(onLight, 150, 90))[0]).toBeLessThan(60); // the logo itself
+      expect((await pixel(onLight, 40, 40))[0]).toBeLessThan(250); // no white plate around it: still the light background
+      expect((await pixel(onLight, 40, 40))[0]).toBeGreaterThan(235);
+
+      const onDark = await place({ r: 25, g: 25, b: 30 });
+      expect((await pixel(onDark, 40, 40))[0]).toBeGreaterThan(200); // a white plate behind the dark logo
+      expect((await pixel(onDark, 600, 600))[0]).toBeLessThan(60); // and only there
+    } finally {
+      delete process.env.OPENAI_LOGO_MODE;
+      resetConfigCache();
     }
   });
 

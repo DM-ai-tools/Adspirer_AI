@@ -1,6 +1,7 @@
 import { cropToFormat, FALLBACK_SIZE, formatPromptRule, type GenerationSize, type ImageFormat } from "@/lib/creatives/formats";
 import { getConfig } from "@/lib/config";
 import { logger } from "@/lib/observability/logger";
+import { chooseLogoTreatment, prepareLogo } from "@/lib/creatives/logo-prep";
 
 export type OpenAIImageResult = {
   imageUrl: string | null;
@@ -43,37 +44,83 @@ export async function generateOpenAIImage(input: {
   }
 
   try {
-    // The model never draws the logo: it would be redrawn, cropped with the frame and
-    // unreadable on a dark ad. A plain render is made with the top-left kept clear, and
-    // the brand's real logo is placed there afterwards on a plate that contrasts with it.
-    const render = async (renderSize: string) => {
-      const response = await fetch("https://api.openai.com/v1/images/generations", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${config.OPENAI_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model,
-          prompt: `${prompt} ${logoInstruction(input.logoUrl ? "overlay" : "none", input.format)}`.slice(0, 32000),
-          size: renderSize,
-          quality,
-          n: 1,
-        }),
-        signal: AbortSignal.timeout(240_000),
-      });
+    // The logo goes to the model as a clean reference (its own plain background removed), so it
+    // is placed where this layout wants it and reads against what is behind it. If that is not
+    // possible, a plain render is made and the real logo is pasted on afterwards.
+    let logoPng: Buffer | null = null;
+    if (input.logoUrl && config.OPENAI_LOGO_MODE !== "paste") {
+      try {
+        const loaded = await loadLogoBuffer(input.logoUrl);
+        logoPng = (await prepareLogo(loaded, { isSvg: isSvg(loaded) })).png;
+      } catch (error) {
+        logger.warn("Logo could not be prepared as a reference image", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    const request = async (renderSize: string, withLogo: boolean) => {
+      const finalPrompt = `${prompt} ${logoInstruction(withLogo ? "attached" : input.logoUrl ? "overlay" : "none", input.format)}`.slice(0, 32000);
+      let response: Response;
+      if (withLogo && logoPng) {
+        const form = new FormData();
+        form.set("model", model);
+        form.set("prompt", finalPrompt);
+        form.set("size", renderSize);
+        form.set("quality", quality);
+        form.set("n", "1");
+        form.append("image[]", new Blob([new Uint8Array(logoPng)], { type: "image/png" }), "logo.png");
+        response = await fetch("https://api.openai.com/v1/images/edits", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${config.OPENAI_API_KEY}` },
+          body: form,
+          signal: AbortSignal.timeout(240_000),
+        });
+      } else {
+        response = await fetch("https://api.openai.com/v1/images/generations", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${config.OPENAI_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ model, prompt: finalPrompt, size: renderSize, quality, n: 1 }),
+          signal: AbortSignal.timeout(240_000),
+        });
+      }
       const body = (await response.json().catch(() => null)) as {
         data?: Array<{ b64_json?: string; url?: string }>;
         error?: { message?: string };
       } | null;
       return { res: response, payload: body };
     };
+    /** A model that does not take the exact portrait size gets a 2:3 render that is cropped to shape. */
+    const withSizeFallback = async (withLogo: boolean) => {
+      let out = await request(size, withLogo);
+      if (!out.res.ok && size !== "1024x1024" && size !== FALLBACK_SIZE && /size/i.test(out.payload?.error?.message ?? "")) {
+        out = await request(FALLBACK_SIZE, withLogo);
+      }
+      return out;
+    };
 
-    let { res, payload } = await render(size);
-    // A model that does not take the exact portrait size gets a 2:3 render that is cropped to shape.
-    if (!res.ok && size !== "1024x1024" && size !== FALLBACK_SIZE && /size/i.test(payload?.error?.message ?? "")) {
-      ({ res, payload } = await render(FALLBACK_SIZE));
+    let usedReference = false;
+    let attempt: Awaited<ReturnType<typeof request>> | null = null;
+    if (logoPng) {
+      try {
+        const withLogo = await withSizeFallback(true);
+        if (withLogo.res.ok) {
+          attempt = withLogo;
+          usedReference = true;
+        } else {
+          logger.warn("Image edit with logo reference was refused; falling back", { status: withLogo.res.status });
+        }
+      } catch (error) {
+        logger.warn("Image edit with logo reference failed; falling back", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
+    if (!attempt) attempt = await withSizeFallback(false);
+    const { res, payload } = attempt;
 
     if (!res.ok) {
       throw new Error(
@@ -99,7 +146,7 @@ export async function generateOpenAIImage(input: {
         logger.warn("Image crop failed", { error: error instanceof Error ? error.message : String(error) });
       }
     }
-    if (input.logoUrl) {
+    if (input.logoUrl && !usedReference) {
       try {
         const sourceImage = b64
           ? Buffer.from(b64, "base64")
@@ -159,8 +206,11 @@ export async function generateOpenAIImage(input: {
   }
 }
 
-/** The one sentence about the logo. The real logo is placed on the finished image, so the model only keeps room for it. */
-function logoInstruction(mode: "overlay" | "none", format?: ImageFormat): string {
+/** The sentences about the logo, which depend on how it reaches the image. */
+function logoInstruction(mode: "attached" | "overlay" | "none", format?: ImageFormat): string {
+  if (mode === "attached") {
+    return `LOGO: the attached image is this brand's official logo on a transparent background. Place it exactly once, wherever it sits most naturally in this layout (a corner, the footer, or beside the headline; never over the main subject or the call-to-action), small but clearly legible at about 16-24% of the frame width${format === "9:16" ? ", below the top 14% and above the bottom 35% of the frame" : ""}. Reproduce it faithfully: same shapes, colours and lettering, fully visible and uncropped, at full opacity; do not redraw, restyle, recolour or replace it. Make sure it reads against what is behind it: on a light area use it as it is; on a dark or busy area give it a clean white rounded badge or panel that belongs to the design, or place it in a calm area. Never put it inside a black or dark box and never add a dark rectangle behind it. Keep it at least 6% away from every edge.`;
+  }
   if (mode === "overlay") {
     return `Leave the top ${format === "9:16" ? "28%" : "16%"} of the frame free of any text, chip or button (background, glow and imagery may continue through it) and keep the top-left corner clear, because the brand's real logo is placed there afterwards. Do not draw, invent or imitate any logo or brand mark.`;
   }
@@ -231,65 +281,59 @@ export function buildBrandImagePrompt(input: {
     .join(" ");
 }
 
-/** True when the logo's visible pixels are mostly light, so it needs a dark plate to be read. */
-async function isLightLogo(png: Buffer): Promise<boolean> {
-  const sharp = (await import("sharp")).default;
-  const { data, info } = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-  let total = 0;
-  let count = 0;
-  for (let i = 0; i < data.length; i += info.channels) {
-    if ((data[i + 3] ?? 255) < 40) continue;
-    total += 0.299 * data[i]! + 0.587 * data[i + 1]! + 0.114 * data[i + 2]!;
-    count += 1;
-  }
-  return count > 0 && total / count > 190;
-}
-
 async function compositeOfficialLogo(
   sourceImage: Buffer,
   logoUrl: string,
   placement: { topFraction?: number } = {},
 ): Promise<Buffer> {
-  const logo = await loadLogoBuffer(logoUrl);
-  const sharpModule = await import("sharp");
-  const sharp = sharpModule.default;
+  const loaded = await loadLogoBuffer(logoUrl);
+  // Rasterise vectors large and drop the logo's own plain backdrop, so no box shows on the ad.
+  const logo = await prepareLogo(loaded, { isSvg: isSvg(loaded) });
+  const sharp = (await import("sharp")).default;
   const meta = await sharp(sourceImage).metadata();
   const width = meta.width ?? 1024;
-  // Everything scales with the image, so the logo is as legible on a 1536px still as on a 1024px one.
-  const margin = Math.round(width * 0.04);
-  const cardWidth = Math.round(width * 0.3);
-  const cardHeight = Math.round(cardWidth * 0.4);
-  const pad = Math.round(cardHeight * 0.16);
-  // Firecrawl usually hands back an SVG. Rasterizing at the default 72 dpi and
-  // refusing to enlarge renders a postage-stamp logo, so vectors get a high
-  // density and are allowed to scale up to the card.
-  const resized = await sharp(logo, isSvg(logo) ? { density: 384 } : undefined)
-    .resize({
-      width: cardWidth - pad * 2,
-      height: cardHeight - pad * 2,
-      fit: "inside",
-      withoutEnlargement: !isSvg(logo),
-      background: { r: 255, g: 255, b: 255, alpha: 0 },
-    })
+  const height = meta.height ?? width;
+  // Everything scales with the image, so the logo is as legible on a tall still as on a square one.
+  const margin = Math.round(width * 0.05);
+  const boxWidth = Math.round(width * 0.24);
+  const boxHeight = Math.round(width * 0.12);
+  const resized = await sharp(logo.png)
+    .resize({ width: boxWidth, height: boxHeight, fit: "inside", withoutEnlargement: false })
     .png()
     .toBuffer({ resolveWithObject: true });
 
-  const light = await isLightLogo(resized.data);
-  const cardLeft = margin;
-  const cardTop = Math.round((meta.height ?? width) * (placement.topFraction ?? 0)) + margin;
-  const logoLeft = cardLeft + Math.round((cardWidth - resized.info.width) / 2);
-  const logoTop = cardTop + Math.round((cardHeight - resized.info.height) / 2);
-  const card = Buffer.from(
-    `<svg width="${cardWidth}" height="${cardHeight}" xmlns="http://www.w3.org/2000/svg"><rect width="${cardWidth}" height="${cardHeight}" rx="${Math.round(cardHeight * 0.18)}" fill="${light ? "#15181d" : "#ffffff"}" fill-opacity="0.96"/></svg>`,
-  );
+  const left = margin;
+  const top = Math.round(height * (placement.topFraction ?? 0)) + margin;
+  const logoWidth = resized.info.width;
+  const logoHeight = resized.info.height;
 
-  return sharp(sourceImage)
-    .composite([
-      { input: card, left: cardLeft, top: cardTop },
-      { input: resized.data, left: logoLeft, top: logoTop },
-    ])
-    .png()
-    .toBuffer();
+  // What the logo will sit on decides how it is shown: straight on, or on a plate of the opposite tone.
+  const behind = await sharp(sourceImage)
+    .extract({
+      left: Math.min(left, width - 1),
+      top: Math.min(top, height - 1),
+      width: Math.max(1, Math.min(logoWidth, width - left)),
+      height: Math.max(1, Math.min(logoHeight, height - top)),
+    })
+    .stats();
+  const [r = 128, g = 128, b = 128] = behind.channels.map((c) => c.mean);
+  const treatment = chooseLogoTreatment(0.299 * r + 0.587 * g + 0.114 * b, logo.luminance);
+
+  const layers: Array<{ input: Buffer; left: number; top: number }> = [];
+  if (treatment.kind === "plate") {
+    const pad = Math.round(logoHeight * 0.28);
+    const plateWidth = logoWidth + pad * 2;
+    const plateHeight = logoHeight + pad * 2;
+    layers.push({
+      input: Buffer.from(
+        `<svg width="${plateWidth}" height="${plateHeight}" xmlns="http://www.w3.org/2000/svg"><rect width="${plateWidth}" height="${plateHeight}" rx="${Math.round(plateHeight * 0.22)}" fill="${treatment.color}" fill-opacity="0.96"/></svg>`,
+      ),
+      left: Math.max(0, left - pad),
+      top: Math.max(0, top - pad),
+    });
+  }
+  layers.push({ input: resized.data, left, top });
+  return sharp(sourceImage).composite(layers).png().toBuffer();
 }
 
 function isSvg(buffer: Buffer): boolean {
