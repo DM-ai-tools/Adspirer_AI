@@ -35,6 +35,8 @@ const envSchema = z.object({
   OPENAI_IMAGE_MODEL: z.string().default("gpt-image-2"),
   /** low | medium | high. High is what makes typography and detail ad-grade; medium is cheaper. */
   OPENAI_IMAGE_QUALITY: z.enum(["low", "medium", "high"]).default("high"),
+  /** model: the image model places the logo where the layout wants it. paste: the exact logo is pasted on afterwards. */
+  OPENAI_LOGO_MODE: z.enum(["model", "paste"]).default("model"),
   SOCIAVAULT_API_KEY: z.string().optional(),
   META_APP_ID: z.string().optional(),
   META_APP_SECRET: z.string().optional(),
@@ -98,6 +100,7 @@ function readRawEnv(): Record<string, string | undefined> {
     FIRECRAWL_API_KEY: process.env.FIRECRAWL_API_KEY,
     OPENAI_IMAGE_MODEL: process.env.OPENAI_IMAGE_MODEL,
     OPENAI_IMAGE_QUALITY: process.env.OPENAI_IMAGE_QUALITY || undefined,
+    OPENAI_LOGO_MODE: process.env.OPENAI_LOGO_MODE || undefined,
     SOCIAVAULT_API_KEY: process.env.SOCIAVAULT_API_KEY,
     META_APP_ID: process.env.META_APP_ID,
     META_APP_SECRET: process.env.META_APP_SECRET,
