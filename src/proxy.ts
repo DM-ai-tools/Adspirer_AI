@@ -19,6 +19,7 @@ export async function proxy(request: NextRequest) {
     pathname.startsWith("/approvals") ||
     pathname.startsWith("/monitoring") ||
     pathname.startsWith("/creatives") ||
+    pathname.startsWith("/commerce") ||
     pathname.startsWith("/audit") ||
     pathname.startsWith("/admin");
 

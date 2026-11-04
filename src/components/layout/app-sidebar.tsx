@@ -9,6 +9,7 @@ import {
   ShieldCheck,
   Activity,
   Palette,
+  ShoppingBag,
   ScrollText,
   UserCog,
   Plug,
@@ -38,6 +39,7 @@ const MAIN_NAV: NavItem[] = [
   { href: "/approvals", label: "Approvals", icon: ShieldCheck },
   { href: "/monitoring", label: "Monitoring", icon: Activity },
   { href: "/creatives", label: "Creatives", icon: Palette },
+  { href: "/commerce", label: "Commerce", icon: ShoppingBag },
   { href: "/audit", label: "Audit Log", icon: ScrollText },
 ];
 
