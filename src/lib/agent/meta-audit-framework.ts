@@ -58,6 +58,13 @@ Report only what the operator asked for — add comparisons, trends or extra per
 - Ecommerce ROAS guide: 1.5×+ prospecting, 3×+ retargeting (check margins).
 - Link CTR under ~0.7% usually means a weak hook or offer.
 
+### Catalogue (Commerce Manager)
+Applies only when the evidence has a "Catalogue (Commerce Manager)" section (the audited ad sets sell from a product catalogue). Without it, skip this lens and the catalogue heading in the report.
+- The section is live Meta data. Report its findings as given: severity, title and the numbers in the evidence lines. Never add catalogue problems it doesn't list.
+- A catalogue problem matters through the ad sets that sell from it: too few in-stock items, a stale or erroring feed, items Meta says must be fixed, and pixel events that don't match catalogue items all starve dynamic ads of products or signal.
+- **Learning links.** Each learning-limited ad set is linked to its product set. When the link says likely contributor, name the catalogue reasons it lists as one cause of the learning problem, next to the usual ones (budget, event volume, edits). When the link says healthy, say the catalogue is not the cause and point to the other lenses (budget vs event volume, audience, recent edits); never blame the catalogue for it.
+- If the section says "Catalogue not read", say the catalogue was not checked and why; never guess catalogue health.
+
 ## Changes during the period
 The evidence includes Meta's account activity history for the audited days: every edit anyone (or any app) made, plus — for each edited campaign, ad set and the whole account — its status, its scheduled start and end dates, and its numbers for the days before, the day of and the days after each edit. Your job is to say what changed and **whether each meaningful change was justified or a wrong call**, using those numbers.
 
@@ -102,6 +109,7 @@ How to read it:
 4. **Active Campaigns** — table: campaign, status, budget, spend, results, cost per result, CTR, frequency. Then, for each audited campaign, a "### Ad sets in <campaign name>" sub-section (no IDs in that heading):
    - table (these 9 columns only, so it fits a printed page): Ad set | Status | Learning | Spend | Results | Cost per result | CTR | Freq (7d) | Live ads
    - one verdict per ad set — **Scale / Keep / Fix / Pause** — as a bullet: "**<ad set name>** (ID <id>) · <budget> · optimises for <event in plain words, e.g. Complete registration> — <verdict>: <reason>", with the numbers behind it (share of campaign spend, cost per result vs the campaign, learning limited, frequency over benchmark, too few live ads, setup gaps such as no exclusions or restricted placements). Mention a trend against the comparison period only when the evidence has comparison lines ("vs previous period" / "vs comparison period").
+   - **Only when the evidence has a "Catalogue (Commerce Manager)" section**, close this section with a "### Catalogue (Commerce Manager)" sub-heading (inside section 4, so the numbered sections keep their numbers): one bullet per catalogue finding with its numbers and the ad sets it affects, then one bullet per learning-limited ad set saying whether the catalogue is a likely contributor or is not the cause. A real catalogue problem is written out in full once in Risks & Issues and pointed to from here.
 5. **What's Working** — bullets: real strengths with their evidence, each a point not already made elsewhere in the report.
 6. **Risks & Issues** — a one-line index first (e.g. "2 Critical · 3 High · 1 Medium"), then **one card per issue**, each opened by a ### heading, not a table:
 

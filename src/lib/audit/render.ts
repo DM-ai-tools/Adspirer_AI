@@ -9,6 +9,8 @@ import {
 import { ownerForCheckpoint, ownerLabel } from "@/lib/agent/optimization-capabilities";
 import { escapeTableCell } from "@/lib/reports/table-row";
 import { hookRate, holdRate } from "@/lib/creative/fatigue";
+import type { CatalogFinding, LearningLink } from "@/lib/meta/catalog/findings";
+import type { CatalogSnapshot } from "@/lib/meta/catalog/types";
 import type { AuditAd, AuditAdSet, AuditChange, AuditChangeContext, MetaAuditSnapshot, PeriodPerformance } from "@/lib/audit/meta-audit-data";
 
 const STATUS_LABEL: Record<CheckpointStatus, string> = {
@@ -666,6 +668,79 @@ export function renderChangesEvidence(snap: MetaAuditSnapshot): string {
     "A name or id missing from \"detail\" is just not reported — don't fill it in.",
   );
   return lines.filter((l) => l !== "").join("\n");
+}
+
+/** One catalogue as read for the audit: its report, or why it could not be read. */
+export type CatalogEvidenceInput =
+  | {
+      catalogName: string;
+      catalogId: string;
+      snapshot: CatalogSnapshot;
+      findings: CatalogFinding[];
+      learningLinks: LearningLink[];
+    }
+  | { catalogId: string; missing: "missing_permission" | "no_catalog"; message: string };
+
+const CATALOG_SEVERITY_LABEL: Record<CatalogFinding["severity"], string> = {
+  critical: "Critical",
+  high: "High",
+  medium: "Medium",
+  low: "Low",
+};
+
+/**
+ * Commerce Manager evidence for the writer: each catalogue's findings with their numbers, and
+ * how they bear on learning-limited ad sets. `scope` is the ad sets this audit covers; a
+ * learning link for any other ad set is left out, and names come from these ad sets.
+ * Returns "" when there is nothing to report.
+ */
+export function renderCatalogEvidence(reports: CatalogEvidenceInput[], scope: AuditAdSet[]): string {
+  if (!reports.length) return "";
+  const inScope = new Map(scope.map((a) => [a.id, a]));
+  const lines: string[] = ["### Catalogue (Commerce Manager) — live Meta data, authoritative"];
+
+  for (const report of reports) {
+    if ("missing" in report) {
+      lines.push(
+        report.missing === "missing_permission"
+          ? "- Catalogue not read: reconnect Facebook to grant catalogue access"
+          : `- Catalogue not read: ${report.message}`,
+      );
+      continue;
+    }
+
+    const { snapshot } = report;
+    lines.push(
+      "",
+      `**${report.catalogName}** (ID ${report.catalogId}) — ${snapshot.productCount.toLocaleString("en-US")} products`,
+    );
+    if (!report.findings.length) {
+      lines.push("- No catalogue problems found in the diagnostics, product sets, feeds or event matching.");
+    }
+    for (const f of report.findings) {
+      lines.push(`- **${CATALOG_SEVERITY_LABEL[f.severity]}** — ${f.title}`);
+      for (const e of f.evidence) lines.push(`  - ${e.trim()}`);
+      lines.push(`  - Fix: ${f.howToFix}`);
+    }
+    for (const w of snapshot.warnings) lines.push(`- Not fully read: ${w}`);
+
+    const links = report.learningLinks.filter((l) => inScope.has(l.adSetId));
+    if (links.length) {
+      lines.push("", "Learning-limited ad sets and this catalogue:");
+      for (const l of links) {
+        const adSetName = inScope.get(l.adSetId)?.name ?? l.adSetId;
+        const set = snapshot.productSets.find((s) => s.id === l.productSetId);
+        const setLabel = set ? `"${set.name}" (${set.id})` : l.productSetId;
+        const head = `- Ad set ${adSetName} (learning limited) → product set ${setLabel}:`;
+        lines.push(
+          l.verdict === "likely_contributor"
+            ? `${head} likely contributor because ${l.reasons.join("; ")}`
+            : `${head} catalogue looks healthy; look elsewhere`,
+        );
+      }
+    }
+  }
+  return lines.join("\n");
 }
 
 /** Short list of open issues for the optimise flow. */

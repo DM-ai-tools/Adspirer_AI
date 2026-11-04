@@ -39,6 +39,55 @@ async function activeClientServices(clientId: string): Promise<ClientService[]> 
   return (data ?? []) as ClientService[];
 }
 
+const MAX_AUDIT_CATALOGS = 3;
+
+/**
+ * Commerce Manager evidence for a Meta audit: the catalogues behind the audited ad sets
+ * (at most MAX_AUDIT_CATALOGS), read in parallel. Returns null when no audited ad set sells
+ * from a product set. Never throws: a failure becomes a "Catalogue not read" line so the
+ * rest of the audit is untouched.
+ */
+async function loadCatalogEvidence(clientId: string, auditedAdSets: AuditAdSet[]): Promise<string | null> {
+  const catalogAdSets = auditedAdSets.filter((a) => a.productSetId);
+  if (!catalogAdSets.length) return null;
+  const unread = (message: string, missing: "missing_permission" | "no_catalog" = "no_catalog") =>
+    renderCatalogEvidence([{ catalogId: "", missing, message }], catalogAdSets);
+  try {
+    const commerce = await getClientCommerce(clientId);
+    if (commerce.state !== "ok") return unread(commerce.message, commerce.state === "missing_permission" ? "missing_permission" : "no_catalog");
+
+    const setIds = new Set(catalogAdSets.map((a) => a.productSetId));
+    const catalogIds = [...new Set(commerce.uses.filter((u) => setIds.has(u.productSetId)).map((u) => u.catalogId))].slice(
+      0,
+      MAX_AUDIT_CATALOGS,
+    );
+    if (!catalogIds.length) return unread("no catalogue was found for the audited ad sets' product sets");
+
+    const reports = await Promise.all(
+      catalogIds.map(async (catalogId): Promise<CatalogEvidenceInput> => {
+        try {
+          const report = await getCatalogReport(clientId, catalogId);
+          if (report.state !== "ok") {
+            return { catalogId, missing: report.state === "missing_permission" ? "missing_permission" : "no_catalog", message: report.message };
+          }
+          return {
+            catalogName: report.snapshot.name,
+            catalogId,
+            snapshot: report.snapshot,
+            findings: report.findings,
+            learningLinks: report.learningLinks,
+          };
+        } catch (error) {
+          return { catalogId, missing: "no_catalog", message: error instanceof Error ? error.message : String(error) };
+        }
+      }),
+    );
+    return renderCatalogEvidence(reports, catalogAdSets);
+  } catch (error) {
+    return unread(error instanceof Error ? error.message : String(error));
+  }
+}
+
 /**
  * Catalog ads' spend per product, each product tagged with its GA4 item category so the spend
  * can go to a category. A snapshot without catalog spend is returned untouched; when GA4 isn't
@@ -108,7 +157,7 @@ async function loadChannelPerformance(
     };
   }
 }
-import { scopeAuditSnapshot, type MetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
+import { scopeAuditSnapshot, type AuditAdSet, type MetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
 import { clientGoogleAssets } from "@/lib/google/assets";
 import { getGoogleDataProvider } from "@/lib/google/provider";
 import { loadChannelSnapshot } from "@/lib/google/snapshot";
@@ -139,10 +188,13 @@ import {
 } from "@/lib/agent/strategy-brief";
 import {
   renderAdSetEvidence,
+  renderCatalogEvidence,
   renderChangesEvidence,
   renderScorecardEvidence,
   renderScorecardMarkdown,
+  type CatalogEvidenceInput,
 } from "@/lib/audit/render";
+import { getCatalogReport, getClientCommerce } from "@/lib/meta/catalog/service";
 import type { Task } from "@/types";
 import { getConfig } from "@/lib/config";
 import { resolveProvider } from "@/lib/adspirer/client";
@@ -2596,6 +2648,8 @@ export async function gatherDiagnoseEvidence(input: {
               sections.push(renderScorecardEvidence(scorecard, snapshot));
               sections.push(renderAdSetEvidence(snapshot));
               sections.push(renderChangesEvidence(snapshot));
+              const catalogSection = await loadCatalogEvidence(input.clientId, snapshot.adSets);
+              if (catalogSection) sections.push(catalogSection);
               auditAppendix = renderScorecardMarkdown(scorecard, snapshot);
               toolCalls.push({
                 name: "audit_checkpoints",
