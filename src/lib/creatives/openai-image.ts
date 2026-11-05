@@ -1,4 +1,5 @@
-import { cropToFormat, FALLBACK_SIZE, formatPromptRule, type GenerationSize, type ImageFormat } from "@/lib/creatives/formats";
+import { cropToFormat } from "@/lib/creatives/crop-to-format";
+import { fallbackSizeFor, formatPromptRule, type GenerationSize, type ImageFormat } from "@/lib/creatives/formats";
 import { getConfig } from "@/lib/config";
 import { logger } from "@/lib/observability/logger";
 import { chooseLogoTreatment, prepareLogo } from "@/lib/creatives/logo-prep";
@@ -19,7 +20,7 @@ export type OpenAIImageResult = {
  */
 export async function generateOpenAIImage(input: {
   prompt: string;
-  size?: GenerationSize | "1536x1024";
+  size?: GenerationSize;
   quality?: "low" | "medium" | "high";
   logoUrl?: string | null;
   /** Crop the render to this shape (before the logo goes on). */
@@ -44,49 +45,20 @@ export async function generateOpenAIImage(input: {
   }
 
   try {
-    // The logo goes to the model as a clean reference (its own plain background removed), so it
-    // is placed where this layout wants it and reads against what is behind it. If that is not
-    // possible, a plain render is made and the real logo is pasted on afterwards.
-    let logoPng: Buffer | null = null;
-    if (input.logoUrl && config.OPENAI_LOGO_MODE !== "paste") {
-      try {
-        const loaded = await loadLogoBuffer(input.logoUrl);
-        logoPng = (await prepareLogo(loaded, { isSvg: isSvg(loaded) })).png;
-      } catch (error) {
-        logger.warn("Logo could not be prepared as a reference image", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
-    const request = async (renderSize: string, withLogo: boolean) => {
-      const finalPrompt = `${prompt} ${logoInstruction(withLogo ? "attached" : input.logoUrl ? "overlay" : "none", input.format)}`.slice(0, 32000);
-      let response: Response;
-      if (withLogo && logoPng) {
-        const form = new FormData();
-        form.set("model", model);
-        form.set("prompt", finalPrompt);
-        form.set("size", renderSize);
-        form.set("quality", quality);
-        form.set("n", "1");
-        form.append("image[]", new Blob([new Uint8Array(logoPng)], { type: "image/png" }), "logo.png");
-        response = await fetch("https://api.openai.com/v1/images/edits", {
-          method: "POST",
-          headers: { Authorization: `Bearer ${config.OPENAI_API_KEY}` },
-          body: form,
-          signal: AbortSignal.timeout(240_000),
-        });
-      } else {
-        response = await fetch("https://api.openai.com/v1/images/generations", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${config.OPENAI_API_KEY}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ model, prompt: finalPrompt, size: renderSize, quality, n: 1 }),
-          signal: AbortSignal.timeout(240_000),
-        });
-      }
+    // The model NEVER sees or draws the logo: image models redraw logos with wrong shapes and
+    // lettering. It is told to leave a calm area free, and the brand's real logo pixels are
+    // composited onto the finished render, at the calmest spot, afterwards.
+    const finalPrompt = `${prompt} ${logoInstruction(input.logoUrl ? "overlay" : "none", input.format)}`.slice(0, 32000);
+    const request = async (renderSize: string) => {
+      const response = await fetch("https://api.openai.com/v1/images/generations", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${config.OPENAI_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ model, prompt: finalPrompt, size: renderSize, quality, n: 1 }),
+        signal: AbortSignal.timeout(240_000),
+      });
       const body = (await response.json().catch(() => null)) as {
         data?: Array<{ b64_json?: string; url?: string }>;
         error?: { message?: string };
@@ -94,32 +66,11 @@ export async function generateOpenAIImage(input: {
       return { res: response, payload: body };
     };
     /** A model that does not take the exact portrait size gets a 2:3 render that is cropped to shape. */
-    const withSizeFallback = async (withLogo: boolean) => {
-      let out = await request(size, withLogo);
-      if (!out.res.ok && size !== "1024x1024" && size !== FALLBACK_SIZE && /size/i.test(out.payload?.error?.message ?? "")) {
-        out = await request(FALLBACK_SIZE, withLogo);
-      }
-      return out;
-    };
-
-    let usedReference = false;
-    let attempt: Awaited<ReturnType<typeof request>> | null = null;
-    if (logoPng) {
-      try {
-        const withLogo = await withSizeFallback(true);
-        if (withLogo.res.ok) {
-          attempt = withLogo;
-          usedReference = true;
-        } else {
-          logger.warn("Image edit with logo reference was refused; falling back", { status: withLogo.res.status });
-        }
-      } catch (error) {
-        logger.warn("Image edit with logo reference failed; falling back", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
+    let attempt = await request(size);
+    const fallbackSize = fallbackSizeFor(input.format);
+    if (!attempt.res.ok && size !== "1024x1024" && size !== fallbackSize && /size/i.test(attempt.payload?.error?.message ?? "")) {
+      attempt = await request(fallbackSize);
     }
-    if (!attempt) attempt = await withSizeFallback(false);
     const { res, payload } = attempt;
 
     if (!res.ok) {
@@ -146,7 +97,7 @@ export async function generateOpenAIImage(input: {
         logger.warn("Image crop failed", { error: error instanceof Error ? error.message : String(error) });
       }
     }
-    if (input.logoUrl && !usedReference) {
+    if (input.logoUrl) {
       try {
         const sourceImage = b64
           ? Buffer.from(b64, "base64")
@@ -160,12 +111,7 @@ export async function generateOpenAIImage(input: {
               )
             : null;
         if (sourceImage) {
-          const branded = await compositeOfficialLogo(
-            sourceImage,
-            input.logoUrl,
-            // Reels/Stories: below the top 14% Meta covers with the account name.
-            input.format === "9:16" ? { topFraction: 0.14 } : {},
-          );
+          const branded = await compositeOfficialLogo(sourceImage, input.logoUrl, input.format);
           b64 = branded.toString("base64");
           imageUrl = `data:image/png;base64,${b64}`;
         }
@@ -207,12 +153,9 @@ export async function generateOpenAIImage(input: {
 }
 
 /** The sentences about the logo, which depend on how it reaches the image. */
-function logoInstruction(mode: "attached" | "overlay" | "none", format?: ImageFormat): string {
-  if (mode === "attached") {
-    return `LOGO: the attached image is this brand's official logo on a transparent background. Place it exactly once, wherever it sits most naturally in this layout (a corner, the footer, or beside the headline; never over the main subject or the call-to-action), small but clearly legible at about 16-24% of the frame width${format === "9:16" ? ", below the top 14% and above the bottom 35% of the frame" : ""}. Reproduce it faithfully: same shapes, colours and lettering, fully visible and uncropped, at full opacity; do not redraw, restyle, recolour or replace it. Make sure it reads against what is behind it: on a light area use it as it is; on a dark or busy area give it a clean white rounded badge or panel that belongs to the design, or place it in a calm area. Never put it inside a black or dark box and never add a dark rectangle behind it. Keep it at least 6% away from every edge.`;
-  }
+function logoInstruction(mode: "overlay" | "none", format?: ImageFormat): string {
   if (mode === "overlay") {
-    return `Leave the top ${format === "9:16" ? "28%" : "16%"} of the frame free of any text, chip or button (background, glow and imagery may continue through it) and keep the top-left corner clear, because the brand's real logo is placed there afterwards. Do not draw, invent or imitate any logo or brand mark.`;
+    return `LOGO SPACE: the brand's real logo is added to this image afterwards, so leave one calm, uncluttered area free in a corner (top-left preferred; ${format === "9:16" ? "below the top 14% of the frame" : "top-right is the alternative"}), about 26% of the frame wide and 14% tall, with no text, chip, button, face or busy detail in it (background colour, soft glow or gradient may continue through it). Do NOT draw, write, invent, imitate or placeholder any logo, wordmark, brand name badge or brand mark anywhere in the image.`;
   }
   return "Do not invent or render a logo.";
 }
@@ -222,7 +165,7 @@ function logoInstruction(mode: "attached" | "overlay" | "none", format?: ImageFo
  * render so the model builds a finished, layered ad, not a flat picture with a caption.
  */
 const CRAFT_BRIEF =
-  "CRAFT — this must look like a finished, professionally designed static ad, never a plain photo or flat template: one unmistakable focal point that reads in under a second at thumbnail size; real depth with distinct foreground, subject and background layers; deliberate lighting with believable shadows, reflections and highlights; rich materials and texture (grain, glass, gloss, fabric, paper, metal) where they suit the style; confident, generous negative space; a clear type hierarchy (huge headline, small supporting text, one bold button) set with proper kerning and contrast; premium colour grading and crisp edges. No clutter, no clip-art, no generic handshake or laptop-on-desk stock imagery, no watermarks.";
+  "CRAFT — this must look like a finished, art-directed, award-calibre static ad, never a plain template, flat graphic or clip-art. A single, surprising VISUAL IDEA carries the ad and reads in under a second even with the text covered: a vivid metaphor, contrast or staged scene built from real-looking objects. Render it with photographic or premium 3D realism: tactile materials (glass, metal, fabric, paper, leaves, liquid), believable light, shadows, reflections and depth of field, distinct foreground, subject and background layers, a rich deliberate colour grade and razor-crisp detail. The picture dominates (about two thirds of the frame); the type supports it: a clear headline sized to complement the scene, not to overpower it, a few small labels set into the scene, and one clean button, all with high contrast, proper kerning and large enough to read at thumbnail size. Anatomy, hands, screens and objects must look correct and realistic. Keep it uncluttered: no rows of badges, no piles of tiny icons, no cheap stock imagery, no watermarks.";
 
 export function buildBrandImagePrompt(input: {
   brandName: string;
@@ -246,7 +189,7 @@ export function buildBrandImagePrompt(input: {
     `Offer/theme: ${input.serviceName}.`,
     CRAFT_BRIEF,
     input.headline || input.primaryText
-      ? `THE POST THIS IMAGE ACCOMPANIES — the image must make this message understood at a glance, showing its subject and benefit, not a generic mood. ${input.headline ? `Headline: "${input.headline}". ` : ""}${input.primaryText ? `Primary text: "${input.primaryText.slice(0, 400)}". ` : ""}Show the headline large and legible; never as small text.`
+      ? `THE POST THIS IMAGE ACCOMPANIES — the picture itself must make this message understood at a glance, through a visual idea that shows its subject and benefit, not a generic mood. ${input.headline ? `Headline: "${input.headline}". ` : ""}${input.primaryText ? `Primary text: "${input.primaryText.slice(0, 400)}". ` : ""}Show the headline clearly legible and well sized, as a supporting element of the scene.`
       : null,
     input.brandVoice ? `Brand mood/voice: ${input.brandVoice}.` : null,
     // Hex codes listed as "accents" get treated as a loose suggestion and the
@@ -271,7 +214,7 @@ export function buildBrandImagePrompt(input: {
       ? `ART DIRECTION — follow this exactly; it is what makes this variant different from the others: ${input.creativeDirection}`
       : null,
     input.creativeDirection?.includes("ON-IMAGE TEXT")
-      ? "TEXT ON THE IMAGE — design this like a finished paid-social ad, not a stock photo: set the ON-IMAGE TEXT from the art direction as bold, high-contrast, perfectly legible typography; the headline large, the highlighted keywords as accent-coloured words or rounded chips in the brand palette, and the call-to-action as a solid rounded button. Spell every word exactly as given. Put no other words on the image: no extra slogans, no lorem ipsum, no gibberish, no fake UI text."
+      ? "TEXT ON THE IMAGE — set the ON-IMAGE TEXT from the art direction as high-contrast, perfectly legible typography that supports the picture rather than dominating it: the headline clear and well sized, the highlighted keywords as a few small chips or accent words placed naturally in the scene, and the call-to-action as a solid rounded button. Spell every word exactly as given. Put no other words on the image: no extra slogans, no lorem ipsum, no gibberish, no fake UI text."
       : null,
     input.variantLabel ? `Variant name: ${input.variantLabel}. Commit fully to the art direction's style so this variation looks clearly different from its siblings.` : null,
     input.revisionNotes ? `Operator revision request: ${input.revisionNotes}` : null,
@@ -281,13 +224,32 @@ export function buildBrandImagePrompt(input: {
     .join(" ");
 }
 
+/** Where on the render the logo may go, as fractions of the frame, with a small bias to the first. */
+export function logoCandidates(format?: ImageFormat): Array<{ x: number; y: number; bias: number }> {
+  // Reels/Stories: Meta covers the top 14% (account name) and the bottom ~35% (reply bar), so stay in between.
+  if (format === "9:16") {
+    return [
+      { x: 0.05, y: 0.15, bias: 0 },
+      { x: 0.95, y: 0.15, bias: 3 },
+      { x: 0.05, y: 0.62, bias: 6 },
+    ];
+  }
+  return [
+    { x: 0.05, y: 0.05, bias: 0 },
+    { x: 0.95, y: 0.05, bias: 3 },
+    { x: 0.05, y: 0.95, bias: 6 },
+    { x: 0.95, y: 0.95, bias: 8 },
+  ];
+}
+
 async function compositeOfficialLogo(
   sourceImage: Buffer,
   logoUrl: string,
-  placement: { topFraction?: number } = {},
+  format?: ImageFormat,
 ): Promise<Buffer> {
   const loaded = await loadLogoBuffer(logoUrl);
   // Rasterise vectors large and drop the logo's own plain backdrop, so no box shows on the ad.
+  // These are the brand's exact pixels; only scaled, never redrawn.
   const logo = await prepareLogo(loaded, { isSvg: isSvg(loaded) });
   const sharp = (await import("sharp")).default;
   const meta = await sharp(sourceImage).metadata();
@@ -301,35 +263,46 @@ async function compositeOfficialLogo(
     .resize({ width: boxWidth, height: boxHeight, fit: "inside", withoutEnlargement: false })
     .png()
     .toBuffer({ resolveWithObject: true });
-
-  const left = margin;
-  const top = Math.round(height * (placement.topFraction ?? 0)) + margin;
   const logoWidth = resized.info.width;
   const logoHeight = resized.info.height;
+  const pad = Math.round(logoHeight * 0.28);
+
+  // Look at each allowed spot (the logo plus its possible plate) and take the calmest: lowest
+  // variation in colour means no text, face or detail there to collide with.
+  let best: { left: number; top: number; luminance: number; score: number } | null = null;
+  for (const c of logoCandidates(format)) {
+    const left = Math.max(0, Math.min(width - logoWidth, c.x < 0.5 ? margin : width - margin - logoWidth));
+    const top = Math.max(0, Math.min(height - logoHeight, c.y < 0.5 ? Math.round(height * c.y) : height - margin - logoHeight));
+    const region = {
+      left: Math.max(0, left - pad),
+      top: Math.max(0, top - pad),
+      width: Math.max(1, Math.min(width - Math.max(0, left - pad), logoWidth + pad * 2)),
+      height: Math.max(1, Math.min(height - Math.max(0, top - pad), logoHeight + pad * 2)),
+    };
+    // Cut the region out first: stats() would otherwise read the whole image.
+    const stats = await sharp(await sharp(sourceImage).extract(region).png().toBuffer()).stats();
+    const [r = 128, g = 128, b = 128] = stats.channels.map((ch) => ch.mean);
+    const spread = stats.channels.slice(0, 3).reduce((sum, ch) => sum + ch.stdev, 0) / 3;
+    const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+    const score = spread + c.bias;
+    if (!best || score < best.score) best = { left, top, luminance, score };
+  }
+  const { left, top, luminance } = best!;
 
   // What the logo will sit on decides how it is shown: straight on, or on a plate of the opposite tone.
-  const behind = await sharp(sourceImage)
-    .extract({
-      left: Math.min(left, width - 1),
-      top: Math.min(top, height - 1),
-      width: Math.max(1, Math.min(logoWidth, width - left)),
-      height: Math.max(1, Math.min(logoHeight, height - top)),
-    })
-    .stats();
-  const [r = 128, g = 128, b = 128] = behind.channels.map((c) => c.mean);
-  const treatment = chooseLogoTreatment(0.299 * r + 0.587 * g + 0.114 * b, logo.luminance);
-
+  const treatment = chooseLogoTreatment(luminance, logo.luminance);
   const layers: Array<{ input: Buffer; left: number; top: number }> = [];
   if (treatment.kind === "plate") {
-    const pad = Math.round(logoHeight * 0.28);
     const plateWidth = logoWidth + pad * 2;
     const plateHeight = logoHeight + pad * 2;
+    const plateLeft = Math.max(0, Math.min(width - plateWidth, left - pad));
+    const plateTop = Math.max(0, Math.min(height - plateHeight, top - pad));
     layers.push({
       input: Buffer.from(
         `<svg width="${plateWidth}" height="${plateHeight}" xmlns="http://www.w3.org/2000/svg"><rect width="${plateWidth}" height="${plateHeight}" rx="${Math.round(plateHeight * 0.22)}" fill="${treatment.color}" fill-opacity="0.96"/></svg>`,
       ),
-      left: Math.max(0, left - pad),
-      top: Math.max(0, top - pad),
+      left: plateLeft,
+      top: plateTop,
     });
   }
   layers.push({ input: resized.data, left, top });

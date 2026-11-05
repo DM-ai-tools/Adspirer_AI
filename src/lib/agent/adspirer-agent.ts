@@ -3455,7 +3455,7 @@ export async function gatherDiagnoseEvidence(input: {
           `- Primary text: ${selected.primary_text.slice(0, 200)}`,
           imageUrl ? `- image_url: ${imageUrl}` : "- image_url: (missing)",
           "",
-          "Use this image_url in create_meta_image_campaign / create_ad Approvals JSON (image campaigns only).",
+          "The operator has CHOSEN this image; that is NOT a request to queue anything. Do not propose or queue create_meta_image_campaign / create_ad yet. First ask, one step at a time, for what the campaign still needs and has not been given: whether to keep this image's headline and primary text, the objective, daily budget, locations, destination URL (default to this image's landing page), start date and any targeting. Queue only after they have answered and confirmed, then use this image_url in the create_meta_image_campaign / create_ad Approvals JSON (image campaigns only).",
         ].join("\n"),
       );
     }

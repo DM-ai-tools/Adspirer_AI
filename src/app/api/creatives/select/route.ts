@@ -67,7 +67,9 @@ export async function POST(request: Request) {
       });
     }
 
-    const bound = imageUrl
+    // Only approvals from this same task wait on this image. With no task, any pending approval
+    // for the client could be someone else's, and picking an image must never touch those.
+    const bound = imageUrl && draft.task_id
       ? await bindImageToPendingApprovals({
           clientId: draft.client_id,
           imageUrl,

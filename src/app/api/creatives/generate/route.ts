@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { IMAGE_FORMATS } from "@/lib/creatives/formats";
 import { getCurrentUser } from "@/lib/security/auth";
 import {
   assertAuthenticated,
@@ -21,6 +22,7 @@ const bodySchema = z.object({
   headline: z.string().optional(),
   primaryText: z.string().optional(),
   analyzeBrand: z.boolean().optional().default(true),
+  format: z.enum(IMAGE_FORMATS).optional(),
 });
 
 export async function POST(request: Request) {
@@ -41,6 +43,7 @@ export async function POST(request: Request) {
       headline: body.headline,
       primaryText: body.primaryText,
       analyzeBrand: body.analyzeBrand,
+      imageFormat: body.format,
     });
 
     if (runImages) {

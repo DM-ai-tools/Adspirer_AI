@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { IMAGE_FORMATS } from "@/lib/creatives/formats";
 import { getCurrentUser } from "@/lib/security/auth";
 import {
   assertAuthenticated,
@@ -22,6 +23,7 @@ const bodySchema = z.object({
   primaryText: z.string().optional(),
   referenceBrief: z.string().max(4000).optional(),
   analyzeBrand: z.boolean().optional().default(true),
+  format: z.enum(IMAGE_FORMATS).optional(),
 });
 
 export async function POST(request: Request) {
@@ -46,6 +48,7 @@ export async function POST(request: Request) {
       primaryText: body.primaryText,
       referenceBrief: body.referenceBrief,
       analyzeBrand: body.analyzeBrand,
+      imageFormat: body.format,
       generateImages: true,
     });
     runAfterResponse("workflow-creative-generation", run);

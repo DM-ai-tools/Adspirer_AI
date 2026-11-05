@@ -42,6 +42,8 @@ import { splitMarkdownTableRow } from "@/lib/reports/table-row";
 import { ChatDocumentAttachButton, uploadChatFile } from "@/components/workspace/documents-panel";
 import { useCreativeStatus } from "@/hooks/use-creative-status";
 import { groupCreativesByMessage } from "@/lib/creatives/chat-groups";
+import { ImageFormatPicker } from "@/components/creatives/image-format-picker";
+import { parseImageFormat, type ImageFormat } from "@/lib/creatives/formats";
 import { CampaignSettingsCard } from "@/components/ai/campaign-settings-card";
 import { TargetingPickerCard } from "@/components/ai/targeting-picker";
 import type { CampaignSettings } from "@/lib/meta/campaign-rules";
@@ -129,6 +131,7 @@ type ParsedAssistant = {
     headline?: string;
     primary_text?: string;
     reference_notes?: string;
+    format?: string;
   } | null;
   formatChoice: { selected?: "image" | "video" | null } | null;
   videoChoice: {
@@ -230,6 +233,7 @@ function readMetaImageChoice(
           headline?: string;
           primary_text?: string;
           reference_notes?: string;
+          format?: string;
         };
       }
     | null
@@ -645,6 +649,8 @@ export function ChatPanel({
     Record<string, string>
   >({});
   const [startingCreatives, setStartingCreatives] = useState(false);
+  // null until the operator picks; then the agent's suggestion (or feed 4:5) applies.
+  const [pickedImageFormat, setPickedImageFormat] = useState<ImageFormat | null>(null);
   const [attachedNames, setAttachedNames] = useState<string[]>([]);
   const [exportProgress, setExportProgress] = useState<{
     format: "md" | "docx" | "pdf" | "xlsx";
@@ -1687,6 +1693,11 @@ export function ChatPanel({
                           disabled={disabled || sending}
                           onReady={(url) => void submit(composeMediaUrlMessage("image", url))}
                         />
+                        <ImageFormatPicker
+                          value={pickedImageFormat ?? parseImageFormat(imageChoice.format)}
+                          onChange={setPickedImageFormat}
+                          disabled={disabled || sending || startingCreatives}
+                        />
                         <div className="flex flex-wrap gap-2">
 
                           <Button
@@ -1722,6 +1733,9 @@ export function ChatPanel({
                                         referenceBrief:
                                           imageChoice.reference_notes,
                                         analyzeBrand: true,
+                                        format:
+                                          pickedImageFormat ??
+                                          parseImageFormat(imageChoice.format),
                                       }),
                                     },
                                   );

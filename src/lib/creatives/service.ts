@@ -1,4 +1,4 @@
-import type { ImageFormat } from "@/lib/creatives/formats";
+import { withAspectMarker, type ImageFormat } from "@/lib/creatives/formats";
 import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
 import { analyzeBrandFromUrl } from "@/lib/brand/analyze-url";
@@ -266,7 +266,7 @@ export async function generateCreativeDrafts(
       primary_text: concept.primary_text,
       description: concept.description,
       cta: concept.cta,
-      creative_direction: concept.creative_direction,
+      creative_direction: withAspectMarker(concept.creative_direction, input.imageFormat ?? "4:5"),
       image_url: null,
       image_b64: null,
       image_mime: "image/png",
@@ -471,7 +471,7 @@ export async function startCreativeGenerationBackground(
               primary_text: c.primary_text,
               description: c.description,
               cta: c.cta,
-              creative_direction: c.creative_direction,
+              creative_direction: withAspectMarker(c.creative_direction, input.imageFormat ?? "4:5"),
               brand_colors: built.colors,
               logo_url: built.logoUrl,
             }

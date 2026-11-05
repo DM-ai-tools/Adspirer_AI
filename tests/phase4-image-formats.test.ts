@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import sharp from "sharp";
-import { cropBox, cropToFormat, generationSize, parseImageFormat } from "@/lib/creatives/formats";
+import { cropToFormat } from "@/lib/creatives/crop-to-format";
+import { cropBox, generationSize, parseImageFormat } from "@/lib/creatives/formats";
 import { buildBrandImagePrompt } from "@/lib/creatives/openai-image";
 
 describe("ad image formats", () => {
