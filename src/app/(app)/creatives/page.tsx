@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
-import { Check, Download, Loader2, Palette, Sparkles, X } from "lucide-react";
+import { Check, ChevronDown, Download, Layers, Loader2, Palette, Sparkles, X } from "lucide-react";
 import { toast } from "sonner";
 import { useApp } from "@/components/layout/app-provider";
 import { PageHeader } from "@/components/shared/page-header";
@@ -21,6 +21,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { readRunMarker } from "@/lib/creatives/formats";
 import { apiFetch } from "@/lib/api-client";
 import { ImageFormatPicker } from "@/components/creatives/image-format-picker";
 import type { ImageFormat } from "@/lib/creatives/formats";
@@ -72,6 +79,7 @@ const GENERATION_STEPS = [
 
 function CreativesInner() {
   const searchParams = useSearchParams();
+  const router = useRouter();
   const { clients, selectedClientId, setSelectedClientId } = useApp();
   const client = clients.find((c) => c.id === selectedClientId);
   const [services, setServices] = useState<ClientService[]>([]);
@@ -104,7 +112,7 @@ function CreativesInner() {
 
   const concepts: CreativeCard[] = useMemo(
     () =>
-      liveDrafts.map((d) => ({
+      liveDrafts.filter((d) => !readRunMarker(d.creative_direction)).map((d) => ({
         ...d,
         concept: d.concept || d.headline,
         image_status: (d.image_status as ImageStatus | null) ?? undefined,
@@ -325,21 +333,35 @@ function CreativesInner() {
                 ))}
               </SelectContent>
             </Select>
-            <Button
-              onClick={() => void generate()}
-              disabled={!selectedClientId || busy}
-            >
-              {busy ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <Sparkles className="mr-2 h-4 w-4" />
-              )}
-              {starting
-                ? "Starting…"
-                : rendering
-                  ? "Rendering…"
-                  : "Generate"}
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button disabled={!selectedClientId || busy}>
+                  {busy ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Sparkles className="mr-2 h-4 w-4" />
+                  )}
+                  {starting ? "Starting…" : rendering ? "Rendering…" : "Generate"}
+                  <ChevronDown className="ml-2 h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-72">
+                <DropdownMenuItem onSelect={() => void generate()}>
+                  <Sparkles className="mr-2 h-4 w-4" />
+                  <span>
+                    Quick run (3 images)
+                    <span className="block text-[11px] text-muted">Uses the fields below</span>
+                  </span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => router.push("/creatives/bulk")}>
+                  <Layers className="mr-2 h-4 w-4" />
+                  <span>
+                    Bulk run (15 hooks)
+                    <span className="block text-[11px] text-muted">15 ads, each a different angle</span>
+                  </span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         }
       />
