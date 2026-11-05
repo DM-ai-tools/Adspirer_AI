@@ -69,10 +69,10 @@ async function whiteBackedLogo(): Promise<string> {
 }
 
 describe("generateOpenAIImage with a logo", () => {
-  it("hands the model the logo to place naturally, and uses its image as it is", async () => {
+  it("never sends the logo to the model: it asks for a clear area and pastes the real logo", async () => {
     const calls: Call[] = [];
     stubFetch(
-      [(url) => (url.endsWith("/images/edits") ? json({ data: [{ b64_json: generated.toString("base64") }] }) : null)],
+      [(url) => (url.endsWith("/images/generations") ? json({ data: [{ b64_json: generated.toString("base64") }] }) : null)],
       calls,
     );
 
@@ -80,84 +80,64 @@ describe("generateOpenAIImage with a logo", () => {
 
     expect(result.status).toBe("succeeded");
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.url).toMatch(/\/images\/edits$/);
-    const form = calls[0]!.body as FormData;
-    const prompt = String(form.get("prompt"));
-    expect(prompt).toMatch(/attached image is this brand's official logo on a transparent background/i);
-    expect(prompt).toMatch(/wherever it sits most naturally/i);
-    expect(prompt).toMatch(/never put it inside a black or dark box/i);
-    expect(prompt).not.toMatch(/top-left corner clear/i);
-    // The logo sent to the model has had its white backdrop removed.
-    const sent = form.get("image[]") as Blob;
-    const meta = await sharp(Buffer.from(await sent.arrayBuffer())).metadata();
-    expect(meta.hasAlpha).toBe(true);
-    expect([meta.width, meta.height]).toEqual([40, 14]);
-    // Nothing is pasted over the model's own placement.
-    expect(result.b64).toBe(generated.toString("base64"));
-  });
-
-  it("falls back to a plain render with the real logo pasted on when the edit is refused", async () => {
-    const calls: Call[] = [];
-    stubFetch(
-      [
-        (url) => (url.endsWith("/images/edits") ? json({ error: { message: "nope" } }, 400) : null),
-        (url) => (url.endsWith("/images/generations") ? json({ data: [{ b64_json: generated.toString("base64") }] }) : null),
-      ],
-      calls,
-    );
-
-    const result = await generateOpenAIImage({ prompt: "Ad for Acme.", logoUrl: await whiteBackedLogo(), format: "1:1" });
-
-    expect(result.status).toBe("succeeded");
-    expect(calls.map((c) => c.url.split("/").pop())).toEqual(["edits", "generations"]);
-    const sent = JSON.parse(String(calls[1]!.body)) as { prompt: string };
-    expect(sent.prompt).toMatch(/top-left corner clear/i);
-    expect(sent.prompt).toMatch(/do not draw, invent or imitate any logo/i);
+    expect(calls[0]!.url).toMatch(/\/images\/generations$/);
+    const sent = JSON.parse(String(calls[0]!.body)) as { prompt: string };
+    expect(sent.prompt).toMatch(/leave one calm, uncluttered area free/i);
+    expect(sent.prompt).toMatch(/do not draw, write, invent, imitate/i);
     expect(result.b64).not.toBe(generated.toString("base64"));
   });
 
-  it("pastes the exact logo when the logo mode is paste, without asking the model to draw it", async () => {
-    process.env.OPENAI_LOGO_MODE = "paste";
-    resetConfigCache();
-    try {
-      const calls: Call[] = [];
-      stubFetch(
-        [(url) => (url.endsWith("/images/generations") ? json({ data: [{ b64_json: generated.toString("base64") }] }) : null)],
-        calls,
-      );
-      const result = await generateOpenAIImage({ prompt: "Ad.", logoUrl: await whiteBackedLogo(), format: "1:1" });
-      expect(calls).toHaveLength(1);
-      expect(calls[0]!.url).toMatch(/\/images\/generations$/);
-      expect(result.b64).not.toBe(generated.toString("base64"));
-    } finally {
-      delete process.env.OPENAI_LOGO_MODE;
-      resetConfigCache();
-    }
+  it("does not use the image edit endpoint at all, whatever the logo", async () => {
+    const calls: Call[] = [];
+    stubFetch(
+      [(url) => (url.endsWith("/images/generations") ? json({ data: [{ b64_json: generated.toString("base64") }] }) : null)],
+      calls,
+    );
+    await generateOpenAIImage({ prompt: "Ad.", logoUrl: await whiteBackedLogo(), format: "1:1" });
+    expect(calls.some((c) => c.url.endsWith("/images/edits"))).toBe(false);
   });
 
   it("pasted logo: straight on a light spot, on a white plate (never black) on a dark one", async () => {
-    process.env.OPENAI_LOGO_MODE = "paste";
-    resetConfigCache();
-    try {
-      const logo = await whiteBackedLogo();
-      const place = async (bg: { r: number; g: number; b: number }) => {
-        const image = await png(bg, 1024);
-        stubFetch([(url) => (url.endsWith("/images/generations") ? json({ data: [{ b64_json: image.toString("base64") }] }) : null)], []);
-        return (await generateOpenAIImage({ prompt: "Ad.", logoUrl: logo, format: "1:1" })).b64!;
-      };
-      // The logo is a dark bar pasted 5% in from the corner (about x 51, y 51, 245 wide).
-      const onLight = await place({ r: 245, g: 245, b: 245 });
-      expect((await pixel(onLight, 150, 90))[0]).toBeLessThan(60); // the logo itself
-      expect((await pixel(onLight, 40, 40))[0]).toBeLessThan(250); // no white plate around it: still the light background
-      expect((await pixel(onLight, 40, 40))[0]).toBeGreaterThan(235);
+    const logo = await whiteBackedLogo();
+    const place = async (bg: { r: number; g: number; b: number }) => {
+      const image = await png(bg, 1024);
+      stubFetch([(url) => (url.endsWith("/images/generations") ? json({ data: [{ b64_json: image.toString("base64") }] }) : null)], []);
+      return (await generateOpenAIImage({ prompt: "Ad.", logoUrl: logo, format: "1:1" })).b64!;
+    };
+    // The logo is a dark bar pasted 5% in from the corner (about x 51, y 51, 245 wide).
+    const onLight = await place({ r: 245, g: 245, b: 245 });
+    expect((await pixel(onLight, 150, 90))[0]).toBeLessThan(60); // the logo itself
+    expect((await pixel(onLight, 40, 40))[0]).toBeGreaterThan(235); // no plate: still the light background
 
-      const onDark = await place({ r: 25, g: 25, b: 30 });
-      expect((await pixel(onDark, 40, 40))[0]).toBeGreaterThan(200); // a white plate behind the dark logo
-      expect((await pixel(onDark, 600, 600))[0]).toBeLessThan(60); // and only there
-    } finally {
-      delete process.env.OPENAI_LOGO_MODE;
-      resetConfigCache();
-    }
+    const onDark = await place({ r: 25, g: 25, b: 30 });
+    expect((await pixel(onDark, 40, 40))[0]).toBeGreaterThan(200); // a white plate behind the dark logo
+    expect((await pixel(onDark, 600, 600))[0]).toBeLessThan(60); // and only there
+  });
+
+  it("puts the logo in the calmest corner when the usual one is busy", async () => {
+    // Top-left is a noisy checkerboard; the other corners are flat light.
+    const size = 1024;
+    const tile = 16;
+    const dark = await sharp({ create: { width: tile, height: tile, channels: 3, background: { r: 0, g: 0, b: 0 } } }).png().toBuffer();
+    const layers = [];
+    for (let y = 0; y < 300; y += tile) for (let x = 0; x < 400; x += tile) if (((x + y) / tile) % 2 === 0) layers.push({ input: dark, left: x, top: y });
+    const busy = await sharp({ create: { width: size, height: size, channels: 3, background: { r: 245, g: 245, b: 245 } } })
+      .composite(layers)
+      .png()
+      .toBuffer();
+    stubFetch([(url) => (url.endsWith("/images/generations") ? json({ data: [{ b64_json: busy.toString("base64") }] }) : null)], []);
+    const out = (await generateOpenAIImage({ prompt: "Ad.", logoUrl: await whiteBackedLogo(), format: "1:1" })).b64!;
+    // The top-right corner now holds the dark logo bar (right-aligned, ~x 728-973, y 51-171).
+    expect((await pixel(out, 850, 110))[0]).toBeLessThan(60);
+  });
+
+  it("keeps the logo clear of Meta's covered bands on 9:16", async () => {
+    const image = await sharp({ create: { width: 1024, height: 1820, channels: 3, background: { r: 245, g: 245, b: 245 } } }).png().toBuffer();
+    stubFetch([(url) => (url.endsWith("/images/generations") ? json({ data: [{ b64_json: image.toString("base64") }] }) : null)], []);
+    const out = (await generateOpenAIImage({ prompt: "Ad.", logoUrl: await whiteBackedLogo(), format: "9:16", size: "1024x1536" })).b64!;
+    const { data, info } = await sharp(Buffer.from(out, "base64")).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    const topBand = Math.round(info.height * 0.14);
+    for (let y = 0; y < topBand; y += 5) for (let x = 0; x < info.width; x += 5) expect(data[(y * info.width + x) * 3]!).toBeGreaterThan(200);
   });
 
   it("without a logo, uses the plain generation and tells the model not to invent one", async () => {

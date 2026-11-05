@@ -22,6 +22,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { apiFetch } from "@/lib/api-client";
+import { ImageFormatPicker } from "@/components/creatives/image-format-picker";
+import type { ImageFormat } from "@/lib/creatives/formats";
 import { creativeDownloadUrl } from "@/lib/creatives/download";
 import { useCreativeStatus } from "@/hooks/use-creative-status";
 import type { ClientService } from "@/types";
@@ -85,6 +87,7 @@ function CreativesInner() {
     searchParams.get("landingUrl") ?? "",
   );
   const [headline, setHeadline] = useState(searchParams.get("headline") ?? "");
+  const [imageFormat, setImageFormat] = useState<ImageFormat>("4:5");
   const [primaryText, setPrimaryText] = useState(
     searchParams.get("primaryText") ?? "",
   );
@@ -172,6 +175,7 @@ function CreativesInner() {
           headline: headline || undefined,
           primaryText: primaryText || undefined,
           analyzeBrand: Boolean(landingUrl),
+          format: imageFormat,
         }),
       });
 
@@ -245,6 +249,22 @@ function CreativesInner() {
       refreshDrafts();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Select failed");
+    }
+  }
+
+  async function moreLikeThis(draftId: string) {
+    setRevisingId(draftId);
+    try {
+      await apiFetch("/api/creatives/variations", {
+        method: "POST",
+        body: JSON.stringify({ draftId, count: 3 }),
+      });
+      toast.success("Making 3 close variations — they appear in the list");
+      refreshDrafts();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not make variations");
+    } finally {
+      setRevisingId(null);
     }
   }
 
@@ -352,6 +372,8 @@ function CreativesInner() {
               />
             </div>
           </div>
+
+          <ImageFormatPicker value={imageFormat} onChange={setImageFormat} disabled={busy} />
 
           {genPhase.step !== "idle" || busy ? (
             <Card className="border-accent/30 bg-accent/5">
@@ -602,6 +624,18 @@ function CreativesInner() {
                         <Check className="mr-1 h-3.5 w-3.5" />
                         Approve for campaign
                       </Button>
+                      {concept.image_status === "succeeded" ? (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          title="3 close variations: same idea and style, similar wording"
+                          disabled={revisingId === concept.id}
+                          onClick={() => void moreLikeThis(concept.id)}
+                        >
+                          More like this
+                        </Button>
+                      ) : null}
                       {concept.image_status === "succeeded" ? (
                         <Button type="button" size="sm" variant="secondary" asChild>
                           <a href={creativeDownloadUrl(concept.id)} download>

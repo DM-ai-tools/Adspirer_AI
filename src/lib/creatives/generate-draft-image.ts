@@ -1,4 +1,4 @@
-import { generationSize, type ImageFormat } from "@/lib/creatives/formats";
+import { generationSize, readAspectMarker, stripAspectMarker, withAspectMarker, type ImageFormat } from "@/lib/creatives/formats";
 import {
   buildBrandImagePrompt,
   generateOpenAIImage,
@@ -26,15 +26,22 @@ export async function generateImageForDraft(
   draftId: string,
   brandName?: string,
   revisionNotes?: string | null,
-  format: ImageFormat = "4:5",
+  requestedFormat?: ImageFormat,
 ): Promise<DraftImageResult> {
   const existing = await getCreativeDraftAsync(draftId);
   if (!existing) {
     throw new Error("Creative draft not found");
   }
 
+  // A rework keeps the shape the draft was made in unless a new one is asked for.
+  const format: ImageFormat = requestedFormat ?? readAspectMarker(existing.creative_direction) ?? "4:5";
+  const direction = requestedFormat
+    ? withAspectMarker(existing.creative_direction, requestedFormat)
+    : existing.creative_direction;
+
   await upsertCreativeDraftAsync({
     ...existing,
+    creative_direction: direction,
     id: existing.id,
     image_status: "generating",
     image_error: null,
@@ -48,7 +55,7 @@ export async function generateImageForDraft(
       existing.headline,
     serviceName: existing.description ?? existing.concept,
     colors: existing.brand_colors,
-    creativeDirection: existing.creative_direction,
+    creativeDirection: stripAspectMarker(existing.creative_direction),
     headline: existing.headline,
     primaryText: existing.primary_text,
     logoUrl: existing.logo_url,
