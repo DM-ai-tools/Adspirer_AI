@@ -143,6 +143,7 @@ import {
   renderScorecardEvidence,
   renderScorecardMarkdown,
 } from "@/lib/audit/render";
+import { renderBreakdownEvidence } from "@/lib/audit/breakdowns";
 import { loadCatalogEvidence } from "@/lib/meta/catalog/audit-evidence";
 import type { Task } from "@/types";
 import { getConfig } from "@/lib/config";
@@ -2597,6 +2598,7 @@ export async function gatherDiagnoseEvidence(input: {
               sections.push(renderScorecardEvidence(scorecard, snapshot));
               sections.push(renderAdSetEvidence(snapshot));
               sections.push(renderChangesEvidence(snapshot));
+              sections.push(renderBreakdownEvidence(snapshot));
               const catalogSection = await loadCatalogEvidence(input.clientId, snapshot.adSets);
               if (catalogSection) sections.push(catalogSection);
               auditAppendix = renderScorecardMarkdown(scorecard, snapshot);
