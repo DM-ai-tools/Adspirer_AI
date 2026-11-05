@@ -3,7 +3,7 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, ChevronDown, ChevronUp, Copy, Download, Layers, Loader2, X } from "lucide-react";
+import { ArrowLeft, ChevronDown, ChevronUp, Copy, Download, FileSpreadsheet, Layers, Loader2, X } from "lucide-react";
 import { toast } from "sonner";
 import { useApp } from "@/components/layout/app-provider";
 import { PageHeader } from "@/components/shared/page-header";
@@ -79,6 +79,19 @@ const STATUS_LABEL: Record<HistoryRun["status"], string> = {
 };
 
 const POLL_MS = 2_500;
+
+/** Excel export of one run (`runId`) or all of a client's runs (`clientId`), dated in the viewer's time zone. */
+function exportUrl(target: { runId?: string; clientId?: string }): string {
+  const params = new URLSearchParams();
+  if (target.runId) params.set("runId", target.runId);
+  if (target.clientId) params.set("clientId", target.clientId);
+  try {
+    params.set("tz", Intl.DateTimeFormat().resolvedOptions().timeZone);
+  } catch {
+    // dates fall back to UTC
+  }
+  return `/api/creatives/bulk/export?${params.toString()}`;
+}
 
 function BulkInner() {
   const router = useRouter();
@@ -313,6 +326,15 @@ function BulkInner() {
             ) : summary.runs.length === 0 ? (
               <EmptyState icon={Layers} title="No bulk runs yet" description="Runs you create appear here, with their images and copy." />
             ) : (
+              <div className="space-y-3">
+              <div className="flex justify-end">
+                <Button size="sm" variant="secondary" asChild>
+                  <a href={exportUrl({ clientId: selectedClientId ?? undefined })} download>
+                    <FileSpreadsheet className="mr-1 h-3.5 w-3.5" />
+                    Export all history to Excel
+                  </a>
+                </Button>
+              </div>
               <div className="grid gap-3 md:grid-cols-2">
                 {summary.runs.map((r) => (
                   <Card key={r.id}>
@@ -343,13 +365,22 @@ function BulkInner() {
                         <p className="text-xs text-muted">
                           {r.ready} of {r.count} images ready{r.failed ? ` · ${r.failed} failed` : ""}
                         </p>
-                        <Button size="sm" variant="secondary" onClick={() => router.replace(`/creatives/bulk?runId=${r.id}`)}>
-                          Open
-                        </Button>
+                        <div className="flex gap-2">
+                          <Button size="sm" variant="secondary" asChild>
+                            <a href={exportUrl({ runId: r.id })} download>
+                              <FileSpreadsheet className="mr-1 h-3.5 w-3.5" />
+                              Excel
+                            </a>
+                          </Button>
+                          <Button size="sm" variant="secondary" onClick={() => router.replace(`/creatives/bulk?runId=${r.id}`)}>
+                            Open
+                          </Button>
+                        </div>
                       </div>
                     </CardContent>
                   </Card>
                 ))}
+              </div>
               </div>
             )
           ) : null}
@@ -438,6 +469,12 @@ function BulkInner() {
                     ) : null}
                   </div>
                   <div className="flex gap-2">
+                    <Button size="sm" variant="secondary" asChild>
+                      <a href={exportUrl({ runId: runId ?? undefined })} download>
+                        <FileSpreadsheet className="mr-1 h-3.5 w-3.5" />
+                        Export to Excel
+                      </a>
+                    </Button>
                     {downloadable.length > 1 ? (
                       <Button size="sm" variant="secondary" onClick={downloadAll}>
                         <Download className="mr-1 h-3.5 w-3.5" />
