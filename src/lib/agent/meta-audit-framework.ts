@@ -81,6 +81,15 @@ How to read it:
 - **Edge cases.** If the history couldn't be read, say that plainly — never write that nothing changed. If it loaded and is empty, one line is enough. If it may be incomplete, say so. Only the audited days count; don't import earlier edits.
 - **A lot of edits (dozens or hundreds).** Don't list them all. Give a one-line count by kind ("412 edits: 120 ad status, 80 creative, …"), then cards for the 5–10 that mattered most, then one line for the rest ("N routine edits: renames, ad status flips with no effect on delivery").
 
+## Breakdowns
+The evidence has a "Breakdowns" section: sums of Meta's own rows by creative format, destination page, audience type, placement position, age and gender, plus the settings in use. Use it to answer "what works and what has never been tried" from numbers, not from habit.
+- **Report only splits with a real difference.** Name a winner only when both groups have enough results to read (~20–30) or the gap is large on a decent spend; otherwise say the split is too thin to judge. A split that shows nothing is one line or left out.
+- **Use the account's own goal metric.** For a sales account judge on cost per result, ROAS or purchases as given; if the account reports add to cart, cost per add to cart and add-to-cart rate may be shown as a leading signal but never as a stand-in for sales.
+- **Say what each grouping is.** Audience type comes from what an ad set includes, not its name; "no saved audience" is broad or interest-based and you must not pick one. Destination comes from the ad link; where Meta didn't return one, say the share of spend that is unread and that the link must be checked in Ads Manager.
+- **"Never tried" is limited to this period.** From "Settings in use" you can say what was used in the audited period (bid strategy, optimisation goal, attribution window, Advantage+, automatic placements). You cannot say it was never used before. Frame an untested option as "not used in the audited period" and a test to run, never as a failure.
+- **Reconcile.** If the evidence says some spend isn't attributed to a listed ad, say so in one line; don't let the split tables imply they cover the whole account.
+- **Attribution matters.** Where the evidence gives purchases, say which attribution window they are counted in (from "Settings in use"); results that include view-through are Meta's own claim and not proof the ad caused the sale.
+
 ## Severity
 - **Critical** — money is being wasted right now or nothing can deliver (tracking broken on the optimisation event, account/campaign can't deliver, spending limit about to stop ads).
 - **High** — large efficiency loss (attribution break, learning limited on major spend, rejected ads in live campaigns, ROAS under target).
@@ -110,6 +119,7 @@ How to read it:
    - table (these 9 columns only, so it fits a printed page): Ad set | Status | Learning | Spend | Results | Cost per result | CTR | Freq (7d) | Live ads
    - one verdict per ad set — **Scale / Keep / Fix / Pause** — as a bullet: "**<ad set name>** (ID <id>) · <budget> · optimises for <event in plain words, e.g. Complete registration> — <verdict>: <reason>", with the numbers behind it (share of campaign spend, cost per result vs the campaign, learning limited, frequency over benchmark, too few live ads, setup gaps such as no exclusions or restricted placements). Mention a trend against the comparison period only when the evidence has comparison lines ("vs previous period" / "vs comparison period").
    - **Only when the evidence has a "Catalogue (Commerce Manager)" section**, close this section with a "### Catalogue (Commerce Manager)" sub-heading (inside section 4, so the numbered sections keep their numbers): one bullet per catalogue finding with its numbers and the ad sets it affects, then one bullet per learning-limited ad set saying whether the catalogue is a likely contributor or is not the cause. A real catalogue problem is written out in full once in Risks & Issues and pointed to from here.
+   - **Close section 4 with "### What the splits show"** (inside section 4, so the numbered sections keep their numbers), built from the "Breakdowns" evidence: one bullet per split that shows a real difference (format, destination, audience type, placement, age/gender), each as "**<winner> vs <other>:** <metric> <a> vs <b>, <share of spend>" — then one "**Not used in the audited period:**" bullet listing the options from "Settings in use" that were absent and are worth a test. Skip the whole sub-heading if no split shows anything.
 5. **What's Working** — bullets: real strengths with their evidence, each a point not already made elsewhere in the report.
 6. **Risks & Issues** — a one-line index first (e.g. "2 Critical · 3 High · 1 Medium"), then **one card per issue**, each opened by a ### heading, not a table:
 
@@ -124,7 +134,9 @@ How to read it:
 
    ### 1. <the action, one line> (fixes R1)
    - **Expected impact:** …
-   - **Effort:** Low / Medium / High · **When:** This week / Next 30 days
+   - **Effort:** Low / Medium / High · **When:** Week 1 / Weeks 2–3 / Month 2+
+
+   Order by phase: tracking and quick fixes in Week 1, tests that need setup (one A/B test at a time, ~2 weeks each) in Weeks 2–3, scaling and bidding changes in Month 2+. For a test, state the one thing it changes and the metric that decides it. Only recommend a test the evidence supports (an option from "not used in the audited period" or a clear gap in a split).
 
    Actions only: don't restate the evidence from Risks, and don't list two actions for the same fix.
 9. **Next Steps** — one sentence: the single highest-impact action; recommendations only, no changes made.

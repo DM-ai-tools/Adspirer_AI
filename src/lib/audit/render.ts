@@ -206,7 +206,7 @@ const LEARNING_LABEL: Record<string, string> = {
 
 const isLiveStatus = (status: string) => status === "ACTIVE" || status === "WITH_ISSUES";
 
-function moneyFor(currency: string) {
+export function moneyFor(currency: string) {
   return (cents: number) => {
     try {
       return new Intl.NumberFormat("en", {

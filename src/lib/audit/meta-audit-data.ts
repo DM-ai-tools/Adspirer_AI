@@ -255,6 +255,10 @@ export type MetaAuditSnapshot = {
   catalogProducts?: AuditCatalogProduct[];
   /** Spend by publisher platform (facebook, instagram, audience_network…). */
   placements: Array<{ platform: string; spendCents: number; results: number | null }>;
+  /** Account-level age × gender split (whole-account audits only); absent when Meta wouldn't return it. */
+  demographics?: Array<{ age: string; gender: string; performance: PeriodPerformance }>;
+  /** Account-level platform × position split (e.g. facebook / feed); absent when Meta wouldn't return it. */
+  placementPositions?: Array<{ platform: string; position: string; performance: PeriodPerformance }>;
   /**
    * Edits Meta recorded in the audited period (account activity history).
    * Absent when the history couldn't be read — `warnings` then says why — so
@@ -652,7 +656,7 @@ export async function fetchMetaAuditSnapshot(
 
   const [
     pixels, customConversions, audiences, campaigns, adSets, ads, totals, campaignIns, adSetIns, adIns, placements, adSetWeek,
-    previousTotals, previousCampaignIns, previousAdSetIns, adWeek, productIns, activityRows,
+    previousTotals, previousCampaignIns, previousAdSetIns, adWeek, productIns, activityRows, demographicIns, positionIns,
   ] =
     await Promise.all([
       settle("Pixels", warnings, paged(graph, `${id}/adspixels`, {
@@ -733,6 +737,12 @@ export async function fetchMetaAuditSnapshot(
         until: Math.floor(Date.parse(`${until}T00:00:00Z`) / 1000) + 2 * 86_400,
         limit: CHANGE_PAGE_SIZE,
       }, CHANGE_PAGES)),
+      settle("Age and gender breakdown", warnings, paged(graph, `${id}/insights`, {
+        level: "account", time_range: timeRange, breakdowns: "age,gender", fields: insightFields, limit: 200,
+      }, 2)),
+      settle("Placement position breakdown", warnings, paged(graph, `${id}/insights`, {
+        level: "account", time_range: timeRange, breakdowns: "publisher_platform,platform_position", fields: insightFields, limit: 200,
+      }, 2)),
     ]);
 
   const byKey = (rows: Row[] | null, key: string) => new Map((rows ?? []).map((r) => [String(r[key] ?? ""), r]));
@@ -1035,6 +1045,24 @@ export async function fetchMetaAuditSnapshot(
         results: perf?.results ?? null,
       };
     }),
+    ...(demographicIns
+      ? {
+          demographics: demographicIns.flatMap((r) => {
+            const performance = performanceFrom(r);
+            return performance ? [{ age: String(r.age ?? "unknown"), gender: String(r.gender ?? "unknown"), performance }] : [];
+          }),
+        }
+      : {}),
+    ...(positionIns
+      ? {
+          placementPositions: positionIns.flatMap((r) => {
+            const performance = performanceFrom(r);
+            return performance
+              ? [{ platform: String(r.publisher_platform ?? "unknown"), position: String(r.platform_position ?? "unknown"), performance }]
+              : [];
+          }),
+        }
+      : {}),
     ...(changes
       ? {
           changes,
