@@ -54,7 +54,7 @@ export type GenerateCreativesResult = {
   imageModel: string;
 };
 
-async function loadScope(input: GenerateCreativesInput) {
+export async function loadScope(input: GenerateCreativesInput) {
   const config = getConfig();
   let client: {
     id: string;

@@ -213,6 +213,9 @@ export function buildBrandImagePrompt(input: {
     input.creativeDirection
       ? `ART DIRECTION — follow this exactly; it is what makes this variant different from the others: ${input.creativeDirection}`
       : null,
+    input.creativeDirection?.includes("STYLE:")
+      ? "The STYLE named in the art direction decides the medium and look of this image (a phone photo, a 3D render, an illustration, a collage, a poster, a comparison layout…). Make it unmistakably in that style, and do not default to a generic polished-photograph look."
+      : null,
     input.creativeDirection?.includes("ON-IMAGE TEXT")
       ? "TEXT ON THE IMAGE — set the ON-IMAGE TEXT from the art direction as high-contrast, perfectly legible typography that supports the picture rather than dominating it: the headline clear and well sized, the highlighted keywords as a few small chips or accent words placed naturally in the scene, and the call-to-action as a solid rounded button. Spell every word exactly as given. Put no other words on the image: no extra slogans, no lorem ipsum, no gibberish, no fake UI text."
       : null,

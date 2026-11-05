@@ -69,15 +69,31 @@ export function fallbackSizeFor(format?: ImageFormat): GenerationSize {
 const ASPECT_MARKER = /^ASPECT: (\S+)$/m;
 
 export function withAspectMarker(direction: string | null | undefined, format: ImageFormat): string {
-  return [stripAspectMarker(direction), `ASPECT: ${format}`].filter(Boolean).join("\n");
-}
-
-export function stripAspectMarker(direction: string | null | undefined): string {
-  return (direction ?? "")
+  // Only the old size line is replaced; other marker lines (such as a bulk run's) stay.
+  const kept = (direction ?? "")
     .split("\n")
     .filter((line) => !/^ASPECT: \S+$/.test(line.trim()))
     .join("\n")
     .trim();
+  return [kept, `ASPECT: ${format}`].filter(Boolean).join("\n");
+}
+
+/** The art direction as the image model should read it: without the app's own marker lines. */
+export function stripAspectMarker(direction: string | null | undefined): string {
+  return (direction ?? "")
+    .split("\n")
+    .filter((line) => !/^(ASPECT|RUN): \S+$/.test(line.trim()))
+    .join("\n")
+    .trim();
+}
+
+/** Marks a draft as part of a bulk run, so the normal Creatives list can leave it out. */
+export function withRunMarker(direction: string | null | undefined, runId: string): string {
+  return [(direction ?? "").trim(), `RUN: ${runId}`].filter(Boolean).join("\n");
+}
+
+export function readRunMarker(direction: string | null | undefined): string | null {
+  return direction?.match(/^RUN: (\S+)$/m)?.[1] ?? null;
 }
 
 export function readAspectMarker(direction: string | null | undefined): ImageFormat | null {
