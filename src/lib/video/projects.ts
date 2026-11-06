@@ -27,6 +27,13 @@ export type VideoInputs = {
   locale: string;
   format: "9:16" | "1:1" | "4:5";
   priority: "quality" | "balanced" | "cost";
+  /** "upload": the operator brought their own script. */
+  mode?: "write" | "upload";
+  scriptText?: string | null;
+  scriptFileName?: string | null;
+  adCopyText?: string | null;
+  /** Changes the operator wants made to their uploaded script. Empty means none: it is kept word for word. */
+  changeRequest?: string | null;
 };
 
 export type VideoBrand = {
@@ -39,7 +46,7 @@ export type VideoBrand = {
   corpus?: string;
 };
 
-export type VideoProjectStatus = "writing" | "scripts_ready" | "confirmed" | "generating" | "clips_ready" | "assembling" | "done" | "failed";
+export type VideoProjectStatus = "writing" | "scripts_ready" | "confirmed" | "generating" | "paused" | "stopped" | "clips_ready" | "assembling" | "done" | "failed";
 
 export type VideoProject = {
   id: string;

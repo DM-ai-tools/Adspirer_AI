@@ -165,7 +165,7 @@ describe("assembling a video (real ffmpeg)", () => {
       status: "clips_ready",
       assets: [{ id: "img_1", name: "results.png", caption: "", role: "highlight", key: "video/p/img_1.png", mime: "image/png" }],
       brand: { name: "Acme", colors: ["#101820", "#37ca37"], logoUrl: `data:image/png;base64,${logo.toString("base64")}`, summary: null },
-      plan: { model: "seedance-2-0", modelLabel: "x", resolution: "720p", ratio: "9:16", format: "9:16", reasons: [], estimatedUsd: 1, character: null, setting: null, chainVideo: false, finishing: { captions: true, logo: true, endCard: true }, createdAt: new Date().toISOString() },
+      plan: { model: "seedance-2-0", modelLabel: "x", resolution: "720p", ratio: "9:16", format: "9:16", reasons: [], estimatedUsd: 1, character: null, setting: null, chainVideo: false, finishing: { captions: true, logo: true, endCard: true }, checkpoint: "none" as const, createdAt: new Date().toISOString() },
       clips: [1, 2].map((n) => ({ number: n, seconds: 6, sceneNumbers: n === 1 ? [1, 2] : [3, 4], status: "succeeded" as const, taskId: null, attempts: 1, error: null, videoKey: `video/p/clip-${n}.mp4`, lastFrameUrl: null, sourceVideoUrl: null, finishedAt: new Date().toISOString(), tokens: 1, usd: 1, prompt: null })),
     });
     return p.id;

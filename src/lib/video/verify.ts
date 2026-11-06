@@ -36,7 +36,7 @@ const reviewSchema = z.object({
       z.object({
         scene: z.number().int().nullable().describe("Scene number, or null for the ad copy or the script as a whole"),
         severity: z.enum(["low", "medium", "high"]),
-        area: z.enum(["hook", "claims", "tone", "flow", "compliance", "pace", "cta", "continuity", "copy"]),
+        area: z.enum(["hook", "claims", "tone", "flow", "compliance", "pace", "cta", "continuity", "copy", "visuals"]),
         problem: z.string(),
         fix: z.string().describe("What the rewrite should do, concretely"),
       }),
@@ -52,6 +52,7 @@ const REVIEW_RULES = [
   "- flow: does each scene follow from the last, with a clear problem, turn and payoff, and does the story fit its framework and angle?",
   "- continuity: is the presenter, setting and look consistent scene to scene? Does a scene contradict another?",
   "- compliance: Meta ad policy problems: personal-attribute call-outs (health, finances, age), before/after or income claims, 'guaranteed' or superlatives without proof, misleading urgency. HIGH severity.",
+  "- visuals: is each scene a filmable shot of a person, object or place that an AI video model can render well? A shot that is a screen, dashboard, chart, document, sign or anything with readable text is HIGH severity (the model draws it as garbled nonsense); the real stat or screenshot is added on top afterwards. Flag generic stock-looking visuals too and suggest a specific, real, slightly unexpected one.",
   "- pace and length: can each spoken line be said in its scene's seconds at a natural pace?",
   "- cta: is there one clear next step, and does the ad copy match the video?",
   "- copy: the primary text has a standalone hook in its first line, a real body, and the next step.",
@@ -88,11 +89,11 @@ export async function reviewScript(script: VideoScript, facts: string): Promise<
 export function warningsToIssues(warnings: string[]): Issue[] {
   return warnings.map((w) => {
     const scene = w.match(/^Scene (\d+)/)?.[1];
-    const high = /not in your page or inputs|not uploaded|over the \d+s limit/.test(w);
+    const high = /not in your page or inputs|not uploaded|over the \d+s limit|garbled text/.test(w);
     return {
       scene: scene ? Number(scene) : null,
       severity: high ? "high" : "medium",
-      area: /not in your page/.test(w) ? "claims" : /contraction|sounds|sentence|dash/.test(w) ? "tone" : /too fast|Runs/.test(w) ? "pace" : /ad copy|first line/.test(w) ? "copy" : "flow",
+      area: /garbled text/.test(w) ? "visuals" : /not in your page/.test(w) ? "claims" : /contraction|sounds|sentence|dash/.test(w) ? "tone" : /too fast|Runs/.test(w) ? "pace" : /ad copy|first line/.test(w) ? "copy" : "flow",
       problem: w,
       fix: "Rewrite this to fix the problem.",
     };

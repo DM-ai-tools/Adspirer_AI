@@ -5,6 +5,7 @@ import { pickModel } from "@/lib/creatives/concept-writer";
 import { pickBulkAngles, STAGE_LABEL, type BulkAngle } from "@/lib/creatives/bulk/angles";
 import { HUMAN_VOICE, SYSTEM } from "@/lib/video/voice";
 import { retime, WORDS_PER_SECOND } from "@/lib/video/timing";
+import { textRisk, VISUAL_DIRECTION_RULES } from "@/lib/video/visual-rules";
 import type { Verification } from "@/lib/video/verify";
 
 /** Ideal length range for the ad, in seconds, and the hard cap. */
@@ -67,6 +68,8 @@ export type VideoScene = {
   /** An uploaded image or screenshot to show in this scene (its asset id). */
   assetId: string | null;
   sound: string;
+  /** For an uploaded script: the words as the operator wrote them, kept when a change they asked for rewrote this line. */
+  originalLine?: string | null;
 };
 
 export type VideoScript = {
@@ -86,6 +89,18 @@ export type VideoScript = {
   warnings: string[];
   /** The verifier's review of this script and what it fixed on its own. */
   verification?: Verification | null;
+  /** "uploaded": the operator's own script, kept word for word unless they asked for a change. */
+  source?: "written" | "uploaded";
+  /** What was done to an uploaded script: how it was split, what was restored, and changes the operator asked for. */
+  handling?: {
+    /** Scenes where the model had changed a word and the operator's exact words were put back. */
+    restoredScenes: number[];
+    /** Scenes where the model had added words that are not in the script, which were removed. */
+    removedScenes: number[];
+    /** Parts of the script that were not spoken lines (directions, notes) and were not put in any scene's words. */
+    unusedText: string[];
+    changes: Array<{ target: string; was: string; now: string }>;
+  } | null;
 };
 
 export type VideoBrief = {
@@ -238,6 +253,8 @@ export function checkScript(script: VideoScript, ctx: { corpus: string; assetIds
     if (scene.line && wordCount(scene.line) / scene.seconds > MAX_WORDS_PER_SECOND) {
       warnings.push(`Scene ${scene.number} has ${wordCount(scene.line)} words in ${scene.seconds}s, too fast to speak clearly.`);
     }
+    const risky = textRisk(scene.visual);
+    if (risky.length) warnings.push(`Scene ${scene.number} shows ${risky.join(" and ")}: AI video draws garbled text there. Show a person or an object instead; the real stat or screenshot is added on top afterwards.`);
     if (scene.assetId && !ctx.assetIds.includes(scene.assetId)) warnings.push(`Scene ${scene.number} uses an image that was not uploaded.`);
     for (const n of numbersIn(`${scene.stat ?? ""} ${scene.line}`)) {
       if (!ctx.corpus.includes(n)) warnings.push(`Scene ${scene.number} states "${n}", which is not in your page or inputs.`);
@@ -356,6 +373,7 @@ export async function writeVideoScripts(brief: VideoBrief, onStage?: (stage: "un
         brief.style && brief.style !== "auto" ? `Preferred style: ${brief.style}. Use it for the scripts where it suits, and a different look for the others.` : "Choose a different style for each script from what suits the business and angle (for example UGC creator walkthrough, cinematic, motion graphics over footage, documentary, 3D animated).",
         `Scene detail: each scene's visual is concrete and filmable, with camera, who speaks (on_camera = the presenter speaks to camera, voiceover = unseen voice over the visuals), the exact line, up to 3 keywords to highlight, a stat if (and only if) it is in the facts or the operator's stats, and sound. Use every stat found in the uploaded images, and the operator's own stats, in the scene whose spoken line makes the point: set stat to the number exactly as printed and asset_id to the image it came from, so the screenshot is shown and the number is highlighted at that moment. One person at most speaks on camera and is the same person throughout: describe them once in "character".`,
         HUMAN_VOICE,
+        VISUAL_DIRECTION_RULES,
         `Ad copy: write it like a short post from a person, not a brochure. 70 to 130 words. The first line is a standalone hook under 125 characters, because Meta cuts the text there. Then two or three short paragraphs separated by blank lines: the situation the viewer recognises, what changes and how it works, and proof taken from the facts. End with the next step in plain words. Facts only. The headline is under 40 characters and the description under 30. Pick the CTA button from the list.`,
         extra ?? null,
       ]

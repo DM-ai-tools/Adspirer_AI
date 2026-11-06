@@ -2,7 +2,7 @@ import { z } from "zod";
 import { getCurrentUser } from "@/lib/security/auth";
 import { assertAuthenticated, assertClientAccess } from "@/lib/authz/assert";
 import { getProject } from "@/lib/video/projects";
-import { advance, blockedReason, regenerateFrom, runGeneration, startGeneration, viewGeneration } from "@/lib/video/generation";
+import { advance, blockedReason, continueGeneration, regenerateFrom, runGeneration, startGeneration, stopGeneration, viewGeneration } from "@/lib/video/generation";
 import { assembleVideo } from "@/lib/video/assemble";
 import { runAfterResponse } from "@/lib/api/background";
 import { jsonOk, parseBody, withApiHandler } from "@/lib/api/response";
@@ -27,7 +27,11 @@ export async function GET(_request: Request, ctx: Ctx) {
 const finishing = z.object({ captions: z.boolean(), logo: z.boolean(), endCard: z.boolean() });
 
 const bodySchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("start"), finishing: finishing.optional() }),
+  z.object({ action: z.literal("start"), finishing: finishing.optional(), checkpoint: z.enum(["after_first", "each", "none"]).optional() }),
+  /** Stop spending: clips already made are kept. */
+  z.object({ action: z.literal("stop") }),
+  /** Carry on after a pause (the clip just checked is approved) or after a stop. */
+  z.object({ action: z.literal("continue") }),
   /** Join the clips again (after a failure, or with different captions, logo or end card). */
   z.object({ action: z.literal("assemble"), finishing: finishing.optional() }),
   /** The page calls this while it is open, so a video carries on after the first request's time runs out. */
@@ -44,9 +48,20 @@ export async function POST(request: Request, ctx: Ctx) {
       if (project.status === "generating") return jsonOk(viewGeneration(project));
       const blocked = blockedReason(project);
       if (blocked) throw new Error(blocked);
-      const started = await startGeneration(project.id, body.finishing);
+      const started = await startGeneration(project.id, body.finishing, body.checkpoint);
       runAfterResponse("video-generation", () => runGeneration(project.id));
       return jsonOk(viewGeneration(started));
+    }
+
+    if (body.action === "stop") {
+      if (project.status !== "generating" && project.status !== "paused") return jsonOk(viewGeneration(project));
+      return jsonOk(viewGeneration(await stopGeneration(project.id)));
+    }
+
+    if (body.action === "continue") {
+      const next = await continueGeneration(project.id);
+      if (next.status === "generating") runAfterResponse("video-generation", () => runGeneration(project.id));
+      return jsonOk(viewGeneration(next));
     }
 
     if (body.action === "assemble") {

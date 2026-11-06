@@ -1,4 +1,5 @@
 import { mmss } from "@/lib/video/overlays";
+import { classifyStyle, clipVisual, SIMPLE_ACTION_RULE, STYLE_LOOKS, TEXT_FREE_RULE } from "@/lib/video/visual-rules";
 import type { VideoScene, VideoScript } from "@/lib/video/script";
 
 /**
@@ -32,11 +33,13 @@ export function accentFor(locale: string): string {
   return ACCENT[locale.toLowerCase()] ?? "a natural accent";
 }
 
-function shot(scene: VideoScene, offset: number, graphic: boolean, hasPresenter: boolean): string {
+function shot(scene: VideoScene, offset: number, graphic: boolean, hasPresenter: boolean, hasCharacter: boolean): string {
   const start = offset;
   const end = offset + scene.seconds;
   const range = `${start}s-${end}s`;
-  const parts = [`${range}: Shot ${scene.number}. ${scene.visual.replace(/\s+/g, " ").trim()}`, `Camera: ${scene.camera.replace(/\s+/g, " ").trim()}.`];
+  // A shot that is mainly a screen is filmed as the person's reaction: the model would draw the screen's words as nonsense.
+  const visual = clipVisual(scene.visual, hasCharacter, graphic).text;
+  const parts = [`${range}: Shot ${scene.number}. ${visual}`, `Camera: ${scene.camera.replace(/\s+/g, " ").trim()}.`];
   if (scene.line) {
     const who =
       scene.speaker === "on_camera"
@@ -82,18 +85,21 @@ export function buildClipPrompt(input: ClipPromptInput): string {
     script.character ? `Presenter: ${script.character}.` : "No presenter appears; keep the look of every shot consistent.",
     `Setting: ${script.setting}.`,
     talks && script.character ? `Voice: the presenter's voice is the same in every shot, natural and conversational, with ${accentFor(locale)}, speaking at an easy pace.` : null,
-    "Look: natural, believable lighting, real skin and fabric, sharp focus on the subject. Hands, faces and objects are anatomically correct and undistorted.",
+    `Look: ${STYLE_LOOKS[classifyStyle(script.style)]}`,
+    "Hands, faces and objects are anatomically correct and undistorted.",
   ].filter((l): l is string => Boolean(l));
 
   let offset = 0;
   const shots = scenes.map((s) => {
-    const line = shot(s, offset, input.graphicSceneNumbers.includes(s.number), hasPresenter);
+    const line = shot(s, offset, input.graphicSceneNumbers.includes(s.number), hasPresenter, Boolean(script.character));
     offset += s.seconds;
     return line;
   });
 
   const rules = [
     "Do not draw any subtitles, captions, on-screen text, numbers, charts, logos, brand names or watermarks anywhere in the frame; they are added afterwards.",
+    TEXT_FREE_RULE,
+    SIMPLE_ACTION_RULE,
     "No background music; natural room sound and the speaker's voice only.",
     "Cut cleanly between shots. Keep the same person, clothes, room and colour grade throughout. Speech and mouth movement stay in sync.",
   ];

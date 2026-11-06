@@ -3,7 +3,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronUp, CircleDashed, Download, Film, ImagePlus, Loader2, MessageSquarePlus, Plus, RefreshCw, ShieldCheck, Sparkles, Trash2, Wand2, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Check, FileUp, ChevronDown, ChevronUp, CircleDashed, Download, Film, ImagePlus, Loader2, MessageSquarePlus, Plus, RefreshCw, ShieldCheck, Sparkles, Trash2, Wand2, X } from "lucide-react";
 import { toast } from "sonner";
 import { useApp } from "@/components/layout/app-provider";
 import { PageHeader } from "@/components/shared/page-header";
@@ -21,7 +21,7 @@ import { apiFetch } from "@/lib/api-client";
 import { ADSPIRER_META_CTAS } from "@/lib/adspirer/skills/ad-copywriting";
 import { describeEvent, mmss, overlayEvents, withTimes } from "@/lib/video/overlays";
 import { retime, sceneSeconds } from "@/lib/video/timing";
-import { SCRIPT_STAGES, viewProgress, type ScriptProgress } from "@/lib/video/progress";
+import { SCRIPT_STAGES, UPLOAD_STAGES, viewProgress, type ScriptProgress } from "@/lib/video/progress";
 import { cn } from "@/lib/utils";
 import type { ClientService } from "@/types";
 
@@ -38,6 +38,7 @@ type Scene = {
   stat: string | null;
   assetId: string | null;
   sound: string;
+  originalLine?: string | null;
 };
 
 type Issue = { scene: number | null; severity: "low" | "medium" | "high"; area: string; problem: string; fix: string };
@@ -54,6 +55,8 @@ type Verification = {
 type Script = {
   id: string;
   verification?: Verification | null;
+  source?: "written" | "uploaded";
+  handling?: { restoredScenes: number[]; removedScenes: number[]; unusedText: string[]; changes: Array<{ target: string; was: string; now: string }> } | null;
   title: string;
   angle: { key: string; name: string; stage: string; kind: string };
   pain: string;
@@ -104,7 +107,9 @@ type FinalView = {
 };
 
 type GenerationView = {
-  status: "generating" | "clips_ready" | "assembling" | "done" | "failed" | "idle";
+  status: "generating" | "paused" | "stopped" | "clips_ready" | "assembling" | "done" | "failed" | "idle";
+  reviewClip: number | null;
+  remainingUsd: number;
   final: FinalView | null;
   clips: GenClip[];
   spentUsd: number;
@@ -117,9 +122,9 @@ type Asset = { id: string; name: string; summary: string; kind: string | null; s
 type ProjectView = {
   id: string;
   name: string;
-  status: "writing" | "scripts_ready" | "confirmed" | "generating" | "clips_ready" | "assembling" | "done" | "failed";
+  status: "writing" | "scripts_ready" | "confirmed" | "generating" | "paused" | "stopped" | "clips_ready" | "assembling" | "done" | "failed";
   error: string | null;
-  inputs: { landingPageUrl: string | null; targetSeconds: number; format: string };
+  inputs: { landingPageUrl: string | null; targetSeconds: number; format: string; mode?: "write" | "upload"; scriptFileName?: string | null; changeRequest?: string | null };
   assets: Asset[];
   progress: ScriptProgress | null;
   brand: { name: string; colors: string[] | null; hasLogo: boolean } | null;
@@ -131,7 +136,7 @@ type ProjectView = {
 
 type HistoryItem = { id: string; name: string; status: ProjectView["status"]; created_at: string; landing_page_url: string | null; target_seconds: number; title: string | null };
 
-const STATUS_LABEL: Record<ProjectView["status"], string> = { writing: "Writing scripts", scripts_ready: "Scripts ready", confirmed: "Script confirmed", generating: "Making the video", clips_ready: "Clips ready", assembling: "Finishing the video", done: "Finished", failed: "Failed" };
+const STATUS_LABEL: Record<ProjectView["status"], string> = { writing: "Writing scripts", scripts_ready: "Scripts ready", confirmed: "Script confirmed", generating: "Making the video", paused: "Waiting for your check", stopped: "Stopped", clips_ready: "Clips ready", assembling: "Finishing the video", done: "Finished", failed: "Failed" };
 const STYLES = ["auto", "UGC creator walkthrough", "Cinematic", "Motion graphics over footage", "Documentary", "3D animated"];
 const FORMATS = [
   { value: "9:16", label: "9:16 Reels & Stories" },
@@ -153,14 +158,15 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 }
 
 /** The bar, the stage list and the time left, driven by the stage the server reports. */
-function ProgressCard({ progress, hasImages }: { progress: ScriptProgress | null; hasImages: boolean }) {
+function ProgressCard({ progress, hasImages, upload }: { progress: ScriptProgress | null; hasImages: boolean; upload: boolean }) {
+  const stages = upload ? UPLOAD_STAGES : SCRIPT_STAGES;
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const t = window.setInterval(() => setNow(Date.now()), 500);
     return () => window.clearInterval(t);
   }, []);
-  const view = viewProgress(progress, now);
-  const activeIndex = progress ? SCRIPT_STAGES.findIndex((s) => s.key === progress.stage) : 0;
+  const view = viewProgress(progress, now, stages);
+  const activeIndex = progress ? stages.findIndex((s) => s.key === progress.stage) : 0;
   const elapsed = progress ? Math.max(0, Math.round((now - Date.parse(progress.startedAt)) / 1000)) : 0;
   return (
     <Card>
@@ -179,7 +185,7 @@ function ProgressCard({ progress, hasImages }: { progress: ScriptProgress | null
           </p>
         </div>
         <ol className="space-y-1.5 text-xs">
-          {SCRIPT_STAGES.map((s, i) => {
+          {stages.map((s, i) => {
             const done = i < activeIndex;
             const active = i === activeIndex;
             return (
@@ -300,6 +306,9 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
   const [busyClip, setBusyClip] = useState<number | null>(null);
   const advancing = useRef(false);
   const [finishing, setFinishing] = useState({ captions: true, logo: true, endCard: true });
+  // Where to wait for a look at a clip before paying for the next one.
+  const [checkpoint, setCheckpoint] = useState<"after_first" | "each" | "none">("after_first");
+  const [confirmStop, setConfirmStop] = useState(false);
 
   useEffect(() => {
     if (status !== "generating" && status !== "assembling") return;
@@ -354,13 +363,27 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
     return (
       <div className="space-y-2">
         <div className="flex flex-wrap items-center gap-3">
-          <Button disabled={starting || Boolean(blocked)} onClick={() => void post({ action: "start", finishing }, () => setStarting(true), () => setStarting(false))}>
+          <Button disabled={starting || Boolean(blocked)} onClick={() => void post({ action: "start", finishing, checkpoint }, () => setStarting(true), () => setStarting(false))}>
             {starting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Film className="mr-2 h-4 w-4" />}
             Generate video
           </Button>
           <p className="text-[11px] text-muted">Makes the clips one after another so the person and voice carry through, then joins them. It takes several minutes and keeps going if you leave.</p>
         </div>
         <FinishingOptions value={finishing} onChange={setFinishing} />
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-[11px] font-medium">Check before spending more:</span>
+          <Select value={checkpoint} onValueChange={(v) => setCheckpoint(v as typeof checkpoint)}>
+            <SelectTrigger className="h-8 w-[300px] text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="after_first">Pause after clip 1 so I can check it (recommended)</SelectItem>
+              <SelectItem value="each">Pause after every clip</SelectItem>
+              <SelectItem value="none">Don&apos;t pause, make it all</SelectItem>
+            </SelectContent>
+          </Select>
+          <span className="text-[11px] text-muted">You can also stop at any time.</span>
+        </div>
         {blocked ? <p className="text-xs text-amber-500">{blocked}</p> : null}
       </div>
     );
@@ -371,6 +394,43 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
 
   return (
     <div className="space-y-3">
+      {status === "paused" ? (
+        <div className="space-y-2 rounded-md border border-amber-500/50 bg-amber-500/5 p-3 text-sm">
+          <p className="font-medium">Clip {gen?.reviewClip ?? 1} is ready. Check it before the rest are made.</p>
+          <p className="text-xs text-muted">
+            Look for a presenter who looks and sounds right, speech that matches the mouth, and no garbled words anywhere. Making the rest will cost about ${(gen?.remainingUsd ?? 0).toFixed(2)} more.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" disabled={starting} onClick={() => void post({ action: "continue" }, () => setStarting(true), () => setStarting(false))}>
+              {starting ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Check className="mr-1 h-3.5 w-3.5" />}
+              Looks good, make the rest
+            </Button>
+            <Button size="sm" variant="secondary" disabled={starting} onClick={() => void post({ action: "regenerate", fromClip: gen?.reviewClip ?? 1 }, () => setStarting(true), () => setStarting(false))}>
+              <RefreshCw className="mr-1 h-3.5 w-3.5" />
+              Not right, make clip {gen?.reviewClip ?? 1} again
+            </Button>
+            <Button size="sm" variant="ghost" disabled={starting} onClick={() => void post({ action: "stop" }, () => setStarting(true), () => setStarting(false), "stopped")}>
+              Stop here
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {status === "stopped" ? (
+        <div className="space-y-2 rounded-md border border-border p-3 text-sm">
+          <p className="font-medium">Stopped. The clips already made are kept.</p>
+          <p className="text-xs text-muted">Nothing more is being made. Carrying on would cost about ${(gen?.remainingUsd ?? 0).toFixed(2)} more.</p>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" disabled={starting} onClick={() => void post({ action: "continue" }, () => setStarting(true), () => setStarting(false))}>
+              Carry on making the video
+            </Button>
+            <Button size="sm" variant="secondary" disabled={starting} onClick={() => void post({ action: "regenerate", fromClip: 1 }, () => setStarting(true), () => setStarting(false))}>
+              Start again from clip 1
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
       {status === "assembling" || final?.state === "running" ? (
         <div className="flex items-center gap-2 rounded-md border border-border p-3 text-sm">
           <Loader2 className="h-4 w-4 animate-spin" />
@@ -436,14 +496,33 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
       <div className="space-y-1.5">
         <div className="flex items-baseline justify-between text-sm">
           <span className="font-medium">
-            {status === "clips_ready" || status === "done" || status === "assembling" ? "Clips ready" : status === "failed" ? "Stopped" : "Making the video"}: {finished} of {clips.length} clips done
+            {status === "clips_ready" || status === "done" || status === "assembling" ? "Clips ready" : status === "paused" ? "Paused for your check" : status === "stopped" ? "Stopped" : status === "failed" ? "Stopped with an error" : "Making the video"}: {finished} of {clips.length} clips done
           </span>
           {gen ? <span className="text-xs text-muted">${gen.spentUsd.toFixed(2)} spent so far</span> : null}
         </div>
         <div className="h-2.5 overflow-hidden rounded-full bg-secondary" role="progressbar" aria-valuenow={Math.round((finished / clips.length) * 100)} aria-valuemin={0} aria-valuemax={100}>
           <div className="h-full rounded-full bg-accent transition-all duration-500" style={{ width: `${Math.max(3, (finished / clips.length) * 100)}%` }} />
         </div>
-        {status === "generating" ? <p className="text-[11px] text-muted">Each clip usually takes 2 to 4 minutes. You can leave this page and come back.</p> : null}
+        {status === "generating" ? (
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-[11px] text-muted">Each clip usually takes 2 to 4 minutes. You can leave this page and come back.</p>
+            {confirmStop ? (
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="text-muted">Stop now? Clips already made are kept. A clip being made may still be charged if it cannot be cancelled.</span>
+                <Button size="sm" variant="danger" disabled={starting} onClick={() => void post({ action: "stop" }, () => setStarting(true), () => { setStarting(false); setConfirmStop(false); }, "stopped")}>
+                  Stop
+                </Button>
+                <Button size="sm" variant="secondary" onClick={() => setConfirmStop(false)}>
+                  Keep going
+                </Button>
+              </div>
+            ) : (
+              <Button size="sm" variant="secondary" onClick={() => setConfirmStop(true)}>
+                Stop making the video
+              </Button>
+            )}
+          </div>
+        ) : null}
         {gen?.error && status === "failed" ? <p className="text-xs text-destructive">{gen.error}</p> : null}
       </div>
       <div className="grid gap-3 md:grid-cols-3">
@@ -518,6 +597,12 @@ function VideoInner() {
   const [serviceId, setServiceId] = useState<string | undefined>();
   const [landingUrl, setLandingUrl] = useState("");
   const [instructions, setInstructions] = useState("");
+  // "upload": the operator brings their own script, which is kept word for word.
+  const [mode, setMode] = useState<"write" | "upload">("write");
+  const [scriptText, setScriptText] = useState("");
+  const [scriptFile, setScriptFile] = useState<File | null>(null);
+  const [adCopyText, setAdCopyText] = useState("");
+  const [changeRequest, setChangeRequest] = useState("");
   const [offerDetails, setOfferDetails] = useState("");
   const [stats, setStats] = useState<string[]>([""]);
   const [images, setImages] = useState<NewImage[]>([]);
@@ -604,7 +689,10 @@ function VideoInner() {
     };
   }, [projectId, pollKey]);
 
-  const canStart = Boolean(selectedClientId) && Boolean(landingUrl.trim() || instructions.trim() || offerDetails.trim() || serviceId);
+  const scriptWords = scriptText.trim().split(/\s+/).filter(Boolean).length;
+  const canStart =
+    Boolean(selectedClientId) &&
+    (mode === "upload" ? scriptWords >= 15 || Boolean(scriptFile) : Boolean(landingUrl.trim() || instructions.trim() || offerDetails.trim() || serviceId));
 
   async function start() {
     if (!selectedClientId) return;
@@ -621,10 +709,15 @@ function VideoInner() {
         style,
         format,
         priority,
+        mode,
+        scriptText: mode === "upload" ? scriptText.trim() || undefined : undefined,
+        adCopyText: mode === "upload" ? adCopyText.trim() || undefined : undefined,
+        changeRequest: mode === "upload" ? changeRequest.trim() || undefined : undefined,
       };
       const form = new FormData();
       form.set("payload", JSON.stringify(payload));
       images.forEach((i) => form.append("images", i.file));
+      if (mode === "upload" && scriptFile) form.set("scriptFile", scriptFile);
       const res = await fetch("/api/creatives/video", { method: "POST", body: form });
       const json = (await res.json()) as { ok: boolean; data?: { projectId: string }; error?: { message: string } };
       if (!json.ok || !json.data) throw new Error(json.error?.message ?? "Could not start");
@@ -719,6 +812,12 @@ function VideoInner() {
         : d,
     );
   }
+
+  // An uploaded script is the only one there is: open it straight away.
+  useEffect(() => {
+    if (view?.status === "scripts_ready" && view.scripts?.length === 1 && !draft) pick(view.scripts[0]!);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view?.status, view?.scripts]);
 
   const timed = useMemo(() => (draft ? withTimes(draft.scenes) : []), [draft]);
   const draftTotal = timed.length ? timed[timed.length - 1]!.end : 0;
@@ -837,8 +936,16 @@ function VideoInner() {
           ) : (
             <Card>
               <CardContent className="space-y-4 p-4">
+                <div className="inline-flex rounded-lg border border-border bg-secondary/50 p-1 text-sm" role="tablist" aria-label="How to get the script">
+                  <button type="button" role="tab" aria-selected={mode === "write"} onClick={() => setMode("write")} className={cn("rounded-md px-3 py-1.5", mode === "write" ? "bg-card font-medium text-foreground shadow-sm" : "text-muted")}>
+                    Write the script for me
+                  </button>
+                  <button type="button" role="tab" aria-selected={mode === "upload"} onClick={() => setMode("upload")} className={cn("rounded-md px-3 py-1.5", mode === "upload" ? "bg-card font-medium text-foreground shadow-sm" : "text-muted")}>
+                    I already have a script
+                  </button>
+                </div>
                 <div className="grid gap-3 md:grid-cols-2">
-                  <Field label="Landing page URL">
+                  <Field label={mode === "upload" ? "Landing page URL (for the brand, colours and logo)" : "Landing page URL"}>
                     <Input value={landingUrl} onChange={(e) => setLandingUrl(e.target.value)} placeholder="https://…" />
                   </Field>
                   <Field label="Service">
@@ -856,12 +963,44 @@ function VideoInner() {
                     </Select>
                   </Field>
                 </div>
-                <Field label="Instructions (optional)">
-                  <Textarea value={instructions} onChange={(e) => setInstructions(e.target.value)} placeholder="Tone, who it is for, what to show, what to avoid, a hook you like…" className="min-h-[72px]" />
-                </Field>
-                <Field label="Offer details (optional)">
-                  <Textarea value={offerDetails} onChange={(e) => setOfferDetails(e.target.value)} placeholder="The offer, price or terms you can state, deadline, guarantee, who qualifies…" className="min-h-[72px]" />
-                </Field>
+                {mode === "write" ? (
+                  <>
+                    <Field label="Instructions (optional)">
+                      <Textarea value={instructions} onChange={(e) => setInstructions(e.target.value)} placeholder="Tone, who it is for, what to show, what to avoid, a hook you like…" className="min-h-[72px]" />
+                    </Field>
+                    <Field label="Offer details (optional)">
+                      <Textarea value={offerDetails} onChange={(e) => setOfferDetails(e.target.value)} placeholder="The offer, price or terms you can state, deadline, guarantee, who qualifies…" className="min-h-[72px]" />
+                    </Field>
+                  </>
+                ) : (
+                  <div className="space-y-4 rounded-md border border-border p-3">
+                    <Field label="Your script" hint="Paste it here, or upload a file below. Your words are kept exactly as you wrote them: we only split it into scenes and add visuals, sound and ad copy around it.">
+                      <Textarea value={scriptText} onChange={(e) => setScriptText(e.target.value)} placeholder="Paste your script. Scene notes, speaker labels (like VO: or Presenter:) and directions are fine: they are used for the visuals and not spoken." className="min-h-[220px]" />
+                    </Field>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <label className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-border px-3 py-1.5 text-xs hover:bg-secondary">
+                        <FileUp className="h-3.5 w-3.5" />
+                        {scriptFile ? "Replace file" : "Upload a file (.txt, .docx, .pdf, .md)"}
+                        <input type="file" accept=".txt,.md,.markdown,.docx,.doc,.pdf" className="hidden" onChange={(e) => { setScriptFile(e.target.files?.[0] ?? null); e.target.value = ""; }} />
+                      </label>
+                      {scriptFile ? (
+                        <span className="inline-flex items-center gap-1 text-xs text-muted">
+                          {scriptFile.name}
+                          <button type="button" aria-label="Remove the file" onClick={() => setScriptFile(null)} className="rounded p-0.5 hover:bg-secondary">
+                            <X className="h-3 w-3" />
+                          </button>
+                        </span>
+                      ) : null}
+                      <span className="text-[11px] text-muted">{scriptWords ? `${scriptWords} words pasted` : ""}</span>
+                    </div>
+                    <Field label="Your ad copy (optional)" hint="If you have it, it is used exactly as written. If not, it is written for you from your script.">
+                      <Textarea value={adCopyText} onChange={(e) => setAdCopyText(e.target.value)} placeholder="The text that goes above the video" className="min-h-[96px]" />
+                    </Field>
+                    <Field label="Changes you want (optional)" hint="Leave this empty and your script is kept word for word. Say what to change and only that is touched, e.g. “make scene 3 shorter” or “change the call to action to Book Now”.">
+                      <Textarea value={changeRequest} onChange={(e) => setChangeRequest(e.target.value)} placeholder="Nothing: keep it exactly as I wrote it" className="min-h-[64px]" />
+                    </Field>
+                  </div>
+                )}
 
                 <div className="space-y-2">
                   <p className="text-[11px] font-medium">Images to use in the video (screenshots of results, stats, product)</p>
@@ -920,12 +1059,15 @@ function VideoInner() {
                 </div>
 
                 <div className="grid gap-4 md:grid-cols-4">
+                  {mode === "write" ? (
                   <div className="md:col-span-2">
                     <p className="mb-1 text-[11px] font-medium">
                       Target length: <span className="text-foreground">{seconds}s</span> <span className="font-normal text-muted">(a guide: each scene runs as long as its words take, up to 60s)</span>
                     </p>
                     <input type="range" min={15} max={60} step={1} value={seconds} onChange={(e) => setSeconds(Number(e.target.value))} className="w-full" />
                   </div>
+                  ) : null}
+                  {mode === "write" ? (
                   <Field label="Style">
                     <Select value={style} onValueChange={setStyle}>
                       <SelectTrigger>
@@ -940,6 +1082,7 @@ function VideoInner() {
                       </SelectContent>
                     </Select>
                   </Field>
+                  ) : null}
                   <Field label="Size">
                     <Select value={format} onValueChange={setFormat}>
                       <SelectTrigger>
@@ -973,9 +1116,9 @@ function VideoInner() {
                 <div className="flex flex-wrap items-center gap-3">
                   <Button onClick={() => void start()} disabled={!canStart || starting}>
                     {starting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Film className="mr-2 h-4 w-4" />}
-                    Write 3 scripts
+                    {mode === "upload" ? "Analyse my script" : "Write 3 scripts"}
                   </Button>
-                  <p className="text-[11px] text-muted">Takes about a minute. No video is generated yet: you choose and confirm a script first.</p>
+                  <p className="text-[11px] text-muted">{mode === "upload" ? "Takes under a minute. Your wording is not changed unless you ask. No video is generated until you confirm." : "Takes about a minute. No video is generated yet: you choose and confirm a script first."}</p>
                 </div>
               </CardContent>
             </Card>
@@ -994,7 +1137,7 @@ function VideoInner() {
               {view.status !== "writing" ? (
                 <Button size="sm" variant="secondary" onClick={() => void rewrite()}>
                   <RefreshCw className="mr-1 h-3.5 w-3.5" />
-                  Write 3 new scripts
+                  {view.inputs.mode === "upload" ? "Read my script again" : "Write 3 new scripts"}
                 </Button>
               ) : null}
               <Button size="sm" variant="secondary" onClick={() => router.replace("/creatives/video?tab=history")}>
@@ -1007,8 +1150,8 @@ function VideoInner() {
           </div>
 
           {view.status === "writing" ? (
-            <ProgressCard progress={view.progress} hasImages={view.assets.length > 0} />
-          ) : view.chosenScript && (["confirmed", "generating", "clips_ready", "assembling", "done"].includes(view.status) || (view.status === "failed" && (view.generation?.clips.length ?? 0) > 0)) ? (
+            <ProgressCard progress={view.progress} hasImages={view.assets.length > 0} upload={view.inputs.mode === "upload"} />
+          ) : view.chosenScript && (["confirmed", "generating", "paused", "stopped", "clips_ready", "assembling", "done"].includes(view.status) || (view.status === "failed" && (view.generation?.clips.length ?? 0) > 0)) ? (
             <div className="space-y-4">
               <Card className="border-accent/40">
                 <CardContent className="space-y-3 p-4">
@@ -1115,6 +1258,42 @@ function VideoInner() {
                         <span className="text-xs font-normal text-muted">{draftTotal >= 30 && draftTotal <= 40 ? "(ideal range)" : draftTotal > 60 ? "(over the 60s limit)" : draftTotal < 30 ? "(a little short)" : ""}</span>
                       </p>
                     </div>
+
+                    {draft.source === "uploaded" ? (
+                      <div className="space-y-1.5 rounded-md border border-accent/40 bg-accent/5 p-3 text-xs">
+                        <p className="flex items-center gap-1.5 text-sm font-medium">
+                          <Check className="h-4 w-4 text-accent" /> Your script, kept word for word
+                        </p>
+                        <p className="text-muted">
+                          Split into {draft.scenes.length} scenes. Your wording is untouched
+                          {draft.handling?.changes.length ? " except where you asked for a change" : ""}. Visuals, camera, sound and the ad copy were added around it.
+                        </p>
+                        {draft.handling?.restoredScenes.length ? <p className="text-muted">Scene{draft.handling.restoredScenes.length === 1 ? "" : "s"} {draft.handling.restoredScenes.join(", ")}: the reader had reworded your text, so your exact words were put back.</p> : null}
+                        {draft.handling?.removedScenes?.length ? <p className="text-muted">Scene{draft.handling.removedScenes.length === 1 ? "" : "s"} {draft.handling.removedScenes.join(", ")}: words that were not in your script were removed.</p> : null}
+                        {draft.handling?.unusedText.length ? (
+                          <div className="text-muted">
+                            Treated as directions, not spoken:
+                            <ul className="mt-0.5 list-disc pl-4">
+                              {draft.handling.unusedText.slice(0, 6).map((t, k) => (
+                                <li key={k} className="italic">{t.length > 140 ? `${t.slice(0, 140)}…` : t}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                        {draft.handling?.changes.length ? (
+                          <div className="text-muted">
+                            Changed as you asked:
+                            <ul className="mt-0.5 list-disc pl-4">
+                              {draft.handling.changes.map((c, k) => (
+                                <li key={k}>
+                                  <span className="text-foreground">{c.target}</span>: “{c.was.slice(0, 90)}” became “{c.now.slice(0, 90)}”
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
 
                     <div className="rounded-md border border-border p-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1224,9 +1403,17 @@ function VideoInner() {
                                   </SelectContent>
                                 </Select>
                               </Field>
-                              <Field label="What is said (exact words)" hint="Spoken aloud and used for the captions">
+                              <Field label="What is said (exact words)" hint={draft.source === "uploaded" ? "Your words. Change them only if you want to." : "Spoken aloud and used for the captions"}>
                                 <Textarea className="min-h-[72px] text-xs" value={draft.scenes[i]!.line} onChange={(e) => editScene(i, { line: e.target.value })} />
                               </Field>
+                              {draft.scenes[i]!.originalLine && draft.scenes[i]!.originalLine !== draft.scenes[i]!.line ? (
+                                <div className="rounded-md bg-secondary/40 p-2 text-[11px] text-muted">
+                                  Your original: “{draft.scenes[i]!.originalLine}”{" "}
+                                  <button type="button" className="font-medium text-accent hover:underline" onClick={() => editScene(i, { line: draft.scenes[i]!.originalLine ?? "", originalLine: null })}>
+                                    Put it back
+                                  </button>
+                                </div>
+                              ) : null}
                               <div className="grid grid-cols-2 gap-2">
                                 <Field label="Words to highlight" hint="Up to 3, comma separated">
                                   <Input className="text-xs" value={draft.scenes[i]!.keywords.join(", ")} onChange={(e) => editScene(i, { keywords: e.target.value.split(",").map((k) => k.trim()).filter(Boolean).slice(0, 3) })} placeholder="e.g. free audit" />
