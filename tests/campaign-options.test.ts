@@ -57,7 +57,7 @@ describe("loadCampaignOptions", () => {
     });
     expect(options.conversionLocations.find((l) => l.id === "messaging")?.supported).toBe(false);
     expect(options.performanceGoals.instant_form?.map((g) => g.id)).toEqual(["LEAD_GENERATION"]);
-    expect(options.attribution.OFFSITE_CONVERSIONS).toHaveLength(3);
+    expect(options.attribution.OFFSITE_CONVERSIONS).toHaveLength(4);
     expect(options.placements.length).toBeGreaterThan(0);
   });
 

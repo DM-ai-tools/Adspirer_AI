@@ -29,6 +29,7 @@ const BUSINESS_LABEL: Record<(typeof BUSINESS_MODELS)[number], string> = {
   other: "Other",
 };
 const ATTRIBUTION_LABEL: Record<(typeof ATTRIBUTION_SETTINGS)[number], string> = {
+  "7d_click_1d_view_1d_engaged": "7-day click, 1-day view, 1-day engagement",
   "7d_click_1d_view": "7-day click, 1-day view",
   "7d_click": "7-day click",
   "1d_click": "1-day click",

@@ -57,6 +57,24 @@ describe("building the one approval for a whole run", () => {
     }
   });
 
+  it("carries the attribution window and the audience choice from the campaign settings to the approval", async () => {
+    const plan: BulkPublishPlan = {
+      ...newCampaign,
+      destination: { ...newCampaign.destination, settings: { ...(newCampaign.destination.settings as object), attribution: "7d_click_1d_view_1d_engaged", advantage_audience: false } } as BulkPublishPlan["destination"],
+    };
+    const args = buildBulkPublishArgs({ accountId: "act_111", plan, ads: ads(3) });
+    expect(args.attribution).toBe("7d_click_1d_view_1d_engaged");
+    expect(args.advantage_audience).toBe(false);
+    const prepared = await prepareApprovalArgs({
+      toolName: "create_meta_image_campaign",
+      clientId: "c1",
+      args,
+      loadAccounts: async () => [{ meta_account_id: "act_111", access_status: "granted", currency: "AUD" }],
+    });
+    expect(prepared.args.attribution).toBe("7d_click_1d_view_1d_engaged");
+    expect(prepared.args.advantage_audience).toBe(false);
+  });
+
   it("drops anything that is not a known setting", () => {
     const args = buildBulkPublishArgs({ accountId: "act_111", plan: newCampaign, ads: ads(2) });
     expect(args).not.toHaveProperty("junk");

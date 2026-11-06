@@ -305,6 +305,8 @@ function summarizeArgs(
       if (audiences) targeting.push(`${audiences} custom audience${audiences > 1 ? "s" : ""}`);
       if (args.advantage_audience === true || args.advantage_audience === 1) {
         targeting.push("Advantage+ audience");
+      } else if (args.advantage_audience === false || args.advantage_audience === 0) {
+        targeting.push("Preferred audience only");
       }
       if (targeting.length) rows.push(["Targeting", targeting.join(" · ")]);
       else if (

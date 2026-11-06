@@ -17,6 +17,11 @@ export const BID_STRATEGIES = [
 
 /** The client's attribution setting as Meta's attribution_spec. */
 export const ATTRIBUTION_SPEC: Record<string, Array<{ event_type: string; window_days: number }>> = {
+  "7d_click_1d_view_1d_engaged": [
+    { event_type: "CLICK_THROUGH", window_days: 7 },
+    { event_type: "VIEW_THROUGH", window_days: 1 },
+    { event_type: "ENGAGED_VIDEO_VIEW", window_days: 1 },
+  ],
   "7d_click_1d_view": [
     { event_type: "CLICK_THROUGH", window_days: 7 },
     { event_type: "VIEW_THROUGH", window_days: 1 },

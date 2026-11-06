@@ -390,6 +390,37 @@ export function CampaignSettingsCard({
 
       <details className="rounded-md border border-border/60 p-2">
         <summary className="cursor-pointer text-[11px] font-semibold text-foreground">
+          Advanced audience — Advantage+ or your preferred audience
+        </summary>
+        <div className="mt-2 space-y-2">
+          <FieldShell
+            label="Audience"
+            description={
+              settings.advantage_audience === true
+                ? "Meta may show your ads beyond the audience you set up if it expects better results. Your targeting is treated as a suggestion."
+                : settings.advantage_audience === false
+                  ? "Ads reach only the audience you set up (locations, interests, audiences, age, gender). Meta does not widen it."
+                  : "Left to the settings: Advantage+ audience is used unless an age limit, or a special ad category, needs your audience kept as set."
+            }
+          >
+            <select
+              className={selectClassName}
+              value={settings.advantage_audience === undefined ? "" : settings.advantage_audience ? "advantage" : "preferred"}
+              disabled={disabled}
+              onChange={(e) =>
+                set({ advantage_audience: e.target.value === "" ? undefined : e.target.value === "advantage" })
+              }
+            >
+              <option value="">Automatic (recommended)</option>
+              <option value="advantage">Advantage+ audience — let Meta find more people</option>
+              <option value="preferred">Reach my preferred audience — only the audience set up in Meta</option>
+            </select>
+          </FieldShell>
+        </div>
+      </details>
+
+      <details className="rounded-md border border-border/60 p-2">
+        <summary className="cursor-pointer text-[11px] font-semibold text-foreground">
           Advanced placements — platform, placement, device, OS
         </summary>
         <div className="mt-2 space-y-3">
