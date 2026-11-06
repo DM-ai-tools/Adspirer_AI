@@ -8,6 +8,7 @@ import { rewriteAdCopy } from "@/lib/video/rewrite";
 import { restoreVerbatim, unusedText, verbatimCheck } from "@/lib/video/verbatim";
 import { retime } from "@/lib/video/timing";
 import { HUMAN_VOICE } from "@/lib/video/voice";
+import { VISUAL_DIRECTION_RULES } from "@/lib/video/visual-rules";
 
 const CTA_VALUES = ADSPIRER_META_CTAS as unknown as [string, ...string[]];
 const ANGLE_KEYS = BULK_ANGLES.map((a) => a.key) as [string, ...string[]];
@@ -113,6 +114,7 @@ export async function structureUploadedScript(
         `\nSplit the script into scenes at its natural beats (a sentence or a clause end), so each scene is one idea and at most about ${MAX_WORDS_PER_SCENE} words of speech. Anything that is not meant to be said aloud (scene headings, camera or editor notes, speaker labels such as "VO:" or "Presenter:", timings) is a direction: use it for the visual, camera, speaker and sound, and do not put it in a spoken line. Copy every spoken word exactly, in order, losing none and adding none. If the script gives a presenter or a setting, use its description.`,
         `Speaker: on_camera when a person is shown speaking to camera, voiceover when the words are an unseen voice, none for a beat with no speech.`,
         `Language: ${ctx.locale}. Where you write a visual, camera or sound, make it concrete and filmable.`,
+        `Where the script gives its own visual direction, keep it as written. Where you propose a visual yourself:\n${VISUAL_DIRECTION_RULES}`,
         feedback ? `\nYour previous attempt changed the operator's words in these places: ${feedback}. Copy those lines exactly as they are in the script.` : null,
       ]
         .filter(Boolean)

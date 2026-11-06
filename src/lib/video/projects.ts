@@ -46,7 +46,7 @@ export type VideoBrand = {
   corpus?: string;
 };
 
-export type VideoProjectStatus = "writing" | "scripts_ready" | "confirmed" | "generating" | "clips_ready" | "assembling" | "done" | "failed";
+export type VideoProjectStatus = "writing" | "scripts_ready" | "confirmed" | "generating" | "paused" | "stopped" | "clips_ready" | "assembling" | "done" | "failed";
 
 export type VideoProject = {
   id: string;

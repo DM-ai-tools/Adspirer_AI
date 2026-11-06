@@ -22,7 +22,12 @@ export type ClipState = {
   usd: number | null;
   /** The prompt that was sent, so a clip can be understood and repeated. */
   prompt: string | null;
+  /** The operator has looked at this clip and said to carry on. */
+  approved?: boolean;
 };
+
+/** When to wait for the operator before spending on the next clip. */
+export type Checkpoint = "after_first" | "each" | "none";
 
 export type Finishing = {
   captions: boolean;
@@ -73,13 +78,19 @@ export type GenerationPlan = {
   chainVideo: boolean;
   /** What the finishing step adds. */
   finishing: Finishing;
+  /** Where generation waits for the operator to check a clip before paying for the next. */
+  checkpoint: Checkpoint;
   createdAt: string;
 };
 
 export type FinalView = Omit<FinalVideo, "key"> & { videoUrl: string | null };
 
 export type GenerationView = {
-  status: "generating" | "clips_ready" | "assembling" | "done" | "failed" | "idle";
+  status: "generating" | "paused" | "stopped" | "clips_ready" | "assembling" | "done" | "failed" | "idle";
+  /** The clip waiting for the operator to check it, when paused. */
+  reviewClip: number | null;
+  /** About what the clips not yet made would cost. */
+  remainingUsd: number;
   final: FinalView | null;
   plan: (Omit<GenerationPlan, "character" | "setting"> & { character: boolean; setting: boolean }) | null;
   clips: Array<Omit<ClipState, "taskId" | "sourceVideoUrl" | "lastFrameUrl" | "videoKey" | "prompt"> & { hasVideo: boolean; videoUrl: string | null }>;

@@ -5,6 +5,7 @@ import { pickModel } from "@/lib/creatives/concept-writer";
 import { sceneSchema, type VideoScene, type VideoScript } from "@/lib/video/script";
 import { sceneSeconds } from "@/lib/video/timing";
 import { HUMAN_VOICE, SYSTEM } from "@/lib/video/voice";
+import { VISUAL_DIRECTION_RULES } from "@/lib/video/visual-rules";
 
 const CTA_VALUES = ADSPIRER_META_CTAS as unknown as [string, ...string[]];
 
@@ -57,6 +58,7 @@ export async function regenerateScene(input: { script: VideoScript; sceneNumber:
       "Facts only: a stat or number may appear only if it is in the facts above or on an uploaded image. Keep an uploaded image (asset_id) and its stat in this scene if the scene had them, unless the feedback says otherwise.",
       `Language: ${ctx.locale}.`,
       HUMAN_VOICE,
+      VISUAL_DIRECTION_RULES,
     ]
       .filter(Boolean)
       .join("\n"),

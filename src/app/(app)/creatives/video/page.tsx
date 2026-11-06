@@ -107,7 +107,9 @@ type FinalView = {
 };
 
 type GenerationView = {
-  status: "generating" | "clips_ready" | "assembling" | "done" | "failed" | "idle";
+  status: "generating" | "paused" | "stopped" | "clips_ready" | "assembling" | "done" | "failed" | "idle";
+  reviewClip: number | null;
+  remainingUsd: number;
   final: FinalView | null;
   clips: GenClip[];
   spentUsd: number;
@@ -120,7 +122,7 @@ type Asset = { id: string; name: string; summary: string; kind: string | null; s
 type ProjectView = {
   id: string;
   name: string;
-  status: "writing" | "scripts_ready" | "confirmed" | "generating" | "clips_ready" | "assembling" | "done" | "failed";
+  status: "writing" | "scripts_ready" | "confirmed" | "generating" | "paused" | "stopped" | "clips_ready" | "assembling" | "done" | "failed";
   error: string | null;
   inputs: { landingPageUrl: string | null; targetSeconds: number; format: string; mode?: "write" | "upload"; scriptFileName?: string | null; changeRequest?: string | null };
   assets: Asset[];
@@ -134,7 +136,7 @@ type ProjectView = {
 
 type HistoryItem = { id: string; name: string; status: ProjectView["status"]; created_at: string; landing_page_url: string | null; target_seconds: number; title: string | null };
 
-const STATUS_LABEL: Record<ProjectView["status"], string> = { writing: "Writing scripts", scripts_ready: "Scripts ready", confirmed: "Script confirmed", generating: "Making the video", clips_ready: "Clips ready", assembling: "Finishing the video", done: "Finished", failed: "Failed" };
+const STATUS_LABEL: Record<ProjectView["status"], string> = { writing: "Writing scripts", scripts_ready: "Scripts ready", confirmed: "Script confirmed", generating: "Making the video", paused: "Waiting for your check", stopped: "Stopped", clips_ready: "Clips ready", assembling: "Finishing the video", done: "Finished", failed: "Failed" };
 const STYLES = ["auto", "UGC creator walkthrough", "Cinematic", "Motion graphics over footage", "Documentary", "3D animated"];
 const FORMATS = [
   { value: "9:16", label: "9:16 Reels & Stories" },
@@ -304,6 +306,9 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
   const [busyClip, setBusyClip] = useState<number | null>(null);
   const advancing = useRef(false);
   const [finishing, setFinishing] = useState({ captions: true, logo: true, endCard: true });
+  // Where to wait for a look at a clip before paying for the next one.
+  const [checkpoint, setCheckpoint] = useState<"after_first" | "each" | "none">("after_first");
+  const [confirmStop, setConfirmStop] = useState(false);
 
   useEffect(() => {
     if (status !== "generating" && status !== "assembling") return;
@@ -358,13 +363,27 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
     return (
       <div className="space-y-2">
         <div className="flex flex-wrap items-center gap-3">
-          <Button disabled={starting || Boolean(blocked)} onClick={() => void post({ action: "start", finishing }, () => setStarting(true), () => setStarting(false))}>
+          <Button disabled={starting || Boolean(blocked)} onClick={() => void post({ action: "start", finishing, checkpoint }, () => setStarting(true), () => setStarting(false))}>
             {starting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Film className="mr-2 h-4 w-4" />}
             Generate video
           </Button>
           <p className="text-[11px] text-muted">Makes the clips one after another so the person and voice carry through, then joins them. It takes several minutes and keeps going if you leave.</p>
         </div>
         <FinishingOptions value={finishing} onChange={setFinishing} />
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-[11px] font-medium">Check before spending more:</span>
+          <Select value={checkpoint} onValueChange={(v) => setCheckpoint(v as typeof checkpoint)}>
+            <SelectTrigger className="h-8 w-[300px] text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="after_first">Pause after clip 1 so I can check it (recommended)</SelectItem>
+              <SelectItem value="each">Pause after every clip</SelectItem>
+              <SelectItem value="none">Don&apos;t pause, make it all</SelectItem>
+            </SelectContent>
+          </Select>
+          <span className="text-[11px] text-muted">You can also stop at any time.</span>
+        </div>
         {blocked ? <p className="text-xs text-amber-500">{blocked}</p> : null}
       </div>
     );
@@ -375,6 +394,43 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
 
   return (
     <div className="space-y-3">
+      {status === "paused" ? (
+        <div className="space-y-2 rounded-md border border-amber-500/50 bg-amber-500/5 p-3 text-sm">
+          <p className="font-medium">Clip {gen?.reviewClip ?? 1} is ready. Check it before the rest are made.</p>
+          <p className="text-xs text-muted">
+            Look for a presenter who looks and sounds right, speech that matches the mouth, and no garbled words anywhere. Making the rest will cost about ${(gen?.remainingUsd ?? 0).toFixed(2)} more.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" disabled={starting} onClick={() => void post({ action: "continue" }, () => setStarting(true), () => setStarting(false))}>
+              {starting ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Check className="mr-1 h-3.5 w-3.5" />}
+              Looks good, make the rest
+            </Button>
+            <Button size="sm" variant="secondary" disabled={starting} onClick={() => void post({ action: "regenerate", fromClip: gen?.reviewClip ?? 1 }, () => setStarting(true), () => setStarting(false))}>
+              <RefreshCw className="mr-1 h-3.5 w-3.5" />
+              Not right, make clip {gen?.reviewClip ?? 1} again
+            </Button>
+            <Button size="sm" variant="ghost" disabled={starting} onClick={() => void post({ action: "stop" }, () => setStarting(true), () => setStarting(false), "stopped")}>
+              Stop here
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {status === "stopped" ? (
+        <div className="space-y-2 rounded-md border border-border p-3 text-sm">
+          <p className="font-medium">Stopped. The clips already made are kept.</p>
+          <p className="text-xs text-muted">Nothing more is being made. Carrying on would cost about ${(gen?.remainingUsd ?? 0).toFixed(2)} more.</p>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" disabled={starting} onClick={() => void post({ action: "continue" }, () => setStarting(true), () => setStarting(false))}>
+              Carry on making the video
+            </Button>
+            <Button size="sm" variant="secondary" disabled={starting} onClick={() => void post({ action: "regenerate", fromClip: 1 }, () => setStarting(true), () => setStarting(false))}>
+              Start again from clip 1
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
       {status === "assembling" || final?.state === "running" ? (
         <div className="flex items-center gap-2 rounded-md border border-border p-3 text-sm">
           <Loader2 className="h-4 w-4 animate-spin" />
@@ -440,14 +496,33 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
       <div className="space-y-1.5">
         <div className="flex items-baseline justify-between text-sm">
           <span className="font-medium">
-            {status === "clips_ready" || status === "done" || status === "assembling" ? "Clips ready" : status === "failed" ? "Stopped" : "Making the video"}: {finished} of {clips.length} clips done
+            {status === "clips_ready" || status === "done" || status === "assembling" ? "Clips ready" : status === "paused" ? "Paused for your check" : status === "stopped" ? "Stopped" : status === "failed" ? "Stopped with an error" : "Making the video"}: {finished} of {clips.length} clips done
           </span>
           {gen ? <span className="text-xs text-muted">${gen.spentUsd.toFixed(2)} spent so far</span> : null}
         </div>
         <div className="h-2.5 overflow-hidden rounded-full bg-secondary" role="progressbar" aria-valuenow={Math.round((finished / clips.length) * 100)} aria-valuemin={0} aria-valuemax={100}>
           <div className="h-full rounded-full bg-accent transition-all duration-500" style={{ width: `${Math.max(3, (finished / clips.length) * 100)}%` }} />
         </div>
-        {status === "generating" ? <p className="text-[11px] text-muted">Each clip usually takes 2 to 4 minutes. You can leave this page and come back.</p> : null}
+        {status === "generating" ? (
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-[11px] text-muted">Each clip usually takes 2 to 4 minutes. You can leave this page and come back.</p>
+            {confirmStop ? (
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="text-muted">Stop now? Clips already made are kept. A clip being made may still be charged if it cannot be cancelled.</span>
+                <Button size="sm" variant="danger" disabled={starting} onClick={() => void post({ action: "stop" }, () => setStarting(true), () => { setStarting(false); setConfirmStop(false); }, "stopped")}>
+                  Stop
+                </Button>
+                <Button size="sm" variant="secondary" onClick={() => setConfirmStop(false)}>
+                  Keep going
+                </Button>
+              </div>
+            ) : (
+              <Button size="sm" variant="secondary" onClick={() => setConfirmStop(true)}>
+                Stop making the video
+              </Button>
+            )}
+          </div>
+        ) : null}
         {gen?.error && status === "failed" ? <p className="text-xs text-destructive">{gen.error}</p> : null}
       </div>
       <div className="grid gap-3 md:grid-cols-3">
@@ -1076,7 +1151,7 @@ function VideoInner() {
 
           {view.status === "writing" ? (
             <ProgressCard progress={view.progress} hasImages={view.assets.length > 0} upload={view.inputs.mode === "upload"} />
-          ) : view.chosenScript && (["confirmed", "generating", "clips_ready", "assembling", "done"].includes(view.status) || (view.status === "failed" && (view.generation?.clips.length ?? 0) > 0)) ? (
+          ) : view.chosenScript && (["confirmed", "generating", "paused", "stopped", "clips_ready", "assembling", "done"].includes(view.status) || (view.status === "failed" && (view.generation?.clips.length ?? 0) > 0)) ? (
             <div className="space-y-4">
               <Card className="border-accent/40">
                 <CardContent className="space-y-3 p-4">

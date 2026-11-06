@@ -5,6 +5,7 @@ import type { ArkContent } from "@/lib/video/seedance";
 import {
   arkCredentials,
   availableSeedanceModels,
+  cancelVideoTask,
   createVideoTask,
   estimateClipUsd,
   getVideoTask,
@@ -16,7 +17,7 @@ import {
 import { createReferenceImage } from "@/lib/video/seedream";
 import { assembleVideo } from "@/lib/video/assemble";
 import { generationRatio, previewPlan } from "@/lib/video/plan-view";
-import { DEFAULT_FINISHING, type ClipState, type Finishing, type GenerationPlan, type GenerationView } from "@/lib/video/generation-types";
+import { DEFAULT_FINISHING, type Checkpoint, type ClipState, type Finishing, type GenerationPlan, type GenerationView } from "@/lib/video/generation-types";
 import { claimProjectLease, getProject, releaseProjectLease, updateProject, type VideoProject } from "@/lib/video/projects";
 
 /** A reference image or clip address from ModelArk stops working after 24 hours; stop using one well before. */
@@ -41,7 +42,7 @@ export function blockedReason(project: VideoProject): string | null {
 }
 
 /** The plan and the empty clip list for a confirmed script. */
-export function buildPlan(project: VideoProject, finishing: Finishing = DEFAULT_FINISHING): { plan: GenerationPlan; clips: ClipState[] } {
+export function buildPlan(project: VideoProject, finishing: Finishing = DEFAULT_FINISHING, checkpoint: Checkpoint = "after_first"): { plan: GenerationPlan; clips: ClipState[] } {
   const script = project.chosen_script;
   if (!script) throw new Error("Confirm a script first.");
   const preview = previewPlan(script, project.inputs, project.assets.length);
@@ -60,6 +61,7 @@ export function buildPlan(project: VideoProject, finishing: Finishing = DEFAULT_
     setting: null,
     chainVideo,
     finishing,
+    checkpoint,
     createdAt: new Date().toISOString(),
   };
   const clips: ClipState[] = preview.clips.map((c) => ({
@@ -81,10 +83,10 @@ export function buildPlan(project: VideoProject, finishing: Finishing = DEFAULT_
   return { plan, clips };
 }
 
-export async function startGeneration(projectId: string, finishing: Finishing = DEFAULT_FINISHING): Promise<VideoProject> {
+export async function startGeneration(projectId: string, finishing: Finishing = DEFAULT_FINISHING, checkpoint: Checkpoint = "after_first"): Promise<VideoProject> {
   const project = await getProject(projectId);
   if (!project) throw new Error("Video project not found");
-  const { plan, clips } = buildPlan(project, finishing);
+  const { plan, clips } = buildPlan(project, finishing, checkpoint);
   return updateProject(projectId, { plan, clips, final: null, status: "generating", error: null });
 }
 
@@ -126,7 +128,15 @@ async function saveClipFile(projectId: string, clip: ClipState, videoUrl: string
   return key;
 }
 
-export type StepResult = "working" | "done" | "failed" | "idle";
+export type StepResult = "working" | "done" | "failed" | "idle" | "paused";
+
+/** True when this clip must be checked by the operator before the next one is paid for. */
+export function needsReview(checkpoint: Checkpoint | undefined, clipNumber: number, clipCount: number): boolean {
+  if (clipNumber >= clipCount) return false;
+  if (checkpoint === "each") return true;
+  if (checkpoint === "none") return false;
+  return clipNumber === 1;
+}
 
 /**
  * One bounded step: make a missing reference image, submit the next clip, or check the running one.
@@ -172,6 +182,9 @@ export async function step(projectId: string, now = Date.now()): Promise<StepRes
         await save({ clips, status: "failed", error: clip.error });
         return "failed";
       }
+      // Never start paying for a clip after the operator has stopped or paused the video.
+      const latest = await getProject(projectId);
+      if (!latest || latest.status !== "generating") return "idle";
       const request = buildClipRequest(project, plan, clips, clip, now);
       try {
         const task = await createVideoTask({
@@ -213,6 +226,11 @@ export async function step(projectId: string, now = Date.now()): Promise<StepRes
       clip.finishedAt = new Date(now).toISOString();
       clip.status = "succeeded";
       clip.error = null;
+      if (needsReview(plan.checkpoint, clip.number, clips.length) && !clip.approved) {
+        // Wait here: the operator checks this clip before the next one is paid for.
+        await save({ clips, status: "paused" });
+        return "paused";
+      }
       await save({ clips });
       continue;
     }
@@ -258,7 +276,7 @@ export async function runGeneration(projectId: string, budgetMs = 240_000, sleep
       await assembleVideo(projectId);
       return last;
     }
-    if (last === "failed") return last;
+    if (last === "failed" || last === "paused") return last;
     if (last === "idle") {
       const p = await getProject(projectId);
       if (!p || p.status !== "generating") return last;
@@ -266,6 +284,34 @@ export async function runGeneration(projectId: string, budgetMs = 240_000, sleep
     await sleep(POLL_EVERY_MS);
   }
   return last;
+}
+
+/**
+ * Stop making the video. Clips already made are kept. A clip that is being made is cancelled if
+ * BytePlus allows it (a queued task can be; one already running may still finish and be charged).
+ */
+export async function stopGeneration(projectId: string): Promise<VideoProject> {
+  const project = await getProject(projectId);
+  if (!project?.plan || !project.clips) throw new Error("There is nothing to stop.");
+  const model = project.plan.model as SeedanceModelKey;
+  const clips = await Promise.all(
+    project.clips.map(async (c) => {
+      if (c.status !== "running") return c;
+      if (c.taskId) await cancelVideoTask(model, c.taskId).catch(() => undefined);
+      return { ...c, status: "waiting" as const, taskId: null, attempts: 0, error: "Stopped by you." };
+    }),
+  );
+  return updateProject(projectId, { clips, status: "stopped", error: null });
+}
+
+/** Carry on after a pause (the clip just checked is approved) or after a stop. */
+export async function continueGeneration(projectId: string): Promise<VideoProject> {
+  const project = await getProject(projectId);
+  if (!project?.plan || !project.clips) throw new Error("There is nothing to continue.");
+  if (project.status !== "paused" && project.status !== "stopped") return project;
+  // Everything made so far has been looked at, so it does not pause again on the same clips.
+  const clips = project.clips.map((c) => (c.status === "succeeded" ? { ...c, approved: true } : c));
+  return updateProject(projectId, { clips, status: "generating", error: null });
 }
 
 /**
@@ -279,7 +325,7 @@ export async function regenerateFrom(projectId: string, fromClip: number): Promi
   const clips = project.clips.map((c) => {
     if (c.number < fromClip) return c;
     if (c.videoKey) void storage.delete(c.videoKey).catch(() => undefined);
-    return { ...c, status: "waiting" as const, taskId: null, attempts: 0, error: null, videoKey: null, lastFrameUrl: null, sourceVideoUrl: null, finishedAt: null, tokens: null, usd: null, prompt: null };
+    return { ...c, approved: false, status: "waiting" as const, taskId: null, attempts: 0, error: null, videoKey: null, lastFrameUrl: null, sourceVideoUrl: null, finishedAt: null, tokens: null, usd: null, prompt: null };
   });
   // From clip 1 the references are made fresh too, so a new take starts from a new, matching person.
   const plan = { ...project.plan, character: fromClip === 1 ? null : project.plan.character, setting: fromClip === 1 ? null : project.plan.setting };
@@ -300,7 +346,7 @@ export function effectiveProject(project: VideoProject, now = Date.now()): Video
 export function viewGeneration(raw: VideoProject): GenerationView {
   const project = effectiveProject(raw);
   const clips = project.clips ?? [];
-  const status = project.status === "generating" ? "generating" : project.status === "clips_ready" ? "clips_ready" : project.status === "assembling" ? "assembling" : project.status === "done" ? "done" : project.status === "failed" && clips.length ? "failed" : "idle";
+  const status = project.status === "generating" ? "generating" : project.status === "clips_ready" ? "clips_ready" : project.status === "paused" ? "paused" : project.status === "stopped" ? "stopped" : project.status === "assembling" ? "assembling" : project.status === "done" ? "done" : project.status === "failed" && clips.length ? "failed" : "idle";
   return {
     status,
     // The reference images' addresses and the prompts stay on the server.
@@ -318,6 +364,13 @@ export function viewGeneration(raw: VideoProject): GenerationView {
       hasVideo: Boolean(c.videoKey),
       videoUrl: c.videoKey ? `/api/creatives/video/${project.id}/clips/${c.number}?v=${encodeURIComponent(c.finishedAt ?? "")}` : null,
     })),
+    reviewClip: project.status === "paused" ? (clips.filter((c) => c.status === "succeeded").at(-1)?.number ?? null) : null,
+    remainingUsd: (() => {
+      const plan = project.plan;
+      if (!plan) return 0;
+      const left = clips.filter((c) => c.status !== "succeeded");
+      return Math.round(left.reduce((t, c) => t + estimateClipUsd(plan.model as SeedanceModelKey, plan.resolution as VideoResolution, plan.ratio as "9:16", c.seconds, plan.chainVideo && c.number > 1 ? (clips[c.number - 2]?.seconds ?? 0) : 0), 0) * 100) / 100;
+    })(),
     final: project.final ? (({ key, ...rest }) => ({ ...rest, videoUrl: key ? `/api/creatives/video/${project.id}/final?v=${encodeURIComponent(rest.createdAt ?? "")}` : null }))(project.final) : null,
     spentUsd: Math.round(clips.reduce((t, c) => t + (c.usd ?? 0), 0) * 100) / 100,
     blocked: ["confirmed", "clips_ready", "done"].includes(project.status) ? blockedReason(project) : null,

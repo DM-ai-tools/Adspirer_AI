@@ -161,7 +161,7 @@ describe("making the clips", () => {
     const { startGeneration, runGeneration } = await import("@/lib/video/generation");
     const { getProject } = await import("@/lib/video/projects");
     const id = await confirmedProject();
-    const started = await startGeneration(id);
+    const started = await startGeneration(id, undefined, "none");
     expect(started.status).toBe("generating");
     expect(started.clips!.length).toBeGreaterThanOrEqual(2);
 
@@ -187,7 +187,7 @@ describe("making the clips", () => {
     const { startGeneration, runGeneration, viewGeneration } = await import("@/lib/video/generation");
     const { getProject } = await import("@/lib/video/projects");
     const id = await confirmedProject();
-    await startGeneration(id);
+    await startGeneration(id, undefined, "none");
     await runGeneration(id, 60_000, noSleep);
     const view = viewGeneration((await getProject(id))!);
     expect(view.spentUsd).toBeGreaterThan(0);
@@ -200,7 +200,7 @@ describe("making the clips", () => {
     const { startGeneration, runGeneration } = await import("@/lib/video/generation");
     const { getProject } = await import("@/lib/video/projects");
     const id = await confirmedProject();
-    await startGeneration(id);
+    await startGeneration(id, undefined, "none");
     nextOutcome = ["fail", "fail"];
     expect(await runGeneration(id, 60_000, noSleep)).toBe("failed");
     expect(created).toHaveLength(2);
@@ -216,7 +216,7 @@ describe("making the clips", () => {
   it("recovers when the first attempt fails and the second works", async () => {
     const { startGeneration, runGeneration } = await import("@/lib/video/generation");
     const id = await confirmedProject();
-    await startGeneration(id);
+    await startGeneration(id, undefined, "none");
     nextOutcome = ["fail"];
     expect(await runGeneration(id, 60_000, noSleep)).toBe("done");
   });
@@ -225,7 +225,7 @@ describe("making the clips", () => {
     const { startGeneration, runGeneration, regenerateFrom } = await import("@/lib/video/generation");
     const { getProject } = await import("@/lib/video/projects");
     const id = await confirmedProject();
-    await startGeneration(id);
+    await startGeneration(id, undefined, "none");
     await runGeneration(id, 60_000, noSleep);
     const before = (await getProject(id))!;
     const keptKey = before.clips![0]!.videoKey;
@@ -252,7 +252,7 @@ describe("making the clips", () => {
     const { startGeneration, step } = await import("@/lib/video/generation");
     const { getProject, updateProject } = await import("@/lib/video/projects");
     const id = await confirmedProject();
-    await startGeneration(id);
+    await startGeneration(id, undefined, "none");
     // make clip 1 and its references, then jump a day ahead
     await step(id);
     await step(id);
@@ -291,6 +291,88 @@ describe("before starting", () => {
   });
 });
 
+describe("pausing and stopping, so money is never spent on a clip you have not checked", () => {
+  it("waits after the first clip by default and does not ask for the second until you say so", async () => {
+    const { startGeneration, runGeneration, continueGeneration, viewGeneration } = await import("@/lib/video/generation");
+    const { getProject } = await import("@/lib/video/projects");
+    const id = await confirmedProject();
+    await startGeneration(id);
+    expect(await runGeneration(id, 60_000, noSleep)).toBe("paused");
+    let project = (await getProject(id))!;
+    expect(project.status).toBe("paused");
+    expect(project.clips![0]!.status).toBe("succeeded");
+    expect(project.clips![1]!.status).toBe("waiting");
+    // only clip 1 was ever asked for
+    expect(created).toHaveLength(1);
+    const view = viewGeneration(project);
+    expect(view.status).toBe("paused");
+    expect(view.reviewClip).toBe(1);
+    expect(view.remainingUsd).toBeGreaterThan(0);
+
+    const resumed = await continueGeneration(id);
+    expect(resumed.status).toBe("generating");
+    expect(await runGeneration(id, 60_000, noSleep)).toBe("done");
+    project = (await getProject(id))!;
+    expect(project.clips!.every((c) => c.status === "succeeded")).toBe(true);
+    expect(created).toHaveLength(2);
+  });
+
+  it("can pause after every clip, or never", async () => {
+    const { needsReview } = await import("@/lib/video/generation");
+    expect([1, 2, 3].map((n) => needsReview("each", n, 3))).toEqual([true, true, false]);
+    expect([1, 2, 3].map((n) => needsReview("after_first", n, 3))).toEqual([true, false, false]);
+    expect([1, 2, 3].map((n) => needsReview("none", n, 3))).toEqual([false, false, false]);
+    // the last clip never waits: there is nothing after it to pay for
+    expect(needsReview("each", 1, 1)).toBe(false);
+  });
+
+  it("stops: keeps what is made, cancels the clip in progress and asks for nothing more", async () => {
+    const { startGeneration, step, stopGeneration, runGeneration } = await import("@/lib/video/generation");
+    const { getProject } = await import("@/lib/video/projects");
+    const id = await confirmedProject();
+    await startGeneration(id, undefined, "none");
+    await step(id); // references
+    await step(id); // clip 1 submitted
+    expect((await getProject(id))!.clips![0]!.status).toBe("running");
+
+    const stopped = await stopGeneration(id);
+    expect(stopped.status).toBe("stopped");
+    expect(stopped.clips![0]!.status).toBe("waiting");
+    expect(stopped.clips![0]!.taskId).toBeNull();
+    expect(stopped.clips![0]!.error).toBe("Stopped by you.");
+
+    const before = created.length;
+    // nothing more is requested while it is stopped
+    expect(await runGeneration(id, 5_000, noSleep)).toBe("idle");
+    expect(created.length).toBe(before);
+  });
+
+  it("carries on from a stop without redoing clips that are already made", async () => {
+    const { startGeneration, runGeneration, stopGeneration, continueGeneration } = await import("@/lib/video/generation");
+    const { getProject } = await import("@/lib/video/projects");
+    const id = await confirmedProject();
+    await startGeneration(id);
+    await runGeneration(id, 60_000, noSleep); // paused after clip 1
+    await stopGeneration(id);
+    const askedBefore = created.length;
+    await continueGeneration(id);
+    expect(await runGeneration(id, 60_000, noSleep)).toBe("done");
+    expect(created.length).toBe(askedBefore + 1);
+    expect((await getProject(id))!.clips![0]!.status).toBe("succeeded");
+  });
+
+  it("redoing a clip makes it pause for a check again", async () => {
+    const { startGeneration, runGeneration, continueGeneration, regenerateFrom } = await import("@/lib/video/generation");
+    const id = await confirmedProject();
+    await startGeneration(id);
+    await runGeneration(id, 60_000, noSleep);
+    await continueGeneration(id);
+    await runGeneration(id, 60_000, noSleep);
+    await regenerateFrom(id, 1);
+    expect(await runGeneration(id, 60_000, noSleep)).toBe("paused");
+  });
+});
+
 describe("assembly follows the clips", () => {
   it("finishes the video by itself once every clip is made", async () => {
     const assembled: string[] = [];
@@ -300,7 +382,7 @@ describe("assembly follows the clips", () => {
     const { createProject, updateProject } = await import("@/lib/video/projects");
     const p = await createProject({ clientId: "c1", inputs: { landingPageUrl: "https://a.test", stats: [], targetSeconds: 35, style: "auto", locale: "en-AU", format: "9:16", priority: "balanced" } });
     await updateProject(p.id, { chosen_script: script(), status: "confirmed" });
-    await startGeneration(p.id, { captions: true, logo: true, endCard: false });
+    await startGeneration(p.id, { captions: true, logo: true, endCard: false }, "none");
     await runGeneration(p.id, 60_000, noSleep);
     expect(assembled).toEqual([p.id]);
     vi.doUnmock("@/lib/video/assemble");
