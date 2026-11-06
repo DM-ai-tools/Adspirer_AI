@@ -35,6 +35,8 @@ export interface MetaAdSet {
   optimization_goal?: string;
   billing_event?: string;
   targeting_summary?: string;
+  /** Where the action happens: ON_AD for instant forms, WEBSITE, and so on. */
+  destination_type?: string;
   /** From promoted_object: the pixel and event the ad set optimises for. */
   pixel_id?: string;
   custom_event_type?: string;
@@ -162,6 +164,11 @@ export interface CreateImageCampaignInput {
    * budget and bidding are read from Meta; campaign_name is then only used for naming.
    */
   existing_campaign_id?: string;
+  /**
+   * With existing_campaign_id: put the ads in this ad set of that campaign and create no ad set. Its
+   * audience, budget, schedule and optimisation stay as they are, so none of those are needed.
+   */
+  existing_adset_id?: string;
   objective?: string;
   budget_daily?: number;
   /** Total spend over the campaign duration; requires end_time. */

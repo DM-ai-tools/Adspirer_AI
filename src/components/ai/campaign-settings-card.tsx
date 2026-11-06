@@ -21,6 +21,8 @@ type Props = {
   stated?: Partial<CampaignSettings>;
   apiBase?: string;
   disabled?: boolean;
+  /** The campaign already exists, so where its budget sits is not asked. */
+  hideBudgetLevel?: boolean;
   onConfirm: (settings: CampaignSettings, labels: Labels) => void;
   onSkip: () => void;
 };
@@ -101,6 +103,7 @@ export function CampaignSettingsCard({
   stated,
   apiBase = "/api",
   disabled,
+  hideBudgetLevel,
   onConfirm,
   onSkip,
 }: Props) {
@@ -223,7 +226,7 @@ export function CampaignSettingsCard({
         </p>
       ) : null}
 
-      <FieldShell
+      {hideBudgetLevel ? null : <FieldShell
         label="Budget level"
         description={BUDGET_LEVELS.find((b) => b.id === settings.budget_level)?.description ?? "Where the budget is set."}
         reason={reason("budget_level")}
@@ -238,7 +241,7 @@ export function CampaignSettingsCard({
             <option key={b.id} value={b.id}>{b.label}</option>
           ))}
         </select>
-      </FieldShell>
+      </FieldShell>}
 
       {locations.length ? (
         <FieldShell

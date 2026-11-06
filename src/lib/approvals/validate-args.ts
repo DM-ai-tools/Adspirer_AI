@@ -344,7 +344,7 @@ function applyCreateDefaults(
   if (args.attribution == null && client) args.attribution = resolveGoals(client).attribution;
   const format = optionalString(args.video_url) || optionalString(args.existing_video_id) || args.ad_type === "video" ? "Video" : "Image";
   if (toolName === "create_meta_image_campaign" || toolName === "create_meta_video_campaign") {
-    if (!optionalString(args.ad_set_name)) args.ad_set_name = adSetNameByConvention(args);
+    if (!optionalString(args.ad_set_name) && !optionalString(args.existing_adset_id)) args.ad_set_name = adSetNameByConvention(args);
     if (!optionalString(args.ad_name)) args.ad_name = adNameByConvention(args, toolName === "create_meta_video_campaign" ? "Video" : format);
     if (Array.isArray(args.extra_ads)) {
       args.extra_ads = args.extra_ads.map((extra) => {
@@ -469,14 +469,16 @@ export async function prepareApprovalArgs(input: {
   }
 
   const missing: string[] = [];
-  if (NEEDS_LOCATION.has(toolName) && !hasTargetingLocation(args.locations)) {
+  // Ads added to an ad set that already exists take its audience and conversion setup as they are.
+  const usesExistingAdSet = Boolean(optionalString(args.existing_adset_id)) && toolName === "create_meta_image_campaign";
+  if (NEEDS_LOCATION.has(toolName) && !usesExistingAdSet && !hasTargetingLocation(args.locations)) {
     if (Array.isArray(args.locations) && args.locations.length) {
       // Locations were given but none is usable — that is a wrong value.
       fail(`${toolName}: ${MISSING_LOCATION_MESSAGE}`, { field: "locations" });
     }
     missing.push(MISSING_LOCATION_MESSAGE);
   }
-  if (CONVERSION_SOURCE_TOOLS.has(toolName) && lacksConversionSource(args)) {
+  if (CONVERSION_SOURCE_TOOLS.has(toolName) && !usesExistingAdSet && lacksConversionSource(args)) {
     missing.push(missingConversionSourceMessage(String(args.objective), toolName));
   }
   if ((toolName === "create_ad" || toolName === "create_adset") && args.ad_type === "carousel") {

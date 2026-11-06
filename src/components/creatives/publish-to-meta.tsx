@@ -25,6 +25,8 @@ type PublishContext = {
 
 type MetaCampaignRow = { id: string; name: string; status: string; objective: string; budgetLevel: "campaign" | "ad_set" };
 type PageRow = { id: string; name: string };
+type AdSetRow = { id: string; name: string; status: string; optimizationGoal: string | null; dailyBudgetCents: number | null; needsLeadForm: boolean; audience: string | null };
+type LeadForm = { id: string; name: string };
 
 type Step = "where" | "campaign" | "targeting" | "ads" | "review" | "done";
 
@@ -59,6 +61,13 @@ export function PublishToMeta({ runId, clientId, onClose }: { runId: string; cli
   const [campaigns, setCampaigns] = useState<MetaCampaignRow[] | null>(null);
   const [campaignsError, setCampaignsError] = useState<string | null>(null);
   const [campaignId, setCampaignId] = useState("");
+  // Inside an existing campaign: add to one of its ad sets as it is, or make a new one.
+  const [adSets, setAdSets] = useState<AdSetRow[] | null>(null);
+  const [adSetsError, setAdSetsError] = useState<string | null>(null);
+  const [adSetMode, setAdSetMode] = useState<"existing" | "new">("existing");
+  const [adSetId, setAdSetId] = useState("");
+  const [leadForms, setLeadForms] = useState<LeadForm[]>([]);
+  const [leadFormId, setLeadFormId] = useState("");
   const [campaignName, setCampaignName] = useState("");
   const [objective, setObjective] = useState("OUTCOME_TRAFFIC");
   const [settings, setSettings] = useState<CampaignSettings | null>(null);
@@ -115,11 +124,47 @@ export function PublishToMeta({ runId, clientId, onClose }: { runId: string; cli
   }
 
   const chosen = campaigns?.find((c) => c.id === campaignId) ?? null;
+  const chosenAdSet = mode === "existing" && adSetMode === "existing" ? (adSets?.find((a) => a.id === adSetId) ?? null) : null;
+  const reuseAdSet = Boolean(chosenAdSet);
+
+  function chooseCampaign(id: string) {
+    setCampaignId(id);
+    setAdSets(null);
+    setAdSetsError(null);
+    setAdSetId("");
+    setLeadFormId("");
+    if (!id || !ctx) return;
+    apiFetch<{ adsets: AdSetRow[] }>(`/api/meta/adsets?clientId=${encodeURIComponent(clientId)}&accountId=${encodeURIComponent(ctx.accountId)}&campaignId=${encodeURIComponent(id)}`)
+      .then((r) => {
+        setAdSets(r.adsets);
+        // With ad sets already there, they are used as they are unless a new one is asked for.
+        setAdSetMode(r.adsets.length ? "existing" : "new");
+        if (r.adsets.length === 1) setAdSetId(r.adsets[0]!.id);
+      })
+      .catch((e) => setAdSetsError(e instanceof Error ? e.message : "Could not load the ad sets"));
+  }
+
+  // An ad set that collects leads on Facebook needs the form its ads use.
+  const needsLeadForm = Boolean(chosenAdSet?.needsLeadForm);
+  useEffect(() => {
+    if (!needsLeadForm || !ctx) return;
+    let cancelled = false;
+    apiFetch<{ leadForms: LeadForm[] }>(`/api/meta/campaign-options?clientId=${encodeURIComponent(clientId)}&accountId=${encodeURIComponent(ctx.accountId)}&objective=OUTCOME_LEADS`)
+      .then((r) => {
+        if (cancelled) return;
+        setLeadForms(r.leadForms ?? []);
+        setLeadFormId((f) => f || r.leadForms?.[0]?.id || "");
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [needsLeadForm, ctx, clientId]);
   const effectiveObjective = mode === "existing" ? (chosen?.objective ?? "") : objective;
   const budgetOnCampaign = mode === "existing" ? chosen?.budgetLevel === "campaign" : settings?.budget_level === "campaign";
-  const needsBudget = mode === "existing" ? chosen?.budgetLevel === "ad_set" : true;
+  const needsBudget = reuseAdSet ? false : mode === "existing" ? chosen?.budgetLevel === "ad_set" : true;
   const budgetNumber = Number(budget);
-  const adsReady = Boolean(landingUrl.trim()) && (!needsBudget || (Number.isFinite(budgetNumber) && budgetNumber > 0)) && Boolean(pageId || pages.length === 0);
+  const adsReady = Boolean(landingUrl.trim()) && (!needsLeadForm || Boolean(leadFormId)) && (!needsBudget || (Number.isFinite(budgetNumber) && budgetNumber > 0)) && Boolean(pageId || pages.length === 0);
 
   async function send() {
     if (!ctx) return;
@@ -130,14 +175,14 @@ export function PublishToMeta({ runId, clientId, onClose }: { runId: string; cli
       const body = {
         destination:
           mode === "existing"
-            ? { mode: "existing" as const, campaignId, campaignName: chosen?.name ?? "Existing campaign", objective: chosen?.objective, settings: restSettings }
+            ? { mode: "existing" as const, campaignId, campaignName: chosen?.name ?? "Existing campaign", objective: chosen?.objective, ...(chosenAdSet ? { adSetId: chosenAdSet.id, adSetName: chosenAdSet.name } : { settings: restSettings }) }
             : { mode: "new" as const, campaignName: campaignName.trim(), objective, settings: { ...restSettings, ...(campaign_budget_optimization !== undefined ? { campaign_budget_optimization } : {}) } },
         adSet: {
-          name: adSetName.trim() || undefined,
+          name: reuseAdSet ? undefined : adSetName.trim() || undefined,
           ...(needsBudget && budgetNumber > 0 ? { budget_daily: budgetNumber } : {}),
           ...(startTime ? { start_time: startTime } : {}),
           ...(endTime ? { end_time: endTime } : {}),
-          targeting: targetingArgs,
+          targeting: reuseAdSet ? {} : targetingArgs,
         },
         ad: {
           facebook_page_id: pageId || undefined,
@@ -145,6 +190,7 @@ export function PublishToMeta({ runId, clientId, onClose }: { runId: string; cli
           call_to_action: cta,
           landing_page_url: landingUrl.trim(),
           url_tags: utm.trim() || undefined,
+          lead_form_id: needsLeadForm ? leadFormId || undefined : undefined,
         },
       };
       const res = await apiFetch<{ approvalId: string; ads: number }>(`/api/creatives/bulk/${runId}/publish`, { method: "POST", body: JSON.stringify(body) });
@@ -216,7 +262,7 @@ export function PublishToMeta({ runId, clientId, onClose }: { runId: string; cli
               {campaignsError ? <p className="text-[11px] text-danger">{campaignsError}</p> : null}
               {!campaigns && !campaignsError ? <p className="text-[11px] text-muted">Loading your campaigns…</p> : null}
               {campaigns ? (
-                <select className={select} value={campaignId} onChange={(e) => setCampaignId(e.target.value)}>
+                <select className={select} value={campaignId} onChange={(e) => chooseCampaign(e.target.value)}>
                   <option value="">Choose a campaign…</option>
                   {campaigns.map((c) => (
                     <option key={c.id} value={c.id}>
@@ -226,9 +272,54 @@ export function PublishToMeta({ runId, clientId, onClose }: { runId: string; cli
                 </select>
               ) : null}
               {chosen && !SUPPORTED.has(chosen.objective) ? <p className="text-[11px] text-danger">That campaign&apos;s objective isn&apos;t supported here yet. Pick a Traffic, Leads, Sales, Engagement or Awareness campaign.</p> : null}
+              {chosen && SUPPORTED.has(chosen.objective) ? (
+                <div className="space-y-2 rounded-md border border-border/60 p-3">
+                  {adSetsError ? <p className="text-[11px] text-danger">{adSetsError}</p> : null}
+                  {!adSets && !adSetsError ? <p className="text-[11px] text-muted">Loading its ad sets…</p> : null}
+                  {adSets ? (
+                    <>
+                      <p className="text-xs font-semibold text-foreground">Which ad set?</p>
+                      {adSets.length ? (
+                        <label className="flex items-start gap-2 text-xs">
+                          <input type="radio" name="adset-mode" checked={adSetMode === "existing"} onChange={() => setAdSetMode("existing")} className="mt-0.5" />
+                          <span className="flex-1">
+                            <span className="font-medium">Add to an ad set that is already there</span>
+                            <span className="block text-muted">Its audience, budget, schedule and settings are used as they are, so nothing more is asked about them.</span>
+                            {adSetMode === "existing" ? (
+                              <select className={cn(select, "mt-2")} value={adSetId} onChange={(e) => setAdSetId(e.target.value)}>
+                                <option value="">Choose an ad set…</option>
+                                {adSets.map((a) => (
+                                  <option key={a.id} value={a.id}>
+                                    {a.name} ({a.status.toLowerCase()}
+                                    {a.audience ? `, ${a.audience}` : ""}
+                                    {a.dailyBudgetCents ? `, ${(a.dailyBudgetCents / 100).toFixed(2)}/day` : ""})
+                                  </option>
+                                ))}
+                              </select>
+                            ) : null}
+                          </span>
+                        </label>
+                      ) : (
+                        <p className="text-[11px] text-muted">This campaign has no ad sets yet, so a new one is made.</p>
+                      )}
+                      <label className="flex items-start gap-2 text-xs">
+                        <input type="radio" name="adset-mode" checked={adSetMode === "new"} onChange={() => setAdSetMode("new")} className="mt-0.5" />
+                        <span>
+                          <span className="font-medium">Make a new ad set in this campaign</span>
+                          <span className="block text-muted">You choose its settings and audience next.</span>
+                        </span>
+                      </label>
+                    </>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           ) : null}
-          <Button size="sm" disabled={mode === "existing" && (!chosen || !SUPPORTED.has(chosen.objective))} onClick={() => setStep("campaign")}>
+          <Button
+            size="sm"
+            disabled={mode === "existing" && (!chosen || !SUPPORTED.has(chosen.objective) || !adSets || (adSetMode === "existing" && adSets.length > 0 && !chosenAdSet))}
+            onClick={() => setStep(reuseAdSet ? "ads" : "campaign")}
+          >
             Continue
           </Button>
         </div>
@@ -275,6 +366,7 @@ export function PublishToMeta({ runId, clientId, onClose }: { runId: string; cli
               clientId={clientId}
               accountId={ctx.accountId}
               objective={effectiveObjective}
+              hideBudgetLevel={mode === "existing"}
               onConfirm={(s) => setSettings(s)}
               onSkip={() => setSettings({})}
             />
@@ -313,25 +405,46 @@ export function PublishToMeta({ runId, clientId, onClose }: { runId: string; cli
 
       {ctx && step === "ads" ? (
         <div className="space-y-3">
-          <p className="text-xs font-semibold text-foreground">Ad set and ad settings (the same for all {count} ads)</p>
-          <Field title="Ad set name">
-            <Input value={adSetName} onChange={(e) => setAdSetName(e.target.value)} />
-          </Field>
-          {needsBudget ? (
+          <p className="text-xs font-semibold text-foreground">{reuseAdSet ? `Ad settings (the same for all ${count} ads)` : `Ad set and ad settings (the same for all ${count} ads)`}</p>
+          {reuseAdSet ? (
+            <p className="rounded-md bg-accent/10 p-2 text-[11px] text-foreground">
+              Using the ad set “{chosenAdSet?.name}” in “{chosen?.name}” as it is: its audience{chosenAdSet?.audience ? ` (${chosenAdSet.audience})` : ""}, budget, schedule and optimisation are kept, so they are not asked again.
+            </p>
+          ) : (
+            <Field title="Ad set name">
+              <Input value={adSetName} onChange={(e) => setAdSetName(e.target.value)} />
+            </Field>
+          )}
+          {reuseAdSet ? null : needsBudget ? (
             <Field title={budgetOnCampaign ? "Daily campaign budget" : "Daily budget"} hint="In the ad account's currency. Shared across all the ads in the ad set.">
               <Input inputMode="decimal" value={budget} onChange={(e) => setBudget(e.target.value)} placeholder="e.g. 50" />
             </Field>
           ) : (
             <p className="text-[11px] text-muted">The campaign already has its own budget, so none is set here.</p>
           )}
-          <div className="grid gap-3 sm:grid-cols-2">
+          {needsLeadForm ? (
+            <Field title="Lead form" hint="This ad set collects leads on Facebook, so its ads need the form people fill in.">
+              {leadForms.length ? (
+                <select className={select} value={leadFormId} onChange={(e) => setLeadFormId(e.target.value)}>
+                  {leadForms.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <p className="text-[11px] text-danger">No active lead forms were found on your Pages. Create one on the Facebook Page first.</p>
+              )}
+            </Field>
+          ) : null}
+          {reuseAdSet ? null : <div className="grid gap-3 sm:grid-cols-2">
             <Field title="Start (optional)" hint="Leave empty to start when you turn it on.">
               <Input type="datetime-local" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
             </Field>
             <Field title="End (optional)">
               <Input type="datetime-local" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
             </Field>
-          </div>
+          </div>}
           <Field title="Facebook Page" hint="The ads run as this Page.">
             {pages.length ? (
               <select className={select} value={pageId} onChange={(e) => setPageId(e.target.value)}>
@@ -364,7 +477,7 @@ export function PublishToMeta({ runId, clientId, onClose }: { runId: string; cli
             <Input value={utm} onChange={(e) => setUtm(e.target.value)} placeholder="utm_source=meta&utm_medium=paid" />
           </Field>
           <div className="flex gap-2">
-            <Button size="sm" variant="ghost" onClick={() => setStep("targeting")}>
+            <Button size="sm" variant="ghost" onClick={() => setStep(reuseAdSet ? "where" : "targeting")}>
               Back
             </Button>
             <Button size="sm" disabled={!adsReady} onClick={() => setStep("review")}>
@@ -382,11 +495,16 @@ export function PublishToMeta({ runId, clientId, onClose }: { runId: string; cli
               <span className="text-muted">Ads:</span> {count} images, each with its own headline and text
             </li>
             <li>
-              <span className="text-muted">Where:</span> {mode === "existing" ? `a new ad set in “${chosen?.name}”` : `a new campaign “${campaignName}” (${label(objective.replace("OUTCOME_", ""))})`}
+              <span className="text-muted">Where:</span>{" "}
+              {mode === "existing"
+                ? reuseAdSet
+                  ? `the existing ad set “${chosenAdSet?.name}” in “${chosen?.name}”`
+                  : `a new ad set in “${chosen?.name}”`
+                : `a new campaign “${campaignName}” (${label(objective.replace("OUTCOME_", ""))})`}
             </li>
             <li>
-              <span className="text-muted">Ad set:</span> {adSetName || "—"}
-              {needsBudget ? `, ${budget} per day` : ", uses the campaign budget"}
+              <span className="text-muted">Ad set:</span>{" "}
+              {reuseAdSet ? "kept exactly as it is (audience, budget, schedule, optimisation)" : `${adSetName || "—"}${needsBudget ? `, ${budget} per day` : ", uses the campaign budget"}`}
             </li>
             <li>
               <span className="text-muted">Button and page:</span> {label(cta)} → {landingUrl}

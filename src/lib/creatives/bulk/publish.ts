@@ -25,6 +25,12 @@ export type BulkPublishPlan = {
         campaignId: string;
         campaignName: string;
         objective?: string;
+        /**
+         * Put the ads in this ad set of the campaign as it is. Nothing about the ad set is asked or sent:
+         * its audience, budget, schedule and optimisation stay as they are in Meta.
+         */
+        adSetId?: string;
+        adSetName?: string;
         settings?: Record<string, unknown>;
       };
   adSet: {
@@ -43,6 +49,8 @@ export type BulkPublishPlan = {
     landing_page_url: string;
     display_link?: string;
     url_tags?: string;
+    /** For an ad set that collects leads on Facebook. */
+    lead_form_id?: string;
   };
 };
 
@@ -149,13 +157,15 @@ export function buildBulkPublishArgs(input: { accountId: string; plan: BulkPubli
   if (!plan.ad.landing_page_url) throw new BulkPublishError("A landing page is needed for the ads.");
 
   const existing = plan.destination.mode === "existing";
+  const adSetId = plan.destination.mode === "existing" ? plan.destination.adSetId : undefined;
   const cta = toMetaCta(plan.ad.call_to_action) ?? "LEARN_MORE";
   const campaignName = clip(plan.destination.campaignName.trim() || "Bulk ads", 80);
   const [first, ...rest] = ads;
 
-  const settings = pick(plan.destination.settings, CAMPAIGN_SETTING_KEYS);
-  const targeting = pick(plan.adSet.targeting, TARGETING_KEYS);
-  const schedule = pick(plan.adSet as Record<string, unknown>, ["budget_daily", "budget_lifetime", "start_time", "end_time"]);
+  // An ad set that already exists keeps all of its own settings, so none are sent for it.
+  const settings = adSetId ? {} : pick(plan.destination.settings, CAMPAIGN_SETTING_KEYS);
+  const targeting = adSetId ? {} : pick(plan.adSet.targeting, TARGETING_KEYS);
+  const schedule = adSetId ? {} : pick(plan.adSet as Record<string, unknown>, ["budget_daily", "budget_lifetime", "start_time", "end_time"]);
 
   const adName = (a: BulkPublishAd) => clip(`${a.name?.trim() || a.headline}`, 100);
 
@@ -168,7 +178,12 @@ export function buildBulkPublishArgs(input: { accountId: string; plan: BulkPubli
     // The ad set's own budget and dates win over the campaign card's when both are given.
     ...schedule,
     ...targeting,
-    ad_set_name: clip(plan.adSet.name?.trim() || `${campaignName} — Ad Set`, 100),
+    ...(adSetId
+      ? {
+          existing_adset_id: adSetId,
+          ...(plan.destination.mode === "existing" && plan.destination.adSetName ? { existing_adset_name: plan.destination.adSetName } : {}),
+        }
+      : { ad_set_name: clip(plan.adSet.name?.trim() || `${campaignName} — Ad Set`, 100) }),
     primary_text: first!.primaryText,
     headline: clip(first!.headline, 255),
     ...(first!.description ? { description: clip(first!.description, 255) } : {}),
@@ -178,6 +193,7 @@ export function buildBulkPublishArgs(input: { accountId: string; plan: BulkPubli
     image_url: first!.imageUrl,
     ...(plan.ad.display_link ? { display_link: plan.ad.display_link } : {}),
     ...(plan.ad.url_tags ? { url_tags: plan.ad.url_tags } : {}),
+    ...(plan.ad.lead_form_id ? { lead_form_id: plan.ad.lead_form_id } : {}),
     ...(plan.ad.facebook_page_id ? { facebook_page_id: plan.ad.facebook_page_id } : {}),
     ...(plan.ad.instagram_account_id ? { instagram_account_id: plan.ad.instagram_account_id } : {}),
     ...(rest.length

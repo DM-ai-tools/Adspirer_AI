@@ -8,6 +8,8 @@ import { createPendingApproval } from "@/lib/approvals/service";
 import { listCreativeDraftsAsync, resolveImageUrlForAdspirer, type CreativeDraft } from "@/lib/creatives/drafts";
 import { getRun } from "@/lib/creatives/bulk/runs";
 import { BulkPublishError, buildBulkPublishArgs, isPrivateImageUrl, type BulkPublishAd, type BulkPublishPlan } from "@/lib/creatives/bulk/publish";
+import { listFacebookPagesForAccountId } from "@/lib/meta/resolve-page";
+import { resolveProvider } from "@/lib/adspirer/client";
 import { toMetaCta } from "@/lib/workflow/queue-campaign";
 import { jsonOk, parseBody, withApiHandler } from "@/lib/api/response";
 
@@ -102,6 +104,8 @@ const bodySchema = z.object({
       campaignId: z.string().regex(/^\d+$/, "Choose a campaign"),
       campaignName: z.string().min(1).max(120),
       objective: z.string().optional(),
+      adSetId: z.string().regex(/^\d+$/).optional(),
+      adSetName: z.string().max(200).optional(),
       settings: settingsSchema.optional(),
     }),
   ]),
@@ -120,8 +124,21 @@ const bodySchema = z.object({
     landing_page_url: z.string().url(),
     display_link: z.string().optional(),
     url_tags: z.string().optional(),
+    lead_form_id: z.string().optional(),
   }),
 });
+
+type Destination = z.infer<typeof bodySchema>["destination"];
+
+function rationaleFor(d: Destination, count: number): string {
+  const where =
+    d.mode === "new"
+      ? `a new campaign “${d.campaignName}” with one ad set`
+      : d.adSetId
+        ? `the existing ad set “${d.adSetName ?? d.adSetId}” in the campaign “${d.campaignName}”. The campaign and the ad set are not changed`
+        : `a new ad set in the existing campaign “${d.campaignName}”`;
+  return `${count} static ads from a bulk run, sent together into ${where}. Each ad is created PAUSED in Meta, so nothing goes live until you turn it on.`;
+}
 
 /**
  * Put the whole run into ONE approval: every finished image becomes an ad in one ad set, in a new or an
@@ -139,6 +156,25 @@ export async function POST(request: Request, ctx: Ctx) {
     const accountId = await accountFor(run.client_id, body.accountId ?? null);
 
     const ads = await readyAds(run, body.draftIds);
+
+    // Fill in what Meta needs and the person did not choose, so the approval is complete and runs without edits.
+    if (!body.ad.facebook_page_id) {
+      const pages = await listFacebookPagesForAccountId(accountId).catch(() => []);
+      if (pages[0]?.id) body.ad.facebook_page_id = pages[0].id;
+    }
+    if (body.destination.mode === "existing" && body.destination.adSetId) {
+      // The ad set must be in that campaign, and an instant-form ad set needs its form. Checked now rather than at approval.
+      const found = await resolveProvider()
+        .then((p) => p.listAdSets(accountId, body.destination.mode === "existing" ? body.destination.campaignId : undefined))
+        .then((list) => list.find((a) => a.id === (body.destination as { adSetId?: string }).adSetId) ?? null)
+        .catch(() => undefined);
+      if (found === null) throw new Error("That ad set is not in the campaign you chose. Pick one from the list.");
+      if (found?.destination_type === "ON_AD" && !body.ad.lead_form_id) {
+        throw new Error("That ad set collects leads on Facebook, so choose the lead form its ads should use.");
+      }
+      if (found) body.destination.adSetName = body.destination.adSetName ?? found.name;
+    }
+
     let args: Record<string, unknown>;
     try {
       args = buildBulkPublishArgs({ accountId, plan: body as BulkPublishPlan, ads });
@@ -153,7 +189,7 @@ export async function POST(request: Request, ctx: Ctx) {
       taskId: null,
       toolName: "create_meta_image_campaign",
       proposedArgs: args,
-      rationale: `${ads.length} static ads from a bulk run, sent together: ${body.destination.mode === "existing" ? `a new ad set in the existing campaign “${body.destination.campaignName}”` : `a new campaign “${body.destination.campaignName}”`} with one ad set. Everything is created PAUSED in Meta, so nothing goes live until you turn it on.`,
+      rationale: rationaleFor(body.destination, ads.length),
       requestedBy: user.id,
       idempotencyKey: `bulk_publish_${runId}_${fingerprint}`,
     });
