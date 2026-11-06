@@ -82,9 +82,26 @@ export function withAspectMarker(direction: string | null | undefined, format: I
 export function stripAspectMarker(direction: string | null | undefined): string {
   return (direction ?? "")
     .split("\n")
-    .filter((line) => !/^(ASPECT|RUN): \S+$/.test(line.trim()))
+    .filter((line) => !/^(ASPECT|RUN|LOGO): \S+$/.test(line.trim()))
     .join("\n")
     .trim();
+}
+
+export type LogoBox = { left: number; top: number; width: number; height: number };
+
+/** Where the exact logo was placed, so an edit can put those pixels back untouched. */
+export function withLogoMarker(direction: string | null | undefined, box: LogoBox): string {
+  const kept = (direction ?? "")
+    .split("\n")
+    .filter((line) => !/^LOGO: \S+$/.test(line.trim()))
+    .join("\n")
+    .trim();
+  return [kept, `LOGO: ${box.left},${box.top},${box.width},${box.height}`].filter(Boolean).join("\n");
+}
+
+export function readLogoMarker(direction: string | null | undefined): LogoBox | null {
+  const m = direction?.match(/^LOGO: (\d+),(\d+),(\d+),(\d+)$/m);
+  return m ? { left: Number(m[1]), top: Number(m[2]), width: Number(m[3]), height: Number(m[4]) } : null;
 }
 
 /** Marks a draft as part of a bulk run, so the normal Creatives list can leave it out. */

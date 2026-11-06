@@ -12,6 +12,8 @@ export type OpenAIImageResult = {
   prompt: string;
   status: "succeeded" | "failed" | "skipped";
   error?: string;
+  /** Where the real logo was placed (including its badge), when it was. */
+  logoBox?: { left: number; top: number; width: number; height: number };
 };
 
 /**
@@ -97,6 +99,7 @@ export async function generateOpenAIImage(input: {
         logger.warn("Image crop failed", { error: error instanceof Error ? error.message : String(error) });
       }
     }
+    let logoBox: OpenAIImageResult["logoBox"];
     if (input.logoUrl) {
       try {
         const sourceImage = b64
@@ -112,7 +115,8 @@ export async function generateOpenAIImage(input: {
             : null;
         if (sourceImage) {
           const branded = await compositeOfficialLogo(sourceImage, input.logoUrl, input.format);
-          b64 = branded.toString("base64");
+          logoBox = branded.box;
+          b64 = branded.image.toString("base64");
           imageUrl = `data:image/png;base64,${b64}`;
         }
       } catch (error) {
@@ -136,6 +140,7 @@ export async function generateOpenAIImage(input: {
       model,
       prompt,
       status: "succeeded",
+      ...(logoBox ? { logoBox } : {}),
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -249,7 +254,7 @@ async function compositeOfficialLogo(
   sourceImage: Buffer,
   logoUrl: string,
   format?: ImageFormat,
-): Promise<Buffer> {
+): Promise<{ image: Buffer; box: { left: number; top: number; width: number; height: number } }> {
   const loaded = await loadLogoBuffer(logoUrl);
   // Rasterise vectors large and drop the logo's own plain backdrop, so no box shows on the ad.
   // These are the brand's exact pixels; only scaled, never redrawn.
@@ -309,7 +314,13 @@ async function compositeOfficialLogo(
     });
   }
   layers.push({ input: resized.data, left, top });
-  return sharp(sourceImage).composite(layers).png().toBuffer();
+  const image = await sharp(sourceImage).composite(layers).png().toBuffer();
+  // The area the logo (and its plate) covers, with a little room, for putting it back after an edit.
+  const box =
+    treatment.kind === "plate"
+      ? { left: Math.max(0, left - pad), top: Math.max(0, top - pad), width: Math.min(width - Math.max(0, left - pad), logoWidth + pad * 2), height: Math.min(height - Math.max(0, top - pad), logoHeight + pad * 2) }
+      : { left: Math.max(0, left - 4), top: Math.max(0, top - 4), width: Math.min(width - Math.max(0, left - 4), logoWidth + 8), height: Math.min(height - Math.max(0, top - 4), logoHeight + 8) };
+  return { image, box };
 }
 
 export function isSvg(buffer: Buffer): boolean {

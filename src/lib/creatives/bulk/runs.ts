@@ -4,6 +4,9 @@ import { getDemoStore } from "@/lib/demo/store";
 import type { ImageFormat } from "@/lib/creatives/formats";
 import type { BulkBody, BulkCta, MessageMap } from "@/lib/creatives/bulk/plan";
 
+/** An earlier look of an image, kept when it is edited so the edit can be undone. */
+export type ImageVersion = { id: string; key: string; at: string; instruction: string; mode: "edit" | "full" };
+
 export type RunItem = {
   draft_id: string;
   angle_key: string | null;
@@ -13,6 +16,10 @@ export type RunItem = {
   targets: string | null;
   body_id: string | null;
   cta_label: string | null;
+  /** Earlier versions of this image, oldest first. */
+  versions?: ImageVersion[];
+  /** Why the last edit failed, if it did. */
+  edit_error?: string | null;
 };
 
 export type RunStatus = "planning" | "rendering" | "done" | "failed";
