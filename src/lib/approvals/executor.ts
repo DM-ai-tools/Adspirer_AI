@@ -788,6 +788,7 @@ async function dispatchToProvider(
       return provider.createImageCampaign({
         account_id: requireString(args, "account_id", toolName),
         campaign_name: requireString(args, "campaign_name", toolName, ["name"]),
+        existing_campaign_id: optionalString(args.existing_campaign_id),
         objective: optionalString(args.objective),
         budget_daily: resolveBudgetDaily(args),
         budget_lifetime: optionalNumber(args.budget_lifetime),

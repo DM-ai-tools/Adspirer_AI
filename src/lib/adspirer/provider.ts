@@ -157,6 +157,11 @@ export interface CreateCampaignInput {
 export interface CreateImageCampaignInput {
   account_id: string;
   campaign_name: string;
+  /**
+   * Add the new ad set and its ads to this campaign instead of creating one. Its objective, campaign
+   * budget and bidding are read from Meta; campaign_name is then only used for naming.
+   */
+  existing_campaign_id?: string;
   objective?: string;
   budget_daily?: number;
   /** Total spend over the campaign duration; requires end_time. */

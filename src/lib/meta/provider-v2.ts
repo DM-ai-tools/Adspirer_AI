@@ -63,7 +63,7 @@ import {
 import { resolvePromotePageId, formatMissingPageHelp } from "@/lib/meta/resolve-page";
 import { logger } from "@/lib/observability/logger";
 import { centsToMetaMinor, metaMinorToCents } from "@/lib/meta/currency";
-import { ATTRIBUTION_SPEC, BID_STRATEGIES, DEFAULT_URL_TAGS } from "@/lib/meta/conventions";
+import { ATTRIBUTION_SPEC, BID_STRATEGIES, DEFAULT_URL_TAGS, MAX_EXTRA_ADS } from "@/lib/meta/conventions";
 import { ExecutionVerificationError } from "@/lib/errors";
 import { assessFatigue } from "@/lib/creative/fatigue";
 import {
@@ -365,7 +365,7 @@ type ExtraAd = {
 function extraAdsFrom(extra: Record<string, unknown> | undefined): ExtraAd[] {
   const raw = extra?.extra_ads;
   if (!Array.isArray(raw)) return [];
-  return raw.slice(0, 5).map((a) => {
+  return raw.slice(0, MAX_EXTRA_ADS).map((a) => {
     const o = (a && typeof a === "object" ? a : {}) as Record<string, unknown>;
     const pick = (k: string) => optionalText(o[k]);
     return {
@@ -1862,11 +1862,45 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
     };
 
     // ---- 1. Validate everything before anything is created -------------
-    const objective = input.objective ?? "OUTCOME_TRAFFIC";
-    const useCbo = Boolean(input.campaign_budget_optimization);
+    // An existing campaign decides the objective, whether it owns the budget, and the bidding.
+    const existingCampaignId = optionalText((input as CreateImageCampaignInput).existing_campaign_id);
+    let live:
+      | { objective?: string; cbo: boolean; bidStrategy: string; specialAdCategories: string[] }
+      | undefined;
+    if (existingCampaignId) {
+      const row = await step("Read the campaign to add to", () =>
+        this.graph.get<{
+          account_id?: unknown;
+          objective?: string;
+          daily_budget?: string;
+          lifetime_budget?: string;
+          bid_strategy?: string;
+          status?: string;
+          special_ad_categories?: string[];
+        }>(existingCampaignId, {
+          fields: "account_id,objective,status,daily_budget,lifetime_budget,bid_strategy,special_ad_categories",
+        }),
+      );
+      const owner = row.account_id != null && String(row.account_id).trim() ? normalizeAccountId(String(row.account_id).trim()) : null;
+      if (owner !== accountId) {
+        throw new Error(`Campaign ${existingCampaignId} belongs to ${owner ?? "an unknown ad account"}, not ${accountId}. Nothing was created.`);
+      }
+      if (/ARCHIVED|DELETED/i.test(String(row.status ?? ""))) {
+        throw new Error(`Campaign ${existingCampaignId} is ${String(row.status).toLowerCase()}, so ads cannot be added to it. Nothing was created.`);
+      }
+      live = {
+        objective: row.objective,
+        cbo: positiveMinor(row.daily_budget) || positiveMinor(row.lifetime_budget),
+        bidStrategy: (row.bid_strategy ?? "LOWEST_COST_WITHOUT_CAP").toUpperCase(),
+        specialAdCategories: Array.isArray(row.special_ad_categories) ? row.special_ad_categories : [],
+      };
+    }
+    const objective = live?.objective ?? input.objective ?? "OUTCOME_TRAFFIC";
+    const useCbo = live ? live.cbo : Boolean(input.campaign_budget_optimization);
     const daily = positiveNumber(input.budget_daily);
     const lifetime = positiveNumber(input.budget_lifetime);
-    if (daily == null && lifetime == null) {
+    // Under an existing campaign budget the ad set carries none, so none is needed here.
+    if (daily == null && lifetime == null && !(live && live.cbo)) {
       throw new Error(
         "A budget is required — set budget_daily, or budget_lifetime with end_time. Nothing was created.",
       );
@@ -1885,7 +1919,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
 
     const adSetInput: CreateAdSetInput = {
       account_id: accountId,
-      campaign_id: progress.campaign_id ?? "pending",
+      campaign_id: progress.campaign_id ?? existingCampaignId ?? "pending",
       name: input.ad_set_name ?? `${input.campaign_name} - Ad Set`,
       budget_daily: useCbo ? undefined : (daily ?? undefined),
       budget_lifetime: useCbo ? undefined : (lifetime ?? undefined),
@@ -1912,18 +1946,25 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       cbo: useCbo,
       objective,
       currency,
-      special_ad_categories: input.special_ad_categories,
+      special_ad_categories: live ? live.specialAdCategories : input.special_ad_categories,
     });
-    const campaignBudgetCents = useCbo
+    const campaignBudgetCents = useCbo && !live
       ? budgetToMinorUnits(daily ?? lifetime ?? undefined)
       : undefined;
-    if (useCbo) this.budgetMinor(campaignBudgetCents ?? 0, currency, "Campaign budget");
+    if (useCbo && !live) this.budgetMinor(campaignBudgetCents ?? 0, currency, "Campaign budget");
     const campaignBudget = !useCbo
       ? {}
       : daily != null
         ? { daily_budget_cents: campaignBudgetCents }
         : { lifetime_budget_cents: campaignBudgetCents };
     const bids = bidPlan(adSetInput.extra_args ?? {}, objective, currency);
+    // Under a campaign budget the campaign owns the bid strategy; never let a cap look applied when it is not.
+    if (live?.cbo) {
+      const asked = optionalText(adSetInput.extra_args?.bid_strategy)?.toUpperCase();
+      if (asked && asked !== live.bidStrategy) {
+        throw new Error(`Campaign ${existingCampaignId} has a campaign budget bidding ${live.bidStrategy}, so the ad set can't use ${asked}. Leave the bid strategy off, or change it on the campaign in Ads Manager. Nothing was created.`);
+      }
+    }
 
     // A recorded campaign must still exist in this account; never re-create it.
     if (progress.campaign_id) {
@@ -1948,7 +1989,10 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
 
     // ---- 3. Campaign -------------------------------------------------------
     let campaign: MetaCampaign;
-    if (progress.campaign_id) {
+    if (existingCampaignId) {
+      // Added to, never created or changed: not recorded as something this approval made.
+      campaign = { id: existingCampaignId, account_id: accountId, name: input.campaign_name, status: "PAUSED", objective };
+    } else if (progress.campaign_id) {
       campaign = {
         id: progress.campaign_id,
         account_id: accountId,

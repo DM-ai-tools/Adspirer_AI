@@ -98,3 +98,6 @@ export function adNameByConvention(args: Record<string, unknown>, format: "Image
   const hook = namePart(typeof args.primary_text === "string" ? args.primary_text : null);
   return [concept, format, hook].filter(Boolean).join("_");
 }
+
+/** Ads one create can put in a single ad set: the main ad plus these. A bulk run's 15 images fit. */
+export const MAX_EXTRA_ADS = 24;

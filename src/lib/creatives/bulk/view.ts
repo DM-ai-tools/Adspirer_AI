@@ -6,7 +6,8 @@ import { leaseActive, type CreativeRun, type RunItem } from "@/lib/creatives/bul
 /** Images per client per calendar month the bulk tool aims for. */
 export const MONTHLY_TARGET = 150;
 
-export type BulkCard = ReturnType<typeof toPublicDraft> & { item: RunItem };
+/** The card's item without storage keys, plus what edits it has had. */
+export type BulkCard = ReturnType<typeof toPublicDraft> & { item: Omit<RunItem, "versions">; edits: Array<{ id: string; at: string; instruction: string; mode: "edit" | "full" }>; editError: string | null };
 
 export type BulkProgress = { total: number; succeeded: number; failed: number; rendering: number; waiting: number };
 
@@ -31,7 +32,14 @@ export async function loadRunView(run: CreativeRun) {
       const d = byId.get(item.draft_id);
       if (!d) return null;
       const pub = toPublicDraft(d);
-      return { ...pub, image_status: d.image_status === "pending" ? ("pending" as const) : pub.image_status, item };
+      const { versions, ...rest } = item;
+      return {
+        ...pub,
+        image_status: d.image_status === "pending" ? ("pending" as const) : pub.image_status,
+        item: rest,
+        edits: (versions ?? []).map((v) => ({ id: v.id, at: v.at, instruction: v.instruction, mode: v.mode })),
+        editError: item.edit_error ?? null,
+      };
     })
     .filter((c): c is BulkCard => Boolean(c));
   return {

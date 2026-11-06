@@ -1,4 +1,4 @@
-import { generationSize, readAspectMarker, stripAspectMarker, withAspectMarker, type ImageFormat } from "@/lib/creatives/formats";
+import { generationSize, readAspectMarker, stripAspectMarker, withAspectMarker, withLogoMarker, type ImageFormat } from "@/lib/creatives/formats";
 import {
   buildBrandImagePrompt,
   generateOpenAIImage,
@@ -90,6 +90,44 @@ export async function generateImageForDraft(
     };
   }
 
+  const stored = await storeDraftImage(existing, {
+    b64: image.b64,
+    imageUrl: image.imageUrl,
+    mime: image.mime,
+    model: image.model,
+    prompt: image.prompt,
+    status: image.status,
+    error: image.error ?? null,
+    revisionNotes: revisionNotes ?? null,
+    direction: image.logoBox ? withLogoMarker(direction, image.logoBox) : direction,
+  });
+  return {
+    draft: stored.draft,
+    displayUrl: stored.displayUrl,
+    imageStatus: image.status,
+    imageError: image.error ?? null,
+  };
+}
+
+/**
+ * Save a finished still on its draft: hosted in Cloudinary when that is set up (a base64 PNG is
+ * 2-4 MB and was the fastest way to exhaust the database quota), else kept inline. Used by a fresh
+ * render, a rework and an edit, so a still is always stored the same way.
+ */
+export async function storeDraftImage(
+  existing: CreativeDraft,
+  image: {
+    b64: string | null;
+    imageUrl: string | null;
+    mime: string;
+    model: string | null;
+    prompt: string | null;
+    status: "succeeded" | "failed" | "skipped";
+    error: string | null;
+    revisionNotes: string | null;
+    direction: string | null;
+  },
+): Promise<{ draft: CreativeDraft; displayUrl: string | null }> {
   const succeeded = image.status === "succeeded";
   const inlineSource = image.b64
     ? `data:${image.mime || "image/png"};base64,${image.b64}`
@@ -133,6 +171,7 @@ export async function generateImageForDraft(
   const draft = await upsertCreativeDraftAsync({
     ...existing,
     id: existing.id,
+    creative_direction: image.direction ?? existing.creative_direction,
     image_url: hostedUrl,
     image_b64: cloudUrl ? null : image.b64,
     ...(cloudMime ? { image_mime: cloudMime } : {}),
@@ -140,9 +179,9 @@ export async function generateImageForDraft(
     image_prompt: image.prompt,
     image_status: image.status,
     image_error: image.error ?? null,
-    revision_notes: revisionNotes ?? existing.revision_notes,
+    revision_notes: image.revisionNotes ?? existing.revision_notes,
     status: succeeded
-      ? revisionNotes
+      ? image.revisionNotes
         ? "revised"
         : existing.status === "selected"
           ? "selected"
@@ -153,11 +192,5 @@ export async function generateImageForDraft(
   const displayUrl =
     cloudUrl ??
     (inlineSource ? publicCreativeAssetUrl(draft.id) : image.imageUrl);
-
-  return {
-    draft,
-    displayUrl,
-    imageStatus: image.status,
-    imageError: image.error ?? null,
-  };
+  return { draft, displayUrl };
 }

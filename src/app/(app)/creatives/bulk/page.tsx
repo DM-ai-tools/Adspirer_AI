@@ -3,7 +3,7 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, ChevronDown, ChevronUp, Copy, Download, FileSpreadsheet, Layers, Loader2, X } from "lucide-react";
+import { ArrowLeft, ChevronDown, Pencil, ChevronUp, Copy, Download, FileSpreadsheet, Layers, Loader2, Send, X } from "lucide-react";
 import { toast } from "sonner";
 import { useApp } from "@/components/layout/app-provider";
 import { PageHeader } from "@/components/shared/page-header";
@@ -17,6 +17,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ImageFormatPicker } from "@/components/creatives/image-format-picker";
+import { PublishToMeta } from "@/components/creatives/publish-to-meta";
 import { apiFetch } from "@/lib/api-client";
 import { creativeDownloadUrl } from "@/lib/creatives/download";
 import type { ImageFormat } from "@/lib/creatives/formats";
@@ -43,6 +44,8 @@ type Card = {
   image_error?: string | null;
   status?: string | null;
   item: Item;
+  edits: Array<{ id: string; at: string; instruction: string; mode: "edit" | "full" }>;
+  editError: string | null;
 };
 
 type RunView = {
@@ -112,6 +115,12 @@ function BulkInner() {
   const [view, setView] = useState<RunView | null>(null);
   const [copyOpen, setCopyOpen] = useState<Set<string>>(new Set());
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Bumped to start following the run again after an edit is sent.
+  const [pollKey, setPollKey] = useState(0);
+  // The "send to Meta" steps, open from the run's header.
+  const [publishOpen, setPublishOpen] = useState(false);
+  // The edit box that is open on each image: what to change, and whether to change only that or start over.
+  const [editing, setEditing] = useState<Record<string, { text: string; mode: "edit" | "full" } | undefined>>({});
   const continuing = useRef(false);
 
   useEffect(() => {
@@ -170,7 +179,7 @@ function BulkInner() {
               continuing.current = false;
             });
         }
-        const active = next.run.status === "planning" || next.run.status === "rendering";
+        const active = next.run.status === "planning" || next.run.status === "rendering" || next.cards.some((c) => c.image_status === "generating");
         if (active) timer = window.setTimeout(() => void tick(), POLL_MS);
       } catch (err) {
         if (!stopped) toast.error(err instanceof Error ? err.message : "Could not load the run");
@@ -181,7 +190,7 @@ function BulkInner() {
       stopped = true;
       if (timer) window.clearTimeout(timer);
     };
-  }, [runId]);
+  }, [runId, pollKey]);
 
   const canStart = Boolean(selectedClientId) && Boolean(landingUrl.trim() || notes.trim() || pastedCopy.trim() || serviceId);
 
@@ -216,6 +225,36 @@ function BulkInner() {
       toast.success("Making 3 close variations. They appear in the Creatives list.");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not make variations");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function sendEdit(id: string) {
+    const e = editing[id];
+    if (!e || e.text.trim().length < 3) return;
+    setBusyId(id);
+    try {
+      await apiFetch(`/api/creatives/bulk/${runId}/edit`, { method: "POST", body: JSON.stringify({ action: "edit", draftId: id, instruction: e.text.trim(), mode: e.mode }) });
+      setEditing((m) => ({ ...m, [id]: undefined }));
+      setView((v) => (v ? { ...v, cards: v.cards.map((c) => (c.id === id ? { ...c, image_status: "generating", editError: null } : c)) } : v));
+      setPollKey((k) => k + 1);
+      toast.success(e.mode === "edit" ? "Changing only what you described. The original is kept." : "Regenerating the whole image with your feedback. The original is kept.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not start the edit");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function undoEdit(id: string) {
+    setBusyId(id);
+    try {
+      await apiFetch(`/api/creatives/bulk/${runId}/edit`, { method: "POST", body: JSON.stringify({ action: "undo", draftId: id }) });
+      setPollKey((k) => k + 1);
+      toast.success("Back to the previous version");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not undo");
     } finally {
       setBusyId(null);
     }
@@ -475,6 +514,12 @@ function BulkInner() {
                         Export to Excel
                       </a>
                     </Button>
+                    {downloadable.length > 0 && view.progress.rendering === 0 ? (
+                      <Button size="sm" onClick={() => setPublishOpen((o) => !o)} disabled={!selectedClientId}>
+                        <Send className="mr-1 h-3.5 w-3.5" />
+                        Send to Meta ({downloadable.length})
+                      </Button>
+                    ) : null}
                     {downloadable.length > 1 ? (
                       <Button size="sm" variant="secondary" onClick={downloadAll}>
                         <Download className="mr-1 h-3.5 w-3.5" />
@@ -490,6 +535,8 @@ function BulkInner() {
                   </div>
                 </CardContent>
               </Card>
+
+              {publishOpen && runId && selectedClientId ? <PublishToMeta runId={runId} clientId={selectedClientId} onClose={() => setPublishOpen(false)} /> : null}
 
               <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                 {view.cards.map((card, index) => {
@@ -555,11 +602,60 @@ function BulkInner() {
                               <Copy className="mr-1 h-3.5 w-3.5" />
                               More like this
                             </Button>
+                            <Button size="sm" variant="secondary" className="h-8" disabled={busyId === card.id} onClick={() => setEditing((m) => ({ ...m, [card.id]: m[card.id] ? undefined : { text: "", mode: "edit" } }))}>
+                              <Pencil className="mr-1 h-3.5 w-3.5" />
+                              Edit this image
+                            </Button>
                             <Button size="sm" variant="secondary" className="h-8" disabled={busyId === card.id} onClick={() => void reject(card.id)}>
                               <X className="mr-1 h-3.5 w-3.5" />
                               Reject
                             </Button>
                           </div>
+                        ) : null}
+                        {editing[card.id] ? (
+                          <div className="space-y-2 rounded-md border border-border p-2">
+                            <Textarea
+                              className="min-h-[64px] text-xs"
+                              value={editing[card.id]!.text}
+                              onChange={(e) => setEditing((m) => ({ ...m, [card.id]: { ...m[card.id]!, text: e.target.value } }))}
+                              placeholder={'What should change? e.g. "make the headline say Free Audit", "swap the background to dark blue", "remove the badge on the right"'}
+                            />
+                            <div className="space-y-1 text-[11px]">
+                              <label className="flex items-start gap-1.5">
+                                <input type="radio" name={`mode-${card.id}`} checked={editing[card.id]!.mode === "edit"} onChange={() => setEditing((m) => ({ ...m, [card.id]: { ...m[card.id]!, mode: "edit" } }))} />
+                                <span>
+                                  <span className="font-medium">Change only that</span>
+                                  <span className="block text-muted">Everything else stays as it is, including your logo.</span>
+                                </span>
+                              </label>
+                              <label className="flex items-start gap-1.5">
+                                <input type="radio" name={`mode-${card.id}`} checked={editing[card.id]!.mode === "full"} onChange={() => setEditing((m) => ({ ...m, [card.id]: { ...m[card.id]!, mode: "full" } }))} />
+                                <span>
+                                  <span className="font-medium">Regenerate the whole image</span>
+                                  <span className="block text-muted">Starts the picture again with your feedback.</span>
+                                </span>
+                              </label>
+                            </div>
+                            <div className="flex gap-2">
+                              <Button size="sm" className="h-8" disabled={busyId === card.id || editing[card.id]!.text.trim().length < 3} onClick={() => void sendEdit(card.id)}>
+                                {busyId === card.id ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Pencil className="mr-1 h-3.5 w-3.5" />}
+                                Apply
+                              </Button>
+                              <Button size="sm" variant="ghost" className="h-8" onClick={() => setEditing((m) => ({ ...m, [card.id]: undefined }))}>
+                                Cancel
+                              </Button>
+                            </div>
+                            <p className="text-[10px] text-muted">Your current image is kept, so you can go back to it.</p>
+                          </div>
+                        ) : null}
+                        {card.editError ? <p className="text-[11px] text-destructive">The last edit could not be made, so the image is unchanged: {card.editError}</p> : null}
+                        {card.edits.length ? (
+                          <p className="text-[11px] text-muted">
+                            Edited {card.edits.length} time{card.edits.length === 1 ? "" : "s"}. Last: “{card.edits[card.edits.length - 1]!.instruction.slice(0, 60)}”{" "}
+                            <button type="button" className="font-medium text-accent hover:underline" disabled={busyId === card.id} onClick={() => void undoEdit(card.id)}>
+                              Undo
+                            </button>
+                          </p>
                         ) : null}
                       </div>
                     </div>
