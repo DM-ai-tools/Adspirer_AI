@@ -7,6 +7,8 @@ import { createProject, listProjects, updateProject, type VideoAsset } from "@/l
 import { writeProjectScripts } from "@/lib/video/brief";
 import { projectName } from "@/lib/video/naming";
 import { DEFAULT_SECONDS, MAX_SECONDS } from "@/lib/video/script";
+import { extractDocumentText } from "@/lib/documents/extract-text";
+import { MIN_SCRIPT_WORDS, scriptWordCount } from "@/lib/video/uploaded-script";
 import { runAfterResponse } from "@/lib/api/background";
 import { jsonOk, withApiHandler } from "@/lib/api/response";
 
@@ -28,6 +30,12 @@ const payloadSchema = z.object({
   locale: z.string().max(20).default("en-AU"),
   format: z.enum(["9:16", "1:1", "4:5"]).default("9:16"),
   priority: z.enum(["quality", "balanced", "cost"]).default("balanced"),
+  /** "upload": the operator brings their own script, which is kept word for word. */
+  mode: z.enum(["write", "upload"]).default("write"),
+  scriptText: z.string().max(40_000).optional(),
+  adCopyText: z.string().max(4000).optional(),
+  /** What to change in the uploaded script. Empty means nothing. */
+  changeRequest: z.string().max(2000).optional(),
   /** Caption and role for each uploaded image, in upload order. */
   images: z.array(z.object({ caption: z.string().max(200).default(""), role: z.enum(["show", "highlight"]).default("show") })).default([]),
 });
@@ -62,7 +70,19 @@ export async function POST(request: Request) {
     const form = await request.formData();
     const body = payloadSchema.parse(JSON.parse(String(form.get("payload") ?? "{}")));
     await assertClientAccess(user.id, body.clientId);
-    if (!body.landingPageUrl && !body.instructions && !body.offerDetails && !body.serviceId) {
+    // An uploaded script comes from the box and/or a file (.txt, .md, .docx, .pdf).
+    let scriptText = body.scriptText?.trim() ?? "";
+    let scriptFileName: string | null = null;
+    if (body.mode === "upload") {
+      const file = form.get("scriptFile");
+      if (file instanceof File && file.size > 0) {
+        scriptFileName = file.name;
+        const buffer = Buffer.from(await file.arrayBuffer());
+        const fromFile = /\.txt$/i.test(file.name) ? buffer.toString("utf8") : (await extractDocumentText({ filename: file.name, buffer, mimeType: file.type || undefined })).text;
+        scriptText = [scriptText, fromFile.trim()].filter(Boolean).join("\n\n");
+      }
+      if (scriptWordCount(scriptText) < MIN_SCRIPT_WORDS) throw new Error(`Paste or upload your script (at least ${MIN_SCRIPT_WORDS} words).`);
+    } else if (!body.landingPageUrl && !body.instructions && !body.offerDetails && !body.serviceId) {
       throw new Error("Give a landing page, instructions or offer details so there is something to write from.");
     }
 
@@ -83,6 +103,11 @@ export async function POST(request: Request) {
         locale: body.locale,
         format: body.format,
         priority: body.priority,
+        mode: body.mode,
+        scriptText: body.mode === "upload" ? scriptText : null,
+        scriptFileName,
+        adCopyText: body.mode === "upload" ? (body.adCopyText?.trim() || null) : null,
+        changeRequest: body.mode === "upload" ? (body.changeRequest?.trim() || null) : null,
       },
     });
 

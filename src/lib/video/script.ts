@@ -67,6 +67,8 @@ export type VideoScene = {
   /** An uploaded image or screenshot to show in this scene (its asset id). */
   assetId: string | null;
   sound: string;
+  /** For an uploaded script: the words as the operator wrote them, kept when a change they asked for rewrote this line. */
+  originalLine?: string | null;
 };
 
 export type VideoScript = {
@@ -86,6 +88,18 @@ export type VideoScript = {
   warnings: string[];
   /** The verifier's review of this script and what it fixed on its own. */
   verification?: Verification | null;
+  /** "uploaded": the operator's own script, kept word for word unless they asked for a change. */
+  source?: "written" | "uploaded";
+  /** What was done to an uploaded script: how it was split, what was restored, and changes the operator asked for. */
+  handling?: {
+    /** Scenes where the model had changed a word and the operator's exact words were put back. */
+    restoredScenes: number[];
+    /** Scenes where the model had added words that are not in the script, which were removed. */
+    removedScenes: number[];
+    /** Parts of the script that were not spoken lines (directions, notes) and were not put in any scene's words. */
+    unusedText: string[];
+    changes: Array<{ target: string; was: string; now: string }>;
+  } | null;
 };
 
 export type VideoBrief = {

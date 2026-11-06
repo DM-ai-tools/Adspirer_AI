@@ -23,6 +23,7 @@ const sceneEdit = z.object({
   stat: z.string().max(80).nullable(),
   assetId: z.string().nullable(),
   sound: z.string().max(400),
+  originalLine: z.string().max(600).nullable().optional(),
 });
 
 const bodySchema = z.object({
