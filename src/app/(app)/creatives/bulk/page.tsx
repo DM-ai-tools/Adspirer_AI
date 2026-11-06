@@ -3,7 +3,7 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, ChevronDown, Pencil, ChevronUp, Copy, Download, FileSpreadsheet, Layers, Loader2, X } from "lucide-react";
+import { ArrowLeft, ChevronDown, Pencil, ChevronUp, Copy, Download, FileSpreadsheet, Layers, Loader2, Send, X } from "lucide-react";
 import { toast } from "sonner";
 import { useApp } from "@/components/layout/app-provider";
 import { PageHeader } from "@/components/shared/page-header";
@@ -17,6 +17,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ImageFormatPicker } from "@/components/creatives/image-format-picker";
+import { PublishToMeta } from "@/components/creatives/publish-to-meta";
 import { apiFetch } from "@/lib/api-client";
 import { creativeDownloadUrl } from "@/lib/creatives/download";
 import type { ImageFormat } from "@/lib/creatives/formats";
@@ -116,6 +117,8 @@ function BulkInner() {
   const [busyId, setBusyId] = useState<string | null>(null);
   // Bumped to start following the run again after an edit is sent.
   const [pollKey, setPollKey] = useState(0);
+  // The "send to Meta" steps, open from the run's header.
+  const [publishOpen, setPublishOpen] = useState(false);
   // The edit box that is open on each image: what to change, and whether to change only that or start over.
   const [editing, setEditing] = useState<Record<string, { text: string; mode: "edit" | "full" } | undefined>>({});
   const continuing = useRef(false);
@@ -511,6 +514,12 @@ function BulkInner() {
                         Export to Excel
                       </a>
                     </Button>
+                    {downloadable.length > 0 && view.progress.rendering === 0 ? (
+                      <Button size="sm" onClick={() => setPublishOpen((o) => !o)} disabled={!selectedClientId}>
+                        <Send className="mr-1 h-3.5 w-3.5" />
+                        Send to Meta ({downloadable.length})
+                      </Button>
+                    ) : null}
                     {downloadable.length > 1 ? (
                       <Button size="sm" variant="secondary" onClick={downloadAll}>
                         <Download className="mr-1 h-3.5 w-3.5" />
@@ -526,6 +535,8 @@ function BulkInner() {
                   </div>
                 </CardContent>
               </Card>
+
+              {publishOpen && runId && selectedClientId ? <PublishToMeta runId={runId} clientId={selectedClientId} onClose={() => setPublishOpen(false)} /> : null}
 
               <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                 {view.cards.map((card, index) => {

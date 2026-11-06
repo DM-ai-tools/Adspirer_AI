@@ -1,4 +1,4 @@
-import { BID_STRATEGIES } from "@/lib/meta/conventions";
+import { BID_STRATEGIES, MAX_EXTRA_ADS } from "@/lib/meta/conventions";
 import { ATTRIBUTION_SETTINGS } from "@/lib/clients/goals";
 import { z } from "zod";
 
@@ -107,7 +107,7 @@ const extraAds = z
       name: z.string().optional(),
     }),
   )
-  .max(5);
+  .max(MAX_EXTRA_ADS);
 
 type BudgetShape = {
   budget_daily?: number;
@@ -192,6 +192,8 @@ export const createCampaignSchema = z.object({
 const campaignBase = {
   account_id: accountId,
   campaign_name: z.string().min(1),
+  /** Put the new ad set and its ads in this existing campaign instead of creating one. */
+  existing_campaign_id: z.string().optional(),
   ad_set_name: z.string().optional(),
   ad_name: z.string().optional(),
   objective: objective.optional(),
@@ -213,7 +215,8 @@ export const createMetaImageCampaignSchema = z
     image_url: z.string().url().optional(),
     existing_image_hash: z.string().optional(),
   })
-  .superRefine((v, ctx) => checkBudgetSchedule(v, ctx, true));
+  // Under an existing campaign the budget may sit on the campaign; the provider checks that live.
+  .superRefine((v, ctx) => checkBudgetSchedule(v, ctx, !v.existing_campaign_id));
 
 export const createMetaVideoCampaignSchema = z
   .object({
