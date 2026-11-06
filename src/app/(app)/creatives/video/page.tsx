@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronUp, CircleDashed, Film, ImagePlus, Loader2, MessageSquarePlus, Plus, RefreshCw, ShieldCheck, Sparkles, Trash2, Wand2, X } from "lucide-react";
@@ -77,12 +77,32 @@ type Plan = {
   estimatedUsd1080: number | null;
 };
 
+type GenClip = {
+  number: number;
+  seconds: number;
+  sceneNumbers: number[];
+  status: "waiting" | "running" | "succeeded" | "failed";
+  attempts: number;
+  error: string | null;
+  usd: number | null;
+  hasVideo: boolean;
+  videoUrl: string | null;
+};
+
+type GenerationView = {
+  status: "generating" | "clips_ready" | "failed" | "idle";
+  clips: GenClip[];
+  spentUsd: number;
+  blocked: string | null;
+  error: string | null;
+};
+
 type Asset = { id: string; name: string; summary: string; kind: string | null; stats: Array<{ value: string; label: string }>; analysed: boolean; url: string };
 
 type ProjectView = {
   id: string;
   name: string;
-  status: "writing" | "scripts_ready" | "confirmed" | "failed";
+  status: "writing" | "scripts_ready" | "confirmed" | "generating" | "clips_ready" | "failed";
   error: string | null;
   inputs: { landingPageUrl: string | null; targetSeconds: number; format: string };
   assets: Asset[];
@@ -91,11 +111,12 @@ type ProjectView = {
   scripts: Script[] | null;
   chosenScript: Script | null;
   plan: Plan | null;
+  generation: GenerationView | null;
 };
 
 type HistoryItem = { id: string; name: string; status: ProjectView["status"]; created_at: string; landing_page_url: string | null; target_seconds: number; title: string | null };
 
-const STATUS_LABEL: Record<ProjectView["status"], string> = { writing: "Writing scripts", scripts_ready: "Scripts ready", confirmed: "Script confirmed", failed: "Failed" };
+const STATUS_LABEL: Record<ProjectView["status"], string> = { writing: "Writing scripts", scripts_ready: "Scripts ready", confirmed: "Script confirmed", generating: "Making the video", clips_ready: "Clips ready", failed: "Failed" };
 const STYLES = ["auto", "UGC creator walkthrough", "Cinematic", "Motion graphics over footage", "Documentary", "3D animated"];
 const FORMATS = [
   { value: "9:16", label: "9:16 Reels & Stories" },
@@ -240,6 +261,152 @@ function FixBar({
   );
 }
 
+/** Starts the video, follows each clip and keeps the work moving while the page is open. */
+function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: string; status: ProjectView["status"]; initial: GenerationView | null; onStatus: (s: ProjectView["status"]) => void }) {
+  const [gen, setGen] = useState<GenerationView | null>(initial);
+  const [starting, setStarting] = useState(false);
+  const [busyClip, setBusyClip] = useState<number | null>(null);
+  const advancing = useRef(false);
+
+  useEffect(() => {
+    if (status !== "generating") return;
+    let stopped = false;
+    let timer: number | undefined;
+    const tick = async () => {
+      try {
+        // Ask the server to take the next step (it also carries on in the background), then read the state.
+        if (!advancing.current) {
+          advancing.current = true;
+          await apiFetch<GenerationView>(`/api/creatives/video/${projectId}/generation`, { method: "POST", body: JSON.stringify({ action: "advance" }) })
+            .then((g) => !stopped && setGen(g))
+            .finally(() => {
+              advancing.current = false;
+            });
+        }
+        const g = await apiFetch<GenerationView>(`/api/creatives/video/${projectId}/generation`);
+        if (stopped) return;
+        setGen(g);
+        if (g.status !== "generating") onStatus(g.status === "clips_ready" ? "clips_ready" : g.status === "failed" ? "failed" : "confirmed");
+        else timer = window.setTimeout(() => void tick(), 4_000);
+      } catch {
+        if (!stopped) timer = window.setTimeout(() => void tick(), 6_000);
+      }
+    };
+    void tick();
+    return () => {
+      stopped = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [projectId, status, onStatus]);
+
+  async function post(body: Record<string, unknown>, loading: () => void, done: () => void) {
+    loading();
+    try {
+      const g = await apiFetch<GenerationView>(`/api/creatives/video/${projectId}/generation`, { method: "POST", body: JSON.stringify(body) });
+      setGen(g);
+      onStatus("generating");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not start");
+    } finally {
+      done();
+    }
+  }
+
+  const clips = gen?.clips ?? [];
+  const finished = clips.filter((c) => c.status === "succeeded").length;
+  const blocked = status === "confirmed" || status === "clips_ready" ? gen?.blocked ?? null : null;
+
+  if (!clips.length || (status === "confirmed" && !clips.some((c) => c.status !== "waiting"))) {
+    return (
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-3">
+          <Button disabled={starting || Boolean(blocked)} onClick={() => void post({ action: "start" }, () => setStarting(true), () => setStarting(false))}>
+            {starting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Film className="mr-2 h-4 w-4" />}
+            Generate video
+          </Button>
+          <p className="text-[11px] text-muted">Makes the clips one after another so the person and voice carry through. It takes a few minutes and keeps going if you leave.</p>
+        </div>
+        {blocked ? <p className="text-xs text-amber-500">{blocked}</p> : null}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="space-y-1.5">
+        <div className="flex items-baseline justify-between text-sm">
+          <span className="font-medium">
+            {status === "clips_ready" ? "Clips ready" : status === "failed" ? "Stopped" : "Making the video"}: {finished} of {clips.length} clips done
+          </span>
+          {gen ? <span className="text-xs text-muted">${gen.spentUsd.toFixed(2)} spent so far</span> : null}
+        </div>
+        <div className="h-2.5 overflow-hidden rounded-full bg-secondary" role="progressbar" aria-valuenow={Math.round((finished / clips.length) * 100)} aria-valuemin={0} aria-valuemax={100}>
+          <div className="h-full rounded-full bg-accent transition-all duration-500" style={{ width: `${Math.max(3, (finished / clips.length) * 100)}%` }} />
+        </div>
+        {status === "generating" ? <p className="text-[11px] text-muted">Each clip usually takes 2 to 4 minutes. You can leave this page and come back.</p> : null}
+        {gen?.error && status === "failed" ? <p className="text-xs text-destructive">{gen.error}</p> : null}
+      </div>
+      <div className="grid gap-3 md:grid-cols-3">
+        {clips.map((c) => (
+          <div key={c.number} className="space-y-2 rounded-md border border-border p-3">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-medium">
+                Clip {c.number} · {c.seconds}s
+              </span>
+              <Badge variant={c.status === "failed" ? "danger" : "secondary"}>{c.status === "waiting" ? "Waiting" : c.status === "running" ? "Making" : c.status === "succeeded" ? "Done" : "Failed"}</Badge>
+            </div>
+            <p className="text-[11px] text-muted">
+              Scenes {c.sceneNumbers[0]}
+              {c.sceneNumbers.length > 1 ? ` to ${c.sceneNumbers[c.sceneNumbers.length - 1]}` : ""}
+            </p>
+            {c.videoUrl ? (
+              // eslint-disable-next-line jsx-a11y/media-has-caption
+              <video src={c.videoUrl} controls playsInline preload="metadata" className="aspect-[9/16] max-h-[420px] w-full rounded-md bg-black object-contain" />
+            ) : (
+              <div className="flex aspect-[9/16] max-h-[200px] w-full items-center justify-center rounded-md border border-dashed border-border text-[11px] text-muted">
+                {c.status === "running" ? (
+                  <span className="inline-flex items-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin" /> Making this clip…
+                  </span>
+                ) : c.status === "failed" ? (
+                  "No video"
+                ) : (
+                  "Waiting for the clip before it"
+                )}
+              </div>
+            )}
+            {c.error && c.status !== "succeeded" ? <p className="text-[11px] text-destructive">{c.error}</p> : null}
+            <div className="flex flex-wrap gap-2">
+              {c.hasVideo ? (
+                <Button size="sm" variant="secondary" className="h-8" asChild>
+                  <a href={`${c.videoUrl!.split("?")[0]}?download=1`} download>
+                    Download
+                  </a>
+                </Button>
+              ) : null}
+              {c.status === "succeeded" || c.status === "failed" ? (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="h-8"
+                  disabled={busyClip !== null || status === "generating"}
+                  title={clips.length > c.number ? "This clip and every clip after it are made again, because each opens from where the one before ended" : undefined}
+                  onClick={() => void post({ action: "regenerate", fromClip: c.number }, () => setBusyClip(c.number), () => setBusyClip(null))}
+                >
+                  {busyClip === c.number ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1 h-3.5 w-3.5" />}
+                  {c.number < clips.length ? "Make again from here" : "Make again"}
+                </Button>
+              ) : null}
+            </div>
+            {c.usd !== null ? <p className="text-[10px] text-muted">${c.usd.toFixed(2)}</p> : null}
+          </div>
+        ))}
+      </div>
+      {status === "clips_ready" ? <p className="text-xs text-muted">All clips are made. Joining them into one finished video, with captions, highlights, your images and the logo, is the next step.</p> : null}
+    </div>
+  );
+}
+
 function VideoInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -275,6 +442,7 @@ function VideoInner() {
   const [showDetails, setShowDetails] = useState(false);
   // Bumped to start following the project again after "write 3 new scripts".
   const [pollKey, setPollKey] = useState(0);
+  const setProjectStatus = useCallback((status: ProjectView["status"]) => setView((v) => (v && v.status !== status ? { ...v, status } : v)), []);
 
   useEffect(() => {
     setTab(searchParams.get("tab") === "history" ? "history" : "new");
@@ -741,11 +909,7 @@ function VideoInner() {
 
           {view.status === "writing" ? (
             <ProgressCard progress={view.progress} hasImages={view.assets.length > 0} />
-          ) : view.status === "failed" ? (
-            <Card>
-              <CardContent className="p-4 text-sm text-destructive">Could not write the scripts: {view.error ?? "unknown error"}</CardContent>
-            </Card>
-          ) : view.status === "confirmed" && view.chosenScript ? (
+          ) : view.chosenScript && (["confirmed", "generating", "clips_ready"].includes(view.status) || (view.status === "failed" && (view.generation?.clips.length ?? 0) > 0)) ? (
             <div className="space-y-4">
               <Card className="border-accent/40">
                 <CardContent className="space-y-3 p-4">
@@ -765,17 +929,15 @@ function VideoInner() {
                       </p>
                     </div>
                   ) : null}
-                  <div className="flex items-center gap-3">
-                    <Button disabled title="Video generation is the next step of this build">
-                      <Film className="mr-2 h-4 w-4" />
-                      Generate video
-                    </Button>
-                    <p className="text-[11px] text-muted">The script, ad copy and plan are saved. Generating the video is not connected yet.</p>
-                  </div>
+                  <GenerationPanel projectId={view.id} status={view.status} initial={view.generation} onStatus={setProjectStatus} />
                 </CardContent>
               </Card>
               <ScriptBody script={view.chosenScript} assets={view.assets} />
             </div>
+          ) : view.status === "failed" ? (
+            <Card>
+              <CardContent className="p-4 text-sm text-destructive">Could not write the scripts: {view.error ?? "unknown error"}</CardContent>
+            </Card>
           ) : (
             <div className="space-y-4">
               {view.assets.length ? (

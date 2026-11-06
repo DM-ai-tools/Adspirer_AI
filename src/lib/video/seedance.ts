@@ -114,12 +114,19 @@ export function frameSize(resolution: VideoResolution, ratio: VideoRatio): { wid
  * Estimated cost of one clip, from the pricing page's formula: tokens = seconds x width x height x
  * fps / 1024, billed per million tokens. It is an estimate: the bill follows usage.completion_tokens.
  */
-export function estimateClipUsd(model: SeedanceModelKey, resolution: VideoResolution, ratio: VideoRatio, seconds: number): number {
+export function estimateClipUsd(model: SeedanceModelKey, resolution: VideoResolution, ratio: VideoRatio, seconds: number, inputVideoSeconds = 0): number {
   const spec = SEEDANCE_SPECS[model];
   const rate = spec.usdPerMTokens[resolution];
   if (rate === undefined) throw new Error(`${spec.label} does not offer ${resolution}`);
   const { width, height } = frameSize(resolution, ratio);
-  const tokens = (seconds * width * height * OUTPUT_FPS) / 1024;
+  // A reference video counts toward the tokens as well as the clip that is made.
+  const tokens = ((seconds + inputVideoSeconds) * width * height * OUTPUT_FPS) / 1024;
+  return (tokens / 1_000_000) * rate;
+}
+
+/** What a finished task cost, from the tokens it reports. */
+export function usdForTokens(model: SeedanceModelKey, resolution: VideoResolution, tokens: number): number {
+  const rate = SEEDANCE_SPECS[model].usdPerMTokens[resolution] ?? 0;
   return (tokens / 1_000_000) * rate;
 }
 
@@ -199,6 +206,8 @@ export type ChooseInput = {
   /** "quality" prefers fewer joins and the newest model, "cost" the cheapest that can do it. */
   priority?: "quality" | "balanced" | "cost";
   resolution?: VideoResolution;
+  /** Models this deployment has a key for. Defaults to all. */
+  available?: SeedanceModelKey[];
 };
 
 /**
@@ -238,6 +247,18 @@ export function chooseSeedanceModel(input: ChooseInput): ModelChoice {
   } else {
     model = "seedance-2-0";
     reasons.push("mostly voiceover over varied shots, where cuts hide the joins, so the cheaper 2.0 does the job");
+  }
+
+  // A model with no key is never chosen: fall back to one that has a key and can still do the job.
+  const available = input.available ?? (Object.keys(SEEDANCE_SPECS) as SeedanceModelKey[]);
+  if (!available.includes(model)) {
+    const wanted = SEEDANCE_SPECS[model].label;
+    const alternative = (["seedance-2-5", "seedance-2-0", "seedance-2-0-fast", "seedance-2-0-mini"] as SeedanceModelKey[]).find(
+      (m) => available.includes(m) && SEEDANCE_SPECS[m].maxSeconds >= longest && SEEDANCE_SPECS[m].maxImageRefs >= input.imageRefs,
+    );
+    if (!alternative) throw new Error(`${wanted} is the right model for this script but has no API key here, and no other model with a key can make it.`);
+    reasons.push(`${wanted} has no API key here, so ${SEEDANCE_SPECS[alternative].label} is used`);
+    model = alternative;
   }
 
   const spec = SEEDANCE_SPECS[model];
@@ -300,7 +321,7 @@ export type TaskResult = {
   error: { code: string; message: string } | null;
 };
 
-async function ark<T>(apiKey: string, path: string, init: RequestInit = {}): Promise<T> {
+export async function arkRequest<T>(apiKey: string, path: string, init: RequestInit = {}): Promise<T> {
   const config = getConfig();
   const url = `${config.ARK_BASE_URL.replace(/\/$/, "")}${path}`;
   let lastError: Error | null = null;
@@ -348,13 +369,15 @@ export function buildTaskBody(input: CreateTaskInput, modelId?: string): Record<
     return_last_frame: true,
     watermark: false,
   };
+  // On 2.5, say it is a plain reference-to-video task so the model does not read it as an edit or an extension.
+  if (input.model === "seedance-2-5" && !hasFrame) body.omni_reference_task_type = "auto";
   if (input.seed !== undefined) body.seed = input.seed;
   return body;
 }
 
 export async function createVideoTask(input: CreateTaskInput): Promise<{ id: string }> {
   const { apiKey, modelId } = arkCredentials(input.model);
-  const created = await ark<{ id: string }>(apiKey, "/contents/generations/tasks", { method: "POST", body: JSON.stringify(buildTaskBody(input, modelId)) });
+  const created = await arkRequest<{ id: string }>(apiKey, "/contents/generations/tasks", { method: "POST", body: JSON.stringify(buildTaskBody(input, modelId)) });
   if (!created?.id) throw new Error("ModelArk did not return a task id.");
   return { id: created.id };
 }
@@ -379,9 +402,9 @@ export function mapTask(raw: {
 
 /** A task is read and cancelled with the same key (and so the same account) that created it. */
 export async function getVideoTask(model: SeedanceModelKey, id: string): Promise<TaskResult> {
-  return mapTask(await ark(arkCredentials(model).apiKey, `/contents/generations/tasks/${encodeURIComponent(id)}`));
+  return mapTask(await arkRequest(arkCredentials(model).apiKey, `/contents/generations/tasks/${encodeURIComponent(id)}`));
 }
 
 export async function cancelVideoTask(model: SeedanceModelKey, id: string): Promise<void> {
-  await ark(arkCredentials(model).apiKey, `/contents/generations/tasks/${encodeURIComponent(id)}`, { method: "DELETE" });
+  await arkRequest(arkCredentials(model).apiKey, `/contents/generations/tasks/${encodeURIComponent(id)}`, { method: "DELETE" });
 }

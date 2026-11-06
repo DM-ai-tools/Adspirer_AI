@@ -4,6 +4,7 @@ import { getDemoStore } from "@/lib/demo/store";
 import type { VideoScript } from "@/lib/video/script";
 import type { AssetAnalysis } from "@/lib/video/assets";
 import type { ScriptProgress } from "@/lib/video/progress";
+import type { ClipState, GenerationPlan } from "@/lib/video/generation-types";
 
 export type VideoAsset = {
   id: string;
@@ -38,7 +39,7 @@ export type VideoBrand = {
   corpus?: string;
 };
 
-export type VideoProjectStatus = "writing" | "scripts_ready" | "confirmed" | "failed";
+export type VideoProjectStatus = "writing" | "scripts_ready" | "confirmed" | "generating" | "clips_ready" | "failed";
 
 export type VideoProject = {
   id: string;
@@ -54,6 +55,10 @@ export type VideoProject = {
   chosen_script: VideoScript | null;
   /** Where the script writing is up to. Optional: needs the progress column from migration 00018. */
   progress?: ScriptProgress | null;
+  /** The video being made: the plan and each clip's state. */
+  plan?: GenerationPlan | null;
+  clips?: ClipState[] | null;
+  lease_until?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -95,6 +100,9 @@ function mapRow(row: Record<string, unknown>): VideoProject {
     scripts: (row.scripts as VideoScript[] | null) ?? null,
     chosen_script: (row.chosen_script as VideoScript | null) ?? null,
     progress: (row.progress as ScriptProgress | null) ?? null,
+    plan: (row.plan as GenerationPlan | null) ?? null,
+    clips: (row.clips as ClipState[] | null) ?? null,
+    lease_until: (row.lease_until as string | null) ?? null,
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
   };
@@ -174,4 +182,32 @@ export async function setProgress(id: string, progress: ScriptProgress): Promise
   } catch {
     // progress is a nicety
   }
+}
+
+/**
+ * Take the project's working lease if nobody holds it, so two requests never advance the same video
+ * at once. Returns false when someone else has it.
+ */
+export async function claimProjectLease(id: string, ms: number): Promise<boolean> {
+  const now = new Date();
+  const until = new Date(now.getTime() + ms).toISOString();
+  if (useMemory()) {
+    const p = memory().find((x) => x.id === id);
+    if (!p) return false;
+    if (p.lease_until && p.lease_until > now.toISOString()) return false;
+    p.lease_until = until;
+    return true;
+  }
+  const { data, error } = await (await admin())
+    .from("video_projects")
+    .update({ lease_until: until })
+    .eq("id", id)
+    .or(`lease_until.is.null,lease_until.lt.${now.toISOString()}`)
+    .select("id");
+  if (error) fail(error);
+  return (data?.length ?? 0) > 0;
+}
+
+export async function releaseProjectLease(id: string): Promise<void> {
+  await updateProject(id, { lease_until: null }).catch(() => undefined);
 }

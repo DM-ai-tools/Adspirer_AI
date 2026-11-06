@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/security/auth";
 import { assertAuthenticated, assertClientAccess } from "@/lib/authz/assert";
 import { deleteProject, getProject, updateProject, type VideoProject } from "@/lib/video/projects";
 import { projectName } from "@/lib/video/naming";
+import { viewGeneration } from "@/lib/video/generation";
 import { getObjectStorage } from "@/lib/storage/r2";
 import { writeProjectScripts } from "@/lib/video/brief";
 import { checkScript, MAX_SECONDS, type VideoScript } from "@/lib/video/script";
@@ -46,6 +47,7 @@ function view(project: VideoProject) {
     scripts: project.scripts,
     chosenScript: chosen,
     plan: chosen ? previewPlan(chosen, project.inputs, project.assets.length) : null,
+    generation: viewGeneration(project),
   };
 }
 

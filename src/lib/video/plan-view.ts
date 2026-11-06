@@ -1,4 +1,4 @@
-import { chooseSeedanceModel, estimateClipUsd, SEEDANCE_SPECS, type VideoRatio, type VideoResolution } from "@/lib/video/seedance";
+import { availableSeedanceModels, chooseSeedanceModel, estimateClipUsd, SEEDANCE_SPECS, type VideoRatio, type VideoResolution } from "@/lib/video/seedance";
 import type { VideoScript } from "@/lib/video/script";
 import type { VideoInputs } from "@/lib/video/projects";
 
@@ -23,14 +23,25 @@ export type PlanPreview = {
 /** The model, clip split and cost for a script, shown before any video is generated. */
 export function previewPlan(script: VideoScript, inputs: Pick<VideoInputs, "format" | "priority">, uploadedImages: number): PlanPreview {
   // Character sheet, location and each uploaded image can all ride along as references.
-  const choice = chooseSeedanceModel({
+  const request = {
     scenes: script.scenes.map((s) => ({ number: s.number, seconds: s.seconds, onCameraSpeech: s.speaker === "on_camera" })),
     imageRefs: uploadedImages + 2,
     priority: inputs.priority,
-    resolution: "720p",
-  });
+    resolution: "720p" as const,
+  };
+  // Prefer a model that has a key. With none that can do the job, still show the plan the script
+  // needs (the screen then says a key is missing); starting the video is what refuses.
+  const available = availableSeedanceModels();
+  let choice: ReturnType<typeof chooseSeedanceModel>;
+  try {
+    choice = chooseSeedanceModel({ ...request, available: available.length ? available : undefined });
+  } catch {
+    choice = chooseSeedanceModel(request);
+  }
   const ratio = generationRatio(inputs.format);
-  const cost = (res: VideoResolution) => choice.clips.reduce((t, c) => t + estimateClipUsd(choice.model, res, ratio, c.seconds), 0);
+  // When a person speaks on camera, each later clip also carries the one before it as a reference, which counts toward the cost.
+  const chain = script.scenes.some((s) => s.speaker === "on_camera");
+  const cost = (res: VideoResolution) => choice.clips.reduce((t, c, i) => t + estimateClipUsd(choice.model, res, ratio, c.seconds, chain && i > 0 ? choice.clips[i - 1]!.seconds : 0), 0);
   const spec = SEEDANCE_SPECS[choice.model];
   return {
     model: choice.model,
