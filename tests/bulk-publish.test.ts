@@ -204,3 +204,71 @@ describe("an existing campaign through the approval's own checks", () => {
     expect((prepared.args.extra_ads as unknown[]).length).toBe(14);
   });
 });
+
+describe("adding the ads to an ad set that already exists", () => {
+  const withAdSet = (adset: Record<string, unknown> = {}, campaign: Record<string, unknown> = {}) => (path: string) => {
+    if (path === "777") return { account_id: "111", objective: "OUTCOME_LEADS", status: "ACTIVE", daily_budget: "5000", bid_strategy: "LOWEST_COST_WITHOUT_CAP", ...campaign };
+    if (path === "888") return { account_id: "111", campaign_id: "777", name: "Warm audience", status: "ACTIVE", destination_type: "WEBSITE", ...adset };
+    return { currency: "AUD", account_id: "111" };
+  };
+  // No locations, budget, pixel or objective settings: all of that already belongs to the ad set.
+  const bare = { account_id: "act_111", campaign_name: "Evergreen", existing_campaign_id: "777", existing_adset_id: "888", primary_text: "Body 1", headline: "Hook 1", landing_page_url: "https://acme.com/lp", image_url: "https://cdn.example.com/0.png", facebook_page_id: "321", extra_args: base.extra_args };
+
+  it("creates no campaign and no ad set, only the ads, inside that ad set", async () => {
+    const { provider, posts } = providerWith({ get: withAdSet() });
+    await provider.createImageCampaign(bare);
+    expect(posts.some(([p]) => p === "act_111/campaigns" || p === "act_111/adsets")).toBe(false);
+    const ads = posts.filter(([p]) => p === "act_111/ads").map(([, b]) => b);
+    expect(ads).toHaveLength(3);
+    expect(new Set(ads.map((a) => a.adset_id))).toEqual(new Set(["888"]));
+    expect(ads.every((a) => a.status === "PAUSED")).toBe(true);
+  });
+
+  it("refuses an ad set from another campaign or account, or an archived one, before anything is created", async () => {
+    for (const [adset, message] of [
+      [{ campaign_id: "999" }, /not in campaign/],
+      [{ account_id: "555" }, /belongs to/],
+      [{ status: "ARCHIVED" }, /archived/],
+    ] as const) {
+      const { provider, post } = providerWith({ get: withAdSet(adset) });
+      await expect(provider.createImageCampaign(bare)).rejects.toThrow(message);
+      expect(post).not.toHaveBeenCalled();
+    }
+  });
+
+  it("needs the lead form for an ad set that collects leads on Facebook, and uses it when given", async () => {
+    const missing = providerWith({ get: withAdSet({ destination_type: "ON_AD" }) });
+    await expect(missing.provider.createImageCampaign(bare)).rejects.toThrow(/lead form/);
+    expect(missing.post).not.toHaveBeenCalled();
+    const ok = providerWith({ get: withAdSet({ destination_type: "ON_AD" }) });
+    await ok.provider.createImageCampaign({ ...bare, lead_form_id: "444" });
+    expect(JSON.stringify(ok.posts.find(([p]) => p === "act_111/adcreatives")![1])).toContain("444");
+  });
+
+  it("is refused when the ad set is named without its campaign", async () => {
+    const { provider, post } = providerWith({ get: withAdSet() });
+    await expect(provider.createImageCampaign({ ...bare, existing_campaign_id: undefined })).rejects.toThrow(/together with its campaign/);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("builds the approval without asking anything the ad set already has", async () => {
+    const plan: BulkPublishPlan = {
+      destination: { mode: "existing", campaignId: "777", campaignName: "Evergreen", objective: "OUTCOME_LEADS", adSetId: "888", adSetName: "Warm audience", settings: { pixel_id: "9", optimization_goal: "LEAD_GENERATION" } },
+      adSet: { name: "ignored", budget_daily: 99, targeting: { locations: ["AU"] } },
+      ad: { landing_page_url: "https://acme.com/lp", facebook_page_id: "321" },
+    };
+    const args = buildBulkPublishArgs({ accountId: "act_111", plan, ads: ads(15) });
+    expect(args).toMatchObject({ existing_campaign_id: "777", existing_adset_id: "888", existing_adset_name: "Warm audience" });
+    for (const key of ["ad_set_name", "budget_daily", "locations", "pixel_id", "optimization_goal"]) expect(args).not.toHaveProperty(key);
+    // and the approval accepts it as it is, with no location, pixel or budget
+    const prepared = await prepareApprovalArgs({
+      toolName: "create_meta_image_campaign",
+      clientId: "c1",
+      args,
+      loadAccounts: async () => [{ meta_account_id: "act_111", access_status: "granted", currency: "AUD" }],
+    });
+    expect(prepared.incomplete).toBeNull();
+    expect(prepared.args).not.toHaveProperty("ad_set_name");
+    expect((prepared.args.extra_ads as unknown[]).length).toBe(14);
+  });
+});

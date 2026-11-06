@@ -676,7 +676,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
         paging?: { cursors?: { after?: string }; next?: string };
       }>(path, {
         fields:
-          "id,name,status,effective_status,campaign_id,daily_budget,lifetime_budget,optimization_goal,billing_event,targeting,promoted_object",
+          "id,name,status,effective_status,campaign_id,daily_budget,lifetime_budget,optimization_goal,billing_event,destination_type,targeting,promoted_object",
         limit: 100,
         ...(after ? { after } : {}),
       });
@@ -704,6 +704,7 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
           : undefined,
       billing_event:
         typeof row.billing_event === "string" ? row.billing_event : undefined,
+      ...(typeof row.destination_type === "string" ? { destination_type: row.destination_type } : {}),
       targeting_summary:
         row.targeting && typeof row.targeting === "object"
           ? JSON.stringify(row.targeting)
@@ -1895,12 +1896,34 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
         specialAdCategories: Array.isArray(row.special_ad_categories) ? row.special_ad_categories : [],
       };
     }
+    // An existing ad set is added to as it is: nothing about it is asked again or changed.
+    const existingAdSetId = optionalText((input as CreateImageCampaignInput).existing_adset_id);
+    let liveAdSet: { name: string; destinationType?: string } | undefined;
+    if (existingAdSetId) {
+      if (!existingCampaignId) throw new Error("An existing ad set can only be used together with its campaign. Nothing was created.");
+      const row = await step("Read the ad set to add to", () =>
+        this.graph.get<{ account_id?: unknown; campaign_id?: unknown; name?: string; status?: string; destination_type?: string }>(existingAdSetId, {
+          fields: "account_id,campaign_id,name,status,destination_type",
+        }),
+      );
+      const owner = row.account_id != null && String(row.account_id).trim() ? normalizeAccountId(String(row.account_id).trim()) : null;
+      if (owner !== accountId) {
+        throw new Error(`Ad set ${existingAdSetId} belongs to ${owner ?? "an unknown ad account"}, not ${accountId}. Nothing was created.`);
+      }
+      if (String(row.campaign_id ?? "") !== existingCampaignId) {
+        throw new Error(`Ad set ${existingAdSetId} is not in campaign ${existingCampaignId}. Nothing was created.`);
+      }
+      if (/ARCHIVED|DELETED/i.test(String(row.status ?? ""))) {
+        throw new Error(`Ad set ${existingAdSetId} is ${String(row.status).toLowerCase()}, so ads cannot be added to it. Nothing was created.`);
+      }
+      liveAdSet = { name: row.name ?? "Ad Set", destinationType: row.destination_type };
+    }
     const objective = live?.objective ?? input.objective ?? "OUTCOME_TRAFFIC";
     const useCbo = live ? live.cbo : Boolean(input.campaign_budget_optimization);
     const daily = positiveNumber(input.budget_daily);
     const lifetime = positiveNumber(input.budget_lifetime);
     // Under an existing campaign budget the ad set carries none, so none is needed here.
-    if (daily == null && lifetime == null && !(live && live.cbo)) {
+    if (daily == null && lifetime == null && !(live && live.cbo) && !liveAdSet) {
       throw new Error(
         "A budget is required — set budget_daily, or budget_lifetime with end_time. Nothing was created.",
       );
@@ -1916,6 +1939,9 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       this.resolveFacebookPageId(accountId, input.facebook_page_id),
     );
     const leadFormId = resolveLeadFormId(input);
+    if (liveAdSet?.destinationType === "ON_AD" && !leadFormId) {
+      throw new Error(`Ad set "${liveAdSet.name}" collects leads on Facebook, so its ads need the lead form (lead_form_id). Nothing was created.`);
+    }
 
     const adSetInput: CreateAdSetInput = {
       account_id: accountId,
@@ -1941,13 +1967,15 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
       campaign_budget_optimization: useCbo,
       extra_args: mergeCampaignExtra(input),
     };
-    // Throws on missing location / budget before any POST.
-    const adSetPlan = await this.planAdSet(adSetInput, {
-      cbo: useCbo,
-      objective,
-      currency,
-      special_ad_categories: live ? live.specialAdCategories : input.special_ad_categories,
-    });
+    // Throws on missing location / budget before any POST. Not needed when the ad set already exists.
+    const adSetPlan = liveAdSet
+      ? null
+      : await this.planAdSet(adSetInput, {
+          cbo: useCbo,
+          objective,
+          currency,
+          special_ad_categories: live ? live.specialAdCategories : input.special_ad_categories,
+        });
     const campaignBudgetCents = useCbo && !live
       ? budgetToMinorUnits(daily ?? lifetime ?? undefined)
       : undefined;
@@ -2017,19 +2045,22 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
 
     // ---- 4. Ad set ---------------------------------------------------------
     let adset: MetaAdSet;
-    if (progress.adset_id) {
+    if (existingAdSetId && liveAdSet) {
+      adset = { id: existingAdSetId, campaign_id: campaign.id, account_id: accountId, name: liveAdSet.name, status: "PAUSED", daily_budget_cents: 0 };
+    } else if (progress.adset_id) {
       adset = {
         id: progress.adset_id,
         campaign_id: campaign.id,
         account_id: accountId,
         name: adSetInput.name ?? "Ad Set",
         status: "PAUSED",
-        daily_budget_cents: adSetPlan.daily_budget_cents,
+        daily_budget_cents: adSetPlan!.daily_budget_cents,
       };
     } else {
+      const plan = adSetPlan!;
       const res = await step("Create ad set", () =>
         this.graph.post<{ id: string }>(`${accountId}/adsets`, {
-          ...adSetPlan.body,
+          ...plan.body,
           campaign_id: campaign.id,
         }),
       );
@@ -2039,10 +2070,10 @@ export class MetaGraphProviderV2 implements MetaAdsProvider {
         account_id: accountId,
         name: adSetInput.name ?? "Ad Set",
         status: "PAUSED",
-        daily_budget_cents: adSetPlan.daily_budget_cents,
-        optimization_goal: adSetPlan.optimization_goal,
-        billing_event: adSetPlan.billing_event,
-        targeting_summary: JSON.stringify(adSetPlan.targeting),
+        daily_budget_cents: plan.daily_budget_cents,
+        optimization_goal: plan.optimization_goal,
+        billing_event: plan.billing_event,
+        targeting_summary: JSON.stringify(plan.targeting),
       };
       await record({ adset_id: adset.id });
     }

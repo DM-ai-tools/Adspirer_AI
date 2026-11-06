@@ -8,7 +8,14 @@ import { getCurrentUser } from "@/lib/security/auth";
 vi.mock("@/lib/approvals/service", () => ({ createPendingApproval: vi.fn() }));
 import { createPendingApproval } from "@/lib/approvals/service";
 
+const adsetsInCampaign = vi.hoisted(() => ({ list: [] as Array<Record<string, unknown>> }));
+vi.mock("@/lib/adspirer/client", () => ({
+  resolveProvider: async () => ({ listAdSets: async () => adsetsInCampaign.list }),
+}));
+vi.mock("@/lib/meta/resolve-page", () => ({ listFacebookPagesForAccountId: async () => [{ id: "pg_default", name: "Acme", source: "x" }] }));
+
 import { GET, POST } from "@/app/api/creatives/bulk/[runId]/publish/route";
+import { summariseTargeting } from "@/lib/meta/adset-summary";
 import { upsertCreativeDraftAsync } from "@/lib/creatives/drafts";
 import { createRun, updateRun } from "@/lib/creatives/bulk/runs";
 
@@ -121,5 +128,53 @@ describe("campaign settings as create arguments", () => {
     });
     expect(settingsToArgs({ budget_level: "ad_set" }).campaign_budget_optimization).toBe(false);
     expect(settingsToArgs(null)).toEqual({});
+  });
+});
+
+describe("sending into an ad set that is already there", () => {
+  const existing = (over: Record<string, unknown> = {}) => ({
+    ...plan,
+    destination: { mode: "existing", campaignId: "777", campaignName: "Evergreen", objective: "OUTCOME_LEADS", adSetId: "888", ...over },
+    ad: { landing_page_url: "https://www.acme.com/offer", call_to_action: "LEARN_MORE" },
+  });
+
+  it("names the ad set on the approval, sends none of its settings, and fills in the Page by itself", async () => {
+    adsetsInCampaign.list = [{ id: "888", name: "Warm audience", destination_type: "WEBSITE" }];
+    const run = await makeRun(15);
+    const res = await post(run.id, existing());
+    expect(res.status).toBe(200);
+    const call = vi.mocked(createPendingApproval).mock.calls[0]![0];
+    expect(call.proposedArgs).toMatchObject({ existing_campaign_id: "777", existing_adset_id: "888", existing_adset_name: "Warm audience", facebook_page_id: "pg_default" });
+    expect(call.proposedArgs).not.toHaveProperty("locations");
+    expect(call.proposedArgs).not.toHaveProperty("budget_daily");
+    expect(call.rationale).toMatch(/existing ad set “Warm audience”/);
+  });
+
+  it("refuses an ad set that is not in that campaign", async () => {
+    adsetsInCampaign.list = [{ id: "123", name: "Other" }];
+    const run = await makeRun(3);
+    const res = await post(run.id, existing());
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(createPendingApproval).not.toHaveBeenCalled();
+  });
+
+  it("asks for the lead form when the ad set collects leads on Facebook", async () => {
+    adsetsInCampaign.list = [{ id: "888", name: "Instant form", destination_type: "ON_AD" }];
+    const run = await makeRun(3);
+    expect((await post(run.id, existing())).status).toBeGreaterThanOrEqual(400);
+    expect(createPendingApproval).not.toHaveBeenCalled();
+    const withForm = existing();
+    (withForm.ad as Record<string, unknown>).lead_form_id = "444";
+    expect((await post(run.id, withForm)).status).toBe(200);
+    expect(vi.mocked(createPendingApproval).mock.calls[0]![0].proposedArgs.lead_form_id).toBe("444");
+  });
+});
+
+describe("describing an existing ad set's audience", () => {
+  it("summarises places, ages, gender and audiences", () => {
+    expect(summariseTargeting(JSON.stringify({ geo_locations: { countries: ["AU", "NZ"] }, age_min: 25, age_max: 55, genders: [2], custom_audiences: [{ id: "1" }] }))).toBe("AU, NZ · age 25–55 · women · 1 custom audience");
+    expect(summariseTargeting(JSON.stringify({ geo_locations: { cities: [{ key: "1" }] } }))).toBe("specific places");
+    expect(summariseTargeting("not json")).toBeNull();
+    expect(summariseTargeting(undefined)).toBeNull();
   });
 });

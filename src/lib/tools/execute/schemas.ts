@@ -194,6 +194,10 @@ const campaignBase = {
   campaign_name: z.string().min(1),
   /** Put the new ad set and its ads in this existing campaign instead of creating one. */
   existing_campaign_id: z.string().optional(),
+  /** With existing_campaign_id: add the ads to this ad set instead of creating one. */
+  existing_adset_id: z.string().optional(),
+  /** Shown on the approval only. */
+  existing_adset_name: z.string().optional(),
   ad_set_name: z.string().optional(),
   ad_name: z.string().optional(),
   objective: objective.optional(),

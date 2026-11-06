@@ -259,14 +259,25 @@ function summarizeArgs(
       rows.push(["Action", toolName === "pause_ad" ? "Pause" : "Resume (starts spending)"]);
       break;
     default: {
+      if (args.existing_campaign_id) {
+        // Ads go into something that is already in Meta; nothing about it is created or changed.
+        rows.push(["Adding to campaign", `${formatArgValue(args.campaign_name ?? args.existing_campaign_id)} (existing)`]);
+        rows.push([
+          "Ad set",
+          args.existing_adset_id
+            ? `${formatArgValue(args.existing_adset_name ?? args.existing_adset_id)} (existing, unchanged)`
+            : `${formatArgValue(args.ad_set_name)} (new)`,
+        ]);
+      }
       const name =
-        args.campaign_name ?? args.name ?? args.ad_set_name ?? args.ad_name;
-      if (name != null) rows.push(["Name", formatArgValue(name)]);
+        args.existing_campaign_id ? args.ad_name : (args.campaign_name ?? args.name ?? args.ad_set_name ?? args.ad_name);
+      if (name != null) rows.push([args.existing_campaign_id ? "First ad" : "Name", formatArgValue(name)]);
       if (args.campaign_id) rows.push(["Campaign", formatArgValue(args.campaign_id)]);
       if (args.ad_set_id ?? args.adset_id) {
         rows.push(["Ad set", formatArgValue(args.ad_set_id ?? args.adset_id)]);
       }
       if (args.objective) rows.push(["Objective", String(args.objective)]);
+      if (Array.isArray(args.extra_ads) && args.extra_ads.length) rows.push(["Ads", `${args.extra_ads.length + 1} ads, each with its own image and copy`]);
       const budget =
         args.budget_lifetime != null
           ? `${major(args.budget_lifetime)} lifetime`
