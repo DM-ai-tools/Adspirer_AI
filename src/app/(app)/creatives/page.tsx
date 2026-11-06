@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
-import { Check, ChevronDown, Download, Layers, Loader2, Palette, Sparkles, X } from "lucide-react";
+import { Check, ChevronDown, Download, Film, Layers, Loader2, Palette, Sparkles, X } from "lucide-react";
 import { toast } from "sonner";
 import { useApp } from "@/components/layout/app-provider";
 import { PageHeader } from "@/components/shared/page-header";
@@ -358,6 +358,13 @@ function CreativesInner() {
                   <span>
                     Bulk run (15 hooks)
                     <span className="block text-[11px] text-muted">15 ads, each a different angle</span>
+                  </span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => router.push("/creatives/video")}>
+                  <Film className="mr-2 h-4 w-4" />
+                  <span>
+                    Video ad
+                    <span className="block text-[11px] text-muted">3 scripts, then a Seedance video</span>
                   </span>
                 </DropdownMenuItem>
               </DropdownMenuContent>
