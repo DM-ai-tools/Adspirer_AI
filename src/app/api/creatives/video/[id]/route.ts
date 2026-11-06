@@ -3,7 +3,7 @@ import { getCurrentUser } from "@/lib/security/auth";
 import { assertAuthenticated, assertClientAccess } from "@/lib/authz/assert";
 import { deleteProject, getProject, updateProject, type VideoProject } from "@/lib/video/projects";
 import { projectName } from "@/lib/video/naming";
-import { viewGeneration } from "@/lib/video/generation";
+import { effectiveProject, viewGeneration } from "@/lib/video/generation";
 import { getObjectStorage } from "@/lib/storage/r2";
 import { writeProjectScripts } from "@/lib/video/brief";
 import { checkScript, MAX_SECONDS, type VideoScript } from "@/lib/video/script";
@@ -25,7 +25,8 @@ async function load(ctx: Ctx) {
   return project;
 }
 
-function view(project: VideoProject) {
+function view(raw: VideoProject) {
+  const project = effectiveProject(raw);
   const chosen = project.chosen_script;
   return {
     id: project.id,

@@ -4,7 +4,7 @@ import { getDemoStore } from "@/lib/demo/store";
 import type { VideoScript } from "@/lib/video/script";
 import type { AssetAnalysis } from "@/lib/video/assets";
 import type { ScriptProgress } from "@/lib/video/progress";
-import type { ClipState, GenerationPlan } from "@/lib/video/generation-types";
+import type { ClipState, FinalVideo, GenerationPlan } from "@/lib/video/generation-types";
 
 export type VideoAsset = {
   id: string;
@@ -39,7 +39,7 @@ export type VideoBrand = {
   corpus?: string;
 };
 
-export type VideoProjectStatus = "writing" | "scripts_ready" | "confirmed" | "generating" | "clips_ready" | "failed";
+export type VideoProjectStatus = "writing" | "scripts_ready" | "confirmed" | "generating" | "clips_ready" | "assembling" | "done" | "failed";
 
 export type VideoProject = {
   id: string;
@@ -58,6 +58,7 @@ export type VideoProject = {
   /** The video being made: the plan and each clip's state. */
   plan?: GenerationPlan | null;
   clips?: ClipState[] | null;
+  final?: FinalVideo | null;
   lease_until?: string | null;
   created_at: string;
   updated_at: string;
@@ -102,6 +103,7 @@ function mapRow(row: Record<string, unknown>): VideoProject {
     progress: (row.progress as ScriptProgress | null) ?? null,
     plan: (row.plan as GenerationPlan | null) ?? null,
     clips: (row.clips as ClipState[] | null) ?? null,
+    final: (row.final as FinalVideo | null) ?? null,
     lease_until: (row.lease_until as string | null) ?? null,
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),

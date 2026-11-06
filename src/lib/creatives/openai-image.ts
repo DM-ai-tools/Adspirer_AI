@@ -312,11 +312,11 @@ async function compositeOfficialLogo(
   return sharp(sourceImage).composite(layers).png().toBuffer();
 }
 
-function isSvg(buffer: Buffer): boolean {
+export function isSvg(buffer: Buffer): boolean {
   return /<svg[\s>]/i.test(buffer.subarray(0, 512).toString("utf8"));
 }
 
-async function loadLogoBuffer(logoUrl: string): Promise<Buffer> {
+export async function loadLogoBuffer(logoUrl: string): Promise<Buffer> {
   if (logoUrl.startsWith("data:")) {
     // Firecrawl ships SVG logos as `data:image/svg+xml;utf8,<percent-encoded>`,
     // so the media type can carry parameters other than base64. Matching only

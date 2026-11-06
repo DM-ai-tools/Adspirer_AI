@@ -3,7 +3,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronUp, CircleDashed, Film, ImagePlus, Loader2, MessageSquarePlus, Plus, RefreshCw, ShieldCheck, Sparkles, Trash2, Wand2, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronUp, CircleDashed, Download, Film, ImagePlus, Loader2, MessageSquarePlus, Plus, RefreshCw, ShieldCheck, Sparkles, Trash2, Wand2, X } from "lucide-react";
 import { toast } from "sonner";
 import { useApp } from "@/components/layout/app-provider";
 import { PageHeader } from "@/components/shared/page-header";
@@ -15,6 +15,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { apiFetch } from "@/lib/api-client";
 import { ADSPIRER_META_CTAS } from "@/lib/adspirer/skills/ad-copywriting";
@@ -89,8 +90,22 @@ type GenClip = {
   videoUrl: string | null;
 };
 
+type FinalView = {
+  state: "running" | "done" | "failed";
+  stage: string | null;
+  error: string | null;
+  seconds: number | null;
+  width: number | null;
+  height: number | null;
+  bytes: number | null;
+  videoUrl: string | null;
+  qa: Array<{ name: string; ok: boolean; detail: string }>;
+  includes: { captions: boolean; logo: boolean; endCard: boolean; stats: number; images: number; captionTiming: "transcript" | "estimated" | "none" } | null;
+};
+
 type GenerationView = {
-  status: "generating" | "clips_ready" | "failed" | "idle";
+  status: "generating" | "clips_ready" | "assembling" | "done" | "failed" | "idle";
+  final: FinalView | null;
   clips: GenClip[];
   spentUsd: number;
   blocked: string | null;
@@ -102,7 +117,7 @@ type Asset = { id: string; name: string; summary: string; kind: string | null; s
 type ProjectView = {
   id: string;
   name: string;
-  status: "writing" | "scripts_ready" | "confirmed" | "generating" | "clips_ready" | "failed";
+  status: "writing" | "scripts_ready" | "confirmed" | "generating" | "clips_ready" | "assembling" | "done" | "failed";
   error: string | null;
   inputs: { landingPageUrl: string | null; targetSeconds: number; format: string };
   assets: Asset[];
@@ -116,7 +131,7 @@ type ProjectView = {
 
 type HistoryItem = { id: string; name: string; status: ProjectView["status"]; created_at: string; landing_page_url: string | null; target_seconds: number; title: string | null };
 
-const STATUS_LABEL: Record<ProjectView["status"], string> = { writing: "Writing scripts", scripts_ready: "Scripts ready", confirmed: "Script confirmed", generating: "Making the video", clips_ready: "Clips ready", failed: "Failed" };
+const STATUS_LABEL: Record<ProjectView["status"], string> = { writing: "Writing scripts", scripts_ready: "Scripts ready", confirmed: "Script confirmed", generating: "Making the video", clips_ready: "Clips ready", assembling: "Finishing the video", done: "Finished", failed: "Failed" };
 const STYLES = ["auto", "UGC creator walkthrough", "Cinematic", "Motion graphics over footage", "Documentary", "3D animated"];
 const FORMATS = [
   { value: "9:16", label: "9:16 Reels & Stories" },
@@ -261,21 +276,39 @@ function FixBar({
   );
 }
 
+function FinishingOptions({ value, onChange }: { value: { captions: boolean; logo: boolean; endCard: boolean }; onChange: (v: { captions: boolean; logo: boolean; endCard: boolean }) => void }) {
+  const item = (key: "captions" | "logo" | "endCard", label: string) => (
+    <label className="flex items-center gap-2 text-xs">
+      <Checkbox checked={value[key]} onCheckedChange={(c) => onChange({ ...value, [key]: c === true })} />
+      {label}
+    </label>
+  );
+  return (
+    <div className="flex flex-wrap items-center gap-4">
+      <span className="text-[11px] font-medium">Add to the finished video:</span>
+      {item("captions", "Captions and highlighted words")}
+      {item("logo", "Your logo")}
+      {item("endCard", "End card with the call to action")}
+    </div>
+  );
+}
+
 /** Starts the video, follows each clip and keeps the work moving while the page is open. */
 function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: string; status: ProjectView["status"]; initial: GenerationView | null; onStatus: (s: ProjectView["status"]) => void }) {
   const [gen, setGen] = useState<GenerationView | null>(initial);
   const [starting, setStarting] = useState(false);
   const [busyClip, setBusyClip] = useState<number | null>(null);
   const advancing = useRef(false);
+  const [finishing, setFinishing] = useState({ captions: true, logo: true, endCard: true });
 
   useEffect(() => {
-    if (status !== "generating") return;
+    if (status !== "generating" && status !== "assembling") return;
     let stopped = false;
     let timer: number | undefined;
     const tick = async () => {
       try {
-        // Ask the server to take the next step (it also carries on in the background), then read the state.
-        if (!advancing.current) {
+        // While clips are being made, ask the server to take the next step (it also carries on in the background).
+        if (status === "generating" && !advancing.current) {
           advancing.current = true;
           await apiFetch<GenerationView>(`/api/creatives/video/${projectId}/generation`, { method: "POST", body: JSON.stringify({ action: "advance" }) })
             .then((g) => !stopped && setGen(g))
@@ -286,8 +319,9 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
         const g = await apiFetch<GenerationView>(`/api/creatives/video/${projectId}/generation`);
         if (stopped) return;
         setGen(g);
-        if (g.status !== "generating") onStatus(g.status === "clips_ready" ? "clips_ready" : g.status === "failed" ? "failed" : "confirmed");
-        else timer = window.setTimeout(() => void tick(), 4_000);
+        const moving = g.status === "generating" || g.status === "assembling";
+        if (g.status !== status) onStatus(g.status === "idle" ? "confirmed" : g.status);
+        if (moving) timer = window.setTimeout(() => void tick(), 4_000);
       } catch {
         if (!stopped) timer = window.setTimeout(() => void tick(), 6_000);
       }
@@ -299,12 +333,12 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
     };
   }, [projectId, status, onStatus]);
 
-  async function post(body: Record<string, unknown>, loading: () => void, done: () => void) {
+  async function post(body: Record<string, unknown>, loading: () => void, done: () => void, next: ProjectView["status"] = "generating") {
     loading();
     try {
       const g = await apiFetch<GenerationView>(`/api/creatives/video/${projectId}/generation`, { method: "POST", body: JSON.stringify(body) });
       setGen(g);
-      onStatus("generating");
+      onStatus(next);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not start");
     } finally {
@@ -320,23 +354,89 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
     return (
       <div className="space-y-2">
         <div className="flex flex-wrap items-center gap-3">
-          <Button disabled={starting || Boolean(blocked)} onClick={() => void post({ action: "start" }, () => setStarting(true), () => setStarting(false))}>
+          <Button disabled={starting || Boolean(blocked)} onClick={() => void post({ action: "start", finishing }, () => setStarting(true), () => setStarting(false))}>
             {starting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Film className="mr-2 h-4 w-4" />}
             Generate video
           </Button>
-          <p className="text-[11px] text-muted">Makes the clips one after another so the person and voice carry through. It takes a few minutes and keeps going if you leave.</p>
+          <p className="text-[11px] text-muted">Makes the clips one after another so the person and voice carry through, then joins them. It takes several minutes and keeps going if you leave.</p>
         </div>
+        <FinishingOptions value={finishing} onChange={setFinishing} />
         {blocked ? <p className="text-xs text-amber-500">{blocked}</p> : null}
       </div>
     );
   }
 
+  const final = gen?.final ?? null;
+  const allClips = clips.length > 0 && finished === clips.length;
+
   return (
     <div className="space-y-3">
+      {status === "assembling" || final?.state === "running" ? (
+        <div className="flex items-center gap-2 rounded-md border border-border p-3 text-sm">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          <span>
+            Finishing the video{final?.stage ? `: ${final.stage}` : ""}…
+            <span className="block text-[11px] text-muted">Joining the clips, timing the captions to the voice, adding your graphics, then checking the result. About a minute.</span>
+          </span>
+        </div>
+      ) : null}
+
+      {final?.state === "done" && final.videoUrl ? (
+        <div className="space-y-3 rounded-md border border-accent/40 p-3">
+          <p className="flex items-center gap-2 text-sm font-medium">
+            <Check className="h-4 w-4 text-accent" /> Finished video · {final.seconds}s · {final.width}x{final.height}
+          </p>
+          <div className="grid gap-4 md:grid-cols-[minmax(0,320px)_1fr]">
+            {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+            <video src={final.videoUrl} controls playsInline preload="metadata" className="aspect-[9/16] max-h-[560px] w-full rounded-md bg-black object-contain" />
+            <div className="space-y-3 text-xs">
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" asChild>
+                  <a href={`${final.videoUrl.split("?")[0]}?download=1`} download>
+                    <Download className="mr-1 h-3.5 w-3.5" />
+                    Download MP4
+                  </a>
+                </Button>
+              </div>
+              <div className="space-y-1">
+                <p className="text-[11px] font-medium">Checked before showing you</p>
+                <ul className="space-y-1">
+                  {final.qa.map((c) => (
+                    <li key={c.name} className={cn("flex gap-1.5", c.ok ? "text-muted" : "text-amber-500")}>
+                      {c.ok ? <Check className="mt-0.5 h-3 w-3 shrink-0 text-accent" /> : <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />}
+                      <span>
+                        {c.name}: {c.detail}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              {final.includes ? (
+                <p className="text-muted">
+                  Includes: {[final.includes.captions ? (final.includes.captionTiming === "transcript" ? "captions timed to the voice" : "captions (timing estimated)") : null, final.includes.logo ? "logo" : null, final.includes.stats ? `${final.includes.stats} stat${final.includes.stats === 1 ? "" : "s"}` : null, final.includes.images ? `${final.includes.images} of your image${final.includes.images === 1 ? "" : "s"}` : null, final.includes.endCard ? "end card" : null].filter(Boolean).join(", ")}.
+                </p>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {final?.state === "failed" ? <p className="text-xs text-destructive">Could not finish the video: {final.error}</p> : null}
+
+      {allClips && status !== "assembling" && status !== "generating" ? (
+        <div className="space-y-2">
+          <FinishingOptions value={finishing} onChange={setFinishing} />
+          <Button size="sm" variant={final?.state === "done" ? "secondary" : "default"} disabled={starting} onClick={() => void post({ action: "assemble", finishing }, () => setStarting(true), () => setStarting(false), "assembling")}>
+            {starting ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Film className="mr-1 h-3.5 w-3.5" />}
+            {final?.state === "done" ? "Finish the video again with these options" : "Join the clips and finish the video"}
+          </Button>
+        </div>
+      ) : null}
+
       <div className="space-y-1.5">
         <div className="flex items-baseline justify-between text-sm">
           <span className="font-medium">
-            {status === "clips_ready" ? "Clips ready" : status === "failed" ? "Stopped" : "Making the video"}: {finished} of {clips.length} clips done
+            {status === "clips_ready" || status === "done" || status === "assembling" ? "Clips ready" : status === "failed" ? "Stopped" : "Making the video"}: {finished} of {clips.length} clips done
           </span>
           {gen ? <span className="text-xs text-muted">${gen.spentUsd.toFixed(2)} spent so far</span> : null}
         </div>
@@ -402,7 +502,6 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
           </div>
         ))}
       </div>
-      {status === "clips_ready" ? <p className="text-xs text-muted">All clips are made. Joining them into one finished video, with captions, highlights, your images and the logo, is the next step.</p> : null}
     </div>
   );
 }
@@ -909,7 +1008,7 @@ function VideoInner() {
 
           {view.status === "writing" ? (
             <ProgressCard progress={view.progress} hasImages={view.assets.length > 0} />
-          ) : view.chosenScript && (["confirmed", "generating", "clips_ready"].includes(view.status) || (view.status === "failed" && (view.generation?.clips.length ?? 0) > 0)) ? (
+          ) : view.chosenScript && (["confirmed", "generating", "clips_ready", "assembling", "done"].includes(view.status) || (view.status === "failed" && (view.generation?.clips.length ?? 0) > 0)) ? (
             <div className="space-y-4">
               <Card className="border-accent/40">
                 <CardContent className="space-y-3 p-4">

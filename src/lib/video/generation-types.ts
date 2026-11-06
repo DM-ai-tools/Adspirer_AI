@@ -24,6 +24,33 @@ export type ClipState = {
   prompt: string | null;
 };
 
+export type Finishing = {
+  captions: boolean;
+  logo: boolean;
+  endCard: boolean;
+};
+
+export const DEFAULT_FINISHING: Finishing = { captions: true, logo: true, endCard: true };
+
+export type QaCheck = { name: string; ok: boolean; detail: string };
+
+/** The finished video, or the state of making it. */
+export type FinalVideo = {
+  state: "running" | "done" | "failed";
+  /** What the step is doing now, for the screen. */
+  stage: string | null;
+  error: string | null;
+  startedAt: string;
+  key: string | null;
+  seconds: number | null;
+  width: number | null;
+  height: number | null;
+  bytes: number | null;
+  createdAt: string | null;
+  qa: QaCheck[];
+  includes: { captions: boolean; logo: boolean; endCard: boolean; stats: number; images: number; captionTiming: "transcript" | "estimated" | "none" } | null;
+};
+
 export type ReferenceImage = {
   url: string;
   /** Our own copy for showing on screen. */
@@ -44,11 +71,16 @@ export type GenerationPlan = {
   setting: ReferenceImage | null;
   /** True when each later clip also gets the one before it as a reference, to keep the face and voice the same. */
   chainVideo: boolean;
+  /** What the finishing step adds. */
+  finishing: Finishing;
   createdAt: string;
 };
 
+export type FinalView = Omit<FinalVideo, "key"> & { videoUrl: string | null };
+
 export type GenerationView = {
-  status: "generating" | "clips_ready" | "failed" | "idle";
+  status: "generating" | "clips_ready" | "assembling" | "done" | "failed" | "idle";
+  final: FinalView | null;
   plan: (Omit<GenerationPlan, "character" | "setting"> & { character: boolean; setting: boolean }) | null;
   clips: Array<Omit<ClipState, "taskId" | "sourceVideoUrl" | "lastFrameUrl" | "videoKey" | "prompt"> & { hasVideo: boolean; videoUrl: string | null }>;
   spentUsd: number;

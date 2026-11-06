@@ -14,8 +14,9 @@ import {
   type VideoResolution,
 } from "@/lib/video/seedance";
 import { createReferenceImage } from "@/lib/video/seedream";
+import { assembleVideo } from "@/lib/video/assemble";
 import { generationRatio, previewPlan } from "@/lib/video/plan-view";
-import type { ClipState, GenerationPlan, GenerationView } from "@/lib/video/generation-types";
+import { DEFAULT_FINISHING, type ClipState, type Finishing, type GenerationPlan, type GenerationView } from "@/lib/video/generation-types";
 import { claimProjectLease, getProject, releaseProjectLease, updateProject, type VideoProject } from "@/lib/video/projects";
 
 /** A reference image or clip address from ModelArk stops working after 24 hours; stop using one well before. */
@@ -40,7 +41,7 @@ export function blockedReason(project: VideoProject): string | null {
 }
 
 /** The plan and the empty clip list for a confirmed script. */
-export function buildPlan(project: VideoProject): { plan: GenerationPlan; clips: ClipState[] } {
+export function buildPlan(project: VideoProject, finishing: Finishing = DEFAULT_FINISHING): { plan: GenerationPlan; clips: ClipState[] } {
   const script = project.chosen_script;
   if (!script) throw new Error("Confirm a script first.");
   const preview = previewPlan(script, project.inputs, project.assets.length);
@@ -58,6 +59,7 @@ export function buildPlan(project: VideoProject): { plan: GenerationPlan; clips:
     character: null,
     setting: null,
     chainVideo,
+    finishing,
     createdAt: new Date().toISOString(),
   };
   const clips: ClipState[] = preview.clips.map((c) => ({
@@ -79,11 +81,11 @@ export function buildPlan(project: VideoProject): { plan: GenerationPlan; clips:
   return { plan, clips };
 }
 
-export async function startGeneration(projectId: string): Promise<VideoProject> {
+export async function startGeneration(projectId: string, finishing: Finishing = DEFAULT_FINISHING): Promise<VideoProject> {
   const project = await getProject(projectId);
   if (!project) throw new Error("Video project not found");
-  const { plan, clips } = buildPlan(project);
-  return updateProject(projectId, { plan, clips, status: "generating", error: null });
+  const { plan, clips } = buildPlan(project, finishing);
+  return updateProject(projectId, { plan, clips, final: null, status: "generating", error: null });
 }
 
 /** Everything needed to ask for one clip. */
@@ -251,7 +253,12 @@ export async function runGeneration(projectId: string, budgetMs = 240_000, sleep
   let last: StepResult = "working";
   while (Date.now() - started < budgetMs) {
     last = await advance(projectId);
-    if (last === "done" || last === "failed") return last;
+    if (last === "done") {
+      // Every clip is made: join them and finish the video straight away.
+      await assembleVideo(projectId);
+      return last;
+    }
+    if (last === "failed") return last;
     if (last === "idle") {
       const p = await getProject(projectId);
       if (!p || p.status !== "generating") return last;
@@ -276,13 +283,24 @@ export async function regenerateFrom(projectId: string, fromClip: number): Promi
   });
   // From clip 1 the references are made fresh too, so a new take starts from a new, matching person.
   const plan = { ...project.plan, character: fromClip === 1 ? null : project.plan.character, setting: fromClip === 1 ? null : project.plan.setting };
-  return updateProject(projectId, { clips, plan, status: "generating", error: null });
+  return updateProject(projectId, { clips, plan, final: null, status: "generating", error: null });
+}
+
+/** Assembling takes about a minute. One that has been "running" far longer was interrupted (a restart, a crash): show it as such. */
+const ASSEMBLY_STALE_MS = 8 * 60 * 1000;
+
+export function effectiveProject(project: VideoProject, now = Date.now()): VideoProject {
+  if (project.status === "assembling" && project.final && now - Date.parse(project.final.startedAt) > ASSEMBLY_STALE_MS) {
+    return { ...project, status: "clips_ready", final: { ...project.final, state: "failed", stage: null, error: "Finishing the video was interrupted. Try again." } };
+  }
+  return project;
 }
 
 /** What the screen reads: state per clip, without internal addresses. */
-export function viewGeneration(project: VideoProject): GenerationView {
+export function viewGeneration(raw: VideoProject): GenerationView {
+  const project = effectiveProject(raw);
   const clips = project.clips ?? [];
-  const status = project.status === "generating" ? "generating" : project.status === "clips_ready" ? "clips_ready" : project.status === "failed" && clips.length ? "failed" : "idle";
+  const status = project.status === "generating" ? "generating" : project.status === "clips_ready" ? "clips_ready" : project.status === "assembling" ? "assembling" : project.status === "done" ? "done" : project.status === "failed" && clips.length ? "failed" : "idle";
   return {
     status,
     // The reference images' addresses and the prompts stay on the server.
@@ -300,8 +318,9 @@ export function viewGeneration(project: VideoProject): GenerationView {
       hasVideo: Boolean(c.videoKey),
       videoUrl: c.videoKey ? `/api/creatives/video/${project.id}/clips/${c.number}?v=${encodeURIComponent(c.finishedAt ?? "")}` : null,
     })),
+    final: project.final ? (({ key, ...rest }) => ({ ...rest, videoUrl: key ? `/api/creatives/video/${project.id}/final?v=${encodeURIComponent(rest.createdAt ?? "")}` : null }))(project.final) : null,
     spentUsd: Math.round(clips.reduce((t, c) => t + (c.usd ?? 0), 0) * 100) / 100,
-    blocked: project.status === "confirmed" || project.status === "clips_ready" ? blockedReason(project) : null,
+    blocked: ["confirmed", "clips_ready", "done"].includes(project.status) ? blockedReason(project) : null,
     error: project.error,
   };
 }

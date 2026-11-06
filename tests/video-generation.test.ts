@@ -290,3 +290,30 @@ describe("before starting", () => {
     expect(plan.reasons.join(" ")).toMatch(/has no API key here/);
   });
 });
+
+describe("assembly follows the clips", () => {
+  it("finishes the video by itself once every clip is made", async () => {
+    const assembled: string[] = [];
+    vi.doMock("@/lib/video/assemble", () => ({ assembleVideo: async (id: string) => void assembled.push(id) }));
+    vi.resetModules();
+    const { startGeneration, runGeneration } = await import("@/lib/video/generation");
+    const { createProject, updateProject } = await import("@/lib/video/projects");
+    const p = await createProject({ clientId: "c1", inputs: { landingPageUrl: "https://a.test", stats: [], targetSeconds: 35, style: "auto", locale: "en-AU", format: "9:16", priority: "balanced" } });
+    await updateProject(p.id, { chosen_script: script(), status: "confirmed" });
+    await startGeneration(p.id, { captions: true, logo: true, endCard: false });
+    await runGeneration(p.id, 60_000, noSleep);
+    expect(assembled).toEqual([p.id]);
+    vi.doUnmock("@/lib/video/assemble");
+  });
+
+  it("shows a join that has been running far too long as interrupted, so the screen is never stuck", async () => {
+    const { effectiveProject } = await import("@/lib/video/generation");
+    const old = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+    const project = { id: "x", status: "assembling", final: { state: "running", startedAt: old, stage: "Joining the clips", error: null } } as never;
+    const out = effectiveProject(project);
+    expect(out.status).toBe("clips_ready");
+    expect(out.final!.state).toBe("failed");
+    const fresh = effectiveProject({ id: "x", status: "assembling", final: { state: "running", startedAt: new Date().toISOString() } } as never);
+    expect(fresh.status).toBe("assembling");
+  });
+});
