@@ -118,7 +118,7 @@ async function writeFromUploadedScript(input: { project: VideoProject; brief: Vi
 
   await stage("understanding");
   const split = await structureUploadedScript(scriptText, ctx);
-  let script = assembleUploaded({ structured: split.structured, lines: split.lines, restoredScenes: split.restoredScenes, removedScenes: split.removedScenes, unused: split.unused, assetIds: ctx.assetIds });
+  let script = assembleUploaded({ structured: split.structured, lines: split.lines, restoredScenes: split.restoredScenes, removedScenes: split.removedScenes, addedScenes: split.addedScenes, unused: split.unused, assetIds: ctx.assetIds });
 
   await stage("writing");
   script = { ...script, adCopy: await adCopyForUploaded({ script, provided: project.inputs.adCopyText?.trim() || null, ctx }) };

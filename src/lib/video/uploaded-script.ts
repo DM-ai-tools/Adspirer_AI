@@ -6,6 +6,7 @@ import { BULK_ANGLES, STAGE_LABEL } from "@/lib/creatives/bulk/angles";
 import { FRAMEWORKS, sceneSchema, type VideoScene, type VideoScript } from "@/lib/video/script";
 import { rewriteAdCopy } from "@/lib/video/rewrite";
 import { restoreVerbatim, unusedText, verbatimCheck } from "@/lib/video/verbatim";
+import { restoreMissingSpeech, spokenBlocks } from "@/lib/video/spoken-blocks";
 import { retime } from "@/lib/video/timing";
 import { HUMAN_VOICE } from "@/lib/video/voice";
 import { VISUAL_DIRECTION_RULES } from "@/lib/video/visual-rules";
@@ -98,7 +99,9 @@ export async function structureUploadedScript(
   scriptText: string,
   ctx: UploadedContext,
   onFeedback?: string,
-): Promise<{ structured: Structured; lines: string[]; restoredScenes: number[]; removedScenes: number[]; unused: string[] }> {
+): Promise<{ structured: Structured; lines: string[]; restoredScenes: number[]; removedScenes: number[]; addedScenes: number[]; unused: string[] }> {
+  // The spoken parts the script labels itself ("VO:", "Presenter:"): every one must end up in a scene.
+  const labelled = spokenBlocks(scriptText);
   const call = async (feedback?: string) => {
     const { object } = await generateObject({
       model: ctx.model,
@@ -112,6 +115,11 @@ export async function structureUploadedScript(
         ">>>",
         "\nFACTS ABOUT THE BUSINESS (for visuals and context only, never to change the script):\n" + ctx.facts,
         `\nSplit the script into scenes at its natural beats (a sentence or a clause end), so each scene is one idea and at most about ${MAX_WORDS_PER_SCENE} words of speech. Anything that is not meant to be said aloud (scene headings, camera or editor notes, speaker labels such as "VO:" or "Presenter:", timings) is a direction: use it for the visual, camera, speaker and sound, and do not put it in a spoken line. Copy every spoken word exactly, in order, losing none and adding none. If the script gives a presenter or a setting, use its description.`,
+        labelled.length
+          ? `This script labels ${labelled.length} spoken part${labelled.length === 1 ? "" : "s"}. Every one of them must be spoken in full, in this order, none left out or merged away (split a long one into two scenes at a sentence end if you need to):\n${labelled.map((b, i) => `${i + 1}. ${b.text}`).join("\n")}`
+          : null,
+        `Anything the script says is printed on screen ("Text Overlay", "On screen", "Super") is not spoken: keep it out of the spoken lines. If it is, or contains, a number or figure, use that figure exactly as written as the scene's stat; otherwise pick its key words (from the spoken line) to highlight.`,
+        `Where the script names an uploaded image or asset ("Uploaded Asset Placeholder", "[PLACEHOLDER: name]"), give that scene the id of the uploaded image with that name from the facts (match by name). A logo is not an image to show in a scene: leave asset_id null for it.`,
         `Speaker: on_camera when a person is shown speaking to camera, voiceover when the words are an unseen voice, none for a beat with no speech.`,
         `Language: ${ctx.locale}. Where you write a visual, camera or sound, make it concrete and filmable.`,
         `Where the script gives its own visual direction, keep it as written. Where you propose a visual yourself:\n${VISUAL_DIRECTION_RULES}`,
@@ -137,15 +145,26 @@ export async function structureUploadedScript(
   }
   const restore = restoreVerbatim(scriptText, structured.scenes.map((s) => s.line));
   // A line with nothing like it in the script was invented: it is removed rather than kept.
-  const removed: number[] = [];
-  const lines = restore.lines.map((line, i) => {
+  const removedIdx: number[] = [];
+  const kept = restore.lines.map((line, i) => {
     if (line.trim() && !restore.spans[i]) {
-      removed.push(i + 1);
+      removedIdx.push(i);
       return "";
     }
     return line;
   });
-  return { structured, lines, restoredScenes: restore.restored.map((i) => i + 1), removedScenes: removed, unused: unusedText(scriptText, restore.spans) };
+  // A spoken part the script labels that no scene carries was skipped by the analysis: put it back where it belongs.
+  const repaired = restoreMissingSpeech(scriptText, structured.scenes, kept, restore.spans);
+  structured = { ...structured, scenes: repaired.scenes };
+  const renumber = (idx: number[]) => idx.map((old) => repaired.from.indexOf(old) + 1).filter((n) => n > 0);
+  return {
+    structured,
+    lines: repaired.lines,
+    restoredScenes: renumber(restore.restored),
+    removedScenes: renumber(removedIdx),
+    addedScenes: repaired.added,
+    unused: unusedText(scriptText, repaired.spans),
+  };
 }
 
 /** Pair the operator's ad copy (kept exactly) with the headline, description and button it did not include. */
@@ -216,11 +235,11 @@ export async function applyChangeRequest(script: VideoScript, request: string, c
     };
     if (adCopy.primaryText !== was) changes.push({ target: "Ad copy", was, now: adCopy.primaryText });
   }
-  return { ...script, scenes: retime(scenes), durationSeconds: retime(scenes).at(-1)?.end ?? script.durationSeconds, adCopy, handling: { restoredScenes: script.handling?.restoredScenes ?? [], removedScenes: script.handling?.removedScenes ?? [], unusedText: script.handling?.unusedText ?? [], changes } };
+  return { ...script, scenes: retime(scenes), durationSeconds: retime(scenes).at(-1)?.end ?? script.durationSeconds, adCopy, handling: { restoredScenes: script.handling?.restoredScenes ?? [], removedScenes: script.handling?.removedScenes ?? [], addedScenes: script.handling?.addedScenes ?? [], unusedText: script.handling?.unusedText ?? [], changes } };
 }
 
 /** Build the VideoScript from the structured result (the operator's words, with visuals added). */
-export function assembleUploaded(input: { structured: Structured; lines: string[]; restoredScenes: number[]; removedScenes: number[]; unused: string[]; assetIds: string[] }): VideoScript {
+export function assembleUploaded(input: { structured: Structured; lines: string[]; restoredScenes: number[]; removedScenes: number[]; addedScenes?: number[]; unused: string[]; assetIds: string[] }): VideoScript {
   const { structured } = input;
   const angle = BULK_ANGLES.find((a) => a.key === structured.angle_key) ?? BULK_ANGLES[0]!;
   const framework = FRAMEWORKS.find((f) => f.key === structured.framework_key);
@@ -241,7 +260,7 @@ export function assembleUploaded(input: { structured: Structured; lines: string[
     adCopy: { primaryText: "", headline: "", description: "", cta: "Learn More" },
     warnings: [],
     source: "uploaded",
-    handling: { restoredScenes: input.restoredScenes, removedScenes: input.removedScenes, unusedText: input.unused, changes: [] },
+    handling: { restoredScenes: input.restoredScenes, removedScenes: input.removedScenes, addedScenes: input.addedScenes ?? [], unusedText: input.unused, changes: [] },
   };
 }
 

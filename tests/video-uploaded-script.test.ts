@@ -144,19 +144,19 @@ describe("structuring an uploaded script", () => {
 
 describe("changes the operator asks for", () => {
   it("touches only what the request mentions, and keeps the original wording to put back", async () => {
-    scenesFromModel = [sc("I thought my Google Ads were working fine."), sc("Turns out I had no idea where the budget was actually going."), sc("So if you're spending on ads, get yours checked.")];
-    changeFromModel = { understood: "Make the last line shorter", scene_changes: [{ scene: 3, line: "Get your ads checked.", visual: null, camera: null, keywords: null, stat: null, sound: null }], ad_copy: null };
+    scenesFromModel = [sc("I thought my Google Ads were working fine."), sc("Turns out I had no idea where the budget was actually going."), sc("Traffic Radius ran a free audit and found the leaks straight away. They manage over $120 million in ad spend."), sc("So if you're spending on ads, get yours checked.")];
+    changeFromModel = { understood: "Make the last line shorter", scene_changes: [{ scene: 4, line: "Get your ads checked.", visual: null, camera: null, keywords: null, stat: null, sound: null }], ad_copy: null };
     const { structureUploadedScript, assembleUploaded, applyChangeRequest } = await import("@/lib/video/uploaded-script");
     const split = await structureUploadedScript(SCRIPT, ctx());
     const script = assembleUploaded({ structured: split.structured, lines: split.lines, restoredScenes: [], removedScenes: [], unused: [], assetIds: [] });
     const changed = await applyChangeRequest(script, "Make the last line shorter", ctx());
     expect(changed.scenes[0]!.line).toBe(script.scenes[0]!.line);
     expect(changed.scenes[1]!.line).toBe(script.scenes[1]!.line);
-    expect(changed.scenes[2]!.line).toBe("Get your ads checked.");
-    expect(changed.scenes[2]!.originalLine).toBe("So if you're spending on ads, get yours checked.");
-    expect(changed.handling!.changes).toEqual([{ target: "Scene 3 words", was: "So if you're spending on ads, get yours checked.", now: "Get your ads checked." }]);
+    expect(changed.scenes[3]!.line).toBe("Get your ads checked.");
+    expect(changed.scenes[3]!.originalLine).toBe("So if you're spending on ads, get yours checked.");
+    expect(changed.handling!.changes).toEqual([{ target: "Scene 4 words", was: "So if you're spending on ads, get yours checked.", now: "Get your ads checked." }]);
     // the length follows the new, shorter line
-    expect(changed.scenes[2]!.seconds).toBeLessThanOrEqual(script.scenes[2]!.seconds);
+    expect(changed.scenes[3]!.seconds).toBeLessThanOrEqual(script.scenes[3]!.seconds);
   });
 
   it("changes nothing when the model returns nothing for a request that touches nothing", async () => {

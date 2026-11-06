@@ -97,6 +97,8 @@ export type VideoScript = {
     restoredScenes: number[];
     /** Scenes where the model had added words that are not in the script, which were removed. */
     removedScenes: number[];
+    /** Scenes added because the analysis had skipped a spoken part the script labels (a VO line); its exact words were put in. */
+    addedScenes?: number[];
     /** Parts of the script that were not spoken lines (directions, notes) and were not put in any scene's words. */
     unusedText: string[];
     changes: Array<{ target: string; was: string; now: string }>;
