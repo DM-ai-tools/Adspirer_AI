@@ -56,7 +56,7 @@ type Script = {
   id: string;
   verification?: Verification | null;
   source?: "written" | "uploaded";
-  handling?: { restoredScenes: number[]; removedScenes: number[]; unusedText: string[]; changes: Array<{ target: string; was: string; now: string }> } | null;
+  handling?: { restoredScenes: number[]; removedScenes: number[]; addedScenes?: number[]; unusedText: string[]; changes: Array<{ target: string; was: string; now: string }> } | null;
   title: string;
   angle: { key: string; name: string; stage: string; kind: string };
   pain: string;
@@ -1269,6 +1269,7 @@ function VideoInner() {
                           {draft.handling?.changes.length ? " except where you asked for a change" : ""}. Visuals, camera, sound and the ad copy were added around it.
                         </p>
                         {draft.handling?.restoredScenes.length ? <p className="text-muted">Scene{draft.handling.restoredScenes.length === 1 ? "" : "s"} {draft.handling.restoredScenes.join(", ")}: the reader had reworded your text, so your exact words were put back.</p> : null}
+                        {draft.handling?.addedScenes?.length ? <p className="text-muted">Scene{draft.handling.addedScenes.length === 1 ? "" : "s"} {draft.handling.addedScenes.join(", ")}: a spoken part of your script had been left out, so it was put back with your exact words.</p> : null}
                         {draft.handling?.removedScenes?.length ? <p className="text-muted">Scene{draft.handling.removedScenes.length === 1 ? "" : "s"} {draft.handling.removedScenes.join(", ")}: words that were not in your script were removed.</p> : null}
                         {draft.handling?.unusedText.length ? (
                           <div className="text-muted">

@@ -8,25 +8,46 @@
  */
 
 const words = (text: string) => text.trim().split(/\s+/).filter(Boolean);
-const norm = (w: string) => w.toLowerCase().replace(/[^a-z0-9]/g, "");
+const norm = (w: string) => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+
+/**
+ * The original's words for matching. A dash, an ellipsis or a bullet standing alone between words is not a
+ * word, so it is left out of the matching and put back in between when a span is read back. `at` maps a
+ * matching index to its place in the original's words.
+ */
+function prepare(original: string): { raw: string[]; norm: string[]; at: number[] } {
+  const raw = words(original);
+  const normalised: string[] = [];
+  const at: number[] = [];
+  raw.forEach((w, i) => {
+    const n = norm(w);
+    if (!n) return;
+    normalised.push(n);
+    at.push(i);
+  });
+  return { raw, norm: normalised, at };
+}
+
+/** A span in matching space as a span in the original's words. */
+const inOriginal = (span: Span, at: number[]): Span => ({ start: at[span.start]!, end: at[span.end]! });
+
+/** Quotation marks around a whole line are not part of what is said. */
+const stripQuotes = (text: string) => text.replace(/^[“"]+\s*/, "").replace(/\s*[”"]+$/, "");
 
 /** How far past the previous word a match may be found inside a line: a note or label can sit between lines, never inside one. */
 const INSIDE_LINE_SKIP = 3;
-/** How far a line's first word may be from the end of the previous line. */
-const BETWEEN_LINES_SKIP = 80;
+/**
+ * How far a line's first word may be from the end of the previous line. Directions, overlays and
+ * placeholders sit between lines in a real script, easily 100+ words, so this is generous.
+ */
+const BETWEEN_LINES_SKIP = 1500;
+/** How many places a line's first word is tried at: it may be a common word that also appears in a direction. */
+const MAX_START_CANDIDATES = 60;
 
 export type Span = { start: number; end: number };
 
-/** Align one line's words to the original starting at `from`. Returns the span in the original and how many words matched. */
-function alignFrom(original: string[], line: string[], from: number): { span: Span; matched: number } | null {
-  let first = -1;
-  for (let k = from; k < Math.min(original.length, from + BETWEEN_LINES_SKIP); k += 1) {
-    if (original[k] === line[0]) {
-      first = k;
-      break;
-    }
-  }
-  if (first < 0) return null;
+/** Align a line starting exactly at `first`. */
+function alignAt(original: string[], line: string[], first: number): { span: Span; matched: number } {
   let ptr = first + 1;
   let matched = 1;
   let end = first;
@@ -47,6 +68,24 @@ function alignFrom(original: string[], line: string[], from: number): { span: Sp
   return { span: { start: first, end }, matched };
 }
 
+/**
+ * Align one line's words to the original starting at `from`. Returns the span in the original and how many words matched.
+ * The line's first word may appear several times (a direction can repeat it), so each place is tried: the earliest
+ * place where the whole line matches wins, otherwise the place where the most words match.
+ */
+function alignFrom(original: string[], line: string[], from: number): { span: Span; matched: number } | null {
+  let best: { span: Span; matched: number } | null = null;
+  let tried = 0;
+  for (let k = from; k < Math.min(original.length, from + BETWEEN_LINES_SKIP) && tried < MAX_START_CANDIDATES; k += 1) {
+    if (original[k] !== line[0]) continue;
+    tried += 1;
+    const a = alignAt(original, line, k);
+    if (a.matched === line.length && a.span.end - a.span.start + 1 === line.length) return a;
+    if (!best || a.matched > best.matched) best = a;
+  }
+  return best;
+}
+
 export type VerbatimResult = {
   /** True when every line is exactly the original's words, in order. */
   ok: boolean;
@@ -58,7 +97,8 @@ export type VerbatimResult = {
 
 /** Check each line against the original text, in order. */
 export function verbatimCheck(original: string, lines: string[]): VerbatimResult {
-  const orig = words(original).map(norm);
+  const prepared = prepare(original);
+  const orig = prepared.norm;
   const spans: Array<Span | null> = [];
   const altered: number[] = [];
   let ptr = 0;
@@ -72,10 +112,10 @@ export function verbatimCheck(original: string, lines: string[]): VerbatimResult
     // Exact when every word was found, and the span is as long as the line (no word swallowed or added).
     const exact = aligned && aligned.matched === toks.length && aligned.span.end - aligned.span.start + 1 === toks.length;
     if (aligned && exact) {
-      spans.push(aligned.span);
+      spans.push(inOriginal(aligned.span, prepared.at));
       ptr = aligned.span.end + 1;
     } else {
-      spans.push(aligned ? aligned.span : null);
+      spans.push(aligned ? inOriginal(aligned.span, prepared.at) : null);
       altered.push(index);
       if (aligned) ptr = aligned.span.end + 1;
     }
@@ -89,8 +129,9 @@ export function verbatimCheck(original: string, lines: string[]): VerbatimResult
  * original spelling and punctuation.
  */
 export function restoreVerbatim(original: string, lines: string[]): { lines: string[]; restored: number[]; spans: Array<Span | null> } {
-  const rawWords = words(original);
-  const orig = rawWords.map(norm);
+  const prepared = prepare(original);
+  const rawWords = prepared.raw;
+  const orig = prepared.norm;
   const out = [...lines];
   const restored: number[] = [];
   const spans: Array<Span | null> = [];
@@ -106,7 +147,7 @@ export function restoreVerbatim(original: string, lines: string[]): { lines: str
       return a && a.matched === toks.length && a.span.end - a.span.start + 1 === toks.length ? a : null;
     })();
     if (exact) {
-      spans.push(exact.span);
+      spans.push(inOriginal(exact.span, prepared.at));
       ptr = exact.span.end + 1;
       return;
     }
@@ -121,9 +162,10 @@ export function restoreVerbatim(original: string, lines: string[]): { lines: str
       }
     }
     if (best && best.matched >= Math.max(2, Math.ceil(toks.length * 0.5))) {
-      out[index] = rawWords.slice(best.span.start, best.span.end + 1).join(" ");
+      const raw = inOriginal(best.span, prepared.at);
+      out[index] = stripQuotes(rawWords.slice(raw.start, raw.end + 1).join(" "));
       restored.push(index);
-      spans.push(best.span);
+      spans.push(raw);
       ptr = best.span.end + 1;
     } else {
       spans.push(null);
