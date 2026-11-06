@@ -71,6 +71,7 @@ const CAMPAIGN_SETTING_KEYS = [
   "pixel_event_name",
   "lead_form_id",
   "attribution",
+  "advantage_audience",
   "bid_strategy",
   "bid_amount",
   "roas_average_floor",
@@ -86,6 +87,7 @@ const CAMPAIGN_SETTING_KEYS = [
 ] as const;
 
 const TARGETING_KEYS = [
+  "advantage_audience",
   "locations",
   "interests",
   "behaviors",

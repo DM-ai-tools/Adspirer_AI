@@ -10,7 +10,8 @@ import { z } from "zod";
 const cents = z.number().int("must be whole cents").positive();
 
 export const BUSINESS_MODELS = ["ecommerce", "lead_gen", "local_service", "b2b", "other"] as const;
-export const ATTRIBUTION_SETTINGS = ["7d_click_1d_view", "7d_click", "1d_click"] as const;
+// "7d_click_1d_view_1d_engaged" is Meta's own newer default: 7-day click, 1-day view and 1-day engaged view.
+export const ATTRIBUTION_SETTINGS = ["7d_click_1d_view_1d_engaged", "7d_click_1d_view", "7d_click", "1d_click"] as const;
 export const SPECIAL_AD_CATEGORIES = [
   "NONE",
   "HOUSING",

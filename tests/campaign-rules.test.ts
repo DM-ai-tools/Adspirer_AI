@@ -68,8 +68,9 @@ describe("performanceGoalsFor", () => {
 });
 
 describe("attributionOptionsFor", () => {
-  it("offers the three windows for conversion goals only", () => {
+  it("offers the windows for conversion goals only, including 7-day click + 1-day view + 1-day engagement", () => {
     expect(attributionOptionsFor("OFFSITE_CONVERSIONS").map((o) => o.id)).toEqual([
+      "7d_click_1d_view_1d_engaged",
       "7d_click_1d_view",
       "7d_click",
       "1d_click",
@@ -204,5 +205,17 @@ describe("conversion events", () => {
       ctx("OUTCOME_LEADS"),
     );
     expect(good.ok).toBe(true);
+  });
+});
+
+describe("advantage_audience on the settings", () => {
+  const ctx = { objective: "OUTCOME_TRAFFIC" as const, hasPixel: true, hasLeadForm: true };
+  it("allows the preferred-audience choice with any age range", () => {
+    expect(validateCampaignSettings({ advantage_audience: false, age_min: 30, age_max: 50 }, ctx).ok).toBe(true);
+  });
+  it("refuses Advantage+ audience with an age limit it cannot keep", () => {
+    expect(validateCampaignSettings({ advantage_audience: true, age_min: 30 }, ctx).ok).toBe(false);
+    expect(validateCampaignSettings({ advantage_audience: true, age_max: 55 }, ctx).ok).toBe(false);
+    expect(validateCampaignSettings({ advantage_audience: true, age_min: 25, age_max: 65 }, ctx).ok).toBe(true);
   });
 });

@@ -157,7 +157,7 @@ describe("extractChatSettings (LLM stubbed)", () => {
     expect(out.settings).toEqual([]);
     expect(out.rejected).toEqual([
       `Didn't save business model "retail": must be one of ecommerce, lead gen, local service, b2b or other.`,
-      `Didn't save attribution "28d_click": must be one of 7-day click + 1-day view, 7-day click or 1-day click.`,
+      `Didn't save attribution "28d_click": must be one of 7-day click + 1-day view + 1-day engagement, 7-day click + 1-day view, 7-day click or 1-day click.`,
     ]);
   });
 

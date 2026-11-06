@@ -45,6 +45,11 @@ export type CampaignSettings = {
   /** Chosen on the card for instant forms. */
   lead_form_id?: string;
   attribution?: AttributionSetting;
+  /**
+   * true: Advantage+ audience, where Meta may go beyond the targeting given. false: reach only the preferred
+   * audience set up (the targeting is used as it is). Left out: decided from the other settings.
+   */
+  advantage_audience?: boolean;
   age_min?: number;
   age_max?: number;
   publisher_platforms?: string[];
@@ -214,12 +219,14 @@ export function performanceGoalsFor(
 }
 
 const ATTRIBUTION_INFO: Record<AttributionSetting, string> = {
+  "7d_click_1d_view_1d_engaged": "Counts conversions within 7 days of a click, 1 day of a view, or 1 day of an engaged video view (watching at least 5 seconds).",
   "7d_click_1d_view": "Counts conversions within 7 days of a click or 1 day of a view. Meta's default.",
   "7d_click": "Counts conversions within 7 days of a click only.",
   "1d_click": "Counts conversions within 1 day of a click only. The strictest window.",
 };
 
 const ATTRIBUTION_LABEL: Record<AttributionSetting, string> = {
+  "7d_click_1d_view_1d_engaged": "7-day click, 1-day view, 1-day engagement",
   "7d_click_1d_view": "7-day click, 1-day view",
   "7d_click": "7-day click",
   "1d_click": "1-day click",
@@ -376,6 +383,10 @@ export function validateCampaignSettings(
     settings.age_min > settings.age_max
   ) {
     return fail("Minimum age cannot be higher than maximum age.");
+  }
+
+  if (settings.advantage_audience === true && ((typeof settings.age_min === "number" && settings.age_min > 25) || (typeof settings.age_max === "number" && settings.age_max < 65))) {
+    return fail("Advantage+ audience can't keep a minimum age above 25 or a maximum below 65. Choose \"Reach my preferred audience\" or widen the age range.");
   }
 
   return { ok: true };

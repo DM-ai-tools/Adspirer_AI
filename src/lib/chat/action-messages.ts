@@ -83,6 +83,7 @@ const SETTING_LABELS: Record<string, string> = {
   pixel_id: "Pixel",
   lead_form_id: "Lead form",
   attribution: "Attribution",
+  advantage_audience: "Audience",
   age: "Age",
   publisher_platforms: "Platforms",
   facebook_positions: "Facebook placements",
@@ -123,6 +124,9 @@ export function composeCampaignSettingsMessage(
     "attribution",
   ] as const) {
     if (settings[key]) lines.push(`${SETTING_LABELS[key]}: ${show(key)}`);
+  }
+  if (settings.advantage_audience !== undefined) {
+    lines.push(`${SETTING_LABELS.advantage_audience}: ${settings.advantage_audience ? "Advantage+ audience" : "Reach my preferred audience (only the audience set up)"}`);
   }
   if (settings.age_min != null || settings.age_max != null) {
     lines.push(`${SETTING_LABELS.age}: ${settings.age_min ?? 18}–${settings.age_max ?? 65}`);

@@ -76,6 +76,22 @@ describe("attribution setting on create", () => {
     ]);
   });
 
+  it("sends click, view and engaged-view windows for the 3-window setting", async () => {
+    const { provider, posts } = providerWith({ get: () => ({ currency: "GBP" }) });
+    await provider.createImageCampaign({ ...base, extra_args: { attribution: "7d_click_1d_view_1d_engaged" } });
+    expect(JSON.parse(String(body(posts, "act_111/adsets").attribution_spec))).toEqual([
+      { event_type: "CLICK_THROUGH", window_days: 7 },
+      { event_type: "VIEW_THROUGH", window_days: 1 },
+      { event_type: "ENGAGED_VIDEO_VIEW", window_days: 1 },
+    ]);
+  });
+
+  it("turns Advantage+ audience off when the preferred audience is chosen", async () => {
+    const { provider, posts } = providerWith({ get: () => ({ currency: "GBP" }) });
+    await provider.createImageCampaign({ ...base, extra_args: { advantage_audience: false } });
+    expect(JSON.parse(String(body(posts, "act_111/adsets").targeting)).targeting_automation).toEqual({ advantage_audience: 0 });
+  });
+
   it("defaults to the client's attribution setting at proposal time", async () => {
     const prepared = await prepareApprovalArgs({
       toolName: "create_meta_image_campaign",
