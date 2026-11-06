@@ -32,6 +32,15 @@ const envSchema = z.object({
   OPENAI_API_KEY: z.string().optional(),
   OPENAI_MODEL: z.string().default("gpt-4o-mini"),
   FIRECRAWL_API_KEY: z.string().optional(),
+  /** BytePlus ModelArk: Seedance video and Seedream images. */
+  ARK_API_KEY: z.string().optional(),
+  /** Separate keys per model family. Each falls back to ARK_API_KEY. */
+  ARK_SEEDANCE_API_KEY: z.string().optional(),
+  ARK_SEEDANCE_25_API_KEY: z.string().optional(),
+  /** Optional model id overrides; the verified ids are built in. */
+  ARK_SEEDANCE_MODEL: z.string().optional(),
+  ARK_SEEDANCE_25_MODEL: z.string().optional(),
+  ARK_BASE_URL: z.string().url().default("https://ark.ap-southeast.bytepluses.com/api/v3"),
   OPENAI_IMAGE_MODEL: z.string().default("gpt-image-2"),
   /** low | medium | high. High is what makes typography and detail ad-grade; medium is cheaper. */
   OPENAI_IMAGE_QUALITY: z.enum(["low", "medium", "high"]).default("high"),
@@ -72,6 +81,7 @@ export type AppConfig = z.infer<typeof envSchema> & {
   hasAnthropic: boolean;
   hasOpenAI: boolean;
   hasFirecrawl: boolean;
+  hasArk: boolean;
   hasSociaVault: boolean;
   /** OAuth client set. Google Ads needs nothing more: developer tokens were retired on 9 Sep 2026. */
   hasGoogle: boolean;
@@ -97,6 +107,12 @@ function readRawEnv(): Record<string, string | undefined> {
     OPENAI_API_KEY: process.env.OPENAI_API_KEY,
     OPENAI_MODEL: process.env.OPENAI_MODEL,
     FIRECRAWL_API_KEY: process.env.FIRECRAWL_API_KEY,
+    ARK_API_KEY: process.env.ARK_API_KEY,
+    ARK_SEEDANCE_API_KEY: process.env.ARK_SEEDANCE_API_KEY || undefined,
+    ARK_SEEDANCE_25_API_KEY: process.env.ARK_SEEDANCE_25_API_KEY || undefined,
+    ARK_SEEDANCE_MODEL: process.env.ARK_SEEDANCE_MODEL || undefined,
+    ARK_SEEDANCE_25_MODEL: process.env.ARK_SEEDANCE_25_MODEL || undefined,
+    ARK_BASE_URL: process.env.ARK_BASE_URL || undefined,
     OPENAI_IMAGE_MODEL: process.env.OPENAI_IMAGE_MODEL,
     OPENAI_IMAGE_QUALITY: process.env.OPENAI_IMAGE_QUALITY || undefined,
     SOCIAVAULT_API_KEY: process.env.SOCIAVAULT_API_KEY,
@@ -152,6 +168,7 @@ export function getConfig(): AppConfig {
     hasAnthropic: Boolean(parsed.ANTHROPIC_API_KEY),
     hasOpenAI: Boolean(parsed.OPENAI_API_KEY),
     hasFirecrawl: Boolean(parsed.FIRECRAWL_API_KEY),
+    hasArk: Boolean(parsed.ARK_API_KEY || parsed.ARK_SEEDANCE_API_KEY || parsed.ARK_SEEDANCE_25_API_KEY),
     hasSociaVault: Boolean(parsed.SOCIAVAULT_API_KEY),
     hasGoogle,
     workspaceV2Enabled: parsed.WORKSPACE_V2_ENABLED,
