@@ -268,12 +268,22 @@ describe("making the clips", () => {
 });
 
 describe("before starting", () => {
+  it("will not start without a verified brand, and says what to resolve", async () => {
+    const { blockedReason } = await import("@/lib/video/generation");
+    const { getProject } = await import("@/lib/video/projects");
+    const id = await confirmedProject();
+    expect(blockedReason((await getProject(id))!)).toMatch(/brand has not been checked/i);
+  });
   it("says why when there is no key for the model", async () => {
     delete process.env.ARK_API_KEY;
     resetConfigCache();
     const { blockedReason } = await import("@/lib/video/generation");
     const { getProject } = await import("@/lib/video/projects");
     const id = await confirmedProject();
+    // The brand and claims are checked first, so give this project a verified brand and see the key check on its own.
+    const { updateProject } = await import("@/lib/video/projects");
+    const prov = { source: "operator" as const, detail: "test", confidence: "high" as const };
+    await updateProject(id, { brand: { name: "Acme", colors: null, logoUrl: null, summary: null, manifest: { version: 1, createdAt: "", clientId: "c1", projectId: id, sourceUrl: { value: null, provenance: [] }, name: { value: "Acme", provenance: [prov] }, nameCandidates: [], internalLabels: [], logo: null, logoCandidates: [], colors: { value: [], provenance: [] }, offer: { value: null, provenance: [] }, cta: { value: null, provenance: [] }, audience: { value: null, provenance: [] }, claims: [{ id: "c", text: "255%", kind: "number", figure: "255%", evidence: "255%", provenance: prov }], allowTextOnlyBrand: true, conflicts: [], issues: [] } } });
     expect(blockedReason((await getProject(id))!)).toMatch(/Add your BytePlus key/);
   });
   it("uses a model that has a key when the preferred one has none", async () => {

@@ -5,7 +5,9 @@ import { deleteProject, getProject, updateProject, type VideoProject } from "@/l
 import { projectName } from "@/lib/video/naming";
 import { effectiveProject, viewGeneration } from "@/lib/video/generation";
 import { getObjectStorage } from "@/lib/storage/r2";
-import { writeProjectScripts } from "@/lib/video/brief";
+import { operatorClaims, writeProjectScripts } from "@/lib/video/brief";
+import { brandView } from "@/lib/video/brand-view";
+import { markEdited, withSpeech } from "@/lib/video/script-actions";
 import { checkScript, MAX_SECONDS, type VideoScript } from "@/lib/video/script";
 import { previewPlan } from "@/lib/video/plan-view";
 import { runAfterResponse } from "@/lib/api/background";
@@ -44,7 +46,13 @@ function view(raw: VideoProject) {
       url: `/api/creatives/video/${project.id}/assets/${a.id}`,
     })),
     progress: project.progress ?? null,
-    brand: project.brand ? { name: project.brand.name, colors: project.brand.colors, hasLogo: Boolean(project.brand.logoUrl) } : null,
+    brand: project.brand ? { name: project.brand.name, colors: project.brand.colors, hasLogo: Boolean(project.brand.manifest?.logo) } : null,
+    brandCheck: brandView(project),
+    contextBrief: project.brand?.brief ?? null,
+    angleLimitation: project.brand?.angleLimitation ?? null,
+    wordsPerSecond: project.inputs.speechRate ?? null,
+    creative: project.plan?.creative ?? null,
+    capabilities: project.plan?.capabilities ?? null,
     scripts: project.scripts,
     chosenScript: chosen,
     plan: chosen ? previewPlan(chosen, project.inputs, project.assets.length) : null,
@@ -88,7 +96,8 @@ export async function PATCH(request: Request, ctx: Ctx) {
     if (!original) throw new Error("That script is not part of this project.");
 
     // Lengths follow the words: the client's seconds only matter for a scene with no speech.
-    const scenes = retime(body.edits.scenes.map((s, i) => ({ ...s, number: i + 1 })));
+    // A scene the operator changed is approved wording: later rewrites keep it.
+    const scenes = retime(markEdited(original, body.edits.scenes).map((s, i) => ({ ...s, number: i + 1 })));
     const cursor = scenes.length ? scenes[scenes.length - 1]!.end : 0;
     if (cursor > MAX_SECONDS) throw new Error(`The script runs ${cursor}s; the limit is ${MAX_SECONDS}s.`);
     const edited: VideoScript = {
@@ -103,8 +112,25 @@ export async function PATCH(request: Request, ctx: Ctx) {
     };
     // Numbers the operator typed count as theirs; the rest must come from the page, the inputs or the original script.
     const corpus = [JSON.stringify(project.inputs), project.brand?.summary ?? "", JSON.stringify(original), body.edits.scenes.map((s) => `${s.line} ${s.stat ?? ""}`).join(" ")].join("\n");
-    edited.warnings = checkScript(edited, { corpus, assetIds: project.assets.map((a) => a.id), target: cursor });
-    const updated = await updateProject(project.id, { chosen_script: edited, status: "confirmed" });
+    // A figure the operator typed in the editor (not in the version written for them) is theirs, with that recorded as its source.
+    const manifest = project.brand?.manifest ?? null;
+    let claims = manifest?.claims;
+    let brand = project.brand;
+    if (manifest && claims) {
+      const originalText = [...original.scenes.map((s) => `${s.line} ${s.stat ?? ""}`), original.adCopy.primaryText, original.adCopy.headline].join("\n");
+      const editedTexts = [...body.edits.scenes.map((s) => `${s.line} ${s.stat ?? ""}`), body.edits.adCopy.primaryText, body.edits.adCopy.headline];
+      const typed = operatorClaims(editedTexts, "typed by you in the script editor", claims.length + 1).filter((c) => !originalText.includes(c.figure ?? "\u0000"));
+      const known = new Set(claims.map((c) => (c.figure ?? c.text).toLowerCase()));
+      const added = typed.filter((c) => !known.has((c.figure ?? c.text).toLowerCase()));
+      if (added.length) {
+        claims = [...claims, ...added];
+        brand = { ...project.brand!, manifest: { ...manifest, claims } };
+      }
+    }
+    edited.warnings = checkScript(edited, { corpus, assetIds: project.assets.map((a) => a.id), target: cursor, claims });
+    // Length and the spoken estimate follow the words as they now stand.
+    const withLength = { ...withSpeech(edited, project.inputs.speechRate, original.speech?.requestedSeconds ?? project.inputs.targetSeconds), warnings: edited.warnings };
+    const updated = await updateProject(project.id, { chosen_script: withLength, status: "confirmed", ...(brand !== project.brand ? { brand } : {}) });
     return jsonOk(view(updated));
   });
 }

@@ -1,6 +1,7 @@
 import { mmss } from "@/lib/video/overlays";
 import { classifyStyle, clipVisual, SIMPLE_ACTION_RULE, STYLE_LOOKS, TEXT_FREE_RULE } from "@/lib/video/visual-rules";
 import type { VideoScene, VideoScript } from "@/lib/video/script";
+import type { PlanCharacter, PlanEnvironment, SceneBrief } from "@/lib/video/pipeline-types";
 
 /**
  * The prompt for one clip, built the way the Seedance prompt guides ask for: assets named by type
@@ -112,5 +113,105 @@ export function buildClipPrompt(input: ClipPromptInput): string {
     ...shots,
     ...rules,
     input.clipNumber < input.clipCount ? `The clip is ${total} seconds long and ends at ${mmss(total)} mid-action, with the presenter in frame, so the next clip can follow it.` : `The clip is ${total} seconds long and ends at ${mmss(total)} on a settled final moment.`,
+  ].join("\n");
+}
+
+// ---------------------------------------------------------------------------------------------
+// The planned prompt: built from the creative plan's scene briefs instead of one global setting.
+// ---------------------------------------------------------------------------------------------
+
+export type PlannedClipPromptInput = {
+  /** The scene briefs in this clip, in order. */
+  scenes: SceneBrief[];
+  /** For each scene, what is said (the speech text, never the display text) or null when nobody speaks. */
+  spoken: Record<number, { text: string; speaker: "on_camera" | "voiceover" | "none" } | undefined>;
+  characters: PlanCharacter[];
+  environments: PlanEnvironment[];
+  style: string;
+  clipNumber: number;
+  clipCount: number;
+  locale: string;
+  /** The reference images this request carries, in the order they are attached: people, then places, then the previous frame. */
+  refs: { characterIds: string[]; environmentIds: string[]; previousFrame: boolean; previousVideo: boolean };
+  /** Targeted corrections from the review of the previous attempt of this clip. */
+  corrections: string[];
+  /** True when the clip that follows opens from where this one ends. */
+  nextContinues: boolean;
+};
+
+/** Mentions in the prompt of the same person across clips ("Video 1") only make sense when that person also speaks here. */
+export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
+  const { scenes, refs } = input;
+  if (!scenes.length) throw new Error("A clip needs at least one scene.");
+  const total = scenes.reduce((t, s) => t + s.seconds, 0);
+  const clean = (t: string) => t.replace(/\s+/g, " ").trim();
+
+  // Assets are named by type and attach order: "Image 1", "Image 2", "Video 1".
+  const imageLabels: Array<{ label: string; text: string }> = [];
+  for (const id of refs.characterIds) {
+    const c = input.characters.find((x) => x.id === id);
+    if (c) imageLabels.push({ label: `person:${id}`, text: `is ${clean(c.role || "the person")}: keep this exact person, face, hair and clothes wherever they appear.` });
+  }
+  for (const id of refs.environmentIds) {
+    const e = input.environments.find((x) => x.id === id);
+    if (e) imageLabels.push({ label: `place:${id}`, text: `is the place "${clean(e.description).slice(0, 120)}": keep this place and its light for the shots set there.` });
+  }
+  if (refs.previousFrame) imageLabels.push({ label: "previous", text: "is where the previous shot ended: this clip opens on the same framing, the same person and the same light." });
+  const assetLines = imageLabels.map((l, i) => `Image ${i + 1} ${l.text}`);
+  if (refs.previousVideo) assetLines.push("Video 1 is the previous shot: the person who speaks in this clip has the same face, voice, pace and accent as the person in Video 1.");
+
+  const used = new Set(scenes.map((s) => s.characterId).filter((id): id is string => Boolean(id)));
+  const people = input.characters.filter((c) => used.has(c.id));
+  const speaks = scenes.some((s) => input.spoken[s.number]?.speaker === "on_camera");
+  const constant = [
+    ...people.map((c) => `Person (${c.id}): ${clean(c.description)}.`),
+    !people.length ? "No person appears on camera in this clip; keep the look of every shot consistent." : null,
+    speaks ? `Voice: the speaker's voice is the same in every shot, natural and conversational, with ${accentFor(input.locale)}, speaking at an easy pace, saying every word clearly and completely.` : null,
+    `Look: ${clean(input.style)}. Real skin texture, natural light, believable materials.`,
+    "Hands, faces and objects are anatomically correct and undistorted; faces stay stable with no morphing, glowing marks or flicker.",
+  ].filter((l): l is string => Boolean(l));
+
+  let offset = 0;
+  const shots = scenes.map((s) => {
+    const range = `${offset}s-${offset + s.seconds}s`;
+    offset += s.seconds;
+    const parts = [
+      `${range}: Shot ${s.number}. ${clean(s.framing)} of ${clean(s.subject)} in ${clean(s.setting)}. Action: ${clean(s.action)}.`,
+      `Camera: ${clean(s.camera)}. Light: ${clean(s.lighting)}.`,
+    ];
+    const say = input.spoken[s.number];
+    if (say && say.text.trim()) {
+      const who = say.speaker === "on_camera" ? "The person on camera says, in real time" : "A voice off camera says";
+      parts.push(`${who}: "${clean(say.text)}"`);
+      if (say.speaker !== "on_camera" && s.characterId) parts.push("The person's mouth stays closed and still while the voice speaks.");
+    } else {
+      parts.push("No one speaks." + (s.characterId ? " The person's mouth stays closed and relaxed." : ""));
+    }
+    if (s.screenTreatment !== "none" || s.overlays.some((o) => o.kind === "stat" || o.kind === "image")) {
+      parts.push("A graphic is added over this shot afterwards: keep that part of the frame calm and uncluttered, with no readable screens, charts or text drawn anywhere.");
+    }
+    const musts = s.acceptance.slice(0, 3).map(clean).filter(Boolean);
+    if (musts.length) parts.push(`This shot must show: ${musts.join("; ")}.`);
+    return parts.join(" ");
+  });
+
+  const rules = [
+    "Do not draw any subtitles, captions, on-screen text, numbers, charts, logos, brand names, buttons or watermarks anywhere in the frame; the real ones are added afterwards.",
+    TEXT_FREE_RULE,
+    SIMPLE_ACTION_RULE,
+    "No background music; natural room sound and the speaker's voice only.",
+    "Cut cleanly between shots. Keep the same person, clothes and colour grade for the shots they share; a new place may have its own light.",
+  ];
+  const fixes = input.corrections.length ? ["Fix these problems from the previous attempt:", ...input.corrections.map((c) => `- ${clean(c)}`)] : [];
+
+  return [
+    ...assetLines,
+    `${clean(input.style)}, realistic live-action vertical video for a Meta ad, ${total} seconds, clip ${input.clipNumber} of ${input.clipCount}.`,
+    ...constant,
+    "Shot list:",
+    ...shots,
+    ...rules,
+    ...fixes,
+    input.nextContinues ? `The clip is ${total} seconds long and ends at ${mmss(total)} mid-action so the next clip can follow it.` : `The clip is ${total} seconds long and ends at ${mmss(total)} on a settled moment.`,
   ].join("\n");
 }

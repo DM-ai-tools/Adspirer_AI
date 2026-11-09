@@ -50,7 +50,7 @@ export const SIMPLE_ACTION_RULE =
  * script reader). A visual is a filmable, text-free shot, never a screen to read.
  */
 export const VISUAL_DIRECTION_RULES =
-  "HOW TO WRITE EACH SCENE'S VISUAL (it becomes an AI video shot, which cannot render readable text): describe one filmable shot in the order shot size and angle, subject, one simple action, camera movement, light and setting. Use real people, hands, objects, places and light: someone reacting, a hand turning a coffee cup, a face lit by a screen glow, a messy desk, a phone set down, a window at golden hour. NEVER make the visual a screen, dashboard, chart, spreadsheet, report, document, website, app, sign or label to be read: the model draws those as garbled nonsense. If the script is about a dashboard or a result, show the person's reaction to it, or hands and a laptop angled away so the screen is not visible; the real stat or screenshot is added on top afterwards. Keep the person and the room the same in every scene. Prefer a specific, slightly unexpected detail over a generic one.";
+  "HOW TO WRITE EACH SCENE'S VISUAL (it becomes an AI video shot, which cannot render readable text): describe one filmable shot in the order shot size and angle, subject, ONE simple observable action, camera movement, light and setting. Choose the subjects, places and actions from THIS business's real world and THIS audience's real day: where the customer actually is when the problem or the result happens, what they actually handle, who is actually with them. Every scene must add something no other scene adds (a new fact, a new moment, a new emotion); never fill time with generic footage, and do not reuse the same room, the same framing or the same prop in consecutive scenes. NEVER make the visual a screen, dashboard, chart, spreadsheet, report, document, website, app, sign or label to be read, and never an invented interface, hologram or floating panel: the model draws those as garbled nonsense. If the point of a scene is a screen or a result, write the visual as the human moment around it (a reaction, a hand, a place, an object that belongs to the story) and say that the real screenshot or figure is composited on top afterwards. Keep any recurring person the same in every scene they appear in. Prefer a specific, slightly unexpected detail over a generic one.";
 
 const TEXT_RISK: Array<[RegExp, string]> = [
   [/\b(dashboard|screen ?recording|screen ?capture|full[- ]screen|screenshot|interface|\bui\b|\bux\b|spreadsheet|excel|analytics|admin panel)\b/i, "a dashboard or interface"],
@@ -78,8 +78,10 @@ export function isScreenShot(visual: string): boolean {
 }
 
 /**
- * What to film in place of a shot that is mainly a screen. The real screenshot or stat is laid over
- * the scene afterwards, so the footage under it is the person's reaction, never an invented interface.
+ * LEGACY fallback, used only for a project that has no creative plan. A video made through the
+ * planned pipeline never uses it: the planner chooses, per scene and per campaign, what is filmed
+ * under a composited screenshot or figure (a fixed "person at a desk" shot repeated for every screen
+ * scene is what made one ad show the same office for twenty seconds).
  */
 export function substituteForScreenShot(hasPresenter: boolean): string {
   return hasPresenter

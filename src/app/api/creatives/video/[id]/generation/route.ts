@@ -36,7 +36,7 @@ const bodySchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("assemble"), finishing: finishing.optional() }),
   /** The page calls this while it is open, so a video carries on after the first request's time runs out. */
   z.object({ action: z.literal("advance") }),
-  z.object({ action: z.literal("regenerate"), fromClip: z.number().int().min(1) }),
+  z.object({ action: z.literal("regenerate"), fromClip: z.number().int().min(1), /** From clip 1 only: make a new creative plan instead of keeping the approved one. */ replan: z.boolean().optional() }),
 ]);
 
 export async function POST(request: Request, ctx: Ctx) {
@@ -72,7 +72,10 @@ export async function POST(request: Request, ctx: Ctx) {
     }
 
     if (body.action === "regenerate") {
-      const next = await regenerateFrom(project.id, body.fromClip);
+      // New clips are only paid for from a verified brand.
+      const blocked = blockedReason(project);
+      if (blocked && !project.plan?.creative) throw new Error(blocked);
+      const next = await regenerateFrom(project.id, body.fromClip, { replan: body.replan });
       runAfterResponse("video-generation", () => runGeneration(project.id));
       return jsonOk(viewGeneration(next));
     }

@@ -5,6 +5,8 @@ import type { VideoScript } from "@/lib/video/script";
 import type { AssetAnalysis } from "@/lib/video/assets";
 import type { ScriptProgress } from "@/lib/video/progress";
 import type { ClipState, FinalVideo, GenerationPlan } from "@/lib/video/generation-types";
+import type { BrandManifest } from "@/lib/video/pipeline-types";
+import type { AnglePlan, CreativeBrief } from "@/lib/video/script-types";
 
 export type VideoAsset = {
   id: string;
@@ -34,19 +36,52 @@ export type VideoInputs = {
   adCopyText?: string | null;
   /** Changes the operator wants made to their uploaded script. Empty means none: it is kept word for word. */
   changeRequest?: string | null;
+  /** Optional creative inputs. Landing page plus length is enough; anything left empty is a visible default the operator can edit. */
+  audience?: string | null;
+  tone?: string | null;
+  goal?: string | null;
+  platform?: string | null;
+  /** Words per second the narrator is assumed to speak at (the estimate is replaced by the measured length once audio exists). */
+  speechRate?: number | null;
+  /** How the operator wants a term said, e.g. { "ROAS": "roh-ass" }. These always win over every other pronunciation choice. */
+  pronunciations?: Record<string, string>;
+  /** Decisions the operator made about the brand: they are applied every time the brand is checked again. */
+  brandChoice?: {
+    /** The public company name, typed by the operator. */
+    name?: string | null;
+    /** A logo URL the operator picked from what the page offered. */
+    logoUrl?: string | null;
+    /** Storage key of a logo file the operator uploaded for this video. */
+    logoUploadKey?: string | null;
+    logoUploadName?: string | null;
+    /** Use the verified company name as text when no logo can be verified. */
+    allowTextOnly?: boolean;
+    cta?: string | null;
+    offer?: string | null;
+  };
 };
 
 export type VideoBrand = {
+  /** The verified public company name (from the manifest). Empty until one is verified. Never an internal label. */
   name: string;
   colors: string[] | null;
+  /** Kept for old projects only. New videos use the verified logo in the manifest and never this. */
   logoUrl: string | null;
   summary: string | null;
+  /** The verified brand source of truth: name, logo, offer, CTA and approved claims, each with where it came from. */
+  manifest?: BrandManifest | null;
   /** What the scripts were written from, kept so a scene can be rewritten later without reading the site again. */
   facts?: string;
   corpus?: string;
+  /** What the page really says, with sources, and what is missing. The scripts are written from this. */
+  brief?: CreativeBrief | null;
+  /** The angles the three versions were built on, kept so one version can be changed without losing the others. */
+  angles?: AnglePlan[];
+  /** Why fewer than three angles were made, when the source could not support more. */
+  angleLimitation?: string | null;
 };
 
-export type VideoProjectStatus = "writing" | "scripts_ready" | "confirmed" | "generating" | "paused" | "stopped" | "clips_ready" | "assembling" | "done" | "failed";
+export type VideoProjectStatus = "writing" | "needs_context" | "scripts_ready" | "confirmed" | "generating" | "paused" | "stopped" | "clips_ready" | "assembling" | "done" | "failed";
 
 export type VideoProject = {
   id: string;

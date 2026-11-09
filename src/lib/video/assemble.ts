@@ -3,15 +3,24 @@ import os from "node:os";
 import path from "node:path";
 import { getObjectStorage } from "@/lib/storage/r2";
 import { logger } from "@/lib/observability/logger";
-import { loadLogoBuffer, isSvg } from "@/lib/creatives/openai-image";
+import { isSvg } from "@/lib/creatives/openai-image";
 import { prepareLogo } from "@/lib/creatives/logo-prep";
 import { measure, probe, runFfmpeg } from "@/lib/video/ffmpeg";
 import { transcribeWords } from "@/lib/video/asr";
-import { alignWords, fillGaps, matchedShare, phraseMarkup, sceneWindows, splitWords, statWindow, toPhrases, type AsrWord, type TimedWord } from "@/lib/video/captions";
+import { alignWords, fillGaps, matchedShare, phraseMarkup, sceneWindows, splitWords, statWindow, type AsrWord, type TimedWord } from "@/lib/video/captions";
+import { alignSpeechLine, buildCues, checkCues, safeCaptionY, toSrt, toVtt } from "@/lib/video/subtitles";
+import { refineWindows } from "@/lib/video/audio-windows";
 import { accentColour, endCardBackground, finalSize, layoutFor, type FinalFormat } from "@/lib/video/layout";
 import { captionPiece, endCardPng, imagePiece, logoPiece, statPiece, type Piece } from "@/lib/video/graphics";
 import { DEFAULT_FINISHING, type FinalVideo, type Finishing, type QaCheck } from "@/lib/video/generation-types";
 import { claimProjectLease, getProject, releaseProjectLease, updateProject, type VideoProject } from "@/lib/video/projects";
+import { loadManifestLogo } from "@/lib/video/brand-resolve";
+import { sourceClaims } from "@/lib/video/claims";
+import { brandBlockers } from "@/lib/video/pipeline";
+import { hasCritical, type BrandManifest, type QaReport, type SpeechLine } from "@/lib/video/pipeline-types";
+import { finalBlocks, reviewFinal } from "@/lib/video/final-qa";
+import { nameFromUrl } from "@/lib/video/naming";
+import { bandsForCue, captionCentres, detectFaceBands } from "@/lib/video/face-bands";
 
 /** The closing card runs this long. */
 export const END_CARD_SECONDS = 2.2;
@@ -51,15 +60,38 @@ async function setStage(projectId: string, current: FinalVideo, stage: string): 
   await updateProject(projectId, { final: current }).catch(() => undefined);
 }
 
-/** Join the clips and add captions, highlights, stats, the operator's images, the logo and an end card. */
+/** How long the closing card is shown: long enough to read what is on it, within the overall budget. */
+export function endCardSecondsFor(wordCount: number, joinedSeconds: number, maxTotal = 60): number {
+  const wanted = Math.min(Math.max(1.6 + wordCount * 0.3, END_CARD_SECONDS + 0.3), 4.5);
+  const room = maxTotal - joinedSeconds;
+  return Math.round(Math.max(Math.min(wanted, room), 2) * 10) / 10;
+}
+
+const wordsOf = (s: string | null | undefined) => (s ?? "").trim().split(/\s+/).filter(Boolean).length;
+
+/** The speech text of every scene: what the plan settled, else the script's own line (display and speech identical). */
+export function speechLinesFor(project: VideoProject): SpeechLine[] {
+  const script = project.chosen_script!;
+  const planned = project.plan?.speech?.lines ?? [];
+  return script.scenes
+    .filter((s) => s.line.trim())
+    .map((s) => planned.find((l) => l.sceneNumber === s.number && l.display === s.line) ?? { sceneNumber: s.number, display: s.line, spoken: s.line, segments: [{ display: s.line, spoken: s.line }], uncertain: [] });
+}
+
+/** Join the clips and add captions, highlights, stats, the operator's images, the verified logo and an end card; inspect the result; block it if a critical check fails. */
 export async function assembleVideo(projectId: string, options: Partial<Finishing> = {}): Promise<void> {
-  if (!(await claimProjectLease(projectId, 280_000))) return;
+  if (!(await claimProjectLease(projectId, 420_000))) return;
   const dir = await mkdtemp(path.join(os.tmpdir(), "video-"));
   let current: FinalVideo = { state: "running", stage: "Starting", error: null, startedAt: new Date().toISOString(), key: null, seconds: null, width: null, height: null, bytes: null, createdAt: null, qa: [], includes: null };
   try {
     const project = await getProject(projectId);
     if (!project?.clips?.length || !project.chosen_script) throw new Error("There are no clips to join yet.");
     if (project.clips.some((c) => c.status !== "succeeded" || !c.videoKey)) throw new Error("Every clip must be finished before they are joined.");
+    // The brand on screen is the verified one or nothing: an unverified brand never reaches a rendered frame.
+    const manifest = project.brand?.manifest ?? null;
+    const brandProblem = brandBlockers(manifest);
+    if (brandProblem) throw new Error(brandProblem);
+    const verified = manifest as BrandManifest;
     const finishing: Finishing = { ...DEFAULT_FINISHING, ...(project.plan?.finishing ?? {}), ...options };
     await updateProject(projectId, { status: "assembling", final: current, error: null });
 
@@ -67,8 +99,14 @@ export async function assembleVideo(projectId: string, options: Partial<Finishin
     const format = project.inputs.format as FinalFormat;
     const { width: W, height: H } = finalSize(format);
     const layout = layoutFor(format);
-    const accent = accentColour(project.brand?.colors);
+    const accent = accentColour(verified.colors.value.length ? verified.colors.value : project.brand?.colors);
     const storage = getObjectStorage();
+    const brandName = verified.name.value ?? "";
+    const ctaLabel = verified.cta.value?.label ?? script.adCopy.cta ?? null;
+
+    // Every figure shown big on screen must have a recorded source.
+    const unsourcedStats = sourceClaims(script.scenes.filter((s) => s.stat).map((s) => ({ text: s.stat!, where: `Scene ${s.number}` })), verified.claims).unsourced;
+    if (unsourcedStats.length) throw new Error(`A figure shown on screen has no recorded source: ${unsourcedStats.map((u) => `"${u.figure}" (${u.use.where})`).join(", ")}.`);
 
     // 1. Every clip to the same size, rate and audio format.
     await setStage(projectId, current, "Preparing the clips");
@@ -103,8 +141,9 @@ export async function assembleVideo(projectId: string, options: Partial<Finishin
     await runFfmpeg(["-f", "concat", "-safe", "0", "-i", listFile, "-c", "copy", joined]);
     const joinedSeconds = (await probe(joined)).seconds;
 
-    // 3. When each scene falls in the finished video, and when each word is spoken.
-    const windows = sceneWindows(script.scenes, project.clips.map((c, i) => ({ sceneNumbers: c.sceneNumbers, plannedSeconds: c.seconds, actualSeconds: actual[i]! })));
+    // 3. When each scene falls in the finished video, and when each word is actually spoken.
+    const planned = sceneWindows(script.scenes, project.clips.map((c, i) => ({ sceneNumbers: c.sceneNumbers, plannedSeconds: c.seconds, actualSeconds: actual[i]! })));
+    const speech = speechLinesFor(project);
     let asr: AsrWord[] | null = null;
     if (finishing.captions) {
       await setStage(projectId, current, "Timing the captions to the voice");
@@ -112,39 +151,47 @@ export async function assembleVideo(projectId: string, options: Partial<Finishin
       await runFfmpeg(["-i", joined, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wav]);
       asr = await transcribeWords(await readFile(wav));
     }
+    // Subtitles come from the audio as finally cut, through the spoken-to-display mapping: the display text is never altered.
+    const aligned = speech.map((line) => {
+      const w = planned.find((x) => x.number === line.sceneNumber) ?? { start: 0, end: joinedSeconds };
+      return alignSpeechLine(line, asr, w);
+    });
+    const windows = refineWindows(planned, aligned, joinedSeconds);
+    const transcriptTimed = aligned.some((a) => a.fromAudio);
+    // The narration's real length, from where each line was found in the audio (the script only had an estimate).
+    const located = aligned.filter((a) => a.fromAudio && a.words.length);
+    const measuredSpeech = located.length ? Math.round(located.reduce((t, a) => t + (Math.max(...a.words.map((w) => w.end)) - Math.min(...a.words.map((w) => w.start))), 0) * 10) / 10 : null;
+    const speechUse = { measuredSeconds: measuredSpeech, estimatedSeconds: script.speech?.estimatedSeconds ?? null };
 
     // 4. The graphics.
     await setStage(projectId, current, "Drawing captions and graphics");
     const overlays: Overlay[] = [];
-    let transcriptTimed = false;
+    const captionOverlays: Overlay[] = [];
     let statCount = 0;
     let imageCount = 0;
+    const imageWindows: Array<{ start: number; end: number }> = [];
 
-    if (finishing.logo && project.brand?.logoUrl) {
+    const logoBytes = await loadManifestLogo(verified, storage);
+    let logoPng: Buffer | null = null;
+    if (logoBytes) {
       try {
-        const raw = await loadLogoBuffer(project.brand.logoUrl);
-        const prepared = await prepareLogo(raw, { isSvg: isSvg(raw) });
-        const piece = await logoPiece(prepared.png, W, layout.logo.width);
-        overlays.push({ piece, x: layout.logo.x * W, y: layout.logo.y * H, start: 0, end: joinedSeconds });
+        logoPng = (await prepareLogo(logoBytes, { isSvg: isSvg(logoBytes) })).png;
       } catch (error) {
-        logger.warn("The logo could not be placed on the video", { error: error instanceof Error ? error.message : String(error) });
+        throw new Error(`The verified logo could not be prepared for the video: ${error instanceof Error ? error.message : String(error)}`);
       }
+    }
+    if (finishing.logo && logoPng) {
+      const piece = await logoPiece(logoPng, W, layout.logo.width);
+      overlays.push({ piece, x: layout.logo.x * W, y: layout.logo.y * H, start: 0, end: joinedSeconds });
     }
 
     for (const w of windows) {
       const scene = script.scenes.find((s) => s.number === w.number)!;
-      const timed = scene.line ? timeScene(scene.line, asr, w) : { words: [] as TimedWord[], fromTranscript: false };
-      if (timed.fromTranscript) transcriptTimed = true;
-
-      if (finishing.captions && timed.words.length) {
-        for (const phrase of toPhrases(timed.words)) {
-          const piece = await captionPiece(phraseMarkup(phrase, scene.keywords, accent), W);
-          overlays.push({ piece, x: (W - piece.width) / 2, y: layout.captionY * H - piece.height / 2, start: Math.max(phrase.start, w.start), end: Math.min(phrase.end, joinedSeconds) });
-        }
-      }
+      const line = aligned.find((a) => a.sceneNumber === w.number);
+      const words = line?.words ?? [];
       if (scene.stat) {
         const piece = await statPiece(scene.stat, W, accent);
-        const when = statWindow(w, timed.words, scene.stat);
+        const when = statWindow(w, words, scene.stat);
         overlays.push({ piece, x: (W - piece.width) / 2, y: layout.statY * H - piece.height / 2, start: when.start, end: when.end });
         statCount += 1;
       }
@@ -153,10 +200,48 @@ export async function assembleVideo(projectId: string, options: Partial<Finishin
         const bytes = asset ? await storage.get(asset.key) : null;
         if (bytes) {
           const piece = await imagePiece(bytes, Math.round(W * layout.imageMaxW), Math.round(H * layout.imageMaxH));
-          overlays.push({ piece, x: (W - piece.width) / 2, y: layout.imageY * H - piece.height / 2, start: Math.min(w.start + 0.2, w.end - 1), end: w.end });
+          const start = Math.min(w.start + 0.2, w.end - 1);
+          overlays.push({ piece, x: (W - piece.width) / 2, y: layout.imageY * H - piece.height / 2, start, end: w.end });
+          imageWindows.push({ start, end: w.end });
           imageCount += 1;
         }
       }
+    }
+
+    // Captions: grouped into readable cues, kept off the logo, the stat and the image card wherever they are on screen.
+    const cues = finishing.captions ? buildCues(aligned) : [];
+    const keywordsAt = (t: number) => {
+      const w = windows.find((x) => t >= x.start - 0.05 && t <= x.end + 0.05);
+      return script.scenes.find((s) => s.number === w?.number)?.keywords ?? [];
+    };
+    // Faces are located first, so a caption never sits on one.
+    const faces = cues.length ? await detectFaceBands(joined, joinedSeconds, path.join(dir, "faces")) : { bands: [], samples: [], limitation: null as string | null };
+    let crowded = 0;
+    for (const cue of cues) {
+      const piece = await captionPiece(phraseMarkup({ words: cue.words, start: cue.start, end: cue.end }, keywordsAt(cue.start), accent), W);
+      const busy = overlays.filter((o) => o.start < cue.end && o.end > cue.start).map((o) => ({ top: o.y / H, bottom: (o.y + o.piece.height) / H }));
+      const heightFraction = piece.height / H;
+      const avoid = [...busy, ...bandsForCue(faces.bands, faces.samples, cue.start, cue.end)];
+      const { inside, lastResort } = captionCentres(layout.captionY, layout.safe, heightFraction);
+      const centre = safeCaptionY(inside, avoid, heightFraction) ?? safeCaptionY(lastResort, avoid, heightFraction);
+      if (centre === null) crowded += 1;
+      const o: Overlay = { piece, x: (W - piece.width) / 2, y: (centre ?? layout.captionY) * H - piece.height / 2, start: Math.max(cue.start, 0), end: Math.min(cue.end, joinedSeconds) };
+      overlays.push(o);
+      captionOverlays.push(o);
+    }
+    const cueFindings = finishing.captions ? checkCues(cues, { videoSeconds: joinedSeconds }) : [];
+    if (faces.limitation) cueFindings.push({ code: "faces_not_located", severity: "minor", category: "composition", message: faces.limitation, evidence: "face location step", correction: "", source: "rule" });
+    if (crowded) cueFindings.push({ code: "caption_crowded", severity: "minor", category: "composition", message: `${crowded} caption${crowded === 1 ? "" : "s"} had no free space away from the logo and cards and sit at the default position.`, evidence: `${crowded} cue(s)`, correction: "Show fewer graphics at the same time.", source: "rule" });
+
+    // Subtitle files from the very same cues as the burned-in captions.
+    let subtitles: FinalVideo["subtitles"] = null;
+    if (cues.length) {
+      const stamp = Date.now();
+      const srtKey = `video/${projectId}/subtitles-${stamp}.srt`;
+      const vttKey = `video/${projectId}/subtitles-${stamp}.vtt`;
+      await storage.put(srtKey, toSrt(cues), "application/x-subrip");
+      await storage.put(vttKey, toVtt(cues), "text/vtt");
+      subtitles = { srtKey, vttKey, cues: cues.length };
     }
 
     // 5. Lay it all over the video and level the sound.
@@ -175,32 +260,25 @@ export async function assembleVideo(projectId: string, options: Partial<Finishin
     args.push("-filter_complex_script", scriptFile, "-map", "[vout]", "-map", "[aout]", "-c:v", "libx264", "-preset", "medium", "-crf", "17", "-pix_fmt", "yuv420p", "-r", String(FPS), "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", overlaid);
     await runFfmpeg(args, { timeoutMs: 270_000 });
 
-    // 6. The closing card, then the final file.
+    // 6. The closing card, drawn only from verified brand data, then the final file.
     let finalFile = overlaid;
     let endCardSeconds = 0;
+    const offerText = verified.offer.value && verified.offer.value.length <= 70 ? verified.offer.value : null;
+    const urlText = nameFromUrl(verified.cta.value?.url ?? verified.sourceUrl.value);
     if (finishing.endCard) {
       await setStage(projectId, current, "Adding the end card");
-      let logoPng: Buffer | null = null;
-      if (project.brand?.logoUrl) {
-        try {
-          const raw = await loadLogoBuffer(project.brand.logoUrl);
-          logoPng = (await prepareLogo(raw, { isSvg: isSvg(raw) })).png;
-        } catch {
-          logoPng = null;
-        }
-      }
-      const card = await endCardPng(W, H, { background: endCardBackground(project.brand?.colors), accent, logoPng, brandName: project.brand?.name ?? "", cta: script.adCopy.cta });
+      endCardSeconds = endCardSecondsFor(wordsOf(brandName) + wordsOf(offerText) + wordsOf(ctaLabel) + 2, joinedSeconds);
+      const card = await endCardPng(W, H, { background: endCardBackground(verified.colors.value), accent, logoPng, brandName, offer: offerText, cta: ctaLabel, url: urlText });
       const cardFile = path.join(dir, "endcard.png");
       await writeFile(cardFile, card);
       const endFile = path.join(dir, "end.mp4");
-      await runFfmpeg(["-loop", "1", "-t", String(END_CARD_SECONDS), "-i", cardFile, "-f", "lavfi", "-t", String(END_CARD_SECONDS), "-i", "anullsrc=r=48000:cl=stereo", "-vf", `fps=${FPS},format=yuv420p`, "-c:v", "libx264", "-tune", "stillimage", "-c:a", "aac", "-b:a", "192k", "-shortest", endFile]);
+      await runFfmpeg(["-loop", "1", "-t", String(endCardSeconds), "-i", cardFile, "-f", "lavfi", "-t", String(endCardSeconds), "-i", "anullsrc=r=48000:cl=stereo", "-vf", `fps=${FPS},format=yuv420p`, "-c:v", "libx264", "-tune", "stillimage", "-c:a", "aac", "-b:a", "192k", "-shortest", endFile]);
       finalFile = path.join(dir, "final.mp4");
       await runFfmpeg(["-i", overlaid, "-i", endFile, "-filter_complex", "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v][a]", "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "medium", "-crf", "17", "-pix_fmt", "yuv420p", "-r", String(FPS), "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", finalFile], { timeoutMs: 270_000 });
-      endCardSeconds = END_CARD_SECONDS;
     }
 
-    // 7. Check the result before calling it done.
-    await setStage(projectId, current, "Checking the finished video");
+    // 7. Inspect the exported video again: stitching and rendering can add problems no single clip had.
+    await setStage(projectId, current, "Inspecting the finished video");
     const info = await probe(finalFile);
     const qa = await measure(finalFile, Math.max(info.seconds - endCardSeconds - 0.1, 1));
     const expected = actual.reduce((t, s) => t + s, 0) + endCardSeconds;
@@ -212,26 +290,93 @@ export async function assembleVideo(projectId: string, options: Partial<Finishin
       { name: "No black frames", ok: qa.blackSeconds < 0.5, detail: `${qa.blackSeconds}s of black` },
       { name: "No long silences", ok: qa.silentStretches === 0, detail: qa.silentStretches ? `${qa.silentStretches} silent stretch(es) over 1.5s` : "none" },
     ];
+
+    const claimTexts = verified.claims.flatMap((c) => [c.text, ...(c.figure ? [c.figure] : [])]);
+    const report = await reviewFinal(
+      {
+        file: finalFile,
+        workDir: dir,
+        attempt: 1,
+        seconds: info.seconds,
+        endCardSeconds,
+        manifest: { name: verified.name, logo: verified.logo, internalLabels: verified.internalLabels, allowTextOnlyBrand: verified.allowTextOnlyBrand, claims: verified.claims, cta: verified.cta, offer: verified.offer },
+        expected: {
+          brandName: brandName || null,
+          ctaLabel: finishing.endCard ? ctaLabel : null,
+          claimTexts,
+          captionTexts: cues.map((c) => c.text),
+          allowedOverlayText: [...script.scenes.flatMap((s) => (s.stat ? [s.stat] : [])), ...(offerText ? [offerText] : []), ...(urlText ? [urlText] : []), brandName],
+        },
+        cues: cues.map((c) => ({ start: c.start, end: c.end, text: c.text })),
+        expectsLogo: Boolean(logoPng) && (finishing.endCard || finishing.logo),
+        asr,
+        requireVision: true,
+        logoReference: logoBytes,
+        verifiedAssetWindows: imageWindows,
+      },
+    );
+    const findings = [...report.findings, ...cueFindings];
+    const blocking = findings.filter((f) => f.severity !== "minor");
+    const merged: QaReport = { ...report, findings, verdict: finalBlocks(report) || blocking.length ? (report.verdict === "pass" ? "unresolved" : report.verdict) : report.verdict };
+    for (const c of report.checks) checks.push({ name: c.name, ok: c.ok, detail: c.detail });
+    const blocked = finalBlocks(merged) || hasCritical(findings) || blocking.length > 0;
+
     const bytes = await readFile(finalFile);
     const key = `video/${projectId}/final-${Date.now()}.mp4`;
+    const brandUse = { name: brandName || null, logo: Boolean(logoPng), textOnly: !logoPng && verified.allowTextOnlyBrand };
+    const includesBase = { captions: finishing.captions, logo: overlays.some((o) => o.start === 0 && o.end === joinedSeconds), endCard: finishing.endCard, stats: statCount, images: imageCount, captionTiming: (!finishing.captions ? "none" : transcriptTimed ? "transcript" : "estimated") as "transcript" | "estimated" | "none" };
+
+    if (blocked) {
+      // A failed critical check blocks delivery: the file is kept only for the operator to look at, never as the finished video.
+      await storage.put(key, bytes, "video/mp4");
+      if (project.final?.reviewKey) await storage.delete(project.final.reviewKey).catch(() => undefined);
+      current = {
+        state: "blocked",
+        stage: null,
+        error: `Not approved for delivery: ${blocking.slice(0, 4).map((f) => f.message).join(" ") || merged.limitations.join(" ") || "the inspection could not approve it."}`,
+        startedAt: current.startedAt,
+        key: null,
+        reviewKey: key,
+        seconds: Math.round(info.seconds * 10) / 10,
+        width: info.width,
+        height: info.height,
+        bytes: bytes.length,
+        createdAt: new Date().toISOString(),
+        qa: checks,
+        includes: includesBase,
+        report: merged,
+        subtitles,
+        brand: brandUse,
+        speech: speechUse,
+      };
+      await updateProject(projectId, { final: current, status: "clips_ready", error: null });
+      return;
+    }
+
     await storage.put(key, bytes, "video/mp4");
     if (project.final?.key) await storage.delete(project.final.key).catch(() => undefined);
-
+    if (project.final?.reviewKey) await storage.delete(project.final.reviewKey).catch(() => undefined);
     current = {
       state: "done",
       stage: null,
       error: null,
       startedAt: current.startedAt,
       key,
+      reviewKey: null,
       seconds: Math.round(info.seconds * 10) / 10,
       width: info.width,
       height: info.height,
       bytes: bytes.length,
       createdAt: new Date().toISOString(),
       qa: checks,
-      includes: { captions: finishing.captions, logo: overlays.some((o) => o.start === 0 && o.end === joinedSeconds), endCard: finishing.endCard, stats: statCount, images: imageCount, captionTiming: !finishing.captions ? "none" : transcriptTimed ? "transcript" : "estimated" },
+      includes: includesBase,
+      report: merged,
+      subtitles,
+      brand: brandUse,
+      speech: speechUse,
     };
-    await updateProject(projectId, { final: current, status: "done", error: null });
+    // The script keeps what was measured, next to what it estimated.
+    await updateProject(projectId, { final: current, status: "done", error: null, ...(script.speech ? { chosen_script: { ...script, speech: { ...script.speech, measuredSeconds: measuredSpeech } } } : {}) });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn("Assembling the video failed", { projectId, error: message });
