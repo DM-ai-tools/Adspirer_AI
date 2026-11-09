@@ -3,6 +3,7 @@ import { z } from "zod";
 import { pickModel } from "@/lib/creatives/concept-writer";
 import { getObjectStorage } from "@/lib/storage/r2";
 import { logger } from "@/lib/observability/logger";
+import { pickMainStat } from "@/lib/video/required-stats";
 import type { VideoAsset } from "@/lib/video/projects";
 
 export type AssetAnalysis = {
@@ -13,6 +14,8 @@ export type AssetAnalysis = {
   stats: Array<{ value: string; label: string }>;
   /** True when a real person's face is visible (such an image cannot be given to Seedance as a reference). */
   hasFace: boolean;
+  /** The one headline figure the image makes its point with, one of `stats`. The script must say it. The operator can change it. */
+  mainStat?: { value: string; label: string } | null;
 };
 
 const schema = z.object({
@@ -23,6 +26,10 @@ const schema = z.object({
     .max(8)
     .describe("Only numbers that are actually legible in the image. Never estimate or invent one."),
   hasFace: z.boolean(),
+  main_stat: z
+    .object({ value: z.string(), label: z.string() })
+    .nullable()
+    .describe("The ONE headline figure the image is making its point with: the most prominent, or the result a viewer would care about most (for a results dashboard, its key outcome rather than a volume or cost figure). It must be one of the stats listed, copied exactly. null if there are no stats."),
 });
 
 const PROMPT =
@@ -49,7 +56,8 @@ export async function analyzeAsset(asset: VideoAsset): Promise<AssetAnalysis | n
         },
       ],
     });
-    return object;
+    const { main_stat: chosen, ...rest } = object;
+    return { ...rest, mainStat: pickMainStat(rest.stats, chosen) };
   } catch (error) {
     logger.warn("Could not read an uploaded video image", { asset: asset.id, error: error instanceof Error ? error.message : String(error) });
     return null;

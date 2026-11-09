@@ -80,6 +80,7 @@ type Script = {
   speech?: { words: number; estimatedSeconds: number; wordsPerSecond: number; requestedSeconds: number; budgetWords: { min: number; target: number; max: number }; fit: "fits" | "long" | "short"; measuredSeconds?: number | null };
   sources?: SourceView[];
   dramatisation?: boolean;
+  imageStats?: Array<{ assetId: string; assetName: string; value: string; label: string; said: boolean; shown: boolean; scene: number | null }>;
   editorial?: { hardFailures: Array<{ problem: string }>; open: Array<{ problem: string; severity: "hard" | "major" | "minor" }>; limitation: string | null };
 };
 
@@ -141,7 +142,7 @@ type GenerationView = {
   error: string | null;
 };
 
-type Asset = { id: string; name: string; summary: string; kind: string | null; stats: Array<{ value: string; label: string }>; analysed: boolean; url: string };
+type Asset = { id: string; name: string; summary: string; kind: string | null; stats: Array<{ value: string; label: string }>; mainStat?: { value: string; label: string } | null; analysed: boolean; url: string };
 
 type ProjectView = {
   id: string;
@@ -589,6 +590,19 @@ function VersionSummary({
           {speech?.measuredSeconds ? <> · measured from the audio: {speech.measuredSeconds}s</> : <> · the measured length appears once the video has been made</>}
         </p>
       </div>
+
+      {script.imageStats?.length ? (
+        <div className="space-y-1 rounded-md border border-border p-2 text-xs">
+          <p className="font-medium">Main stat from each of your images (it must be said, with its image shown)</p>
+          <ul className="space-y-0.5">
+            {script.imageStats.map((c, i) => (
+              <li key={i} className={c.said && c.shown ? "text-muted" : c.said ? "text-amber-500" : "text-destructive"}>
+                {c.said && c.shown ? "Said and shown" : c.said ? "Said, image not shown" : "Not said yet"} in {c.scene ? `scene ${c.scene}` : "no scene"}: <span className="text-foreground">{c.value}</span> {c.label}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       {script.hook ? (
         <p className="text-xs">
@@ -1474,6 +1488,17 @@ function VideoInner() {
     }
   }
 
+  async function chooseMainStat(assetId: string, value: string) {
+    if (!projectId) return;
+    try {
+      await apiFetch(`/api/creatives/video/${projectId}/assets/${assetId}`, { method: "PATCH", body: JSON.stringify({ value }) });
+      setView((v) => (v ? { ...v, assets: v.assets.map((a) => (a.id === assetId ? { ...a, mainStat: a.stats.find((s) => s.value === value) ?? a.mainStat } : a)) } : v));
+      toast.success("Main stat changed. Write the scripts again to use it.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not change the main stat");
+    }
+  }
+
   async function saveContext(values: { audience?: string; tone?: string; goal?: string; platform?: string; offerDetails?: string; instructions?: string; speechRate?: number; rewrite: boolean }) {
     if (!projectId) return;
     setRevising("context");
@@ -1498,7 +1523,7 @@ function VideoInner() {
     if (!draft || !projectId) return;
     setRewriting(id);
     try {
-      const res = await apiFetch<{ scene: Scene | null; adCopy: Script["adCopy"] | null; verification: Verification; speech?: Script["speech"] | null }>(`/api/creatives/video/${projectId}/rewrite`, {
+      const res = await apiFetch<{ scene: Scene | null; adCopy: Script["adCopy"] | null; verification: Verification; speech?: Script["speech"] | null; imageStats?: Script["imageStats"] }>(`/api/creatives/video/${projectId}/rewrite`, {
         method: "POST",
         body: JSON.stringify({
           scriptId: draft.id,
@@ -1516,6 +1541,7 @@ function VideoInner() {
       if (res.adCopy) setDraft((d) => (d ? { ...d, adCopy: res.adCopy! } : d));
       setReview(res.verification);
       if (res.speech) setDraft((d) => (d ? { ...d, speech: res.speech! } : d));
+      if (res.imageStats) setDraft((d) => (d ? { ...d, imageStats: res.imageStats! } : d));
       setFeedbackFor((f) => ({ ...f, [id]: undefined }));
       if (action !== "check") toast.success(action === "scene" ? "Scene rewritten and the script re-checked" : "Ad copy rewritten and the script re-checked");
     } catch (err) {
@@ -1759,7 +1785,7 @@ function VideoInner() {
 
                 <div className="space-y-2">
                   <p className="text-[11px] font-medium">Images to use in the video (screenshots of results, stats, product)</p>
-                  <p className="text-[11px] text-muted">We read each image automatically, pull out the stats printed in it, and show it on screen where that stat is said. PNG, JPG or WebP, up to 8.</p>
+                  <p className="text-[11px] text-muted">We read each image automatically and pick its main stat (you can change it). The script says that stat, and the image is shown on screen when it is said. PNG, JPG or WebP, up to 8.</p>
                   <div className="flex flex-wrap gap-2">
                     {images.map((img, i) => (
                       <div key={i} className="relative">
@@ -1959,15 +1985,26 @@ function VideoInner() {
                             <p className="text-muted">{a.summary || (a.analysed ? "No description" : "Could not be read, so it is shown but no stats were taken from it.")}</p>
                             <div className="flex flex-wrap gap-1">
                               {a.stats.length ? (
-                                a.stats.map((s, i) => (
-                                  <Badge key={i} variant="secondary">
-                                    {s.value} {s.label}
-                                  </Badge>
-                                ))
+                                a.stats.map((s, i) => {
+                                  const isMain = a.mainStat?.value === s.value;
+                                  return (
+                                    <button
+                                      key={i}
+                                      type="button"
+                                      title={isMain ? "The main stat: the script says this one" : "Make this the main stat"}
+                                      onClick={() => void chooseMainStat(a.id, s.value)}
+                                      className={cn("rounded-md border px-2 py-0.5 text-[11px] transition-colors", isMain ? "border-accent bg-accent/10 font-medium text-foreground" : "border-border text-muted hover:border-accent")}
+                                    >
+                                      {isMain ? "Main · " : ""}
+                                      {s.value} {s.label}
+                                    </button>
+                                  );
+                                })
                               ) : (
                                 <span className="text-[11px] text-muted">No numbers found in it</span>
                               )}
                             </div>
+                            {a.stats.length ? <p className="text-[10px] text-muted">The main stat is the one the script says, with this image shown while it is said. Click another to change it, then write the scripts again.</p> : null}
                           </div>
                         </div>
                       ))}

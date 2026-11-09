@@ -7,7 +7,8 @@ import { effectiveProject, viewGeneration } from "@/lib/video/generation";
 import { getObjectStorage } from "@/lib/storage/r2";
 import { operatorClaims, writeProjectScripts } from "@/lib/video/brief";
 import { brandView } from "@/lib/video/brand-view";
-import { markEdited, withSpeech } from "@/lib/video/script-actions";
+import { markEdited, requiredStatsForProject, withSpeech } from "@/lib/video/script-actions";
+import { attachImageStats, linkImageStats, pickMainStat } from "@/lib/video/required-stats";
 import { checkScript, MAX_SECONDS, type VideoScript } from "@/lib/video/script";
 import { previewPlan } from "@/lib/video/plan-view";
 import { runAfterResponse } from "@/lib/api/background";
@@ -42,6 +43,7 @@ function view(raw: VideoProject) {
       summary: a.analysis?.summary ?? a.caption ?? "",
       kind: a.analysis?.kind ?? null,
       stats: a.analysis?.stats ?? [],
+      mainStat: pickMainStat(a.analysis?.stats ?? [], a.analysis?.mainStat),
       analysed: Boolean(a.analysis),
       url: `/api/creatives/video/${project.id}/assets/${a.id}`,
     })),
@@ -129,7 +131,15 @@ export async function PATCH(request: Request, ctx: Ctx) {
     }
     edited.warnings = checkScript(edited, { corpus, assetIds: project.assets.map((a) => a.id), target: cursor, claims });
     // Length and the spoken estimate follow the words as they now stand.
-    const withLength = { ...withSpeech(edited, project.inputs.speechRate, original.speech?.requestedSeconds ?? project.inputs.targetSeconds), warnings: edited.warnings };
+    const lengthed = { ...withSpeech(edited, project.inputs.speechRate, original.speech?.requestedSeconds ?? project.inputs.targetSeconds), warnings: edited.warnings };
+    // The stats read from the uploaded images are mandatory in a script we wrote: they must be said (an uploaded script keeps the operator's own words).
+    const required = requiredStatsForProject(project);
+    const linked = attachImageStats({ ...lengthed, scenes: linkImageStats(lengthed.scenes, required) }, required);
+    const unsaid = original.source === "uploaded" ? [] : (linked.imageStats ?? []).filter((c) => !c.said);
+    if (unsaid.length) {
+      throw new Error(`The stats from your image${new Set(unsaid.map((c) => c.assetId)).size > 1 ? "s" : ""} must be said in the script: ${unsaid.map((c) => `${c.value}${c.label ? ` (${c.label})` : ""}`).join(", ")}. Say each one in a scene (write the figure as it is printed) and the image is shown with it.`);
+    }
+    const withLength = linked;
     const updated = await updateProject(project.id, { chosen_script: withLength, status: "confirmed", ...(brand !== project.brand ? { brand } : {}) });
     return jsonOk(view(updated));
   });

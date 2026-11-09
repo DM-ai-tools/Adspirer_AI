@@ -17,6 +17,7 @@ import { overlapFindings, qualityReport, type QualityFinding } from "@/lib/video
 import { checkScript, unsourcedFigures, type VideoScene, type VideoScript } from "@/lib/video/script";
 import type { AnglePlan, CreativeBrief, EditorialIssue, EditorialReport } from "@/lib/video/script-types";
 import { retime } from "@/lib/video/timing";
+import { statCoverage, type RequiredStat } from "@/lib/video/required-stats";
 import type { Issue, Verification } from "@/lib/video/verify";
 import { SYSTEM } from "@/lib/video/voice";
 
@@ -31,6 +32,8 @@ export type EditorialContext = {
   assetIds: string[];
   locale: string;
   maxPasses?: number;
+  /** Stats read from the operator's uploaded images: every one must be said in the script, in a scene that shows its image. */
+  requiredStats?: RequiredStat[];
   /**
    * Other versions that exist and are NOT being edited (when only one version is regenerated). They
    * are shown to the reviewer and compared for overlap, but never reviewed, rewritten or returned.
@@ -235,6 +238,17 @@ function trackedDeterministic(script: VideoScript, ctx: EditorialContext): Track
   // The closing line IS the last spoken line, so a problem with the call to action is a problem with that scene and can be rewritten there.
   const lastSpoken = spoken[spoken.length - 1]?.number ?? null;
   out.push(...findings.map((f) => fromFinding(f.scene === null && f.code.startsWith("cta_") && f.code !== "cta_missing" ? { ...f, scene: lastSpoken } : f)));
+
+  // The stats read from the uploaded images are mandatory: they are why the images were uploaded.
+  if (ctx.requiredStats?.length && script.source !== "uploaded") {
+    for (const c of statCoverage(script, ctx.requiredStats)) {
+      if (!c.said) {
+        out.push({ scene: null, severity: "hard", area: "claims", problem: `The stat ${c.value}${c.label ? ` (${c.label})` : ""} from your image "${c.assetName}" is not said anywhere in the script.`, fix: `Say ${c.value} and what it measures naturally, in the scene where the proof helps the argument, and show that image in that scene.`, code: "required_stat_missing" });
+      } else if (!c.shown) {
+        out.push({ scene: c.scene, severity: "major", area: "claims", problem: `The stat ${c.value} is said in scene ${c.scene}, but your image "${c.assetName}" is not shown there.`, fix: "Show that image in the scene that says the figure.", code: "required_stat_not_shown" });
+      }
+    }
+  }
 
   // length
   if (ctx.targetSeconds > 0) {

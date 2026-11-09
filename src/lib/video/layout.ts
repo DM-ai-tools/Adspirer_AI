@@ -25,7 +25,7 @@ export type Layout = {
 
 export function layoutFor(format: FinalFormat): Layout {
   if (format === "9:16") {
-    return { captionY: 0.605, statY: 0.255, imageY: 0.445, imageMaxW: 0.82, imageMaxH: 0.2, logo: { x: 0.05, y: 0.15, width: 0.2 }, safe: { top: 0.14, bottom: 0.35 } };
+    return { captionY: 0.605, statY: 0.255, imageY: 0.44, imageMaxW: 0.84, imageMaxH: 0.23, logo: { x: 0.05, y: 0.15, width: 0.2 }, safe: { top: 0.14, bottom: 0.35 } };
   }
   if (format === "4:5") {
     return { captionY: 0.8, statY: 0.2, imageY: 0.47, imageMaxW: 0.8, imageMaxH: 0.3, logo: { x: 0.05, y: 0.04, width: 0.22 }, safe: { top: 0.06, bottom: 0.06 } };

@@ -51,8 +51,10 @@ export function repairText(text: string, sourceText: string): { text: string; ch
   for (const token of tokens(out, DOMAIN)) {
     const key = squash(token);
     if (key.length < 7 || sourceSquashed.includes(key)) continue;
-    const stem = token.toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").split(/[./]/)[0]!;
-    const original = sourceDomains.find((d) => d.toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").split(/[./]/)[0] === stem);
+    // The same site written another way: they share a name label ("trafficradius" in trafficradius.com.au and googleaudit.trafficradius.com.au).
+    const labelsOf = (d: string) => d.toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").split(/[./]/).filter((l) => l.length >= 5 && !["example", "audit"].includes(l));
+    const mine = labelsOf(token);
+    const original = sourceDomains.find((d) => labelsOf(d).some((l) => mine.includes(l)));
     if (original) {
       out = out.replace(token, original.replace(/^https?:\/\//, "").replace(/^www\./, ""));
       changes.push(`put back the web address exactly as the page gives it`);

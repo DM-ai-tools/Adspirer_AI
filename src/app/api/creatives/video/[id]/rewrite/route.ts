@@ -8,7 +8,8 @@ import { regenerateScene, rewriteAdCopy } from "@/lib/video/rewrite";
 import { checkOnly, type VerifyContext } from "@/lib/video/verify";
 import { retime } from "@/lib/video/timing";
 import { jsonOk, parseBody, withApiHandler } from "@/lib/api/response";
-import { withSpeech } from "@/lib/video/script-actions";
+import { requiredStatsForProject, withSpeech } from "@/lib/video/script-actions";
+import { attachImageStats } from "@/lib/video/required-stats";
 
 export const maxDuration = 120;
 type Ctx = { params: Promise<{ id: string }> };
@@ -93,6 +94,7 @@ export async function POST(request: Request, ctx: Ctx) {
     const verification = await checkOnly(script, vctx);
     // The length and the spoken estimate for the words as they stand now.
     const speech = withSpeech(script, project.inputs.speechRate, original.speech?.requestedSeconds ?? project.inputs.targetSeconds).speech ?? null;
-    return jsonOk({ scene, adCopy, verification, speech });
+    const checked = attachImageStats(script, requiredStatsForProject(project));
+    return jsonOk({ scene, adCopy, verification, speech, imageStats: checked.imageStats ?? [] });
   });
 }

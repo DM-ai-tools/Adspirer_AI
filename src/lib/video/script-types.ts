@@ -155,7 +155,12 @@ export type EditorialReport = {
   checkedAt: string;
 };
 
+/** One stat read from an uploaded image, and whether the script says it and shows that image when it does. */
+export type ImageStatCoverage = { assetId: string; assetName: string; value: string; label: string; said: boolean; shown: boolean; scene: number | null };
+
 export type ScriptExtras = {
+  /** Every stat read from the uploaded images must be said in the script, in a scene that shows that image. */
+  imageStats?: ImageStatCoverage[];
   angleDetail?: AnglePlan;
   differentiator?: string;
   hook?: { line: string; candidates: HookCandidate[]; payoff: string };

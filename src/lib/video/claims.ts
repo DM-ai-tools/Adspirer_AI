@@ -136,6 +136,24 @@ export function figuresEquivalent(a: NormalisedFigure, b: NormalisedFigure): boo
   return pair(a, b) || pair(b, a);
 }
 
+/**
+ * A precise figure said the way a person rounds it ("$13.6 million" for 13,580,509.69): the same
+ * number to within 1.5%, the same kind of figure, and only when the source figure is precise enough
+ * (five or more digits) that rounding is what anyone would do. A currency the source does not show is
+ * allowed to be said ("$71.6 million" for 71,637,701.43). Exact figures still have to match exactly.
+ */
+export function figureRoundsTo(spoken: NormalisedFigure, source: NormalisedFigure): boolean {
+  if (spoken.value === null || source.value === null || source.value === 0) return false;
+  const precise = source.text.replace(/\D/g, "").replace(/^0+/, "").length >= 5;
+  if (!precise) return false;
+  // A plain number ("none" or "count") and an amount of money are the same kind of figure here: the image may simply not show the currency.
+  const plain = (u: string) => u === "none" || u === "count";
+  const kinds = spoken.unit === source.unit || (plain(spoken.unit) && plain(source.unit)) || (spoken.unit === "money" && plain(source.unit)) || (plain(spoken.unit) && source.unit === "money");
+  if (!kinds) return false;
+  if (spoken.unit === "money" && source.unit === "money" && spoken.currency && source.currency && spoken.currency !== source.currency) return false;
+  return Math.abs(spoken.value - source.value) / Math.abs(source.value) <= 0.015;
+}
+
 // ------------------------------------------------------------------ finding claims in prose
 
 const MONTHS = "jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?";
@@ -372,7 +390,7 @@ export function sourceClaims(
   for (const use of uses) {
     for (const f of findClaimsInText(use.text)) {
       const wanted = normaliseFigure(f.figure);
-      const hit = indexed.find((r) => r.figures.some((g) => figuresEquivalent(wanted, g)));
+      const hit = indexed.find((r) => r.figures.some((g) => figuresEquivalent(wanted, g) || figureRoundsTo(wanted, g)));
       if (hit) sourced.push({ use, figure: f.figure, claim: hit.claim });
       else {
         const known = registry.map((c) => c.figure).filter((x): x is string => Boolean(x));
