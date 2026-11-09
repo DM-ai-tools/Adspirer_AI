@@ -84,8 +84,12 @@ export async function imagePiece(source: Buffer, maxWidth: number, maxHeight: nu
   const radius = Math.round(Math.min(w, h) * 0.04);
   const mask = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${scaled.info.width}" height="${scaled.info.height}"><rect width="100%" height="100%" rx="${radius}"/></svg>`);
   const rounded = await sharp(scaled.data).composite([{ input: mask, blend: "dest-in" }]).png().toBuffer();
-  const png = await sharp(roundRect(w, h, radius + 4, "#FFFFFF", 1)).composite([{ input: rounded, left: border, top: border }]).png().toBuffer();
-  return { png, width: w, height: h };
+  const card = await sharp(roundRect(w, h, radius + 4, "#FFFFFF", 1)).composite([{ input: rounded, left: border, top: border }]).png().toBuffer();
+  // A soft shadow lifts the card off the footage so it reads as a card laid on the picture, not a rectangle pasted on it.
+  const pad = 26;
+  const shadow = await sharp(roundRect(w, h, radius + 4, "#000000", 0.42)).extend({ top: pad, bottom: pad, left: pad, right: pad, background: { r: 0, g: 0, b: 0, alpha: 0 } }).blur(9).png().toBuffer();
+  const png = await sharp(shadow).composite([{ input: card, left: pad, top: pad - 6 }]).png().toBuffer();
+  return { png, width: w + pad * 2, height: h + pad * 2 };
 }
 
 /** The logo on a white rounded badge, so it reads over any footage. The logo is the real file, only scaled. */

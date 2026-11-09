@@ -15,7 +15,8 @@ import { planAngles } from "@/lib/video/angles";
 import { editorialPass, refreshEditorial } from "@/lib/video/editorial";
 import { resolveWordsPerSecond } from "@/lib/video/duration";
 import { contactTokens, repairScript } from "@/lib/video/script-repairs";
-import { trimToFit, writeScriptForAngle, writeScriptSet, type WriteContext } from "@/lib/video/script-writer";
+import { requiredStatsFrom, spokenForms } from "@/lib/video/required-stats";
+import { ensureMainStats, trimToFit, writeScriptForAngle, writeScriptSet, type WriteContext } from "@/lib/video/script-writer";
 import type { AnglePlan, CreativeBrief } from "@/lib/video/script-types";
 import type { VideoScript } from "@/lib/video/script";
 import { pickModel } from "@/lib/creatives/concept-writer";
@@ -146,7 +147,7 @@ export async function buildBrief(project: VideoProject): Promise<{ brief: VideoB
     instructions: project.inputs.instructions,
     offerDetails: project.inputs.offerDetails,
     stats: project.inputs.stats ?? [],
-    images: project.assets.map((a) => ({ id: a.id, name: a.name, summary: a.analysis?.summary ?? a.caption, stats: a.analysis?.stats ?? [] })),
+    images: project.assets.map((a) => ({ id: a.id, name: a.name, summary: a.analysis?.summary ?? a.caption, stats: a.analysis?.stats ?? [], mainStat: a.analysis?.mainStat ?? null })),
     targetSeconds: project.inputs.targetSeconds,
     style: project.inputs.style,
     locale: project.inputs.locale,
@@ -179,7 +180,9 @@ export function writeContextFor(project: VideoProject, creative: CreativeBrief, 
   const pageText = docs.find((d) => d.kind === "page")?.text ?? "";
   // Web addresses and phone numbers are trusted from the page itself (and its own address): a changed one sends the viewer somewhere else.
   const contacts = [brief.landingPageUrl ?? "", ...contactTokens(pageText)];
-  const sourceText = [...creative.facts.flatMap((f) => [f.text, f.source.quote]), ...docs.filter((d) => d.kind !== "page").map((d) => d.text), ...contacts].join("\n");
+  // The figures from the operator's images, and how a person naturally rounds them ("13.6 million" for 13,580,509.69), may be said.
+  const rounded = requiredStatsFrom(brief.images).flatMap((r) => spokenForms(r.value));
+  const sourceText = [...creative.facts.flatMap((f) => [f.text, f.source.quote]), ...docs.filter((d) => d.kind !== "page").map((d) => d.text), ...contacts, ...rounded].join("\n");
   return {
     creative,
     brief,
@@ -205,7 +208,7 @@ const SCRIPT_VERSIONS = 3;
 export async function editScripts(scripts: VideoScript[], ctx: WriteContext, angles: AnglePlan[]): Promise<VideoScript[]> {
   const { scripts: edited } = await editorialPass(
     scripts,
-    { brief: ctx.creative, angles, facts: ctx.facts, claims: ctx.claims, sourceText: ctx.sourceText, wordsPerSecond: ctx.wordsPerSecond, targetSeconds: ctx.targetSeconds, assetIds: ctx.assetIds, locale: ctx.brief.locale, maxPasses: 2 },
+    { brief: ctx.creative, angles, facts: ctx.facts, claims: ctx.claims, sourceText: ctx.sourceText, wordsPerSecond: ctx.wordsPerSecond, targetSeconds: ctx.targetSeconds, assetIds: ctx.assetIds, locale: ctx.brief.locale, maxPasses: 2, requiredStats: requiredStatsFrom(ctx.brief.images) },
     {
       rewriteScript: async (script, issues, others) => {
         const angle = script.angleDetail ?? angles.find((a) => a.id === script.angle.key);
@@ -220,8 +223,16 @@ export async function editScripts(scripts: VideoScript[], ctx: WriteContext, ang
   );
   // The editor's scene rewrites can lengthen a script again: whatever is still well over its length is cut, never shipped.
   // The report must describe the text as it now stands, so it is checked again after the corrections and the cut.
-  const editorialCtx = { brief: ctx.creative, angles, facts: ctx.facts, claims: ctx.claims, sourceText: ctx.sourceText, wordsPerSecond: ctx.wordsPerSecond, targetSeconds: ctx.targetSeconds, assetIds: ctx.assetIds, locale: ctx.brief.locale };
-  return edited.map((s) => refreshEditorial(trimToFit(repairScript(s, ctx.sourceText), ctx), editorialCtx));
+  const required = requiredStatsFrom(ctx.brief.images);
+  const editorialCtx = { brief: ctx.creative, angles, facts: ctx.facts, claims: ctx.claims, sourceText: ctx.sourceText, wordsPerSecond: ctx.wordsPerSecond, targetSeconds: ctx.targetSeconds, assetIds: ctx.assetIds, locale: ctx.brief.locale, requiredStats: required };
+  return Promise.all(
+    edited.map(async (s) => {
+      const cut = trimToFit(repairScript(s, ctx.sourceText), ctx);
+      // The main stat of each image is mandatory: if the passes still have not got it said, one scene is rewritten to say it. The image then stays only where it is said.
+      const withStats = await ensureMainStats(cut, required, ctx);
+      return refreshEditorial(withStats, editorialCtx);
+    }),
+  );
 }
 
 /** Background job: read the brand and the uploaded images, build the creative brief, plan three different angles, write each, edit them, save them. */

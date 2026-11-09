@@ -130,7 +130,7 @@ export type VideoBrief = {
   offerDetails?: string | null;
   stats: string[];
   /** Uploaded images, already read: what each shows and the stats printed in it. */
-  images: Array<{ id: string; name: string; summary: string; stats: Array<{ value: string; label: string }> }>;
+  images: Array<{ id: string; name: string; summary: string; stats: Array<{ value: string; label: string }>; mainStat?: { value: string; label: string } | null }>;
   targetSeconds: number;
   /** "auto" lets the writer pick a different style per script. */
   style: string;

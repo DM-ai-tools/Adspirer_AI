@@ -21,12 +21,15 @@ import { hasCritical, type BrandManifest, type QaReport, type SpeechLine } from 
 import { finalBlocks, reviewFinal } from "@/lib/video/final-qa";
 import { nameFromUrl } from "@/lib/video/naming";
 import { bandsForCue, captionCentres, detectFaceBands } from "@/lib/video/face-bands";
+import { imageSpansFor } from "@/lib/video/image-timing";
+import { requiredStatsFrom } from "@/lib/video/required-stats";
 
 /** The closing card runs this long. */
 export const END_CARD_SECONDS = 2.2;
 const FPS = 30;
 
-export type Overlay = { piece: Piece; x: number; y: number; start: number; end: number };
+/** `fade`: seconds to fade in and out; `slide`: pixels it rises while arriving (an image eases in instead of popping). */
+export type Overlay = { piece: Piece; x: number; y: number; start: number; end: number; fade?: number; slide?: number };
 
 /** Time the words of one scene: from the transcript where it matches, evenly otherwise. */
 export function timeScene(line: string, asr: AsrWord[] | null, window: { start: number; end: number }): { words: TimedWord[]; fromTranscript: boolean } {
@@ -40,12 +43,21 @@ export function timeScene(line: string, asr: AsrWord[] | null, window: { start: 
 }
 
 /** The ffmpeg filter that lays every overlay on the video at its time and place, and levels the sound. */
-export function buildOverlayFilter(overlays: Array<Pick<Overlay, "x" | "y" | "start" | "end">>): string {
+export function buildOverlayFilter(overlays: Array<Pick<Overlay, "x" | "y" | "start" | "end" | "fade" | "slide">>): string {
   const lines: string[] = [];
   let label = "0:v";
   overlays.forEach((o, i) => {
     const out = i === overlays.length - 1 ? "vout" : `v${i + 1}`;
-    lines.push(`[${label}][${i + 1}:v]overlay=x=${Math.round(o.x)}:y=${Math.round(o.y)}:format=auto:enable='between(t,${o.start.toFixed(2)},${o.end.toFixed(2)})'[${out}]`);
+    if (o.fade) {
+      // The image arrives and leaves with a short fade, rising a little as it arrives. Its input is a looped picture so the fade has frames to work on.
+      const f = o.fade;
+      const arrived = (o.start + f).toFixed(2);
+      lines.push(`[${i + 1}:v]format=rgba,fade=t=in:st=${o.start.toFixed(2)}:d=${f}:alpha=1,fade=t=out:st=${Math.max(o.end - f, o.start).toFixed(2)}:d=${f}:alpha=1[f${i}]`);
+      const rise = o.slide ? `+if(lt(t,${arrived}),(${arrived}-t)*${Math.round(o.slide / f)},0)` : "";
+      lines.push(`[${label}][f${i}]overlay=x=${Math.round(o.x)}:y='${Math.round(o.y)}${rise}':format=auto:enable='between(t,${o.start.toFixed(2)},${o.end.toFixed(2)})'[${out}]`);
+    } else {
+      lines.push(`[${label}][${i + 1}:v]overlay=x=${Math.round(o.x)}:y=${Math.round(o.y)}:format=auto:enable='between(t,${o.start.toFixed(2)},${o.end.toFixed(2)})'[${out}]`);
+    }
     label = out;
   });
   if (!overlays.length) lines.push("[0:v]null[vout]");
@@ -185,6 +197,12 @@ export async function assembleVideo(projectId: string, options: Partial<Finishin
       overlays.push({ piece, x: layout.logo.x * W, y: layout.logo.y * H, start: 0, end: joinedSeconds });
     }
 
+    // Captions and faces are worked out first: an image and a caption are both placed away from a face.
+    const cues = finishing.captions ? buildCues(aligned) : [];
+    const hasImages = script.scenes.some((s) => s.assetId);
+    const faces = cues.length || hasImages ? await detectFaceBands(joined, joinedSeconds, path.join(dir, "faces")) : { bands: [], samples: [], limitation: null as string | null };
+    const statOverlays: Overlay[] = [];
+
     for (const w of windows) {
       const scene = script.scenes.find((s) => s.number === w.number)!;
       const line = aligned.find((a) => a.sceneNumber === w.number);
@@ -192,30 +210,45 @@ export async function assembleVideo(projectId: string, options: Partial<Finishin
       if (scene.stat) {
         const piece = await statPiece(scene.stat, W, accent);
         const when = statWindow(w, words, scene.stat);
-        overlays.push({ piece, x: (W - piece.width) / 2, y: layout.statY * H - piece.height / 2, start: when.start, end: when.end });
+        const card: Overlay = { piece, x: (W - piece.width) / 2, y: layout.statY * H - piece.height / 2, start: when.start, end: when.end };
+        overlays.push(card);
+        statOverlays.push(card);
         statCount += 1;
-      }
-      if (scene.assetId) {
-        const asset = project.assets.find((a) => a.id === scene.assetId);
-        const bytes = asset ? await storage.get(asset.key) : null;
-        if (bytes) {
-          const piece = await imagePiece(bytes, Math.round(W * layout.imageMaxW), Math.round(H * layout.imageMaxH));
-          const start = Math.min(w.start + 0.2, w.end - 1);
-          overlays.push({ piece, x: (W - piece.width) / 2, y: layout.imageY * H - piece.height / 2, start, end: w.end });
-          imageWindows.push({ start, end: w.end });
-          imageCount += 1;
-        }
       }
     }
 
+    // The operator's stat images: each arrives just before its figure is said, stays for the point, and leaves; one continuous showing per run of scenes that use it.
+    const figuresByAsset: Record<string, string[]> = {};
+    for (const r of requiredStatsFrom(project.assets.map((a) => ({ id: a.id, name: a.name, stats: a.analysis?.stats ?? [], mainStat: a.analysis?.mainStat ?? null })))) (figuresByAsset[r.assetId] ??= []).push(r.value);
+    const spans = imageSpansFor({
+      scenes: script.scenes.map((s) => ({ number: s.number, assetId: s.assetId, stat: s.stat })),
+      windows,
+      words: new Map(aligned.map((a) => [a.sceneNumber, a.words])),
+      figuresByAsset,
+      totalSeconds: joinedSeconds,
+    });
+    for (const span of spans) {
+      const asset = project.assets.find((a) => a.id === span.assetId);
+      const bytes = asset ? await storage.get(asset.key) : null;
+      if (!bytes) continue;
+      const piece = await imagePiece(bytes, Math.round(W * layout.imageMaxW), Math.round(H * layout.imageMaxH));
+      const heightFraction = piece.height / H;
+      // Placed in the free middle of the frame: off any face, clear of the big-stat card, and leaving room for the caption beneath it.
+      const faceBands = bandsForCue(faces.bands, faces.samples, span.start, span.end);
+      const cards = statOverlays.filter((c) => c.start < span.end && c.end > span.start).map((c) => ({ top: c.y / H, bottom: (c.y + c.piece.height) / H }));
+      const captionRoom = { top: layout.captionY - 0.05, bottom: layout.captionY + 0.05 };
+      const { inside } = captionCentres(layout.imageY, layout.safe, heightFraction);
+      const centre = safeCaptionY(inside, [...faceBands, ...cards, captionRoom], heightFraction) ?? safeCaptionY(inside, [...faceBands, ...cards], heightFraction) ?? layout.imageY;
+      overlays.push({ piece, x: (W - piece.width) / 2, y: centre * H - piece.height / 2, start: span.start, end: span.end, fade: 0.3, slide: 30 });
+      imageWindows.push({ start: span.start, end: span.end });
+      imageCount += 1;
+    }
+
     // Captions: grouped into readable cues, kept off the logo, the stat and the image card wherever they are on screen.
-    const cues = finishing.captions ? buildCues(aligned) : [];
     const keywordsAt = (t: number) => {
       const w = windows.find((x) => t >= x.start - 0.05 && t <= x.end + 0.05);
       return script.scenes.find((s) => s.number === w?.number)?.keywords ?? [];
     };
-    // Faces are located first, so a caption never sits on one.
-    const faces = cues.length ? await detectFaceBands(joined, joinedSeconds, path.join(dir, "faces")) : { bands: [], samples: [], limitation: null as string | null };
     let crowded = 0;
     for (const cue of cues) {
       const piece = await captionPiece(phraseMarkup({ words: cue.words, start: cue.start, end: cue.end }, keywordsAt(cue.start), accent), W);
@@ -252,6 +285,9 @@ export async function assembleVideo(projectId: string, options: Partial<Finishin
       const f = path.join(dir, `o${i}.png`);
       await writeFile(f, o.piece.png);
       files.push(f);
+      // A faded overlay needs frames over time, so its picture is looped for the length of the video.
+      // (It is never longer than the video: a longer picture would stretch the video itself.)
+      if (o.fade) args.push("-loop", "1", "-framerate", String(FPS), "-t", String(Math.max(Math.floor(joinedSeconds * 100) / 100 - 0.05, 1)));
       args.push("-i", f);
     }
     const scriptFile = path.join(dir, "filter.txt");

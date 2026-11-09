@@ -4,8 +4,9 @@ import { buildScriptSpeech, resolveWordsPerSecond } from "@/lib/video/duration";
 import { editorialPass, refreshEditorial } from "@/lib/video/editorial";
 import type { VideoProject } from "@/lib/video/projects";
 import { checkScript, type VideoBrief, type VideoScene, type VideoScript } from "@/lib/video/script";
+import { requiredStatsFrom } from "@/lib/video/required-stats";
 import { repairScript } from "@/lib/video/script-repairs";
-import { trimToFit, writeScriptForAngle, type WriteContext } from "@/lib/video/script-writer";
+import { ensureMainStats, trimToFit, writeScriptForAngle, type WriteContext } from "@/lib/video/script-writer";
 import type { AnglePlan } from "@/lib/video/script-types";
 import { retime } from "@/lib/video/timing";
 
@@ -56,6 +57,11 @@ export function applyDraft(original: VideoScript, draft: Draft, ctx: { wordsPerS
   return { ...next, warnings: checkScript(next, { corpus: ctx.corpus, assetIds: ctx.assetIds, target: ctx.requestedSeconds, claims: ctx.claims }) };
 }
 
+/** The stats read from the project's uploaded images: each must be said in the script. */
+export function requiredStatsForProject(project: Pick<VideoProject, "assets">) {
+  return requiredStatsFrom(project.assets.map((a) => ({ id: a.id, name: a.name, stats: a.analysis?.stats ?? [], mainStat: a.analysis?.mainStat ?? null })));
+}
+
 /** The brief the writer needs, rebuilt from what is stored so a version can be changed without reading the site again. */
 export function storedBrief(project: VideoProject): VideoBrief {
   const creative = project.brand!.brief!;
@@ -70,7 +76,7 @@ export function storedBrief(project: VideoProject): VideoBrief {
     instructions: inputs.instructions,
     offerDetails: inputs.offerDetails,
     stats: inputs.stats ?? [],
-    images: project.assets.map((a) => ({ id: a.id, name: a.name, summary: a.analysis?.summary ?? a.caption, stats: a.analysis?.stats ?? [] })),
+    images: project.assets.map((a) => ({ id: a.id, name: a.name, summary: a.analysis?.summary ?? a.caption, stats: a.analysis?.stats ?? [], mainStat: a.analysis?.mainStat ?? null })),
     targetSeconds: inputs.targetSeconds,
     style: inputs.style,
     locale: inputs.locale,
@@ -99,6 +105,7 @@ export async function reviseVersion(project: VideoProject, input: ReviseInput, d
   const ctx: WriteContext = writeContextFor(project, creative, brief);
   // The operator's unsaved edits count: their scenes are approved and survive.
   const current = input.draft ? applyDraft(found, input.draft, { wordsPerSecond: project.inputs.speechRate, requestedSeconds: ctx.targetSeconds, corpus: ctx.corpus, assetIds: ctx.assetIds, claims: ctx.claims }) : found;
+  const required = requiredStatsFrom(brief.images);
   const avoidOpenings = others.map((o) => o.hook?.line).filter((l): l is string => Boolean(l));
 
   let angle: AnglePlan | undefined = current.angleDetail ?? project.brand?.angles?.find((a) => a.id === current.angle.key);
@@ -130,12 +137,14 @@ export async function reviseVersion(project: VideoProject, input: ReviseInput, d
   // The new version is edited against the facts, its voice, its length and the untouched versions, which are compared with but never changed.
   const { scripts: edited } = await editorialPass(
     [written],
-    { brief: creative, angles: [angle!], facts: ctx.facts, claims: ctx.claims, sourceText: ctx.sourceText, wordsPerSecond: ctx.wordsPerSecond, targetSeconds: ctx.targetSeconds, assetIds: ctx.assetIds, locale: brief.locale, maxPasses: 2, compareWith: others },
+    { brief: creative, angles: [angle!], facts: ctx.facts, claims: ctx.claims, sourceText: ctx.sourceText, wordsPerSecond: ctx.wordsPerSecond, targetSeconds: ctx.targetSeconds, assetIds: ctx.assetIds, locale: brief.locale, maxPasses: 2, compareWith: others, requiredStats: required },
     {
       rewriteScript: async (script, issues) =>
         write(ctx, angle!, { previous: script, avoidOpenings, direction: `Fix these problems and keep what already works: ${issues.map((i) => `${i.problem} (${i.fix})`).join(" ")}` }),
     },
   );
-  const result = refreshEditorial(trimToFit(repairScript(edited[0] ?? written, ctx.sourceText), ctx), { brief: creative, angles: [angle!], facts: ctx.facts, claims: ctx.claims, sourceText: ctx.sourceText, wordsPerSecond: ctx.wordsPerSecond, targetSeconds: ctx.targetSeconds, assetIds: ctx.assetIds, locale: brief.locale });
+  const cut = trimToFit(repairScript(edited[0] ?? written, ctx.sourceText), ctx);
+  const withStats = await ensureMainStats(cut, required, ctx);
+  const result = refreshEditorial(withStats, { brief: creative, angles: [angle!], facts: ctx.facts, claims: ctx.claims, sourceText: ctx.sourceText, wordsPerSecond: ctx.wordsPerSecond, targetSeconds: ctx.targetSeconds, assetIds: ctx.assetIds, locale: brief.locale, requiredStats: required });
   return scripts.map((s) => (s.id === found.id ? { ...result, id: found.id } : s));
 }
