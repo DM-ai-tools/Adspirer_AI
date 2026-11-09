@@ -8,6 +8,7 @@ import { alignWords, fillGaps, matchedShare, phraseMarkup, sceneWindows, splitSt
 import { accentColour, finalSize, insideSafeZone, layoutFor } from "@/lib/video/layout";
 import { buildOverlayFilter, timeScene } from "@/lib/video/assemble";
 import type { VideoScene, VideoScript } from "@/lib/video/script";
+import type { BrandManifest } from "@/lib/video/pipeline-types";
 
 const stored = new Map<string, Buffer>();
 vi.mock("@/lib/storage/r2", () => ({
@@ -15,6 +16,28 @@ vi.mock("@/lib/storage/r2", () => ({
     put: async (key: string, data: Buffer) => void stored.set(key, Buffer.from(data)),
     get: async (key: string) => stored.get(key) ?? null,
     delete: async (key: string) => void stored.delete(key),
+  }),
+}));
+
+vi.mock("@/lib/video/face-bands", async (orig) => ({
+  ...(await orig<typeof import("@/lib/video/face-bands")>()),
+  // The face finder calls a vision model; its own tests inject a detector.
+  detectFaceBands: async () => ({ bands: [], samples: [], limitation: null }),
+}));
+
+let finalVerdict: "pass" | "critical" = "pass";
+vi.mock("@/lib/video/final-qa", async (orig) => ({
+  ...(await orig<typeof import("@/lib/video/final-qa")>()),
+  // The vision review is exercised in its own tests; here the assembly is shown to act on its verdict.
+  reviewFinal: async () => ({
+    subject: { kind: "final" as const },
+    attempt: 1,
+    checkedAt: new Date().toISOString(),
+    verdict: finalVerdict === "pass" ? ("pass" as const) : ("unresolved" as const),
+    findings: finalVerdict === "pass" ? [] : [{ code: "brand_name_wrong", severity: "critical" as const, category: "branding" as const, message: "The end card does not show the verified company name.", evidence: "read 'Whlubler'", correction: "", source: "vision" as const }],
+    checks: [{ name: "Frames read for text", ok: finalVerdict === "pass", detail: "8 frames" }],
+    framesInspected: 8,
+    limitations: [],
   }),
 }));
 
@@ -139,6 +162,7 @@ describe("assembling a video (real ffmpeg)", () => {
       await runFfmpeg(["-f", "lavfi", "-i", "testsrc2=size=720x1280:rate=24", "-f", "lavfi", "-i", `sine=frequency=${n === 1 ? 300 : 500}:sample_rate=44100`, "-t", "6", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", f]);
       stored.set(`video/p/clip-${n}.mp4`, await readFile(f));
     }
+    stored.set("video/p/brand/logo.png", await sharp({ create: { width: 400, height: 120, channels: 4, background: { r: 20, g: 20, b: 20, alpha: 1 } } }).png().toBuffer());
     stored.set("video/p/img_1.png", await sharp({ create: { width: 800, height: 500, channels: 3, background: "#1d4ed8" } }).png().toBuffer());
   }, 60_000);
 
@@ -146,10 +170,31 @@ describe("assembling a video (real ffmpeg)", () => {
     number, start, end: start + seconds, seconds, visual: "v", camera: "c", speaker: "on_camera", line, keywords: [], stat: null, assetId: null, sound: "s", ...extra,
   });
 
-  async function project() {
+  const prov = { source: "operator" as const, detail: "test", confidence: "high" as const };
+  const manifestFor = (over: { logo?: boolean; issues?: BrandManifest["issues"]; claims?: BrandManifest["claims"] } = {}): BrandManifest => ({
+    version: 1,
+    createdAt: new Date().toISOString(),
+    clientId: "c1",
+    projectId: "p",
+    sourceUrl: { value: "https://acme.example", provenance: [prov] },
+    name: { value: "Acme", provenance: [prov] },
+    nameCandidates: [],
+    internalLabels: [{ value: "TR Internal Marketing Version 1", provenance: { ...prov, source: "internal" as const } }],
+    logo: over.logo === false ? null : { storageKey: "video/p/brand/logo.png", mime: "image/png", sourceUrl: "https://acme.example/logo.png", origin: "page", verification: { ok: true, format: "png", width: 400, height: 120, hasAlpha: true, transparentShare: 0.5, luminance: 20, legibleOnLight: true, legibleOnDark: false, problems: [] }, provenance: [prov] },
+    logoCandidates: [],
+    colors: { value: ["#101820", "#37ca37"], provenance: [prov] },
+    offer: { value: "Free ad audit", provenance: [prov] },
+    cta: { value: { label: "Book a free audit", url: "https://acme.example/audit" }, provenance: [prov] },
+    audience: { value: null, provenance: [] },
+    claims: over.claims ?? [{ id: "claim_1", text: "255% avg client ROI", kind: "number", figure: "255%", evidence: "255% avg client ROI", provenance: prov }],
+    allowTextOnlyBrand: false,
+    conflicts: [],
+    issues: over.issues ?? [],
+  });
+
+  async function project(overrides: { logo?: boolean; issues?: BrandManifest["issues"]; claims?: BrandManifest["claims"] } = {}) {
     const { createProject, updateProject } = await import("@/lib/video/projects");
     const p = await createProject({ clientId: "c1", inputs: { landingPageUrl: "https://a.test", stats: [], targetSeconds: 12, style: "auto", locale: "en-AU", format: "9:16", priority: "balanced" } });
-    const logo = await sharp({ create: { width: 400, height: 120, channels: 4, background: { r: 20, g: 20, b: 20, alpha: 1 } } }).png().toBuffer();
     const script: VideoScript = {
       id: "s", title: "t", angle: { key: "k", name: "A", stage: "S", kind: "pain" }, pain: "p", framework: { key: "f", name: "F" }, style: "UGC", durationSeconds: 12, hookAlternatives: ["a", "b", "c"], character: null, setting: "s",
       scenes: [
@@ -164,7 +209,7 @@ describe("assembling a video (real ffmpeg)", () => {
       chosen_script: script,
       status: "clips_ready",
       assets: [{ id: "img_1", name: "results.png", caption: "", role: "highlight", key: "video/p/img_1.png", mime: "image/png" }],
-      brand: { name: "Acme", colors: ["#101820", "#37ca37"], logoUrl: `data:image/png;base64,${logo.toString("base64")}`, summary: null },
+      brand: { name: "Acme", colors: ["#101820", "#37ca37"], logoUrl: null, summary: null, manifest: manifestFor(overrides) },
       plan: { model: "seedance-2-0", modelLabel: "x", resolution: "720p", ratio: "9:16", format: "9:16", reasons: [], estimatedUsd: 1, character: null, setting: null, chainVideo: false, finishing: { captions: true, logo: true, endCard: true }, checkpoint: "none" as const, createdAt: new Date().toISOString() },
       clips: [1, 2].map((n) => ({ number: n, seconds: 6, sceneNumbers: n === 1 ? [1, 2] : [3, 4], status: "succeeded" as const, taskId: null, attempts: 1, error: null, videoKey: `video/p/clip-${n}.mp4`, lastFrameUrl: null, sourceVideoUrl: null, finishedAt: new Date().toISOString(), tokens: 1, usd: 1, prompt: null })),
     });
@@ -184,9 +229,10 @@ describe("assembling a video (real ffmpeg)", () => {
     expect(p.status).toBe("done");
     expect(p.final!.state).toBe("done");
     expect([p.final!.width, p.final!.height]).toEqual([1080, 1920]);
-    // two 6s clips plus the 2.2s end card
-    expect(p.final!.seconds).toBeGreaterThan(13.5);
-    expect(p.final!.seconds).toBeLessThan(14.9);
+    // two 6s clips plus an end card long enough to read
+    expect(p.final!.seconds).toBeGreaterThan(14.4);
+    expect(p.final!.seconds).toBeLessThan(17);
+    expect(p.final!.brand).toEqual({ name: "Acme", logo: true, textOnly: false });
     expect(p.final!.qa.filter((c) => !c.ok)).toEqual([]);
     expect(p.final!.includes).toMatchObject({ captions: true, logo: true, endCard: true, stats: 1, images: 1 });
 
@@ -200,6 +246,63 @@ describe("assembling a video (real ffmpeg)", () => {
       await runFfmpeg(["-ss", "13.2", "-i", file, "-frames:v", "1", path.join(process.env.VIDEO_DEBUG_DIR, "frame-end.png")]);
     }
   }, 120_000);
+
+  it("makes subtitle files from the same cues as the burned-in captions, with the display text intact", async () => {
+    asrWords = null;
+    finalVerdict = "pass";
+    const { assembleVideo } = await import("@/lib/video/assemble");
+    const { getProject } = await import("@/lib/video/projects");
+    const id = await project();
+    await assembleVideo(id);
+    const p = (await getProject(id))!;
+    expect(p.final!.subtitles?.cues).toBeGreaterThan(0);
+    const srt = stored.get(p.final!.subtitles!.srtKey)!.toString("utf8");
+    const vtt = stored.get(p.final!.subtitles!.vttKey)!.toString("utf8");
+    expect(srt).toMatch(/^1\r?\n\d\d:\d\d:\d\d,\d{3} --> /);
+    expect(vtt.startsWith("WEBVTT")).toBe(true);
+    expect(srt).toContain("ads");
+  }, 120_000);
+
+  it("blocks delivery when the inspection finds a critical problem, keeping the file only for review", async () => {
+    asrWords = null;
+    finalVerdict = "critical";
+    const { assembleVideo } = await import("@/lib/video/assemble");
+    const { getProject } = await import("@/lib/video/projects");
+    const id = await project();
+    await assembleVideo(id);
+    finalVerdict = "pass";
+    const p = (await getProject(id))!;
+    expect(p.final!.state).toBe("blocked");
+    expect(p.final!.key).toBeNull();
+    expect(p.final!.reviewKey).toBeTruthy();
+    expect(p.final!.error).toMatch(/Not approved for delivery.*verified company name/);
+    expect(p.status).toBe("clips_ready");
+    const { viewGeneration } = await import("@/lib/video/generation");
+    const view = viewGeneration(p);
+    expect(view.final!.videoUrl).toBeNull();
+    expect(view.final!.reviewUrl).toContain("review=1");
+  }, 120_000);
+
+  it("refuses to render anything when the brand is not verified", async () => {
+    const { assembleVideo } = await import("@/lib/video/assemble");
+    const { getProject } = await import("@/lib/video/projects");
+    const id = await project({ issues: [{ code: "name_internal", severity: "blocking", field: "name", message: "Only an internal title was found for the company name.", resolution: "Type the name." }] });
+    await assembleVideo(id);
+    const p = (await getProject(id))!;
+    expect(p.final!.state).toBe("failed");
+    expect(p.final!.error).toMatch(/internal title/);
+    expect(p.final!.key).toBeNull();
+  }, 60_000);
+
+  it("refuses to show a figure on screen that has no recorded source", async () => {
+    const { assembleVideo } = await import("@/lib/video/assemble");
+    const { getProject } = await import("@/lib/video/projects");
+    const id = await project({ claims: [] });
+    await assembleVideo(id);
+    const p = (await getProject(id))!;
+    expect(p.final!.state).toBe("failed");
+    expect(p.final!.error).toMatch(/no recorded source/);
+  }, 60_000);
 
   it("without captions or an end card it is just the joined clips with the logo", async () => {
     asrWords = null;

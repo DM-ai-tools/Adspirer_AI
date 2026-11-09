@@ -1,6 +1,9 @@
+import type { ClipAttemptRecord, CreativePlan, ProviderCapabilities, PronunciationLexicon, QaReport, SpeechLine } from "@/lib/video/pipeline-types";
+
 /** What is stored while a video is being made, and what the screen reads back. Client-safe: types only. */
 
-export type ClipStatus = "waiting" | "running" | "succeeded" | "failed";
+/** "reviewing": the clip is downloaded and is being inspected before it counts as made. */
+export type ClipStatus = "waiting" | "running" | "reviewing" | "succeeded" | "failed";
 
 export type ClipState = {
   number: number;
@@ -24,6 +27,18 @@ export type ClipState = {
   prompt: string | null;
   /** The operator has looked at this clip and said to carry on. */
   approved?: boolean;
+  /** Every attempt at this clip: the prompt, the corrections added, the review and what it cost. Explains why a clip was retried or failed. */
+  attemptLog?: ClipAttemptRecord[];
+  /** The review of the clip that is currently kept (or the last one when it failed). */
+  qa?: QaReport | null;
+  /** Corrections for the NEXT attempt, from the last review's findings. */
+  corrections?: string[];
+  /** Attempts made because a review rejected the clip (separate from attempts lost to provider errors). */
+  qaAttempts?: number;
+  /** How many times the scenes in this clip were redesigned after repeated failures. */
+  redesigns?: number;
+  /** True when the review could not approve the clip and no retry is left: it blocks the video. */
+  unresolved?: boolean;
 };
 
 /** When to wait for the operator before spending on the next clip. */
@@ -39,9 +54,13 @@ export const DEFAULT_FINISHING: Finishing = { captions: true, logo: true, endCar
 
 export type QaCheck = { name: string; ok: boolean; detail: string };
 
+/** What the brand check found when the video was finished, so a delivered file can be traced to verified inputs. */
+export type FinalBrandUse = { name: string | null; logo: boolean; textOnly: boolean };
+
 /** The finished video, or the state of making it. */
 export type FinalVideo = {
-  state: "running" | "done" | "failed";
+  /** "blocked": the export was made but failed a critical check, so it is not offered for download. */
+  state: "running" | "done" | "failed" | "blocked";
   /** What the step is doing now, for the screen. */
   stage: string | null;
   error: string | null;
@@ -54,6 +73,15 @@ export type FinalVideo = {
   createdAt: string | null;
   qa: QaCheck[];
   includes: { captions: boolean; logo: boolean; endCard: boolean; stats: number; images: number; captionTiming: "transcript" | "estimated" | "none" } | null;
+  /** The full inspection of the exported video (frames, text read from the video, brand checks). */
+  report?: QaReport | null;
+  /** Subtitle files made from the same timing as the burned-in captions. */
+  subtitles?: { srtKey: string; vttKey: string; cues: number } | null;
+  brand?: FinalBrandUse | null;
+  /** The narration's length as measured from the audio of this export, against what the script estimated. Null when the speech could not be located. */
+  speech?: { measuredSeconds: number | null; estimatedSeconds: number | null } | null;
+  /** A blocked export is kept here for the operator to look at; it is never offered as the finished video. */
+  reviewKey?: string | null;
 };
 
 export type ReferenceImage = {
@@ -80,10 +108,20 @@ export type GenerationPlan = {
   finishing: Finishing;
   /** Where generation waits for the operator to check a clip before paying for the next. */
   checkpoint: Checkpoint;
+  /** The creative plan made for this video: per-scene briefs, characters, environments. Made before any clip is paid for. */
+  creative?: CreativePlan | null;
+  /** Display text versus speech text, and how each term is said. */
+  speech?: { lexicon: PronunciationLexicon; lines: SpeechLine[] } | null;
+  /** One reference image per recurring person and per place. */
+  references?: { characters: Record<string, ReferenceImage>; environments: Record<string, ReferenceImage> };
+  /** What this deployment's providers can and cannot do, and what is done instead. */
+  capabilities?: ProviderCapabilities;
+  /** The most that may be spent on one video including clips that were rejected and made again. */
+  budgetUsd?: number;
   createdAt: string;
 };
 
-export type FinalView = Omit<FinalVideo, "key"> & { videoUrl: string | null };
+export type FinalView = Omit<FinalVideo, "key" | "reviewKey" | "subtitles"> & { videoUrl: string | null; reviewUrl: string | null; srtUrl: string | null; vttUrl: string | null; subtitleCues: number };
 
 export type GenerationView = {
   status: "generating" | "paused" | "stopped" | "clips_ready" | "assembling" | "done" | "failed" | "idle";
@@ -92,8 +130,8 @@ export type GenerationView = {
   /** About what the clips not yet made would cost. */
   remainingUsd: number;
   final: FinalView | null;
-  plan: (Omit<GenerationPlan, "character" | "setting"> & { character: boolean; setting: boolean }) | null;
-  clips: Array<Omit<ClipState, "taskId" | "sourceVideoUrl" | "lastFrameUrl" | "videoKey" | "prompt"> & { hasVideo: boolean; videoUrl: string | null }>;
+  plan: (Omit<GenerationPlan, "character" | "setting" | "references" | "speech"> & { character: boolean; setting: boolean; speech: { uncertain: string[]; terms: number } | null }) | null;
+  clips: Array<Omit<ClipState, "taskId" | "sourceVideoUrl" | "lastFrameUrl" | "videoKey" | "prompt" | "attemptLog"> & { hasVideo: boolean; videoUrl: string | null; attemptCount: number }>;
   spentUsd: number;
   /** Why generation cannot start, e.g. no key for the model. */
   blocked: string | null;

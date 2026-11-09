@@ -11,9 +11,9 @@ export type ScriptStage = "reading" | "understanding" | "writing" | "verifying" 
 
 export const SCRIPT_STAGES: Array<{ key: Exclude<ScriptStage, "done">; label: string; from: number; to: number; typicalSeconds: number }> = [
   { key: "reading", label: "Reading your website and images", from: 0, to: 25, typicalSeconds: 15 },
-  { key: "understanding", label: "Working out the audience, pains and proof", from: 25, to: 40, typicalSeconds: 12 },
-  { key: "writing", label: "Writing three scripts, each with its own angle", from: 40, to: 85, typicalSeconds: 40 },
-  { key: "verifying", label: "Verifying facts, tone and timing, and fixing weak scenes", from: 85, to: 98, typicalSeconds: 25 },
+  { key: "understanding", label: "Reading what the page really says, and what is missing", from: 25, to: 40, typicalSeconds: 15 },
+  { key: "writing", label: "Choosing three different angles, then writing each", from: 40, to: 85, typicalSeconds: 50 },
+  { key: "verifying", label: "Editing: checking facts, voice and length, and fixing weak lines", from: 85, to: 98, typicalSeconds: 30 },
 ];
 
 /** The same four stages, worded for reading someone's own script. */

@@ -6,6 +6,7 @@ import { checkScript, type VideoBrief, type VideoScene, type VideoScript } from 
 import { regenerateScene, rewriteAdCopy, type RewriteContext } from "@/lib/video/rewrite";
 import { SYSTEM } from "@/lib/video/voice";
 import { retime } from "@/lib/video/timing";
+import type { ApprovedClaim } from "@/lib/video/pipeline-types";
 
 export type Issue = {
   /** The scene it is about, or null for the ad copy or the script as a whole. */
@@ -89,11 +90,11 @@ export async function reviewScript(script: VideoScript, facts: string): Promise<
 export function warningsToIssues(warnings: string[]): Issue[] {
   return warnings.map((w) => {
     const scene = w.match(/^Scene (\d+)/)?.[1];
-    const high = /not in your page or inputs|not uploaded|over the \d+s limit|garbled text/.test(w);
+    const high = /not in your page or inputs|no recorded source|not uploaded|over the \d+s limit|garbled text/.test(w);
     return {
       scene: scene ? Number(scene) : null,
       severity: high ? "high" : "medium",
-      area: /garbled text/.test(w) ? "visuals" : /not in your page/.test(w) ? "claims" : /contraction|sounds|sentence|dash/.test(w) ? "tone" : /too fast|Runs/.test(w) ? "pace" : /ad copy|first line/.test(w) ? "copy" : "flow",
+      area: /garbled text/.test(w) ? "visuals" : /not in your page|no recorded source/.test(w) ? "claims" : /contraction|sounds|sentence|dash/.test(w) ? "tone" : /too fast|Runs/.test(w) ? "pace" : /ad copy|first line/.test(w) ? "copy" : "flow",
       problem: w,
       fix: "Rewrite this to fix the problem.",
     };
@@ -106,6 +107,8 @@ export type VerifyContext = {
   corpus: string;
   assetIds: string[];
   target: number;
+  /** Approved, sourced claims. When given, every figure is checked against them by value. */
+  claims?: ApprovedClaim[];
 };
 
 function merge(rule: Issue[], review: Issue[]): Issue[] {
@@ -122,7 +125,7 @@ function merge(rule: Issue[], review: Issue[]): Issue[] {
 
 /** A review without fixing anything: the rule checks and the AI review in one list. */
 export async function checkOnly(script: VideoScript, ctx: VerifyContext): Promise<Verification> {
-  const warnings = checkScript(script, { corpus: ctx.corpus, assetIds: ctx.assetIds, target: ctx.target });
+  const warnings = checkScript(script, { corpus: ctx.corpus, assetIds: ctx.assetIds, target: ctx.target, claims: ctx.claims });
   const review = await reviewScript(script, ctx.facts);
   const issues = merge(
     warningsToIssues(warnings),
@@ -187,7 +190,7 @@ export async function verifyAndFix(script: VideoScript, ctx: VerifyContext): Pro
   }
 
   // After the fixes, the rule checks run again (instant). The AI review ran once; its leftovers are kept only if nothing was fixed there.
-  const warnings = checkScript(current, { corpus: ctx.corpus, assetIds: ctx.assetIds, target: ctx.target });
+  const warnings = checkScript(current, { corpus: ctx.corpus, assetIds: ctx.assetIds, target: ctx.target, claims: ctx.claims });
   const fixedScenes = new Set(fixes.filter((f) => f.target.startsWith("Scene")).map((f) => Number(f.target.slice(6))));
   const leftoverReview = first.issues.filter((i) => !warningsToIssues([i.problem]).length || !i.problem.startsWith("Scene")).filter((i) => i.scene === null ? !fixes.some((f) => f.target === "Ad copy") : !fixedScenes.has(i.scene));
   const issues = merge(warningsToIssues(warnings), leftoverReview.filter((i) => !/^Scene \d+ |^The ad copy|^Runs /.test(i.problem)));

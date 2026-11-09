@@ -21,6 +21,7 @@ import { apiFetch } from "@/lib/api-client";
 import { ADSPIRER_META_CTAS } from "@/lib/adspirer/skills/ad-copywriting";
 import { describeEvent, mmss, overlayEvents, withTimes } from "@/lib/video/overlays";
 import { retime, sceneSeconds } from "@/lib/video/timing";
+import { buildScriptSpeech } from "@/lib/video/duration";
 import { SCRIPT_STAGES, UPLOAD_STAGES, viewProgress, type ScriptProgress } from "@/lib/video/progress";
 import { cn } from "@/lib/utils";
 import type { ClientService } from "@/types";
@@ -39,6 +40,7 @@ type Scene = {
   assetId: string | null;
   sound: string;
   originalLine?: string | null;
+  edited?: boolean;
 };
 
 type Issue = { scene: number | null; severity: "low" | "medium" | "high"; area: string; problem: string; fix: string };
@@ -69,6 +71,16 @@ type Script = {
   scenes: Scene[];
   adCopy: { primaryText: string; headline: string; description: string; cta: string };
   warnings: string[];
+  angleDetail?: { situation: string; tension: string; centralMessage: string };
+  differentiator?: string;
+  hook?: { line: string; payoff: string };
+  visualDirection?: string;
+  onScreen?: string[];
+  cta?: { spoken: string; label: string; target: string | null; benefit: string | null };
+  speech?: { words: number; estimatedSeconds: number; wordsPerSecond: number; requestedSeconds: number; budgetWords: { min: number; target: number; max: number }; fit: "fits" | "long" | "short"; measuredSeconds?: number | null };
+  sources?: SourceView[];
+  dramatisation?: boolean;
+  editorial?: { hardFailures: Array<{ problem: string }>; open: Array<{ problem: string; severity: "hard" | "major" | "minor" }>; limitation: string | null };
 };
 
 type Plan = {
@@ -85,8 +97,13 @@ type GenClip = {
   number: number;
   seconds: number;
   sceneNumbers: number[];
-  status: "waiting" | "running" | "succeeded" | "failed";
+  status: "waiting" | "running" | "reviewing" | "succeeded" | "failed";
   attempts: number;
+  attemptCount?: number;
+  qaAttempts?: number;
+  unresolved?: boolean;
+  corrections?: string[];
+  qa?: { verdict: string; framesInspected: number; limitations: string[]; findings: Array<{ code: string; severity: "critical" | "major" | "minor"; message: string; atSeconds?: number }> } | null;
   error: string | null;
   usd: number | null;
   hasVideo: boolean;
@@ -94,7 +111,14 @@ type GenClip = {
 };
 
 type FinalView = {
-  state: "running" | "done" | "failed";
+  state: "running" | "done" | "failed" | "blocked";
+  reviewUrl?: string | null;
+  srtUrl?: string | null;
+  vttUrl?: string | null;
+  subtitleCues?: number;
+  brand?: { name: string | null; logo: boolean; textOnly: boolean } | null;
+  speech?: { measuredSeconds: number | null; estimatedSeconds: number | null } | null;
+  report?: { findings: Array<{ code: string; severity: "critical" | "major" | "minor"; message: string; atSeconds?: number }>; limitations: string[]; framesInspected: number } | null;
   stage: string | null;
   error: string | null;
   seconds: number | null;
@@ -122,12 +146,17 @@ type Asset = { id: string; name: string; summary: string; kind: string | null; s
 type ProjectView = {
   id: string;
   name: string;
-  status: "writing" | "scripts_ready" | "confirmed" | "generating" | "paused" | "stopped" | "clips_ready" | "assembling" | "done" | "failed";
+  status: "writing" | "needs_context" | "scripts_ready" | "confirmed" | "generating" | "paused" | "stopped" | "clips_ready" | "assembling" | "done" | "failed";
   error: string | null;
+  contextBrief?: BriefView | null;
+  angleLimitation?: string | null;
+  wordsPerSecond?: number | null;
   inputs: { landingPageUrl: string | null; targetSeconds: number; format: string; mode?: "write" | "upload"; scriptFileName?: string | null; changeRequest?: string | null };
   assets: Asset[];
   progress: ScriptProgress | null;
   brand: { name: string; colors: string[] | null; hasLogo: boolean } | null;
+  brandCheck?: BrandCheck | null;
+  creative?: CreativeView | null;
   scripts: Script[] | null;
   chosenScript: Script | null;
   plan: Plan | null;
@@ -136,7 +165,7 @@ type ProjectView = {
 
 type HistoryItem = { id: string; name: string; status: ProjectView["status"]; created_at: string; landing_page_url: string | null; target_seconds: number; title: string | null };
 
-const STATUS_LABEL: Record<ProjectView["status"], string> = { writing: "Writing scripts", scripts_ready: "Scripts ready", confirmed: "Script confirmed", generating: "Making the video", paused: "Waiting for your check", stopped: "Stopped", clips_ready: "Clips ready", assembling: "Finishing the video", done: "Finished", failed: "Failed" };
+const STATUS_LABEL: Record<ProjectView["status"], string> = { writing: "Writing scripts", needs_context: "Needs more information", scripts_ready: "Scripts ready", confirmed: "Script confirmed", generating: "Making the video", paused: "Waiting for your check", stopped: "Stopped", clips_ready: "Clips ready", assembling: "Finishing the video", done: "Finished", failed: "Failed" };
 const STYLES = ["auto", "UGC creator walkthrough", "Cinematic", "Motion graphics over footage", "Documentary", "3D animated"];
 const FORMATS = [
   { value: "9:16", label: "9:16 Reels & Stories" },
@@ -299,6 +328,581 @@ function FinishingOptions({ value, onChange }: { value: { captions: boolean; log
   );
 }
 
+type SourceView = { claim: string; factId: string; source: { label: string; quote: string; url?: string } };
+
+type BriefView = {
+  company: { name: string | null };
+  offer: { name: string; description: string };
+  conversion: { action: string; target: string | null; benefit: string | null } | null;
+  audience: { primary: string; situation: string; inferred: boolean };
+  mechanism: { plain: string; distinctive: boolean } | null;
+  facts: Array<{ id: string; text: string; category: string; source: { label: string; quote: string }; scope?: string }>;
+  inferences: Array<{ id: string; text: string; kind: string }>;
+  rejectedFacts: Array<{ text: string; reason: string }>;
+  voice: { tone: string };
+  defaults: Array<{ field: "audience" | "platform" | "tone" | "goal" | "speechRate"; value: string; why: string }>;
+  gaps: Array<{ field: string; why: string; essential: boolean; ask: string }>;
+  sourceQuality: "rich" | "thin" | "insufficient";
+  limitation: string | null;
+  injectionFlags: string[];
+};
+
+/** What the scripts are written from: the facts the page states (with where each came from), what is only inferred, what is missing, and the defaults in force. */
+function BriefCard({ brief, angleLimitation, onSave, busy }: { brief: BriefView; angleLimitation: string | null; onSave: (values: { audience?: string; tone?: string; goal?: string; platform?: string; offerDetails?: string; instructions?: string; speechRate?: number; rewrite: boolean }) => void; busy: boolean }) {
+  const [open, setOpen] = useState(false);
+  const [vals, setVals] = useState({ audience: "", tone: "", goal: "", platform: "", offerDetails: "", speechRate: "" });
+  const gapsOpen = brief.gaps.filter((g) => g.essential);
+  const set = (k: keyof typeof vals) => (e: { target: { value: string } }) => setVals((v) => ({ ...v, [k]: e.target.value }));
+  const payload = (rewrite: boolean) => ({
+    audience: vals.audience.trim() || undefined,
+    tone: vals.tone.trim() || undefined,
+    goal: vals.goal.trim() || undefined,
+    platform: vals.platform.trim() || undefined,
+    offerDetails: vals.offerDetails.trim() || undefined,
+    speechRate: vals.speechRate.trim() ? Number(vals.speechRate) : undefined,
+    rewrite,
+  });
+  return (
+    <Card>
+      <CardContent className="space-y-3 p-4 text-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="flex items-center gap-2 font-medium">
+            <ShieldCheck className="h-4 w-4 text-accent" /> What these scripts are written from
+            <Badge variant={brief.sourceQuality === "rich" ? "secondary" : "danger"}>{brief.sourceQuality === "rich" ? "Plenty to work with" : brief.sourceQuality === "thin" ? "Thin source material" : "Not enough to go on"}</Badge>
+          </p>
+          <Button size="sm" variant="ghost" onClick={() => setOpen((v) => !v)}>
+            {open ? <ChevronUp className="mr-1 h-3.5 w-3.5" /> : <ChevronDown className="mr-1 h-3.5 w-3.5" />}
+            {open ? "Hide" : "Show the brief"}
+          </Button>
+        </div>
+        {brief.limitation ? <p className="text-xs text-amber-500">{brief.limitation}</p> : null}
+        {angleLimitation ? <p className="text-xs text-amber-500">{angleLimitation}</p> : null}
+        {brief.injectionFlags.length ? <p className="text-[11px] text-muted">The page contained text addressed to an AI. It was treated as page content and ignored as an instruction.</p> : null}
+        {brief.defaults.length ? (
+          <div className="space-y-1 rounded-md bg-secondary/30 p-3 text-xs">
+            <p className="font-medium">Assumed, because you did not say (change any of these and write again)</p>
+            <ul className="space-y-0.5 text-muted">
+              {brief.defaults.map((d) => (
+                <li key={d.field}>
+                  <span className="text-foreground">{d.field === "speechRate" ? "Speaking pace" : d.field}</span>: {d.value} <span className="italic">({d.why})</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        {gapsOpen.length || brief.gaps.length ? (
+          <div className="space-y-1 text-xs">
+            <p className="font-medium">Missing from the page</p>
+            <ul className="space-y-0.5 text-muted">
+              {brief.gaps.map((g, i) => (
+                <li key={i} className={g.essential ? "text-amber-500" : undefined}>
+                  {g.why} {g.essential ? `Needed: ${g.ask}` : ""}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        {open ? (
+          <div className="space-y-3 border-t border-border pt-3 text-xs">
+            <p>
+              <span className="font-medium">Company:</span> {brief.company.name ?? "not verified"} · <span className="font-medium">Offer:</span> {brief.offer.name}
+              {brief.offer.description ? ` · ${brief.offer.description}` : ""}
+            </p>
+            {brief.conversion ? (
+              <p>
+                <span className="font-medium">The real next step:</span> {brief.conversion.action}
+                {brief.conversion.target ? ` (${brief.conversion.target})` : ""}
+                {brief.conversion.benefit ? ` · you get: ${brief.conversion.benefit}` : ""}
+              </p>
+            ) : (
+              <p className="text-muted">No clear next step was found on the page.</p>
+            )}
+            <p>
+              <span className="font-medium">Audience{brief.audience.inferred ? " (inferred)" : ""}:</span> {brief.audience.primary}. <span className="text-muted">{brief.audience.situation}</span>
+            </p>
+            {brief.mechanism ? (
+              <p>
+                <span className="font-medium">How it works:</span> {brief.mechanism.plain}
+              </p>
+            ) : null}
+            <div>
+              <p className="font-medium">Stated by the sources ({brief.facts.length})</p>
+              <ul className="mt-1 space-y-1">
+                {brief.facts.slice(0, 24).map((f) => (
+                  <li key={f.id} className="rounded border border-border p-2">
+                    <span className="text-foreground">{f.text}</span>
+                    {f.scope ? <span className="text-muted"> · {f.scope}</span> : null}
+                    <span className="block text-[10px] text-muted">
+                      {f.source.label}: “{f.source.quote.slice(0, 160)}”
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            {brief.inferences.length ? (
+              <div>
+                <p className="font-medium">Inferred by the writer (not stated as fact)</p>
+                <ul className="mt-1 list-disc space-y-0.5 pl-4 text-muted">
+                  {brief.inferences.slice(0, 12).map((f) => (
+                    <li key={f.id}>
+                      {f.kind}: {f.text}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {brief.rejectedFacts.length ? <p className="text-muted">{brief.rejectedFacts.length} statement{brief.rejectedFacts.length === 1 ? "" : "s"} could not be traced to the sources and were left out.</p> : null}
+            <div className="space-y-3 rounded-md border border-border p-3">
+              <p className="font-medium">Change what it is written from</p>
+              <div className="grid gap-3 md:grid-cols-2">
+                <Field label="Audience">
+                  <Input className="text-xs" value={vals.audience} onChange={set("audience")} placeholder={brief.audience.primary} />
+                </Field>
+                <Field label="Tone">
+                  <Input className="text-xs" value={vals.tone} onChange={set("tone")} placeholder={brief.voice.tone} />
+                </Field>
+                <Field label="Campaign goal">
+                  <Input className="text-xs" value={vals.goal} onChange={set("goal")} placeholder="e.g. book a consultation" />
+                </Field>
+                <Field label="Platform">
+                  <Input className="text-xs" value={vals.platform} onChange={set("platform")} placeholder="e.g. Instagram Reels" />
+                </Field>
+                <Field label="Words spoken per second" hint="Used for the length estimate (about 2.5 is a relaxed pace). Replaced by the measured length once a video exists.">
+                  <Input className="text-xs" type="number" step={0.1} min={1.8} max={3.2} value={vals.speechRate} onChange={set("speechRate")} placeholder="2.5" />
+                </Field>
+              </div>
+              <Field label="Details you can add (prices, terms, proof, who qualifies)">
+                <Textarea className="min-h-[64px] text-xs" value={vals.offerDetails} onChange={set("offerDetails")} />
+              </Field>
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" disabled={busy} onClick={() => onSave(payload(true))}>
+                  {busy ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1 h-3.5 w-3.5" />}
+                  Save and write the three scripts again
+                </Button>
+                <Button size="sm" variant="secondary" disabled={busy} onClick={() => onSave(payload(false))}>
+                  Save without rewriting
+                </Button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** The page cannot support scripts without inventing things: say what is missing and ask only for what is essential. */
+function NeedsContext({ brief, error, onSave, busy }: { brief: BriefView | null; error: string | null; onSave: (values: { offerDetails?: string; instructions?: string; audience?: string; rewrite: boolean }) => void; busy: boolean }) {
+  const [details, setDetails] = useState("");
+  const [audience, setAudience] = useState("");
+  const asks = brief?.gaps.filter((g) => g.essential) ?? [];
+  return (
+    <Card className="border-amber-500/60">
+      <CardContent className="space-y-3 p-4 text-sm">
+        <p className="flex items-center gap-2 font-medium">
+          <AlertTriangle className="h-4 w-4 text-amber-500" /> More information is needed before scripts can be written
+        </p>
+        <p className="text-xs text-muted">
+          {brief?.limitation ?? error ?? "The page does not say enough about the offer, and writing from it would mean inventing details."} Nothing has been made up to fill the gap.
+        </p>
+        {asks.length ? (
+          <ul className="list-disc space-y-0.5 pl-4 text-xs">
+            {asks.map((g, i) => (
+              <li key={i}>{g.ask}</li>
+            ))}
+          </ul>
+        ) : null}
+        <Field label="What the offer is and what you can say about it" hint="Plain facts: what you do, how, for whom, any price or result you can stand behind.">
+          <Textarea className="min-h-[96px] text-xs" value={details} onChange={(e) => setDetails(e.target.value)} />
+        </Field>
+        <Field label="Who it is for (optional)">
+          <Input className="text-xs" value={audience} onChange={(e) => setAudience(e.target.value)} />
+        </Field>
+        <Button size="sm" disabled={busy || !details.trim()} onClick={() => onSave({ offerDetails: details.trim(), audience: audience.trim() || undefined, rewrite: true })}>
+          {busy ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Wand2 className="mr-1 h-3.5 w-3.5" />}
+          Write the scripts with this
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
+/** The clean spoken script, how long it should take to say, and what to show and ask: the part of a version people actually read. */
+function VersionSummary({
+  script,
+  spoken,
+  words,
+  speech,
+  requestedSeconds,
+  onAction,
+  busy,
+}: {
+  script: Script;
+  spoken: string;
+  words: number;
+  speech: { estimatedSeconds: number; wordsPerSecond: number; fit: "fits" | "long" | "short"; budgetWords: { min: number; max: number }; measuredSeconds?: number | null } | null;
+  requestedSeconds: number;
+  onAction: (action: "regenerate" | "rewrite_delivery" | "change_angle" | "retime", opts?: { instruction?: string; seconds?: number }) => void;
+  busy: string | null;
+}) {
+  const [instruction, setInstruction] = useState("");
+  const [newLength, setNewLength] = useState(String(requestedSeconds));
+  const [showSources, setShowSources] = useState(false);
+  const sources = (script.sources ?? []) as SourceView[];
+  const editorial = script.editorial;
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(spoken);
+      toast.success("Script copied");
+    } catch {
+      toast.error("Could not copy");
+    }
+  };
+  const fitText = !speech ? null : speech.fit === "fits" ? "fits the length asked for" : speech.fit === "long" ? "runs long: edit it down rather than speed it up" : "runs short";
+  return (
+    <div className="space-y-4 rounded-md border border-accent/30 p-4">
+      <div className="space-y-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge>{script.angle.name}</Badge>
+          {script.dramatisation ? <Badge variant="outline">Dramatisation, not a customer testimonial</Badge> : null}
+        </div>
+        {script.angleDetail ? <p className="text-xs text-muted">For: {script.angleDetail.situation}</p> : null}
+        {script.differentiator ? <p className="text-xs">{script.differentiator}</p> : null}
+      </div>
+
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-sm font-medium">The script, as it will be spoken</p>
+          <Button type="button" size="sm" variant="secondary" onClick={() => void copy()}>
+            Copy
+          </Button>
+        </div>
+        <div className="whitespace-pre-line rounded-md bg-secondary/30 p-3 text-sm leading-relaxed">{spoken || "Nothing is spoken yet."}</div>
+        <p className="text-xs text-muted">
+          {words} words
+          {speech ? (
+            <>
+              {" "}
+              · estimated {Math.round(speech.estimatedSeconds)}s spoken at {speech.wordsPerSecond} words a second (asked for {requestedSeconds}s, {fitText}; about {speech.budgetWords.min} to {speech.budgetWords.max} words fits)
+            </>
+          ) : null}
+          {speech?.measuredSeconds ? <> · measured from the audio: {speech.measuredSeconds}s</> : <> · the measured length appears once the video has been made</>}
+        </p>
+      </div>
+
+      {script.hook ? (
+        <p className="text-xs">
+          <span className="font-medium">Opening chosen:</span> “{script.hook.line}” <span className="text-muted">· pays off: {script.hook.payoff}</span>
+        </p>
+      ) : null}
+
+      <div className="grid gap-3 md:grid-cols-2 text-xs">
+        <div className="space-y-1">
+          <p className="font-medium">What is shown</p>
+          <p className="text-muted">{script.visualDirection ?? "See the scenes below."}</p>
+        </div>
+        <div className="space-y-1">
+          <p className="font-medium">On screen and the ask</p>
+          {script.onScreen?.length ? <p className="text-muted">On screen: {script.onScreen.join(" · ")}</p> : null}
+          {script.cta ? (
+            <p className="text-muted">
+              Ends with: “{script.cta.spoken}” → button <span className="text-foreground">{script.cta.label}</span>
+              {script.cta.target ? ` (${script.cta.target})` : ""}
+              {script.cta.benefit ? ` · you get: ${script.cta.benefit}` : ""}
+            </p>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="space-y-1 text-xs">
+        <button type="button" className="text-accent underline" onClick={() => setShowSources((v) => !v)}>
+          {showSources ? "Hide" : "Show"} where each claim comes from ({sources.length})
+        </button>
+        {showSources ? (
+          sources.length ? (
+            <ul className="space-y-1">
+              {sources.map((s, i) => (
+                <li key={i} className="rounded border border-border p-2">
+                  <span className="text-foreground">{s.claim}</span>
+                  <span className="block text-[10px] text-muted">
+                    {s.source.label}: “{s.source.quote.slice(0, 200)}”
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-muted">This version states no factual claim that needs a source.</p>
+          )
+        ) : null}
+      </div>
+
+      {editorial && (editorial.hardFailures.length || editorial.open.length || editorial.limitation) ? (
+        <div className="space-y-1 rounded-md border border-border p-2 text-xs">
+          {editorial.hardFailures.map((i, k) => (
+            <p key={`h${k}`} className="text-destructive">
+              Must fix: {i.problem}
+            </p>
+          ))}
+          {editorial.open.filter((i) => i.severity !== "minor" && i.severity !== "hard").slice(0, 4).map((i, k) => (
+            <p key={`o${k}`} className="text-amber-500">
+              {i.problem}
+            </p>
+          ))}
+          {editorial.limitation ? <p className="text-muted">{editorial.limitation}</p> : null}
+          <p className="text-[10px] text-muted">The editor&apos;s ratings are editorial signals, not predictions of how the ad will perform.</p>
+        </div>
+      ) : null}
+
+      <div className="space-y-2 border-t border-border pt-3">
+        <p className="text-xs font-medium">Change this version (the other two stay as they are; scenes you edited are kept)</p>
+        <Input className="text-xs" value={instruction} onChange={(e) => setInstruction(e.target.value)} placeholder="Optional: what you want, in your words" />
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" variant="secondary" disabled={Boolean(busy)} onClick={() => onAction("regenerate", { instruction: instruction.trim() || undefined })}>
+            {busy === "regenerate" ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1 h-3.5 w-3.5" />}
+            Write this version again
+          </Button>
+          <Button size="sm" variant="secondary" disabled={Boolean(busy)} onClick={() => onAction("rewrite_delivery", { instruction: instruction.trim() || undefined })}>
+            {busy === "rewrite_delivery" ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <MessageSquarePlus className="mr-1 h-3.5 w-3.5" />}
+            Same angle, new delivery
+          </Button>
+          <Button size="sm" variant="secondary" disabled={Boolean(busy)} onClick={() => onAction("change_angle", { instruction: instruction.trim() || undefined })}>
+            {busy === "change_angle" ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Wand2 className="mr-1 h-3.5 w-3.5" />}
+            Different angle, same facts
+          </Button>
+          <span className="flex items-center gap-1 text-xs">
+            <Input className="h-8 w-16 text-xs" type="number" min={15} max={60} value={newLength} onChange={(e) => setNewLength(e.target.value)} />
+            <Button size="sm" variant="secondary" disabled={Boolean(busy) || !Number(newLength)} onClick={() => onAction("retime", { seconds: Number(newLength) })}>
+              {busy === "retime" ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : null}
+              Make it {Number(newLength) || "?"}s
+            </Button>
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type BrandCheck =
+  | { checked: false }
+  | {
+      checked: true;
+      ready: boolean;
+      name: string | null;
+      nameSources: string[];
+      nameCandidates: Array<{ value: string; source: string; rejectedReason: string | null }>;
+      internalLabels: string[];
+      conflicts: Array<{ field: string; chosen: string | null; reason: string; values: Array<{ value: string; source: string }> }>;
+      hasLogo: boolean;
+      logo: { width: number; height: number; hasAlpha: boolean; origin: string; source: string | null; url: string } | null;
+      logoCandidates: Array<{ url: string | null; role: string; score: number; rejectedReason: string | null; source: string }>;
+      allowTextOnly: boolean;
+      colors: string[];
+      offer: string | null;
+      cta: { label: string; url?: string } | null;
+      claims: Array<{ id: string; text: string; source: string }>;
+      issues: Array<{ code: string; severity: "blocking" | "warning"; field: string; message: string; resolution: string }>;
+      checkedAt: string;
+    };
+
+type CreativeView = {
+  narrative: { approach: string; whyItFits: string; arc: string[] };
+  characters: Array<{ id: string; description: string; role: string }>;
+  environments: Array<{ id: string; description: string; sceneNumbers: number[] }>;
+  scenes: Array<{ number: number; purpose: string; informationAdded: string; subject: string; setting: string; action: string; framing: string; camera: string; seconds: number; durationBasis: string; screenTreatment: string; transition: { kind: string; rationale: string }; risks: string[]; acceptance: string[] }>;
+  validation: { ok: boolean; issues: Array<{ scene: number | null; severity: string; message: string }> };
+};
+
+/** The verified brand the video is made from: public name, original logo, where each came from, and what still needs a decision. */
+function BrandCheckCard({ projectId, brand, onChanged }: { projectId: string; brand: BrandCheck | null | undefined; onChanged: (b: BrandCheck) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [name, setName] = useState("");
+  const [page, setPage] = useState("");
+  const [open, setOpen] = useState(false);
+
+  async function post(body: Record<string, unknown>) {
+    setBusy(true);
+    try {
+      onChanged(await apiFetch<BrandCheck>(`/api/creatives/video/${projectId}/brand`, { method: "POST", body: JSON.stringify(body) }));
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not check the brand");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function upload(file: File) {
+    setBusy(true);
+    try {
+      const form = new FormData();
+      form.set("logo", file);
+      const res = await fetch(`/api/creatives/video/${projectId}/brand`, { method: "POST", body: form, credentials: "same-origin" });
+      const json = (await res.json()) as { ok: boolean; data?: BrandCheck; error?: { message?: string } };
+      if (!json.ok || !json.data) throw new Error(json.error?.message ?? "Could not use that logo");
+      onChanged(json.data);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not use that logo");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!brand || !brand.checked) {
+    return (
+      <Card>
+        <CardContent className="flex flex-wrap items-center gap-3 p-4 text-sm">
+          <ShieldCheck className="h-4 w-4 text-muted" />
+          <span>The brand has not been checked. The video uses only a verified company name and logo.</span>
+          <Button size="sm" disabled={busy} onClick={() => void post({ action: "refresh" })}>
+            {busy ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : null}Check the brand
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const blocking = brand.issues.filter((i) => i.severity === "blocking");
+  const warnings = brand.issues.filter((i) => i.severity === "warning");
+  const pickable = brand.logoCandidates.filter((c) => c.url && c.role !== "icon" && c.role !== "decorative");
+  return (
+    <Card className={blocking.length ? "border-amber-500/60" : "border-accent/40"}>
+      <CardContent className="space-y-3 p-4 text-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="flex items-center gap-2 font-medium">
+            {blocking.length ? <AlertTriangle className="h-4 w-4 text-amber-500" /> : <ShieldCheck className="h-4 w-4 text-accent" />}
+            Brand check {blocking.length ? "· needs a decision before video is made" : "· verified"}
+          </p>
+          <Button size="sm" variant="ghost" disabled={busy} onClick={() => void post({ action: "refresh" })}>
+            {busy ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1 h-3.5 w-3.5" />}Check again
+          </Button>
+        </div>
+        <div className="grid gap-4 md:grid-cols-[160px_1fr]">
+          <div className="space-y-1">
+            {brand.logo ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={brand.logo.url} alt="Verified logo" className="max-h-24 w-full rounded border border-border bg-white object-contain p-2" />
+            ) : (
+              <div className="flex h-24 items-center justify-center rounded border border-dashed border-border text-[11px] text-muted">No verified logo</div>
+            )}
+            {brand.logo ? (
+              <p className="text-[10px] text-muted">
+                {brand.logo.width}x{brand.logo.height}{brand.logo.hasAlpha ? ", transparent" : ""}, {brand.logo.origin === "page" ? "from the page" : brand.logo.origin === "client" ? "saved for this client" : "uploaded"}
+              </p>
+            ) : null}
+          </div>
+          <div className="space-y-1 text-xs">
+            <p>
+              <span className="text-muted">Company name shown to viewers:</span> <span className="font-medium">{brand.name ?? "not verified"}</span>
+            </p>
+            {brand.nameSources.length ? <p className="text-[11px] text-muted">Source: {brand.nameSources.join("; ")}</p> : null}
+            {brand.internalLabels.length ? <p className="text-[11px] text-muted">Kept out of the video (internal labels): {brand.internalLabels.slice(0, 4).join("; ")}</p> : null}
+            {brand.cta ? <p><span className="text-muted">Call to action:</span> {brand.cta.label}</p> : null}
+            <p className="text-[11px] text-muted">{brand.claims.length} claim{brand.claims.length === 1 ? "" : "s"} with a recorded source may be stated in the video.</p>
+          </div>
+        </div>
+
+        {blocking.map((i) => (
+          <p key={i.code + i.message} className="rounded border border-amber-500/40 bg-amber-500/5 p-2 text-xs">
+            <span className="font-medium">{i.message}</span> <span className="text-muted">{i.resolution}</span>
+          </p>
+        ))}
+        {warnings.map((i) => (
+          <p key={i.code + i.message} className="text-[11px] text-muted">
+            {i.message}
+          </p>
+        ))}
+
+        <button type="button" className="text-[11px] text-accent underline" onClick={() => setOpen((v) => !v)}>
+          {open ? "Hide" : "Fix or change"} the name and logo
+        </button>
+        {open ? (
+          <div className="space-y-3 rounded border border-border p-3">
+            <div className="flex flex-wrap items-end gap-2">
+              <Field label="Public company name" hint="Exactly as customers know it.">
+                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={brand.name ?? "Company name"} className="h-8 w-64 text-xs" />
+              </Field>
+              <Button size="sm" disabled={busy || !name.trim()} onClick={() => void post({ action: "choose", name })}>
+                Use this name
+              </Button>
+            </div>
+            <div className="flex flex-wrap items-end gap-2">
+              <Field label="Landing page to read the brand from" hint="Its header and footer show the real company name and logo.">
+                <Input value={page} onChange={(e) => setPage(e.target.value)} placeholder="https://" className="h-8 w-64 text-xs" />
+              </Field>
+              <Button size="sm" disabled={busy || !/^https?:\/\//.test(page.trim())} onClick={() => void post({ action: "choose", landingPageUrl: page.trim() })}>
+                Read this page
+              </Button>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-border px-3 py-1.5 text-xs hover:bg-secondary">
+                <FileUp className="h-3.5 w-3.5" /> Upload the logo
+                <input type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" className="hidden" disabled={busy} onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); e.target.value = ""; }} />
+              </label>
+              <label className="inline-flex items-center gap-2 text-xs">
+                <Checkbox checked={brand.allowTextOnly} onCheckedChange={(v) => void post({ action: "choose", allowTextOnly: v === true })} />
+                No logo: show the verified company name as text
+              </label>
+            </div>
+            {pickable.length ? (
+              <div className="space-y-1">
+                <p className="text-[11px] font-medium">Images found on the page (choose the company logo)</p>
+                <div className="flex flex-wrap gap-2">
+                  {pickable.slice(0, 6).map((c) => (
+                    <button key={c.url} type="button" disabled={busy} onClick={() => void post({ action: "choose", logoUrl: c.url })} className="w-24 space-y-1 rounded border border-border p-1 text-left hover:border-accent" title={c.rejectedReason ?? c.source}>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={c.url!} alt="" className="h-12 w-full bg-white object-contain" />
+                      <span className="block truncate text-[10px] text-muted">{c.role}{c.rejectedReason ? " (rejected)" : ""}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** The creative plan made for this video: what each scene is for and what it adds, so it can be judged before more is paid for. */
+function PlanCard({ creative }: { creative: CreativeView }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="space-y-2 rounded-md border border-border p-3 text-xs">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <p className="font-medium">Creative plan: {creative.narrative.approach}</p>
+          <p className="text-muted">{creative.narrative.whyItFits}</p>
+        </div>
+        <Badge variant={creative.validation.ok ? "secondary" : "danger"}>{creative.validation.ok ? "Checked" : "Failed checks"}</Badge>
+      </div>
+      <button type="button" className="text-accent underline" onClick={() => setOpen((v) => !v)}>
+        {open ? "Hide scenes" : `Show ${creative.scenes.length} scenes`}
+      </button>
+      {open ? (
+        <ol className="space-y-2">
+          {creative.scenes.map((s) => (
+            <li key={s.number} className="rounded border border-border p-2">
+              <p className="font-medium">
+                Scene {s.number} · {s.seconds}s · {s.purpose}
+              </p>
+              <p className="text-muted">Adds: {s.informationAdded}</p>
+              <p>
+                {s.framing} of {s.subject} in {s.setting}. {s.action}. Camera: {s.camera}.
+              </p>
+              <p className="text-[11px] text-muted">
+                Length: {s.durationBasis}. Transition: {s.transition.kind} ({s.transition.rationale}).{s.screenTreatment !== "none" ? ` Screen: ${s.screenTreatment.replace(/_/g, " ")}.` : ""}
+              </p>
+            </li>
+          ))}
+        </ol>
+      ) : null}
+      {creative.validation.issues.filter((i) => i.severity === "warning").length ? (
+        <p className="text-[11px] text-muted">Notes: {creative.validation.issues.filter((i) => i.severity === "warning").slice(0, 3).map((i) => i.message).join(" ")}</p>
+      ) : null}
+    </div>
+  );
+}
+
 /** Starts the video, follows each clip and keeps the work moving while the page is open. */
 function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: string; status: ProjectView["status"]; initial: GenerationView | null; onStatus: (s: ProjectView["status"]) => void }) {
   const [gen, setGen] = useState<GenerationView | null>(initial);
@@ -457,7 +1061,23 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
                     Download MP4
                   </a>
                 </Button>
+                {final.srtUrl ? (
+                  <Button size="sm" variant="secondary" asChild>
+                    <a href={final.srtUrl} download>Subtitles (SRT)</a>
+                  </Button>
+                ) : null}
+                {final.vttUrl ? (
+                  <Button size="sm" variant="secondary" asChild>
+                    <a href={final.vttUrl} download>Subtitles (VTT)</a>
+                  </Button>
+                ) : null}
               </div>
+              {final.speech?.measuredSeconds ? (
+                <p className="text-muted">
+                  Narration measured from the audio: {final.speech.measuredSeconds}s{final.speech.estimatedSeconds ? ` (the script estimated ${Math.round(final.speech.estimatedSeconds)}s)` : ""}.
+                </p>
+              ) : null}
+              {final.brand ? <p className="text-muted">Brand on screen: {final.brand.name ?? "none"}{final.brand.logo ? ", with the verified logo" : final.brand.textOnly ? ", as text (no logo)" : ""}.</p> : null}
               <div className="space-y-1">
                 <p className="text-[11px] font-medium">Checked before showing you</p>
                 <ul className="space-y-1">
@@ -482,6 +1102,33 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
       ) : null}
 
       {final?.state === "failed" ? <p className="text-xs text-destructive">Could not finish the video: {final.error}</p> : null}
+
+      {final?.state === "blocked" ? (
+        <div className="space-y-2 rounded-md border border-destructive/50 bg-destructive/5 p-3 text-sm">
+          <p className="flex items-center gap-2 font-medium text-destructive">
+            <AlertTriangle className="h-4 w-4" /> Not approved for delivery
+          </p>
+          <p className="text-xs">{final.error}</p>
+          {final.report?.findings.length ? (
+            <ul className="space-y-0.5 text-[11px]">
+              {final.report.findings.slice(0, 8).map((f, i) => (
+                <li key={f.code + i} className={f.severity === "minor" ? "text-muted" : "text-destructive"}>
+                  {f.severity}: {f.message}
+                  {f.atSeconds !== undefined ? ` (${f.atSeconds.toFixed(1)}s)` : ""}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {final.report?.limitations.length ? <p className="text-[11px] text-muted">Could not check: {final.report.limitations.join(" ")}</p> : null}
+          {final.reviewUrl ? (
+            <details className="text-xs">
+              <summary className="cursor-pointer text-accent">See the export that failed (not for use)</summary>
+              {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+              <video src={final.reviewUrl} controls playsInline preload="metadata" controlsList="nodownload" className="mt-2 aspect-[9/16] max-h-[420px] rounded-md bg-black object-contain" />
+            </details>
+          ) : null}
+        </div>
+      ) : null}
 
       {allClips && status !== "assembling" && status !== "generating" ? (
         <div className="space-y-2">
@@ -532,7 +1179,7 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
               <span className="font-medium">
                 Clip {c.number} · {c.seconds}s
               </span>
-              <Badge variant={c.status === "failed" ? "danger" : "secondary"}>{c.status === "waiting" ? "Waiting" : c.status === "running" ? "Making" : c.status === "succeeded" ? "Done" : "Failed"}</Badge>
+              <Badge variant={c.status === "failed" ? "danger" : "secondary"}>{c.status === "waiting" ? ((c.qaAttempts ?? 0) > 0 ? "Making again" : "Waiting") : c.status === "running" ? "Making" : c.status === "reviewing" ? "Inspecting" : c.status === "succeeded" ? "Done" : c.unresolved ? "Not approved" : "Failed"}</Badge>
             </div>
             <p className="text-[11px] text-muted">
               Scenes {c.sceneNumbers[0]}
@@ -543,9 +1190,9 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
               <video src={c.videoUrl} controls playsInline preload="metadata" className="aspect-[9/16] max-h-[420px] w-full rounded-md bg-black object-contain" />
             ) : (
               <div className="flex aspect-[9/16] max-h-[200px] w-full items-center justify-center rounded-md border border-dashed border-border text-[11px] text-muted">
-                {c.status === "running" ? (
+                {c.status === "running" || c.status === "reviewing" ? (
                   <span className="inline-flex items-center gap-2">
-                    <Loader2 className="h-4 w-4 animate-spin" /> Making this clip…
+                    <Loader2 className="h-4 w-4 animate-spin" /> {c.status === "reviewing" ? "Inspecting the clip frame by frame…" : "Making this clip…"}
                   </span>
                 ) : c.status === "failed" ? (
                   "No video"
@@ -555,6 +1202,20 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
               </div>
             )}
             {c.error && c.status !== "succeeded" ? <p className="text-[11px] text-destructive">{c.error}</p> : null}
+            {c.qa && c.qa.findings.length ? (
+              <ul className="space-y-0.5 text-[11px]">
+                {c.qa.findings.slice(0, 5).map((f, i) => (
+                  <li key={f.code + i} className={f.severity === "minor" ? "text-muted" : "text-amber-500"}>
+                    {f.severity}: {f.message}
+                    {f.atSeconds !== undefined ? ` (${f.atSeconds.toFixed(1)}s)` : ""}
+                  </li>
+                ))}
+              </ul>
+            ) : c.qa ? (
+              <p className="text-[11px] text-muted">Inspected {c.qa.framesInspected} frames: no problems found.</p>
+            ) : null}
+            {c.qa?.limitations?.length ? <p className="text-[10px] text-muted">Not checked: {c.qa.limitations.join(" ")}</p> : null}
+            {(c.attemptCount ?? 0) > 1 ? <p className="text-[10px] text-muted">Made {c.attemptCount} times; earlier takes were rejected by the inspection.</p> : null}
             <div className="flex flex-wrap gap-2">
               {c.hasVideo ? (
                 <Button size="sm" variant="secondary" className="h-8" asChild>
@@ -574,6 +1235,18 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
                 >
                   {busyClip === c.number ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1 h-3.5 w-3.5" />}
                   {c.number < clips.length ? "Make again from here" : "Make again"}
+                </Button>
+              ) : null}
+              {c.number === 1 && (c.status === "succeeded" || c.status === "failed") ? (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-8"
+                  disabled={busyClip !== null || status === "generating"}
+                  title="Throw away the creative plan too and make a new one from the same script"
+                  onClick={() => void post({ action: "regenerate", fromClip: 1, replan: true }, () => setBusyClip(c.number), () => setBusyClip(null))}
+                >
+                  New plan, start again
                 </Button>
               ) : null}
             </div>
@@ -607,6 +1280,10 @@ function VideoInner() {
   const [stats, setStats] = useState<string[]>([""]);
   const [images, setImages] = useState<NewImage[]>([]);
   const [seconds, setSeconds] = useState(35);
+  const [audienceIn, setAudienceIn] = useState("");
+  const [toneIn, setToneIn] = useState("");
+  const [goalIn, setGoalIn] = useState("");
+  const [platformIn, setPlatformIn] = useState("");
   const [style, setStyle] = useState("auto");
   const [format, setFormat] = useState("9:16");
   const [priority, setPriority] = useState<"balanced" | "quality" | "cost">("balanced");
@@ -710,6 +1387,10 @@ function VideoInner() {
         format,
         priority,
         mode,
+        audience: audienceIn.trim() || undefined,
+        tone: toneIn.trim() || undefined,
+        goal: goalIn.trim() || undefined,
+        platform: platformIn.trim() || undefined,
         scriptText: mode === "upload" ? scriptText.trim() || undefined : undefined,
         adCopyText: mode === "upload" ? adCopyText.trim() || undefined : undefined,
         changeRequest: mode === "upload" ? changeRequest.trim() || undefined : undefined,
@@ -766,11 +1447,58 @@ function VideoInner() {
     setFeedbackFor({});
   }
 
+  // One version changed on its own: the other two and any scene the operator edited are left as they are.
+  const [revising, setRevising] = useState<string | null>(null);
+  async function revise(action: "regenerate" | "rewrite_delivery" | "change_angle" | "retime", opts: { instruction?: string; seconds?: number } = {}) {
+    if (!draft || !projectId) return;
+    setRevising(action);
+    try {
+      const res = await apiFetch<{ scripts: Script[]; scriptId: string }>(`/api/creatives/video/${projectId}/versions`, {
+        method: "POST",
+        body: JSON.stringify({
+          scriptId: draft.id,
+          action,
+          instruction: opts.instruction,
+          seconds: opts.seconds,
+          draft: { title: draft.title, scenes: draft.scenes.map((s) => ({ ...s, seconds: Number(s.seconds) || 2 })), adCopy: draft.adCopy },
+        }),
+      });
+      setView((v) => (v ? { ...v, scripts: res.scripts } : v));
+      const next = res.scripts.find((x) => x.id === res.scriptId);
+      if (next) pick(next);
+      toast.success(action === "retime" ? "Rewritten to the new length" : "This version was rewritten");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not change this version");
+    } finally {
+      setRevising(null);
+    }
+  }
+
+  async function saveContext(values: { audience?: string; tone?: string; goal?: string; platform?: string; offerDetails?: string; instructions?: string; speechRate?: number; rewrite: boolean }) {
+    if (!projectId) return;
+    setRevising("context");
+    try {
+      const res = await apiFetch<{ rewriting: boolean }>(`/api/creatives/video/${projectId}/context`, { method: "POST", body: JSON.stringify(values) });
+      if (res.rewriting) {
+        setSelectedId(null);
+        setDraft(null);
+        setView((v) => (v ? { ...v, status: "writing", scripts: null, error: null, progress: null } : v));
+        setPollKey((k) => k + 1);
+      } else {
+        toast.success("Saved");
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not save");
+    } finally {
+      setRevising(null);
+    }
+  }
+
   async function runRewrite(id: string, action: "scene" | "copy" | "check", opts: { sceneNumber?: number; issues?: string[]; feedback?: string } = {}) {
     if (!draft || !projectId) return;
     setRewriting(id);
     try {
-      const res = await apiFetch<{ scene: Scene | null; adCopy: Script["adCopy"] | null; verification: Verification }>(`/api/creatives/video/${projectId}/rewrite`, {
+      const res = await apiFetch<{ scene: Scene | null; adCopy: Script["adCopy"] | null; verification: Verification; speech?: Script["speech"] | null }>(`/api/creatives/video/${projectId}/rewrite`, {
         method: "POST",
         body: JSON.stringify({
           scriptId: draft.id,
@@ -787,6 +1515,7 @@ function VideoInner() {
       }
       if (res.adCopy) setDraft((d) => (d ? { ...d, adCopy: res.adCopy! } : d));
       setReview(res.verification);
+      if (res.speech) setDraft((d) => (d ? { ...d, speech: res.speech! } : d));
       setFeedbackFor((f) => ({ ...f, [id]: undefined }));
       if (action !== "check") toast.success(action === "scene" ? "Scene rewritten and the script re-checked" : "Ad copy rewritten and the script re-checked");
     } catch (err) {
@@ -821,6 +1550,14 @@ function VideoInner() {
 
   const timed = useMemo(() => (draft ? withTimes(draft.scenes) : []), [draft]);
   const draftTotal = timed.length ? timed[timed.length - 1]!.end : 0;
+  // The clean spoken script and its length estimate follow the words as they are being edited.
+  const spokenText = useMemo(() => (draft ? draft.scenes.map((s) => s.line.trim()).filter(Boolean).join("\n\n") : ""), [draft]);
+  const draftSpeech = useMemo(() => {
+    if (!draft) return null;
+    const requested = draft.speech?.requestedSeconds ?? view?.inputs.targetSeconds ?? 35;
+    const built = buildScriptSpeech(draft.scenes.map((s) => s.line).filter((l) => l.trim()), requested, view?.wordsPerSecond ?? draft.speech?.wordsPerSecond ?? null);
+    return { ...built, measuredSeconds: draft.speech?.measuredSeconds ?? null };
+  }, [draft, view?.inputs.targetSeconds, view?.wordsPerSecond]);
   const assetName = useCallback((id: string) => view?.assets.find((a) => a.id === id)?.name, [view]);
   const events = useMemo(() => overlayEvents(timed), [timed]);
 
@@ -971,6 +1708,24 @@ function VideoInner() {
                     <Field label="Offer details (optional)">
                       <Textarea value={offerDetails} onChange={(e) => setOfferDetails(e.target.value)} placeholder="The offer, price or terms you can state, deadline, guarantee, who qualifies…" className="min-h-[72px]" />
                     </Field>
+                    <details className="rounded-md border border-border p-3 text-xs">
+                      <summary className="cursor-pointer text-[11px] font-medium">Optional: audience, tone, goal, platform</summary>
+                      <p className="mt-2 text-[11px] text-muted">The landing page and the length are enough. Anything left empty is worked out from the page, and what was assumed is shown with the scripts so you can change it.</p>
+                      <div className="mt-2 grid gap-3 md:grid-cols-2">
+                        <Field label="Who it is for">
+                          <Input className="text-xs" value={audienceIn} onChange={(e) => setAudienceIn(e.target.value)} />
+                        </Field>
+                        <Field label="Tone">
+                          <Input className="text-xs" value={toneIn} onChange={(e) => setToneIn(e.target.value)} placeholder="e.g. dry and practical" />
+                        </Field>
+                        <Field label="Campaign goal">
+                          <Input className="text-xs" value={goalIn} onChange={(e) => setGoalIn(e.target.value)} placeholder="e.g. quote requests" />
+                        </Field>
+                        <Field label="Platform">
+                          <Input className="text-xs" value={platformIn} onChange={(e) => setPlatformIn(e.target.value)} placeholder="e.g. Instagram Reels" />
+                        </Field>
+                      </div>
+                    </details>
                   </>
                 ) : (
                   <div className="space-y-4 rounded-md border border-border p-3">
@@ -1171,17 +1926,23 @@ function VideoInner() {
                       </p>
                     </div>
                   ) : null}
+                  <BrandCheckCard projectId={view.id} brand={view.brandCheck} onChanged={(b) => setView((v) => (v ? { ...v, brandCheck: b } : v))} />
+                  {view.creative ? <PlanCard creative={view.creative} /> : null}
                   <GenerationPanel projectId={view.id} status={view.status} initial={view.generation} onStatus={setProjectStatus} />
                 </CardContent>
               </Card>
               <ScriptBody script={view.chosenScript} assets={view.assets} />
             </div>
+          ) : view.status === "needs_context" ? (
+            <NeedsContext brief={view.contextBrief ?? null} error={view.error} busy={revising === "context"} onSave={(v) => void saveContext(v)} />
           ) : view.status === "failed" ? (
             <Card>
               <CardContent className="p-4 text-sm text-destructive">Could not write the scripts: {view.error ?? "unknown error"}</CardContent>
             </Card>
           ) : (
             <div className="space-y-4">
+              <BrandCheckCard projectId={view.id} brand={view.brandCheck} onChanged={(b) => setView((v) => (v ? { ...v, brandCheck: b } : v))} />
+              {view.contextBrief ? <BriefCard brief={view.contextBrief} angleLimitation={view.angleLimitation ?? null} busy={revising === "context"} onSave={(v) => void saveContext(v)} /> : null}
               {view.assets.length ? (
                 <Card>
                   <CardContent className="space-y-3 p-4">
@@ -1225,15 +1986,14 @@ function VideoInner() {
                   >
                     <div className="mb-2 flex flex-wrap gap-1.5">
                       <Badge>{s.angle.name}</Badge>
-                      <Badge variant="outline">{s.angle.stage}</Badge>
-                      <Badge variant="outline">{s.durationSeconds}s</Badge>
+                      {s.angle.stage ? <Badge variant="outline">{s.angle.stage}</Badge> : null}
+                      <Badge variant="outline">{s.speech ? `${s.speech.words} words · about ${Math.round(s.speech.estimatedSeconds)}s` : `${s.durationSeconds}s`}</Badge>
                     </div>
                     <p className="text-sm font-medium">{s.title}</p>
-                    <p className="mt-1 text-[11px] text-muted">
-                      {s.framework.name} · {s.style}
-                    </p>
-                    <p className="mt-2 text-xs text-muted">Targets: {s.pain}</p>
-                    <p className="mt-2 text-xs">&ldquo;{s.hookAlternatives[0]}&rdquo;</p>
+                    <p className="mt-1 text-[11px] text-muted">{s.style}</p>
+                    <p className="mt-2 text-xs text-muted">{s.angleDetail ? s.angleDetail.situation : `Targets: ${s.pain}`}</p>
+                    {s.differentiator ? <p className="mt-1 text-xs">{s.differentiator}</p> : null}
+                    <p className="mt-2 text-xs">&ldquo;{s.hook?.line ?? s.hookAlternatives[0]}&rdquo;</p>
                     {s.verification ? (
                       <div className="mt-2">
                         <VerdictBadge v={s.verification} />
@@ -1258,6 +2018,10 @@ function VideoInner() {
                         <span className="text-xs font-normal text-muted">{draftTotal >= 30 && draftTotal <= 40 ? "(ideal range)" : draftTotal > 60 ? "(over the 60s limit)" : draftTotal < 30 ? "(a little short)" : ""}</span>
                       </p>
                     </div>
+
+                    {draft.source !== "uploaded" ? (
+                      <VersionSummary script={draft} spoken={spokenText} words={spokenText.split(/\s+/).filter(Boolean).length} speech={draftSpeech} requestedSeconds={draft.speech?.requestedSeconds ?? view.inputs.targetSeconds} onAction={(a, o) => void revise(a, o)} busy={revising} />
+                    ) : null}
 
                     {draft.source === "uploaded" ? (
                       <div className="space-y-1.5 rounded-md border border-accent/40 bg-accent/5 p-3 text-xs">
@@ -1530,8 +2294,8 @@ function ScriptBody({ script, assets }: { script: Script; assets: Asset[] }) {
       <CardContent className="space-y-4 p-4">
         <div className="flex flex-wrap gap-1.5">
           <Badge>{script.angle.name}</Badge>
-          <Badge variant="outline">{script.angle.stage}</Badge>
-          <Badge variant="outline">{script.framework.name}</Badge>
+          {script.angle.stage ? <Badge variant="outline">{script.angle.stage}</Badge> : null}
+          {script.framework.name ? <Badge variant="outline">{script.framework.name}</Badge> : null}
           <Badge variant="outline">{script.style}</Badge>
         </div>
         <p className="text-xs text-muted">Targets: {script.pain}</p>

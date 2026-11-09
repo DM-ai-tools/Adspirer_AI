@@ -1,7 +1,7 @@
-/** Serve a video file with byte-range support, so a player can seek, and an optional download name. */
-export function streamVideo(request: Request, bytes: Buffer, downloadName: string): Response {
+/** Serve a video file with byte-range support, so a player can seek, and an optional download name (none: shown in a player only, never offered as a download). */
+export function streamVideo(request: Request, bytes: Buffer, downloadName: string | null): Response {
   const headers: Record<string, string> = { "Content-Type": "video/mp4", "Accept-Ranges": "bytes", "Cache-Control": "private, max-age=3600" };
-  if (new URL(request.url).searchParams.has("download")) headers["Content-Disposition"] = `attachment; filename="${downloadName}"`;
+  if (downloadName && new URL(request.url).searchParams.has("download")) headers["Content-Disposition"] = `attachment; filename="${downloadName}"`;
 
   const range = /^bytes=(\d*)-(\d*)$/.exec(request.headers.get("range") ?? "");
   if (range) {

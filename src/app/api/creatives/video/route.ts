@@ -36,6 +36,16 @@ const payloadSchema = z.object({
   adCopyText: z.string().max(4000).optional(),
   /** What to change in the uploaded script. Empty means nothing. */
   changeRequest: z.string().max(2000).optional(),
+  /** How to say a term, e.g. { "ROAS": "roh-ass" }. Wins over every other pronunciation choice. */
+  pronunciations: z.record(z.string().max(40), z.string().max(80)).default({}),
+  /** Optional creative inputs: leave empty and the defaults used are shown and can be edited. */
+  audience: z.string().max(400).optional(),
+  tone: z.string().max(200).optional(),
+  goal: z.string().max(300).optional(),
+  platform: z.string().max(120).optional(),
+  speechRate: z.number().min(1.8).max(3.2).optional(),
+  /** The public company name, when the operator already knows the page will not say it clearly. */
+  brandName: z.string().max(120).optional(),
   /** Caption and role for each uploaded image, in upload order. */
   images: z.array(z.object({ caption: z.string().max(200).default(""), role: z.enum(["show", "highlight"]).default("show") })).default([]),
 });
@@ -108,6 +118,13 @@ export async function POST(request: Request) {
         scriptFileName,
         adCopyText: body.mode === "upload" ? (body.adCopyText?.trim() || null) : null,
         changeRequest: body.mode === "upload" ? (body.changeRequest?.trim() || null) : null,
+        pronunciations: body.pronunciations,
+        audience: body.audience?.trim() || null,
+        tone: body.tone?.trim() || null,
+        goal: body.goal?.trim() || null,
+        platform: body.platform?.trim() || null,
+        speechRate: body.speechRate ?? null,
+        brandChoice: body.brandName?.trim() ? { name: body.brandName.trim() } : undefined,
       },
     });
 

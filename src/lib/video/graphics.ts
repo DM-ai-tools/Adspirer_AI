@@ -101,24 +101,41 @@ export async function logoPiece(logoPng: Buffer, frameWidth: number, widthFracti
   return { png, width: w, height: h };
 }
 
-/** The closing card: brand colour, the logo big on a white card, and the call to action as a button. */
-export async function endCardPng(width: number, height: number, options: { background: string; accent: string; logoPng: Buffer | null; brandName: string; cta: string }): Promise<Buffer> {
+/**
+ * The closing card, drawn only from verified brand data: the manifest's public company name, its
+ * original logo, the offer and the call to action. Nothing here is generated, guessed or taken from a
+ * project title. The layout adapts to what exists (a logo, or the verified name as text when text-only
+ * was allowed), but the words and the mark are exact.
+ */
+export async function endCardPng(
+  width: number,
+  height: number,
+  options: { background: string; accent: string; logoPng: Buffer | null; brandName: string; offer?: string | null; cta: string | null; url?: string | null },
+): Promise<Buffer> {
   const sharp = await sharpLib();
   const layers: Array<{ input: Buffer; left: number; top: number }> = [];
-  let y = Math.round(height * 0.3);
+  const gap = Math.round(height * 0.04);
+  const pieces: Piece[] = [];
   if (options.logoPng) {
-    const logo = await logoPiece(options.logoPng, width, 0.62);
-    layers.push({ input: logo.png, left: Math.round((width - logo.width) / 2), top: y });
-    y += logo.height + Math.round(height * 0.06);
-  } else {
-    const name = await text(`<span foreground="#FFFFFF">${esc(options.brandName)}</span>`, { size: Math.round(width * 0.09), width: Math.round(width * 0.8) });
-    layers.push({ input: name.png, left: Math.round((width - name.width) / 2), top: y });
-    y += name.height + Math.round(height * 0.06);
+    pieces.push(await logoPiece(options.logoPng, width, 0.62));
+  } else if (options.brandName) {
+    pieces.push(await text(`<span foreground="#FFFFFF">${esc(options.brandName)}</span>`, { size: Math.round(width * 0.09), width: Math.round(width * 0.8) }));
+  }
+  if (options.offer) {
+    pieces.push(await text(`<span foreground="#FFFFFF">${esc(options.offer)}</span>`, { size: Math.round(width * 0.052), width: Math.round(width * 0.78), bold: false }));
   }
   if (options.cta) {
     const label = await text(`<span foreground="#101820">${esc(options.cta)}</span>`, { size: Math.round(width * 0.05), width: Math.round(width * 0.6) });
-    const button = await onPanel([{ piece: label, gap: 0 }], { width: Math.round(width * 0.44), padX: Math.round(width * 0.06), padY: Math.round(width * 0.025), radius: Math.round(width * 0.04), fill: options.accent, opacity: 1 });
-    layers.push({ input: button.png, left: Math.round((width - button.width) / 2), top: y });
+    pieces.push(await onPanel([{ piece: label, gap: 0 }], { width: Math.round(width * 0.44), padX: Math.round(width * 0.06), padY: Math.round(width * 0.025), radius: Math.round(width * 0.04), fill: options.accent, opacity: 1 }));
+  }
+  if (options.url) {
+    pieces.push(await text(`<span foreground="#FFFFFF">${esc(options.url)}</span>`, { size: Math.round(width * 0.036), width: Math.round(width * 0.8), bold: false }));
+  }
+  const total = pieces.reduce((t, p) => t + p.height, 0) + gap * Math.max(pieces.length - 1, 0);
+  let y = Math.round(Math.max((height - total) / 2, height * 0.14));
+  for (const piece of pieces) {
+    layers.push({ input: piece.png, left: Math.round((width - piece.width) / 2), top: y });
+    y += piece.height + gap;
   }
   return sharp({ create: { width, height, channels: 4, background: options.background } }).composite(layers).png().toBuffer();
 }

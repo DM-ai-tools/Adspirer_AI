@@ -18,6 +18,8 @@ export type BrandUrlAnalysis = {
   summary: string;
   /** Start of the page text, so downstream prompts know what the business says it does. */
   page_excerpt?: string;
+  /** More of the page text (up to 12,000 characters), for building a sourced creative brief. */
+  page_text?: string;
   source: "firecrawl_branding" | "openai+scrape" | "scrape_only" | "heuristic";
 };
 
@@ -80,6 +82,7 @@ async function analyzeBrandCore(
   const scraped = await scrapeWebsiteServices(url);
   const markdown = (scraped.markdown ?? "").slice(0, 8000);
   const pageExcerpt = markdown.slice(0, 2500) || undefined;
+  const pageText = (scraped.markdown ?? "").slice(0, 12_000) || undefined;
   const config = getConfig();
   const branding = scraped.branding;
 
@@ -148,6 +151,7 @@ async function analyzeBrandCore(
       summary: `Firecrawl branding: ${colors.length} brand colors${logo ? " and official logo" : ""} extracted from ${scraped.url}.`,
       source: "firecrawl_branding",
       page_excerpt: pageExcerpt,
+      page_text: pageText,
     };
   }
 
@@ -209,6 +213,7 @@ async function analyzeBrandCore(
           : `Brand cues from ${scraped.url}`,
         source: "openai+scrape",
         page_excerpt: pageExcerpt,
+        page_text: pageText,
       };
     } catch (error) {
       logger.warn("Brand URL OpenAI analysis failed", {
@@ -231,6 +236,7 @@ async function analyzeBrandCore(
     summary: `Scraped ${scraped.url} (${scraped.source}). Limited brand extraction without OpenAI.`,
     source: scraped.markdown ? "scrape_only" : "heuristic",
     page_excerpt: pageExcerpt,
+    page_text: pageText,
   };
 }
 

@@ -8,6 +8,7 @@ import { regenerateScene, rewriteAdCopy } from "@/lib/video/rewrite";
 import { checkOnly, type VerifyContext } from "@/lib/video/verify";
 import { retime } from "@/lib/video/timing";
 import { jsonOk, parseBody, withApiHandler } from "@/lib/api/response";
+import { withSpeech } from "@/lib/video/script-actions";
 
 export const maxDuration = 120;
 type Ctx = { params: Promise<{ id: string }> };
@@ -47,10 +48,10 @@ async function contextFor(project: VideoProject): Promise<VerifyContext> {
   const brand = project.brand;
   if (brand?.facts && brand.corpus) {
     const brief = { locale: project.inputs.locale, images: project.assets.map((a) => ({ id: a.id })) } as unknown as VideoBrief;
-    return { brief, facts: brand.facts, corpus: brand.corpus, assetIds: project.assets.map((a) => a.id), target: 0 };
+    return { brief, facts: brand.facts, corpus: brand.corpus, assetIds: project.assets.map((a) => a.id), target: 0, claims: brand.manifest?.claims };
   }
   const { brief } = await buildBrief(project);
-  return { brief, facts: briefFacts(brief), corpus: factsCorpus(brief), assetIds: brief.images.map((i) => i.id), target: 0 };
+  return { brief, facts: briefFacts(brief), corpus: factsCorpus(brief), assetIds: brief.images.map((i) => i.id), target: 0, claims: brief.claims };
 }
 
 /** Rewrite one scene or the ad copy, from the operator's feedback and/or the problems found, and re-check the script. */
@@ -90,6 +91,8 @@ export async function POST(request: Request, ctx: Ctx) {
     }
 
     const verification = await checkOnly(script, vctx);
-    return jsonOk({ scene, adCopy, verification });
+    // The length and the spoken estimate for the words as they stand now.
+    const speech = withSpeech(script, project.inputs.speechRate, original.speech?.requestedSeconds ?? project.inputs.targetSeconds).speech ?? null;
+    return jsonOk({ scene, adCopy, verification, speech });
   });
 }

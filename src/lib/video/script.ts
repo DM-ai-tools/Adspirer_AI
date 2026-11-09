@@ -7,6 +7,9 @@ import { HUMAN_VOICE, SYSTEM } from "@/lib/video/voice";
 import { retime, WORDS_PER_SECOND } from "@/lib/video/timing";
 import { textRisk, VISUAL_DIRECTION_RULES } from "@/lib/video/visual-rules";
 import type { Verification } from "@/lib/video/verify";
+import type { ApprovedClaim } from "@/lib/video/pipeline-types";
+import type { ScriptExtras } from "@/lib/video/script-types";
+import { sourceClaims, type ClaimUse } from "@/lib/video/claims";
 
 /** Ideal length range for the ad, in seconds, and the hard cap. */
 export const IDEAL_SECONDS = { min: 30, max: 40 } as const;
@@ -70,6 +73,8 @@ export type VideoScene = {
   sound: string;
   /** For an uploaded script: the words as the operator wrote them, kept when a change they asked for rewrote this line. */
   originalLine?: string | null;
+  /** The operator changed this scene's words or picture: later rewrites keep it as it is. */
+  edited?: boolean;
 };
 
 export type VideoScript = {
@@ -103,7 +108,7 @@ export type VideoScript = {
     unusedText: string[];
     changes: Array<{ target: string; was: string; now: string }>;
   } | null;
-};
+} & ScriptExtras;
 
 export type VideoBrief = {
   brandName: string;
@@ -111,6 +116,8 @@ export type VideoBrief = {
   colors?: string[] | null;
   imageryNotes?: string | null;
   pageExcerpt?: string | null;
+  /** More of the page's text, for the creative brief. */
+  pageText?: string | null;
   summary?: string | null;
   industry?: string | null;
   description?: string | null;
@@ -128,6 +135,10 @@ export type VideoBrief = {
   /** "auto" lets the writer pick a different style per script. */
   style: string;
   locale: string;
+  /** The claims that have a recorded source: the only figures and results the script may state. */
+  claims?: ApprovedClaim[];
+  /** Pronunciations the operator asked for; the writer must use those terms as written. */
+  pronunciationNotes?: string[];
 };
 
 const CTA_VALUES = ADSPIRER_META_CTAS as unknown as [string, ...string[]];
@@ -247,7 +258,7 @@ export function qualityWarnings(script: Pick<VideoScript, "scenes" | "adCopy">):
  * starts late, the wrong total length, an uploaded image that does not exist, lines that do not
  * sound spoken, and ad copy that is too thin.
  */
-export function checkScript(script: VideoScript, ctx: { corpus: string; assetIds: string[]; target: number }): string[] {
+export function checkScript(script: VideoScript, ctx: { corpus: string; assetIds: string[]; target: number; claims?: ApprovedClaim[] }): string[] {
   const warnings: string[] = [];
   const total = script.scenes.reduce((a, s) => a + s.seconds, 0);
   if (total > MAX_SECONDS) warnings.push(`Runs ${total}s, over the ${MAX_SECONDS}s limit. Cut or shorten a scene.`);
@@ -258,16 +269,39 @@ export function checkScript(script: VideoScript, ctx: { corpus: string; assetIds
     const risky = textRisk(scene.visual);
     if (risky.length) warnings.push(`Scene ${scene.number} shows ${risky.join(" and ")}: AI video draws garbled text there. Show a person or an object instead; the real stat or screenshot is added on top afterwards.`);
     if (scene.assetId && !ctx.assetIds.includes(scene.assetId)) warnings.push(`Scene ${scene.number} uses an image that was not uploaded.`);
-    for (const n of numbersIn(`${scene.stat ?? ""} ${scene.line}`)) {
-      if (!ctx.corpus.includes(n)) warnings.push(`Scene ${scene.number} states "${n}", which is not in your page or inputs.`);
+    if (!ctx.claims) {
+      for (const n of numbersIn(`${scene.stat ?? ""} ${scene.line}`)) {
+        if (!ctx.corpus.includes(n)) warnings.push(`Scene ${scene.number} states "${n}", which is not in your page or inputs.`);
+      }
     }
   }
-  for (const n of numbersIn(script.adCopy.primaryText)) {
-    if (!ctx.corpus.includes(n)) warnings.push(`The ad copy states "${n}", which is not in your page or inputs.`);
+  if (ctx.claims) {
+    // Every figure must match an approved claim by value, never by a loose substring of the page text.
+    for (const u of unsourcedFigures(script, ctx.claims)) warnings.push(`${u.where} states "${u.figure}", which has no recorded source in your page, stats or images.`);
+  } else {
+    for (const n of numbersIn(script.adCopy.primaryText)) {
+      if (!ctx.corpus.includes(n)) warnings.push(`The ad copy states "${n}", which is not in your page or inputs.`);
+    }
   }
   if (script.scenes[0] && script.scenes[0].seconds > 5) warnings.push("The opening scene is longer than 5s; the hook should land in the first 2-3 seconds.");
   warnings.push(...qualityWarnings(script));
   return [...new Set(warnings)];
+}
+
+/** Every figure the script states (spoken, shown big, or in the ad copy) that no approved claim backs. */
+export function unsourcedFigures(script: Pick<VideoScript, "scenes" | "adCopy">, claims: ApprovedClaim[]): Array<{ where: string; figure: string }> {
+  const uses: ClaimUse[] = [];
+  for (const scene of script.scenes) {
+    if (scene.line) uses.push({ text: scene.line, where: `Scene ${scene.number}` });
+    if (scene.stat) uses.push({ text: scene.stat, where: `Scene ${scene.number}` });
+  }
+  uses.push({ text: script.adCopy.primaryText, where: "The ad copy" });
+  uses.push({ text: script.adCopy.headline, where: "The ad headline" });
+  const { unsourced } = sourceClaims(uses, claims);
+  const seen = new Set<string>();
+  return unsourced
+    .map((u) => ({ where: u.use.where, figure: u.figure }))
+    .filter((u) => (seen.has(`${u.where}|${u.figure}`) ? false : (seen.add(`${u.where}|${u.figure}`), true)));
 }
 
 type RawScript = z.infer<typeof scriptSchema>["scripts"][number];
@@ -275,7 +309,7 @@ type RawScript = z.infer<typeof scriptSchema>["scripts"][number];
 export function buildScripts(
   raw: RawScript[],
   assigned: Array<{ angle: BulkAngle; framework: Framework }>,
-  ctx: { corpus: string; assetIds: string[]; target: number },
+  ctx: { corpus: string; assetIds: string[]; target: number; claims?: ApprovedClaim[] },
 ): VideoScript[] {
   const byKey = new Map<string, RawScript>();
   for (const r of raw) if (!byKey.has(r.angle_key)) byKey.set(r.angle_key, r);
@@ -333,7 +367,11 @@ const messageMapSchema = z.object({
   mechanism: z.string(),
 });
 
-/** Read the brief and write three scripts, each with its own angle and framework. */
+/**
+ * LEGACY single-call writer (fixed angle bank, randomly assigned named frameworks). The app now writes through
+ * the creative brief, planned angles and `script-writer.ts`; this is kept only so the live evaluation can
+ * compare the old output with the new on the same inputs.
+ */
 export async function writeVideoScripts(brief: VideoBrief, onStage?: (stage: "understanding" | "writing") => Promise<void> | void): Promise<{ scripts: VideoScript[]; messageMap: z.infer<typeof messageMapSchema> }> {
   const model = pickModel();
   if (!model) throw new Error("No language model is configured to write scripts (set ANTHROPIC_API_KEY or OPENAI_API_KEY).");
@@ -352,7 +390,7 @@ export async function writeVideoScripts(brief: VideoBrief, onStage?: (stage: "un
   const angles = pickBulkAngles(SCRIPT_COUNT);
   const frameworks = assignFrameworks(angles);
   const assigned = angles.map((angle, i) => ({ angle, framework: frameworks[i]! }));
-  const ctx = { corpus: factsCorpus(brief, [JSON.stringify(messageMap)]), assetIds: brief.images.map((i) => i.id), target };
+  const ctx = { corpus: factsCorpus(brief, [JSON.stringify(messageMap)]), assetIds: brief.images.map((i) => i.id), target, claims: brief.claims };
 
   const write = async (extra?: string) => {
     const { object } = await generateObject({
