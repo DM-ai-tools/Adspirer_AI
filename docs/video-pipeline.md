@@ -21,6 +21,17 @@ How a video ad goes from a script to a file that is allowed to be delivered. Eve
 - Frame inspection and text reading use a vision language model (Anthropic first, OpenAI if that call fails). With no vision model the clip or video stays unresolved instead of being approved.
 - Speech checks and caption timing need `OPENAI_API_KEY` (Whisper).
 
+## When a clip does not pass its inspection
+
+Every new attempt at a clip is paid for, so nothing is made again on its own. The clip is kept, the video pauses ("Waiting for your decision") and the screen shows what was found and what each choice costs:
+
+- **Make it again** (or **Redesign the shot and make it again**) pays for one more attempt with the corrections. The video's cost cap is raised to cover that attempt and the clips still to come, because the spend was approved.
+- **Use this clip as it is** keeps the clip, marks it "Used as it is" and carries on. The findings stay on the clip.
+- **Inspect it again** (only when the inspection itself could not run, for example no vision credit) re-checks the same clip and pays for no video.
+- **Stop here** stops the video; carrying on from a stop returns to the same decision.
+
+A final export that fails its inspection is still kept out of the download; the screen offers **Use this video anyway**, and a video delivered that way shows the findings above it. Actions: `decide` (clip, choice) and `accept_final` on the generation route.
+
 ## Regenerating a video
 
 1. Open the project in Creatives > Video ad. Under **Brand check**, choose "Check the brand". If the project was made without a landing page, open "Fix or change the name and logo" and give the landing page (or the company name and a logo).

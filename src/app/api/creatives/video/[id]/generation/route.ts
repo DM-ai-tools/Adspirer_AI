@@ -2,7 +2,7 @@ import { z } from "zod";
 import { getCurrentUser } from "@/lib/security/auth";
 import { assertAuthenticated, assertClientAccess } from "@/lib/authz/assert";
 import { getProject } from "@/lib/video/projects";
-import { advance, blockedReason, continueGeneration, regenerateFrom, runGeneration, startGeneration, stopGeneration, viewGeneration } from "@/lib/video/generation";
+import { acceptBlockedFinal, advance, blockedReason, continueGeneration, regenerateFrom, resolveDecision, runGeneration, startGeneration, stopGeneration, viewGeneration } from "@/lib/video/generation";
 import { assembleVideo } from "@/lib/video/assemble";
 import { runAfterResponse } from "@/lib/api/background";
 import { jsonOk, parseBody, withApiHandler } from "@/lib/api/response";
@@ -36,6 +36,10 @@ const bodySchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("assemble"), finishing: finishing.optional() }),
   /** The page calls this while it is open, so a video carries on after the first request's time runs out. */
   z.object({ action: z.literal("advance") }),
+  /** What to do with a clip that did not pass its inspection: make it again (paid for), use it as it is, or inspect it again. */
+  z.object({ action: z.literal("decide"), clip: z.number().int().min(1), choice: z.enum(["remake", "use", "inspect"]) }),
+  /** Deliver an export the inspection blocked, as the operator's decision. */
+  z.object({ action: z.literal("accept_final") }),
   z.object({ action: z.literal("regenerate"), fromClip: z.number().int().min(1), /** From clip 1 only: make a new creative plan instead of keeping the approved one. */ replan: z.boolean().optional() }),
 ]);
 
@@ -62,6 +66,16 @@ export async function POST(request: Request, ctx: Ctx) {
       const next = await continueGeneration(project.id);
       if (next.status === "generating") runAfterResponse("video-generation", () => runGeneration(project.id));
       return jsonOk(viewGeneration(next));
+    }
+
+    if (body.action === "decide") {
+      const next = await resolveDecision(project.id, body.clip, body.choice);
+      if (next.status === "generating") runAfterResponse("video-generation", () => runGeneration(project.id));
+      return jsonOk(viewGeneration(next));
+    }
+
+    if (body.action === "accept_final") {
+      return jsonOk(viewGeneration(await acceptBlockedFinal(project.id)));
     }
 
     if (body.action === "assemble") {

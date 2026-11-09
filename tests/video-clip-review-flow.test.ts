@@ -146,13 +146,24 @@ describe("a clip is only made once it has been inspected", () => {
     expect(p.clips!.every((c) => c.status === "succeeded" && c.qa?.verdict === "pass" && c.attemptLog!.length === 1)).toBe(true);
   });
 
-  it("rejects a clip with a facial artifact, tries again with a targeted correction and a new seed, and records both takes", async () => {
-    const { startGeneration, runGeneration } = await import("@/lib/video/generation");
+  it("holds a clip with a facial artifact and spends nothing more until the operator agrees; then tries again with a targeted correction and a new seed, and records both takes", async () => {
+    const { startGeneration, runGeneration, resolveDecision } = await import("@/lib/video/generation");
     const { getProject } = await import("@/lib/video/projects");
     const { spentUsd } = await import("@/lib/video/pipeline");
     const id = await confirmed();
     await startGeneration(id, undefined, "none");
     queue = [{ verdict: "retry", findings: [finding()] }];
+    expect(await runGeneration(id, 60_000, noSleep)).toBe("paused");
+
+    // Nothing was made again on its own: one clip was paid for and the video waits for a decision.
+    const held = (await getProject(id))!;
+    expect(held.status).toBe("paused");
+    expect(created).toHaveLength(1);
+    expect(held.clips![0]!.decision).toMatchObject({ verdict: "retry" });
+    expect(held.clips![0]!.decision!.estimateUsd).toBeGreaterThan(0);
+    expect(held.clips![0]!.videoKey).toBeTruthy();
+
+    await resolveDecision(id, 1, "remake");
     expect(await runGeneration(id, 60_000, noSleep)).toBe("done");
 
     const p = (await getProject(id))!;
@@ -167,23 +178,28 @@ describe("a clip is only made once it has been inspected", () => {
     // the rejected take is paid for and counted
     expect(spentUsd(p.clips!)).toBeGreaterThan(p.clips!.reduce((t, c) => t + (c.usd ?? 0), 0));
     expect(clip1.qaAttempts).toBe(1);
+    expect(clip1.decision).toBeNull();
   });
 
-  it("preserves clips that were approved: only the rejected clip is made again", async () => {
-    const { startGeneration, runGeneration } = await import("@/lib/video/generation");
+  it("preserves clips that were approved: only the held clip is made again, and only once the operator agrees", async () => {
+    const { startGeneration, runGeneration, resolveDecision } = await import("@/lib/video/generation");
     const { getProject } = await import("@/lib/video/projects");
     const id = await confirmed();
     await startGeneration(id, undefined, "none");
     const clipCount = (await getProject(id))!.clips!.length;
     queue = [{ verdict: "pass" }, { verdict: "retry", findings: [finding()] }];
+    expect(await runGeneration(id, 60_000, noSleep)).toBe("paused");
+    expect(created.length).toBe(2);
+    expect((await getProject(id))!.clips![1]!.decision).toBeTruthy();
+    await resolveDecision(id, 2, "remake");
     await runGeneration(id, 60_000, noSleep);
     const p = (await getProject(id))!;
     expect(p.clips![0]!.attemptLog).toHaveLength(1);
     expect(created.length).toBe(clipCount + 1);
   });
 
-  it("gives a clip whose speech was cut off the seconds it needs, in the plan and the script", async () => {
-    const { startGeneration, runGeneration } = await import("@/lib/video/generation");
+  it("gives a clip whose speech was cut off the seconds it needs, in the plan and the script, once it is made again", async () => {
+    const { startGeneration, runGeneration, resolveDecision } = await import("@/lib/video/generation");
     const { getProject } = await import("@/lib/video/projects");
     const id = await confirmed();
     await startGeneration(id, undefined, "none");
@@ -191,6 +207,12 @@ describe("a clip is only made once it has been inspected", () => {
     const total = before.clips![0]!.seconds;
     const lastBefore = new Map(before.chosen_script!.scenes.map((x) => [x.number, x.seconds]));
     queue = [{ verdict: "retry", findings: [finding({ code: "speech_clipped_end", category: "speech", severity: "major", message: "The last words are cut off at the end of the clip.", correction: "Let the last sentence finish before the clip ends." })] }];
+    expect(await runGeneration(id, 60_000, noSleep)).toBe("paused");
+    const held = (await getProject(id))!;
+    // while it waits, nothing has changed; the longer length is what the operator is asked to pay for
+    expect(held.clips![0]!.seconds).toBe(total);
+    expect(held.clips![0]!.decision!.addSeconds).toBeGreaterThan(0);
+    await resolveDecision(id, 1, "remake");
     await runGeneration(id, 60_000, noSleep);
     const p = (await getProject(id))!;
     expect(p.clips![0]!.seconds).toBeGreaterThan(total);
@@ -200,12 +222,16 @@ describe("a clip is only made once it has been inspected", () => {
 });
 
 describe("a clip that cannot be approved", () => {
-  it("redesigns the shot when the same problem keeps coming back, then carries on", async () => {
-    const { startGeneration, runGeneration } = await import("@/lib/video/generation");
+  it("redesigns the shot only when the operator agrees to pay for it, then carries on", async () => {
+    const { startGeneration, runGeneration, resolveDecision } = await import("@/lib/video/generation");
     const { getProject } = await import("@/lib/video/projects");
     const id = await confirmed();
     await startGeneration(id, undefined, "none");
     queue = [{ verdict: "redesign", findings: [finding()] }];
+    expect(await runGeneration(id, 60_000, noSleep)).toBe("paused");
+    expect(redesigns).toBe(0);
+    expect((await getProject(id))!.clips![0]!.decision!.verdict).toBe("redesign");
+    await resolveDecision(id, 1, "remake");
     expect(await runGeneration(id, 60_000, noSleep)).toBe("done");
     const p = (await getProject(id))!;
     expect(redesigns).toBe(1);
@@ -213,21 +239,96 @@ describe("a clip that cannot be approved", () => {
     expect(p.plan!.creative!.narrative.approach).toBe("redesigned shot");
   });
 
-  it("stops and says exactly what is wrong instead of shipping it", async () => {
-    const { startGeneration, runGeneration } = await import("@/lib/video/generation");
+  it("holds the clip and says exactly what is wrong instead of shipping it or spending more", async () => {
+    const { startGeneration, runGeneration, viewGeneration } = await import("@/lib/video/generation");
     const { getProject } = await import("@/lib/video/projects");
     const id = await confirmed();
     await startGeneration(id, undefined, "none");
     queue = [{ verdict: "unresolved", findings: [finding()] }];
-    expect(await runGeneration(id, 60_000, noSleep)).toBe("failed");
+    expect(await runGeneration(id, 60_000, noSleep)).toBe("paused");
     const p = (await getProject(id))!;
-    expect(p.status).toBe("failed");
+    expect(p.status).toBe("paused");
     expect(p.clips![0]!.status).toBe("failed");
     expect(p.clips![0]!.unresolved).toBe(true);
-    expect(p.error).toMatch(/could not be approved.*cyan marks/i);
-    // the rejected clip is kept to look at, and the next clip was never paid for
+    expect(p.clips![0]!.error).toMatch(/did not pass.*cyan marks/i);
+    // the clip is kept to look at, and the next clip was never paid for
     expect(p.clips![0]!.videoKey).toBeTruthy();
     expect(p.clips![1]!.status).toBe("waiting");
+    expect(created).toHaveLength(1);
+
+    // the screen is told what the choices cost
+    const view = viewGeneration(p);
+    expect(view.reviewClip).toBeNull();
+    expect(view.decision).toMatchObject({ clip: 1, verdict: "unresolved", canUse: true, inspectionFailed: false });
+    expect(view.decision!.estimateUsd).toBeGreaterThan(0);
+    expect(view.decision!.remainingUsd).toBeGreaterThan(0);
+  });
+
+  it("lets the operator use the clip as it is, without spending anything on it, and keeps the problems on record", async () => {
+    const { startGeneration, runGeneration, resolveDecision } = await import("@/lib/video/generation");
+    const { getProject } = await import("@/lib/video/projects");
+    const id = await confirmed();
+    await startGeneration(id, undefined, "none");
+    const clipCount = (await getProject(id))!.clips!.length;
+    queue = [{ verdict: "unresolved", findings: [finding({ code: "text_in_footage", message: 'Text ("spent") appears inside the footage.' })] }];
+    expect(await runGeneration(id, 60_000, noSleep)).toBe("paused");
+    await resolveDecision(id, 1, "use");
+    expect(await runGeneration(id, 60_000, noSleep)).toBe("done");
+    const p = (await getProject(id))!;
+    expect(p.clips![0]!).toMatchObject({ status: "succeeded", acceptedWithIssues: true, unresolved: false, decision: null });
+    expect(p.clips![0]!.qa!.findings[0]!.message).toMatch(/spent/);
+    // the clip was not made again, and the rest were made
+    expect(p.clips![0]!.attemptLog).toHaveLength(1);
+    expect(created).toHaveLength(clipCount);
+    expect(p.clips!.every((c) => c.status === "succeeded")).toBe(true);
+  });
+
+  it("raises the cost cap to cover an attempt the operator approved", async () => {
+    const { startGeneration, runGeneration, resolveDecision } = await import("@/lib/video/generation");
+    const { getProject, updateProject } = await import("@/lib/video/projects");
+    const id = await confirmed();
+    await startGeneration(id, undefined, "none");
+    queue = [{ verdict: "unresolved", findings: [finding()] }];
+    expect(await runGeneration(id, 60_000, noSleep)).toBe("paused");
+    const held = (await getProject(id))!;
+    held.plan!.budgetUsd = held.clips![0]!.usd! + 0.01;
+    await updateProject(id, { plan: held.plan });
+    await resolveDecision(id, 1, "remake");
+    const after = (await getProject(id))!;
+    expect(after.plan!.budgetUsd).toBeGreaterThan(held.clips![0]!.usd! + 0.01);
+    // the attempt goes ahead; the old cap would have stopped it before it was submitted
+    await runGeneration(id, 60_000, noSleep);
+    expect(created.length).toBeGreaterThanOrEqual(2);
+    expect((await getProject(id))!.clips![0]!.attemptLog!.length).toBe(2);
+  });
+
+  it("offers to inspect again, not to make the clip again, when the inspection itself could not run", async () => {
+    const { startGeneration, runGeneration, resolveDecision, viewGeneration } = await import("@/lib/video/generation");
+    const { getProject } = await import("@/lib/video/projects");
+    const id = await confirmed();
+    await startGeneration(id, undefined, "none");
+    const clipCount = (await getProject(id))!.clips!.length;
+    queue = [{ verdict: "unresolved", findings: [finding({ code: "review_failed", category: "technical", message: "The clip could not be inspected (no credit)." })] }];
+    expect(await runGeneration(id, 60_000, noSleep)).toBe("paused");
+    expect(viewGeneration((await getProject(id))!).decision!.inspectionFailed).toBe(true);
+    await resolveDecision(id, 1, "inspect");
+    expect(await runGeneration(id, 60_000, noSleep)).toBe("done");
+    // checked again; no new video was paid for
+    expect(created).toHaveLength(clipCount);
+  });
+
+  it("refuses a decision when nothing is waiting for one, and carrying on from a stop keeps waiting for it", async () => {
+    const { startGeneration, runGeneration, resolveDecision, stopGeneration, continueGeneration } = await import("@/lib/video/generation");
+    const { getProject } = await import("@/lib/video/projects");
+    const id = await confirmed();
+    await startGeneration(id, undefined, "none");
+    await expect(resolveDecision(id, 1, "use")).rejects.toThrow(/not waiting/);
+    queue = [{ verdict: "unresolved", findings: [finding()] }];
+    expect(await runGeneration(id, 60_000, noSleep)).toBe("paused");
+    await stopGeneration(id);
+    const resumed = await continueGeneration(id);
+    expect(resumed.status).toBe("paused");
+    expect((await getProject(id))!.clips![0]!.decision).toBeTruthy();
     expect(created).toHaveLength(1);
   });
 
@@ -237,10 +338,22 @@ describe("a clip that cannot be approved", () => {
     const id = await confirmed();
     await startGeneration(id, undefined, "none");
     queue = [{ verdict: "pass", findings: [finding({ code: "fabricated_text", message: "A wordmark reading 'Whlubler' is drawn in the footage." })] }];
-    expect(await runGeneration(id, 60_000, noSleep)).toBe("failed");
+    expect(await runGeneration(id, 60_000, noSleep)).toBe("paused");
     const p = (await getProject(id))!;
     expect(p.clips![0]!.status).toBe("failed");
-    expect(p.error).toMatch(/Whlubler/);
+    expect(p.clips![0]!.error).toMatch(/Whlubler/);
+  });
+
+  it("delivers an export the final inspection blocked only when the operator says so", async () => {
+    const { acceptBlockedFinal } = await import("@/lib/video/generation");
+    const { getProject, updateProject } = await import("@/lib/video/projects");
+    const id = await confirmed();
+    await expect(acceptBlockedFinal(id)).rejects.toThrow(/no blocked export/);
+    await updateProject(id, { status: "clips_ready", final: { state: "blocked", stage: null, error: "Not approved for delivery: stray text.", startedAt: "", key: null, reviewKey: "video/x/final-1.mp4", seconds: 30, width: 1080, height: 1920, bytes: 10, createdAt: "2026-11-09T00:00:00Z", qa: [], includes: null, report: null } });
+    await acceptBlockedFinal(id);
+    const p = (await getProject(id))!;
+    expect(p.status).toBe("done");
+    expect(p.final).toMatchObject({ state: "done", key: "video/x/final-1.mp4", reviewKey: null, acceptedAnyway: true, error: null });
   });
 
   it("stops at the cost cap instead of retrying without limit", async () => {
