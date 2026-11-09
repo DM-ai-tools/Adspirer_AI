@@ -1587,6 +1587,26 @@ function VideoInner() {
   const assetName = useCallback((id: string) => view?.assets.find((a) => a.id === id)?.name, [view]);
   const events = useMemo(() => overlayEvents(timed), [timed]);
 
+  // A confirmed script can be reopened for last-minute changes until a clip has been made from it.
+  const [reopening, setReopening] = useState(false);
+  const canReopen = Boolean(view?.chosenScript) && (view?.status === "confirmed" || view?.status === "failed") && !(view?.generation?.clips ?? []).some((c) => c.status !== "waiting" || c.attempts > 0);
+  async function reopen() {
+    if (!projectId) return;
+    setReopening(true);
+    try {
+      const res = await apiFetch<{ scriptId: string }>(`/api/creatives/video/${projectId}/reopen`, { method: "POST" });
+      const next = await apiFetch<ProjectView>(`/api/creatives/video/${projectId}`);
+      setView(next);
+      const script = next.scripts?.find((s) => s.id === res.scriptId);
+      if (script) pick(script);
+      toast.success("The script is open for editing. Confirm it again when you are done.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not reopen the script");
+    } finally {
+      setReopening(false);
+    }
+  }
+
   async function confirm() {
     if (!draft || !projectId) return;
     setConfirming(true);
@@ -1936,8 +1956,16 @@ function VideoInner() {
             <div className="space-y-4">
               <Card className="border-accent/40">
                 <CardContent className="space-y-3 p-4">
-                  <div className="flex items-center gap-2 text-sm font-medium">
-                    <Check className="h-4 w-4 text-accent" /> Confirmed: {view.chosenScript.title} · {view.chosenScript.durationSeconds}s
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                      <Check className="h-4 w-4 text-accent" /> Confirmed: {view.chosenScript.title} · {view.chosenScript.durationSeconds}s
+                    </div>
+                    {canReopen ? (
+                      <Button type="button" size="sm" variant="secondary" disabled={reopening} onClick={() => void reopen()} title="Make last-minute changes, then confirm again. Nothing has been generated yet, so nothing is lost.">
+                        {reopening ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <MessageSquarePlus className="mr-1 h-3.5 w-3.5" />}
+                        Edit the script
+                      </Button>
+                    ) : null}
                   </div>
                   {view.plan ? (
                     <div className="space-y-2 text-sm">
@@ -2308,7 +2336,7 @@ function VideoInner() {
 
                     <Button onClick={() => void confirm()} disabled={confirming || draftTotal > 60 || draftTotal < 15}>
                       {confirming ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
-                      Confirm this script
+                      {view?.chosenScript?.id === draft.id ? "Confirm the changes" : "Confirm this script"}
                     </Button>
                   </CardContent>
                 </Card>

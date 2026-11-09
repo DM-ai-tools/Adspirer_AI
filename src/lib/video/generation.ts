@@ -20,6 +20,7 @@ import { generationRatio, previewPlan } from "@/lib/video/plan-view";
 import { DEFAULT_FINISHING, type Checkpoint, type ClipState, type Finishing, type GenerationPlan, type GenerationView } from "@/lib/video/generation-types";
 import { claimProjectLease, getProject, releaseProjectLease, updateProject, type VideoProject } from "@/lib/video/projects";
 import { buildPlannedClipPrompt } from "@/lib/video/clip-prompt";
+import { effectiveClaims } from "@/lib/video/claims";
 import {
   applyPlanDurations,
   brandBlockers,
@@ -54,7 +55,7 @@ export function blockedReason(project: VideoProject): string | null {
   // Nothing is generated from an unverified brand: a wrong name or an invented logo is far costlier than a pause.
   const brand = brandBlockers(project.brand?.manifest);
   if (brand) return brand;
-  const claims = claimBlockers(project.chosen_script, project.brand!.manifest!);
+  const claims = claimBlockers(project.chosen_script, project.brand!.manifest!, effectiveClaims(project.brand));
   if (claims) return claims;
   if (!availableSeedanceModels().length) return "Add your BytePlus key to .env.local (ARK_API_KEY, or ARK_SEEDANCE_API_KEY and ARK_SEEDANCE_25_API_KEY) to make video.";
   try {

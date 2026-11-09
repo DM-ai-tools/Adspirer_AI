@@ -1,3 +1,4 @@
+import { effectiveClaims } from "@/lib/video/claims";
 import { z } from "zod";
 import { getCurrentUser } from "@/lib/security/auth";
 import { assertAuthenticated, assertClientAccess } from "@/lib/authz/assert";
@@ -116,7 +117,7 @@ export async function PATCH(request: Request, ctx: Ctx) {
     const corpus = [JSON.stringify(project.inputs), project.brand?.summary ?? "", JSON.stringify(original), body.edits.scenes.map((s) => `${s.line} ${s.stat ?? ""}`).join(" ")].join("\n");
     // A figure the operator typed in the editor (not in the version written for them) is theirs, with that recorded as its source.
     const manifest = project.brand?.manifest ?? null;
-    let claims = manifest?.claims;
+    let claims = manifest ? effectiveClaims(project.brand) : undefined;
     let brand = project.brand;
     if (manifest && claims) {
       const originalText = [...original.scenes.map((s) => `${s.line} ${s.stat ?? ""}`), original.adCopy.primaryText, original.adCopy.headline].join("\n");

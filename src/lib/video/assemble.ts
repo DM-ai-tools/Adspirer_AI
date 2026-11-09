@@ -15,7 +15,7 @@ import { captionPiece, endCardPng, imagePiece, logoPiece, statPiece, type Piece 
 import { DEFAULT_FINISHING, type FinalVideo, type Finishing, type QaCheck } from "@/lib/video/generation-types";
 import { claimProjectLease, getProject, releaseProjectLease, updateProject, type VideoProject } from "@/lib/video/projects";
 import { loadManifestLogo } from "@/lib/video/brand-resolve";
-import { sourceClaims } from "@/lib/video/claims";
+import { effectiveClaims, sourceClaims } from "@/lib/video/claims";
 import { brandBlockers } from "@/lib/video/pipeline";
 import { hasCritical, type BrandManifest, type QaReport, type SpeechLine } from "@/lib/video/pipeline-types";
 import { finalBlocks, reviewFinal } from "@/lib/video/final-qa";
@@ -117,7 +117,8 @@ export async function assembleVideo(projectId: string, options: Partial<Finishin
     const ctaLabel = verified.cta.value?.label ?? script.adCopy.cta ?? null;
 
     // Every figure shown big on screen must have a recorded source.
-    const unsourcedStats = sourceClaims(script.scenes.filter((s) => s.stat).map((s) => ({ text: s.stat!, where: `Scene ${s.number}` })), verified.claims).unsourced;
+    const allClaims = effectiveClaims(project.brand);
+    const unsourcedStats = sourceClaims(script.scenes.filter((s) => s.stat).map((s) => ({ text: s.stat!, where: `Scene ${s.number}` })), allClaims).unsourced;
     if (unsourcedStats.length) throw new Error(`A figure shown on screen has no recorded source: ${unsourcedStats.map((u) => `"${u.figure}" (${u.use.where})`).join(", ")}.`);
 
     // 1. Every clip to the same size, rate and audio format.
@@ -327,7 +328,7 @@ export async function assembleVideo(projectId: string, options: Partial<Finishin
       { name: "No long silences", ok: qa.silentStretches === 0, detail: qa.silentStretches ? `${qa.silentStretches} silent stretch(es) over 1.5s` : "none" },
     ];
 
-    const claimTexts = verified.claims.flatMap((c) => [c.text, ...(c.figure ? [c.figure] : [])]);
+    const claimTexts = allClaims.flatMap((c) => [c.text, ...(c.figure ? [c.figure] : [])]);
     const report = await reviewFinal(
       {
         file: finalFile,
@@ -335,7 +336,7 @@ export async function assembleVideo(projectId: string, options: Partial<Finishin
         attempt: 1,
         seconds: info.seconds,
         endCardSeconds,
-        manifest: { name: verified.name, logo: verified.logo, internalLabels: verified.internalLabels, allowTextOnlyBrand: verified.allowTextOnlyBrand, claims: verified.claims, cta: verified.cta, offer: verified.offer },
+        manifest: { name: verified.name, logo: verified.logo, internalLabels: verified.internalLabels, allowTextOnlyBrand: verified.allowTextOnlyBrand, claims: allClaims, cta: verified.cta, offer: verified.offer },
         expected: {
           brandName: brandName || null,
           ctaLabel: finishing.endCard ? ctaLabel : null,

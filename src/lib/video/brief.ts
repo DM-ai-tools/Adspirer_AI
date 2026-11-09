@@ -4,7 +4,7 @@ import { loadScope } from "@/lib/creatives/service";
 import { getObjectStorage } from "@/lib/storage/r2";
 import { nameFromUrl } from "@/lib/video/naming";
 import { resolveBrandManifest } from "@/lib/video/brand-resolve";
-import { findClaimsInText } from "@/lib/video/claims";
+import { claimsFromFacts, findClaimsInText, mergeClaims } from "@/lib/video/claims";
 import { defaultFetchAsset } from "@/lib/video/logo-verify";
 import type { ApprovedClaim, BrandManifest } from "@/lib/video/pipeline-types";
 import { getProject, setProgress, updateProject, type VideoProject } from "@/lib/video/projects";
@@ -261,6 +261,10 @@ export async function writeProjectScripts(projectId: string): Promise<void> {
     // What the page really says, with sources, and what is missing.
     await stage("understanding");
     const creative = await buildCreativeBrief(briefInputFor(project, brief, brand.manifest));
+    // The figures in the brief's verified facts are sourced: they join the claims the script and the video are checked against.
+    const withFacts = mergeClaims(brief.claims ?? [], claimsFromFacts(creative.facts));
+    brief.claims = withFacts;
+    if (brand.manifest) brand.manifest = { ...brand.manifest, claims: mergeClaims(brand.manifest.claims, withFacts) };
     const facts = briefFacts(brief);
     if (creative.sourceQuality === "insufficient") {
       // Writing from this would mean inventing: ask for what is essential instead.

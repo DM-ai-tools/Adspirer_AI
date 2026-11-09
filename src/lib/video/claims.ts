@@ -5,6 +5,7 @@
  * NORMALISED value ("$12M+" is 12,000,000 dollars, "doubled" is 2x), never by a loose substring.
  */
 import type { ApprovedClaim, Provenance } from "@/lib/video/pipeline-types";
+import type { BriefFact } from "@/lib/video/script-types";
 
 // ------------------------------------------------------------------ figures
 
@@ -152,6 +153,56 @@ export function figureRoundsTo(spoken: NormalisedFigure, source: NormalisedFigur
   if (!kinds) return false;
   if (spoken.unit === "money" && source.unit === "money" && spoken.currency && source.currency && spoken.currency !== source.currency) return false;
   return Math.abs(spoken.value - source.value) / Math.abs(source.value) <= 0.015;
+}
+
+// ------------------------------------------------------------------ claims from the brief's verified facts
+
+const claimSource = (kind: BriefFact["source"]["kind"]): ApprovedClaim["provenance"]["source"] => (kind === "page" ? "page_text" : kind === "image" ? "image_reading" : kind === "client_record" ? "client_record" : "operator");
+
+/**
+ * The figures inside the brief's verified facts. A fact only exists if its quote was found in a
+ * source, so every figure in one is sourced; the manifest's own claim list is built from a shorter
+ * stretch of the page and can miss a sentence the brief verified (a "30-90 day plan" further down),
+ * which would block a script that is perfectly well sourced.
+ */
+export function claimsFromFacts(facts: BriefFact[]): ApprovedClaim[] {
+  const out: ApprovedClaim[] = [];
+  for (const f of facts) {
+    let n = 0;
+    const seenHere = new Set<string>();
+    for (const fig of findClaimsInText(`${f.text} ${f.source.quote}`)) {
+      // The fact and its quote often state the same figure: one claim per figure.
+      const key = fig.figure.replace(/\s+/g, "").toLowerCase();
+      if (seenHere.has(key)) continue;
+      seenHere.add(key);
+      n += 1;
+      out.push({
+        id: `claim_fact_${f.id}_${n}`,
+        text: f.text,
+        kind: "number",
+        figure: fig.figure,
+        evidence: f.source.quote,
+        provenance: { source: claimSource(f.source.kind), detail: `${f.source.label}: ${f.text.slice(0, 90)}`, confidence: "medium" },
+      });
+    }
+  }
+  return out;
+}
+
+/** `extra` claims added to `base`, skipping any whose figure is already there. */
+export function mergeClaims(base: ApprovedClaim[], extra: ApprovedClaim[]): ApprovedClaim[] {
+  const out = [...base];
+  for (const c of extra) {
+    const f = c.figure ? normaliseFigure(c.figure) : null;
+    if (out.some((b) => b.id === c.id || (f && b.figure && figuresEquivalent(normaliseFigure(b.figure), f)))) continue;
+    out.push(c);
+  }
+  return out;
+}
+
+/** Everything the scripts and the video may state as a figure: the manifest's claims plus the figures in the brief's verified facts. */
+export function effectiveClaims(brand: { manifest?: { claims: ApprovedClaim[] } | null; brief?: { facts: BriefFact[] } | null } | null | undefined): ApprovedClaim[] {
+  return mergeClaims(brand?.manifest?.claims ?? [], claimsFromFacts(brand?.brief?.facts ?? []));
 }
 
 // ------------------------------------------------------------------ finding claims in prose
