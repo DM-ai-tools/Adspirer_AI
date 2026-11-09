@@ -85,6 +85,29 @@ export function storedBrief(project: VideoProject): VideoBrief {
   };
 }
 
+/**
+ * A confirmed script can be reopened for last-minute changes until a clip has been made from it:
+ * nothing has been paid for, so nothing is lost. Once clips exist, changing the script would leave
+ * them out of step with it, so the clips are made again instead.
+ */
+export function reopenCheck(project: Pick<VideoProject, "status" | "chosen_script" | "clips" | "final">): { ok: true } | { ok: false; reason: string } {
+  if (!project.chosen_script) return { ok: false, reason: "There is no confirmed script to edit." };
+  if (project.status !== "confirmed" && project.status !== "failed") {
+    return { ok: false, reason: project.status === "scripts_ready" ? "The script is already open for editing." : "Video is already being made from this script. Stop it first, or make the clips again after changing the script." };
+  }
+  const started = (project.clips ?? []).some((c) => c.status !== "waiting" || c.attempts > 0 || Boolean(c.videoKey) || Boolean(c.taskId));
+  if (started || project.final) return { ok: false, reason: "Clips have already been made from this script, so it can no longer be edited here. Use Make again on a clip after changing it." };
+  return { ok: true };
+}
+
+/** What reopening does to the project: back to choosing and editing, with the confirmed (edited) version in place of its original, and no half-prepared generation left behind. */
+export function reopenPatch(project: Pick<VideoProject, "chosen_script" | "scripts">): Partial<VideoProject> {
+  const chosen = project.chosen_script!;
+  const scripts = project.scripts ?? [];
+  const next = scripts.some((s) => s.id === chosen.id) ? scripts.map((s) => (s.id === chosen.id ? chosen : s)) : [...scripts, chosen];
+  return { status: "scripts_ready", scripts: next, plan: null, clips: null, final: null, error: null };
+}
+
 export type ReviseInput = { scriptId: string; action: VersionAction; draft?: Draft | null; instruction?: string | null; seconds?: number | null };
 
 /** Change one version and return the full list of versions with it replaced. The others are never rewritten. */
