@@ -4,6 +4,7 @@ import path from "node:path";
 import { logger } from "@/lib/observability/logger";
 import { getObjectStorage } from "@/lib/storage/r2";
 import { providerCapabilities } from "@/lib/video/capabilities";
+import { effectiveClaims } from "@/lib/video/claims";
 import { runFfmpeg } from "@/lib/video/ffmpeg";
 import { transcribeWords } from "@/lib/video/asr";
 import { applyLexicon, buildLexicon, SEEDANCE_SPEECH_PROVIDER } from "@/lib/video/pronunciation";
@@ -13,7 +14,7 @@ import { correctionLines, createVisionReviewer, decideClip, redesignReasons, rev
 import { estimateClipUsd, SEEDANCE_SPECS, splitIntoClips, type SeedanceModelKey, type VideoResolution } from "@/lib/video/seedance";
 import { unsourcedFigures, type VideoScript } from "@/lib/video/script";
 import { withTimes } from "@/lib/video/overlays";
-import { manifestReady, type BrandManifest, type ClipAttemptRecord, type CreativePlan, type QaFinding, type QaReport, type SceneBrief, type SpeechLine } from "@/lib/video/pipeline-types";
+import { manifestReady, type ApprovedClaim, type BrandManifest, type ClipAttemptRecord, type CreativePlan, type QaFinding, type QaReport, type SceneBrief, type SpeechLine } from "@/lib/video/pipeline-types";
 import type { ClipState, GenerationPlan } from "@/lib/video/generation-types";
 import type { VideoProject } from "@/lib/video/projects";
 
@@ -44,8 +45,8 @@ export function brandBlockers(manifest: BrandManifest | null | undefined): strin
 }
 
 /** Figures in the script that no approved claim backs, as one sentence, or null. */
-export function claimBlockers(script: VideoScript, manifest: BrandManifest): string | null {
-  const open = unsourcedFigures(script, manifest.claims);
+export function claimBlockers(script: VideoScript, manifest: BrandManifest, claims: ApprovedClaim[] = manifest.claims): string | null {
+  const open = unsourcedFigures(script, claims);
   if (!open.length) return null;
   return `Some figures in the script have no recorded source: ${open.slice(0, 6).map((o) => `"${o.figure}" (${o.where})`).join(", ")}. Add the source (a stat, an image, the offer details) or edit the script.`;
 }
@@ -68,7 +69,7 @@ export function planInputFor(project: VideoProject, script: VideoScript, manifes
       scenes: script.scenes.map((s) => ({ number: s.number, line: s.line, seconds: s.seconds, speaker: s.speaker, keywords: s.keywords, stat: s.stat, assetId: s.assetId, visual: s.visual, camera: s.camera, sound: s.sound })),
     },
     assets: project.assets.map((a) => ({ id: a.id, name: a.name, summary: a.analysis?.summary ?? a.caption, stats: a.analysis?.stats ?? [] })),
-    claims: manifest.claims,
+    claims: effectiveClaims(project.brand),
     capabilities,
     maxSeconds: 60,
   };
@@ -115,7 +116,7 @@ export async function prepareCreative(project: VideoProject): Promise<PreparedCr
   const manifest = project.brand?.manifest ?? null;
   const brand = brandBlockers(manifest);
   if (brand) throw new Error(brand);
-  const claims = claimBlockers(script, manifest!);
+  const claims = claimBlockers(script, manifest!, effectiveClaims(project.brand));
   if (claims) throw new Error(claims);
 
   const capabilities = providerCapabilities();

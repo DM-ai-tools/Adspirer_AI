@@ -1,3 +1,4 @@
+import { effectiveClaims } from "@/lib/video/claims";
 import { z } from "zod";
 import { getCurrentUser } from "@/lib/security/auth";
 import { assertAuthenticated, assertClientAccess } from "@/lib/authz/assert";
@@ -49,7 +50,7 @@ async function contextFor(project: VideoProject): Promise<VerifyContext> {
   const brand = project.brand;
   if (brand?.facts && brand.corpus) {
     const brief = { locale: project.inputs.locale, images: project.assets.map((a) => ({ id: a.id })) } as unknown as VideoBrief;
-    return { brief, facts: brand.facts, corpus: brand.corpus, assetIds: project.assets.map((a) => a.id), target: 0, claims: brand.manifest?.claims };
+    return { brief, facts: brand.facts, corpus: brand.corpus, assetIds: project.assets.map((a) => a.id), target: 0, claims: effectiveClaims(brand) };
   }
   const { brief } = await buildBrief(project);
   return { brief, facts: briefFacts(brief), corpus: factsCorpus(brief), assetIds: brief.images.map((i) => i.id), target: 0, claims: brief.claims };

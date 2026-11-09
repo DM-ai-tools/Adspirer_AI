@@ -1,3 +1,4 @@
+import { effectiveClaims } from "@/lib/video/claims";
 import { planAngles } from "@/lib/video/angles";
 import { writeContextFor } from "@/lib/video/brief";
 import { buildScriptSpeech, resolveWordsPerSecond } from "@/lib/video/duration";
@@ -80,7 +81,7 @@ export function storedBrief(project: VideoProject): VideoBrief {
     targetSeconds: inputs.targetSeconds,
     style: inputs.style,
     locale: inputs.locale,
-    claims: project.brand?.manifest?.claims,
+    claims: effectiveClaims(project.brand),
   };
 }
 
