@@ -103,6 +103,7 @@ type GenClip = {
   attemptCount?: number;
   qaAttempts?: number;
   unresolved?: boolean;
+  acceptedWithIssues?: boolean;
   corrections?: string[];
   qa?: { verdict: string; framesInspected: number; limitations: string[]; findings: Array<{ code: string; severity: "critical" | "major" | "minor"; message: string; atSeconds?: number }> } | null;
   error: string | null;
@@ -113,6 +114,7 @@ type GenClip = {
 
 type FinalView = {
   state: "running" | "done" | "failed" | "blocked";
+  acceptedAnyway?: boolean;
   reviewUrl?: string | null;
   srtUrl?: string | null;
   vttUrl?: string | null;
@@ -131,9 +133,23 @@ type FinalView = {
   includes: { captions: boolean; logo: boolean; endCard: boolean; stats: number; images: number; captionTiming: "transcript" | "estimated" | "none" } | null;
 };
 
+type ClipDecisionView = {
+  clip: number;
+  verdict: "retry" | "redesign" | "unresolved";
+  summary: string;
+  estimateUsd: number;
+  inspectionFailed: boolean;
+  spentUsd: number;
+  budgetUsd: number | null;
+  overBudget: boolean;
+  canUse: boolean;
+  remainingUsd: number;
+};
+
 type GenerationView = {
   status: "generating" | "paused" | "stopped" | "clips_ready" | "assembling" | "done" | "failed" | "idle";
   reviewClip: number | null;
+  decision?: ClipDecisionView | null;
   remainingUsd: number;
   final: FinalView | null;
   clips: GenClip[];
@@ -727,6 +743,50 @@ type CreativeView = {
 };
 
 /** The verified brand the video is made from: public name, original logo, where each came from, and what still needs a decision. */
+
+/**
+ * A clip did not pass its inspection. Making it again costs real money, so nothing happens until the
+ * operator chooses: make it again (the cost is stated), use the clip as it is, or stop.
+ */
+function DecisionCard({ decision, clipCount, busy, onChoose, onStop }: { decision: ClipDecisionView; clipCount: number; busy: boolean; onChoose: (choice: "remake" | "use" | "inspect") => void; onStop: () => void }) {
+  const last = decision.clip >= clipCount;
+  return (
+    <div className="space-y-2 rounded-md border border-amber-500/50 bg-amber-500/5 p-3 text-sm">
+      <p className="flex items-center gap-2 font-medium">
+        <AlertTriangle className="h-4 w-4 text-amber-500" /> Clip {decision.clip} did not pass the inspection
+      </p>
+      <p className="text-xs">{decision.summary}</p>
+      <p className="text-xs text-muted">
+        Nothing is being spent now. {decision.inspectionFailed ? "The inspection itself could not finish, so making the clip again would not help; inspecting it again costs no video." : `Making it again would cost about $${decision.estimateUsd.toFixed(2)} (you have spent $${decision.spentUsd.toFixed(2)} so far).`}
+        {decision.overBudget && !decision.inspectionFailed ? ` That is past the cost cap of $${(decision.budgetUsd ?? 0).toFixed(2)}; choosing it raises the cap to cover this attempt and the clips still to be made.` : ""}
+      </p>
+      <div className="flex flex-wrap gap-2">
+        {decision.canUse ? (
+          <Button size="sm" disabled={busy} onClick={() => onChoose("use")} title="Keep this clip exactly as it is. The problems stay on record.">
+            {busy ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Check className="mr-1 h-3.5 w-3.5" />}
+            {last ? "Use this clip as it is" : `Use this clip as it is, make the rest (about $${decision.remainingUsd.toFixed(2)})`}
+          </Button>
+        ) : null}
+        {decision.inspectionFailed ? (
+          <Button size="sm" variant="secondary" disabled={busy} onClick={() => onChoose("inspect")}>
+            <RefreshCw className="mr-1 h-3.5 w-3.5" />
+            Inspect it again
+          </Button>
+        ) : (
+          <Button size="sm" variant="secondary" disabled={busy} onClick={() => onChoose("remake")}>
+            <RefreshCw className="mr-1 h-3.5 w-3.5" />
+            {decision.verdict === "redesign" ? "Redesign the shot and make it again" : "Make it again with corrections"} (about ${decision.estimateUsd.toFixed(2)})
+          </Button>
+        )}
+        <Button size="sm" variant="ghost" disabled={busy} onClick={onStop}>
+          Stop here
+        </Button>
+      </div>
+      {decision.canUse ? <p className="text-[11px] text-muted">Watch the clip below first. If it looks right to you, use it.</p> : null}
+    </div>
+  );
+}
+
 function BrandCheckCard({ projectId, brand, onChanged }: { projectId: string; brand: BrandCheck | null | undefined; onChanged: (b: BrandCheck) => void }) {
   const [busy, setBusy] = useState(false);
   const [name, setName] = useState("");
@@ -1012,7 +1072,17 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
 
   return (
     <div className="space-y-3">
-      {status === "paused" ? (
+      {status === "paused" && gen?.decision ? (
+        <DecisionCard
+          decision={gen.decision}
+          clipCount={clips.length}
+          busy={starting}
+          onChoose={(choice) => void post({ action: "decide", clip: gen.decision!.clip, choice }, () => setStarting(true), () => setStarting(false))}
+          onStop={() => void post({ action: "stop" }, () => setStarting(true), () => setStarting(false), "stopped")}
+        />
+      ) : null}
+
+      {status === "paused" && !gen?.decision ? (
         <div className="space-y-2 rounded-md border border-amber-500/50 bg-amber-500/5 p-3 text-sm">
           <p className="font-medium">Clip {gen?.reviewClip ?? 1} is ready. Check it before the rest are made.</p>
           <p className="text-xs text-muted">
@@ -1061,6 +1131,11 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
 
       {final?.state === "done" && final.videoUrl ? (
         <div className="space-y-3 rounded-md border border-accent/40 p-3">
+          {final.acceptedAnyway ? (
+            <p className="rounded-md bg-amber-500/10 p-2 text-[11px] text-amber-500">
+              You chose to use this video although the inspection did not approve it{final.report?.findings.filter((f) => f.severity !== "minor").length ? `: ${final.report.findings.filter((f) => f.severity !== "minor").slice(0, 3).map((f) => f.message).join(" ")}` : "."}
+            </p>
+          ) : null}
           <p className="flex items-center gap-2 text-sm font-medium">
             <Check className="h-4 w-4 text-accent" /> Finished video · {final.seconds}s · {final.width}x{final.height}
           </p>
@@ -1135,10 +1210,19 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
           ) : null}
           {final.report?.limitations.length ? <p className="text-[11px] text-muted">Could not check: {final.report.limitations.join(" ")}</p> : null}
           {final.reviewUrl ? (
-            <details className="text-xs">
-              <summary className="cursor-pointer text-accent">See the export that failed (not for use)</summary>
+            <div className="space-y-1.5 rounded-md border border-border p-2 text-xs">
+              <p>Watch it. If it is good enough for you, you can use it as it is. The problems above stay on record with the video.</p>
+              <Button size="sm" variant="secondary" disabled={starting} onClick={() => void post({ action: "accept_final" }, () => setStarting(true), () => setStarting(false), "done")}>
+                <Check className="mr-1 h-3.5 w-3.5" />
+                Use this video anyway
+              </Button>
+            </div>
+          ) : null}
+          {final.reviewUrl ? (
+            <details className="text-xs" open>
+              <summary className="cursor-pointer text-accent">The export the inspection did not approve</summary>
               {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-              <video src={final.reviewUrl} controls playsInline preload="metadata" controlsList="nodownload" className="mt-2 aspect-[9/16] max-h-[420px] rounded-md bg-black object-contain" />
+              <video src={final.reviewUrl} controls playsInline preload="metadata" className="mt-2 aspect-[9/16] max-h-[420px] rounded-md bg-black object-contain" />
             </details>
           ) : null}
         </div>
@@ -1157,7 +1241,7 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
       <div className="space-y-1.5">
         <div className="flex items-baseline justify-between text-sm">
           <span className="font-medium">
-            {status === "clips_ready" || status === "done" || status === "assembling" ? "Clips ready" : status === "paused" ? "Paused for your check" : status === "stopped" ? "Stopped" : status === "failed" ? "Stopped with an error" : "Making the video"}: {finished} of {clips.length} clips done
+            {status === "clips_ready" || status === "done" || status === "assembling" ? "Clips ready" : status === "paused" ? (gen?.decision ? "Waiting for your decision" : "Paused for your check") : status === "stopped" ? "Stopped" : status === "failed" ? "Stopped with an error" : "Making the video"}: {finished} of {clips.length} clips done
           </span>
           {gen ? <span className="text-xs text-muted">${gen.spentUsd.toFixed(2)} spent so far</span> : null}
         </div>
@@ -1193,7 +1277,7 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
               <span className="font-medium">
                 Clip {c.number} · {c.seconds}s
               </span>
-              <Badge variant={c.status === "failed" ? "danger" : "secondary"}>{c.status === "waiting" ? ((c.qaAttempts ?? 0) > 0 ? "Making again" : "Waiting") : c.status === "running" ? "Making" : c.status === "reviewing" ? "Inspecting" : c.status === "succeeded" ? "Done" : c.unresolved ? "Not approved" : "Failed"}</Badge>
+              <Badge variant={c.status === "failed" ? "danger" : "secondary"}>{c.status === "waiting" ? ((c.qaAttempts ?? 0) > 0 ? "Making again" : "Waiting") : c.status === "running" ? "Making" : c.status === "reviewing" ? "Inspecting" : c.status === "succeeded" ? (c.acceptedWithIssues ? "Used as it is" : "Done") : c.unresolved ? "Not approved" : "Failed"}</Badge>
             </div>
             <p className="text-[11px] text-muted">
               Scenes {c.sceneNumbers[0]}

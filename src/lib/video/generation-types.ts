@@ -5,6 +5,27 @@ import type { ClipAttemptRecord, CreativePlan, ProviderCapabilities, Pronunciati
 /** "reviewing": the clip is downloaded and is being inspected before it counts as made. */
 export type ClipStatus = "waiting" | "running" | "reviewing" | "succeeded" | "failed";
 
+/**
+ * A clip the inspection did not approve. Nothing is made again until the operator says so, because
+ * every new attempt is paid for: they can make it again (at the stated cost), use the clip as it is,
+ * or stop.
+ */
+export type ClipDecision = {
+  /** What the automatic loop would have done: correct and retry, redesign the shot, or nothing (retries used up, or over the cost cap). */
+  verdict: "retry" | "redesign" | "unresolved";
+  /** The problems, in words for the operator. */
+  summary: string;
+  /** About what one more attempt at this clip costs. */
+  estimateUsd: number;
+  /** Seconds the last scene of this clip needs when the speech ran past it, applied if the operator makes it again. */
+  addSeconds: number;
+  /** The corrections the next attempt would carry. */
+  corrections: string[];
+  /** True when the inspection itself could not run: making the clip again would not help, inspecting again would. */
+  inspectionFailed: boolean;
+  at: string;
+};
+
 export type ClipState = {
   number: number;
   seconds: number;
@@ -39,6 +60,10 @@ export type ClipState = {
   redesigns?: number;
   /** True when the review could not approve the clip and no retry is left: it blocks the video. */
   unresolved?: boolean;
+  /** Set while the operator is deciding what to do with a clip that did not pass. */
+  decision?: ClipDecision | null;
+  /** The operator used this clip although the inspection did not approve it. */
+  acceptedWithIssues?: boolean;
 };
 
 /** When to wait for the operator before spending on the next clip. */
@@ -82,6 +107,8 @@ export type FinalVideo = {
   speech?: { measuredSeconds: number | null; estimatedSeconds: number | null } | null;
   /** A blocked export is kept here for the operator to look at; it is never offered as the finished video. */
   reviewKey?: string | null;
+  /** The operator delivered this export although the inspection did not approve it. */
+  acceptedAnyway?: boolean;
 };
 
 export type ReferenceImage = {
@@ -127,6 +154,8 @@ export type GenerationView = {
   status: "generating" | "paused" | "stopped" | "clips_ready" | "assembling" | "done" | "failed" | "idle";
   /** The clip waiting for the operator to check it, when paused. */
   reviewClip: number | null;
+  /** Set when a clip did not pass its inspection and the operator is to say what happens next. */
+  decision: (ClipDecision & { clip: number; spentUsd: number; budgetUsd: number | null; overBudget: boolean; canUse: boolean; remainingUsd: number }) | null;
   /** About what the clips not yet made would cost. */
   remainingUsd: number;
   final: FinalView | null;

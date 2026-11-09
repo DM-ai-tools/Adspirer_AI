@@ -252,6 +252,11 @@ function resetForAnotherAttempt(clip: ClipState): void {
   Object.assign(clip, { status: "waiting" as const, taskId: null, attempts: 0, videoKey: null, lastFrameUrl: null, sourceVideoUrl: null, finishedAt: null, tokens: null, usd: null, prompt: null });
 }
 
+/** About what one attempt at this clip costs, `extraSeconds` longer when the speech ran past it. */
+function clipEstimate(plan: GenerationPlan, clips: ClipState[], clip: ClipState, extraSeconds = 0): number {
+  return estimateClipUsd(plan.model as SeedanceModelKey, plan.resolution as VideoResolution, plan.ratio as "9:16", clip.seconds + extraSeconds, plan.chainVideo && clip.number > 1 ? (clips[clip.number - 2]?.seconds ?? 0) : 0);
+}
+
 const top = (findings: Array<{ severity: string; message: string }>, n = 3) =>
   findings
     .filter((f) => f.severity !== "minor")
@@ -429,45 +434,25 @@ export async function step(projectId: string, now = Date.now()): Promise<StepRes
         continue;
       }
 
-      if (report.verdict === "retry") {
-        const add = secondsToAdd(report.findings, clip, model);
-        const extra: Partial<VideoProject> = {};
-        if (add > 0 && plan.creative) {
-          // The speech ran past the clip: give the last scene of the clip the seconds it needs, in the plan and the script alike.
-          const lastScene = Math.max(...clip.sceneNumbers);
-          clip.seconds += add;
-          plan.creative.scenes = plan.creative.scenes.map((s) => (s.number === lastScene ? { ...s, seconds: s.seconds + add } : s));
-          extra.chosen_script = applyPlanDurations(script, plan.creative);
-        }
-        resetForAnotherAttempt(clip);
-        clip.qaAttempts = attempt;
-        clip.corrections = corrections;
-        clip.error = `Attempt ${attempt} was not approved (${top(report.findings)}). Trying again with these corrections.`;
-        await save({ clips, plan, ...extra });
-        return "working";
-      }
-
-      if (report.verdict === "redesign" && plan.creative && (clip.redesigns ?? 0) < MAX_REDESIGNS) {
-        try {
-          plan.creative = await redesignClipScenes(project, plan, clip, report.findings);
-          resetForAnotherAttempt(clip);
-          clip.redesigns = (clip.redesigns ?? 0) + 1;
-          clip.qaAttempts = 0;
-          clip.corrections = [];
-          clip.error = `The same problem kept coming back (${top(report.findings)}), so the shot was redesigned and is being made again.`;
-          await save({ clips, plan });
-          return "working";
-        } catch (error) {
-          logger.warn("Could not redesign a failing shot", { projectId, clip: clip.number, error: error instanceof Error ? error.message : String(error) });
-        }
-      }
-
-      // Nothing more can be done automatically: say exactly what is wrong instead of shipping it.
+      // The inspection did not approve this clip. Another attempt costs real money, so nothing is made
+      // again on its own: the video waits here, with the clip kept, until the operator chooses to make it
+      // again (at the stated cost), to use the clip as it is, or to stop.
+      const summary = top(report.findings) || report.limitations.join(" ") || "the review could not approve it";
+      const addSeconds = report.verdict === "retry" && plan.creative ? secondsToAdd(report.findings, clip, model) : 0;
       clip.status = "failed";
       clip.unresolved = true;
-      clip.error = `Clip ${clip.number} could not be approved after ${attempt} attempt${attempt === 1 ? "" : "s"}: ${top(report.findings) || report.limitations.join(" ") || "the review could not approve it"}`;
-      await save({ clips, status: "failed", error: clip.error });
-      return "failed";
+      clip.decision = {
+        verdict: report.verdict === "redesign" || report.verdict === "retry" ? report.verdict : "unresolved",
+        summary,
+        estimateUsd: Math.round(clipEstimate(plan, clips, clip, addSeconds) * 100) / 100,
+        addSeconds,
+        corrections,
+        inspectionFailed: !report.findings.some((f) => f.severity !== "minor" && f.code !== "review_failed"),
+        at: new Date(now).toISOString(),
+      };
+      clip.error = `Clip ${clip.number} did not pass the inspection (attempt ${attempt}): ${summary}`;
+      await save({ clips, status: "paused", error: null });
+      return "paused";
     }
 
     // running: ask how it is getting on
@@ -578,9 +563,99 @@ export async function continueGeneration(projectId: string): Promise<VideoProjec
   const project = await getProject(projectId);
   if (!project?.plan || !project.clips) throw new Error("There is nothing to continue.");
   if (project.status !== "paused" && project.status !== "stopped") return project;
+  // A clip that did not pass is waiting for a decision: carrying on means choosing what to do with it.
+  if (project.clips.some((c) => c.decision)) return project.status === "paused" ? project : updateProject(projectId, { status: "paused", error: null });
   // Everything made so far has been looked at, so it does not pause again on the same clips.
   const clips = project.clips.map((c) => (c.status === "succeeded" ? { ...c, approved: true } : c));
   return updateProject(projectId, { clips, status: "generating", error: null });
+}
+
+export type DecisionChoice = "remake" | "use" | "inspect";
+
+/**
+ * What the operator chose for a clip that did not pass its inspection.
+ * - remake: pay for another attempt (corrected, or the shot redesigned). The cost cap is raised to cover it, because they approved this spend.
+ * - use: keep the clip as it is and carry on. The findings stay on the clip and are not hidden.
+ * - inspect: look at the same clip again (no video is paid for); for when the inspection itself could not run.
+ */
+export async function resolveDecision(projectId: string, clipNumber: number, choice: DecisionChoice): Promise<VideoProject> {
+  const project = await getProject(projectId);
+  if (!project?.plan || !project.clips) throw new Error("There is nothing to decide.");
+  if (project.status !== "paused" && project.status !== "stopped") throw new Error("This video is not waiting for a decision.");
+  const plan = project.plan;
+  const clips = project.clips;
+  const clip = clips.find((c) => c.number === clipNumber);
+  const decision = clip?.decision;
+  if (!clip || !decision) throw new Error(`Clip ${clipNumber} is not waiting for a decision.`);
+
+  if (choice === "use") {
+    if (!clip.videoKey) throw new Error("This clip has no video to use.");
+    clip.status = "succeeded";
+    clip.approved = true;
+    clip.unresolved = false;
+    clip.acceptedWithIssues = true;
+    clip.decision = null;
+    clip.error = null;
+    clip.corrections = [];
+    // The other clips were looked at already; this one the operator has looked at.
+    return updateProject(projectId, { clips: clips.map((c) => (c.status === "succeeded" ? { ...c, approved: true } : c)), status: "generating", error: null });
+  }
+
+  if (choice === "inspect") {
+    if (!clip.videoKey) throw new Error("This clip has no video to inspect.");
+    clip.status = "reviewing";
+    clip.unresolved = false;
+    clip.decision = null;
+    clip.error = null;
+    return updateProject(projectId, { clips, status: "generating", error: null });
+  }
+
+  // remake
+  const attempt = (clip.qaAttempts ?? 0) + 1;
+  const extra: Partial<VideoProject> = {};
+  let redesigned = false;
+  if (decision.verdict === "redesign" && plan.creative && (clip.redesigns ?? 0) < MAX_REDESIGNS) {
+    try {
+      plan.creative = await redesignClipScenes(project, plan, clip, clip.qa?.findings ?? []);
+      redesigned = true;
+    } catch (error) {
+      logger.warn("Could not redesign a failing shot", { projectId, clip: clip.number, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  if (redesigned) {
+    resetForAnotherAttempt(clip);
+    clip.redesigns = (clip.redesigns ?? 0) + 1;
+    clip.qaAttempts = 0;
+    clip.corrections = [];
+    clip.error = `The shot was redesigned and is being made again, as you asked (${decision.summary}).`;
+  } else {
+    if (decision.addSeconds > 0 && plan.creative) {
+      // The speech ran past the clip: give the last scene of the clip the seconds it needs, in the plan and the script alike.
+      const lastScene = Math.max(...clip.sceneNumbers);
+      clip.seconds += decision.addSeconds;
+      plan.creative.scenes = plan.creative.scenes.map((s) => (s.number === lastScene ? { ...s, seconds: s.seconds + decision.addSeconds } : s));
+      if (project.chosen_script) extra.chosen_script = applyPlanDurations(project.chosen_script, plan.creative);
+    }
+    resetForAnotherAttempt(clip);
+    clip.qaAttempts = attempt;
+    clip.corrections = decision.corrections;
+    clip.error = `Attempt ${attempt} was not approved (${decision.summary}). Making it again with these corrections, as you asked.`;
+  }
+  clip.unresolved = false;
+  clip.decision = null;
+  // The operator approved this spend: it must not be stopped, now or at the clips after it, by the cost cap set before the problem was found.
+  const toCome = clips.filter((c) => c.status !== "succeeded").reduce((t, c) => t + clipEstimate(plan, clips, c), 0);
+  const needed = Math.round((spentUsd(clips) + toCome) * 100) / 100;
+  if (plan.budgetUsd && needed > plan.budgetUsd) plan.budgetUsd = needed;
+  return updateProject(projectId, { clips, plan, status: "generating", error: null, ...extra });
+}
+
+/** The operator delivers an export the inspection blocked: it becomes the finished video, with the findings kept on record. */
+export async function acceptBlockedFinal(projectId: string): Promise<VideoProject> {
+  const project = await getProject(projectId);
+  const final = project?.final;
+  if (!project || !final || final.state !== "blocked" || !final.reviewKey) throw new Error("There is no blocked export to use.");
+  return updateProject(projectId, { final: { ...final, state: "done", key: final.reviewKey, reviewKey: null, error: null, acceptedAnyway: true }, status: "done", error: null });
 }
 
 /**
@@ -595,7 +670,7 @@ export async function regenerateFrom(projectId: string, fromClip: number, option
     if (c.number < fromClip) return c;
     if (c.videoKey) void storage.delete(c.videoKey).catch(() => undefined);
     // The attempt log stays: what a rejected take cost and why it was rejected is part of the video's history.
-    return { ...c, approved: false, status: "waiting" as const, taskId: null, attempts: 0, error: null, videoKey: null, lastFrameUrl: null, sourceVideoUrl: null, finishedAt: null, tokens: null, usd: null, prompt: null, qa: null, corrections: [], qaAttempts: 0, redesigns: 0, unresolved: false };
+    return { ...c, approved: false, status: "waiting" as const, taskId: null, attempts: 0, error: null, videoKey: null, lastFrameUrl: null, sourceVideoUrl: null, finishedAt: null, tokens: null, usd: null, prompt: null, qa: null, corrections: [], qaAttempts: 0, redesigns: 0, unresolved: false, decision: null, acceptedWithIssues: false };
   });
   // From clip 1 the references are made fresh too, so a new take starts from new, matching people and places.
   const replan = Boolean(options.replan) && fromClip === 1;
@@ -658,7 +733,25 @@ export function viewGeneration(raw: VideoProject): GenerationView {
       hasVideo: Boolean(c.videoKey),
       videoUrl: c.videoKey ? `/api/creatives/video/${project.id}/clips/${c.number}?v=${encodeURIComponent(c.finishedAt ?? "")}` : null,
     })),
-    reviewClip: project.status === "paused" ? (clips.filter((c) => c.status === "succeeded").at(-1)?.number ?? null) : null,
+    reviewClip: project.status === "paused" && !clips.some((c) => c.decision) ? (clips.filter((c) => c.status === "succeeded").at(-1)?.number ?? null) : null,
+    decision: (() => {
+      const held = clips.find((c) => c.decision);
+      const plan = project.plan;
+      if (!held?.decision || !plan || (project.status !== "paused" && project.status !== "stopped")) return null;
+      const spent = spentUsd(clips);
+      const budget = plan.budgetUsd ?? null;
+      const rest = clips.filter((c) => c.status !== "succeeded" && c.number !== held.number);
+      const restUsd = rest.reduce((t, c) => t + clipEstimate(plan, clips, c), 0);
+      return {
+        ...held.decision,
+        clip: held.number,
+        spentUsd: spent,
+        budgetUsd: budget,
+        overBudget: budget !== null && spent + held.decision.estimateUsd > budget + 0.005,
+        canUse: Boolean(held.videoKey),
+        remainingUsd: Math.round(restUsd * 100) / 100,
+      };
+    })(),
     remainingUsd: (() => {
       const plan = project.plan;
       if (!plan) return 0;
