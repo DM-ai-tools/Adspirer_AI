@@ -36,7 +36,7 @@ describe("Traffic Radius branding", () => {
     const meta = await sharp(logo!).metadata();
     expect(meta.width! / meta.height!).toBeCloseTo(BRAND.logoAspect, 2);
     expect(BRAND_BARS).toEqual(["#0C0D0D", "#3EB8E7", "#A4D36B"]);
-    expect(REPORT_THEME.navy).toBe("#072032");
+    expect(REPORT_THEME.dark).toBe("#0C0D0D");
   });
 
   it("splits the title into the cover's eyebrow and the account name", () => {
@@ -55,7 +55,8 @@ describe("Traffic Radius branding", () => {
     expect(text).toContain("META ADS ACCOUNT AUDIT");
     expect(text).toContain("TRAFFIC RADIUS");
     expect(text).toContain("Prepared by Traffic Radius");
-    expect(all).toContain('w:fill="072032"'); // navy panel, headings and table headers
+    expect(all).toContain('w:fill="0C0D0D"'); // black panel, headings and table headers
+    expect(all).not.toContain("072032");
     expect(all).toContain('w:fill="F1F8E8"'); // the total row and the read line in light green
     expect(text).not.toMatch(/CampaignForge|CAMPAIGNFORGE/);
   }, 30_000);

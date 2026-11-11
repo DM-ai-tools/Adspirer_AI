@@ -8,12 +8,12 @@ import {
 
 /**
  * Traffic Radius brand colours (trafficradius.com.au), used by every exported report. Taken from the
- * logo's own pixels and the site's stylesheet: navy is the site's dark sections, lime its most-used
- * accent, sky and black the logo's other two bars, charcoal its wordmark.
+ * logo's own pixels and the site's stylesheet: the logo's black is the main colour, lime the site's most-used
+ * accent, sky the logo's other bar, charcoal its wordmark.
  */
 export const REPORT_THEME = {
-  navy: "#072032",
-  navySoft: "#3A5068",
+  dark: "#0C0D0D",
+  darkSoft: "#4A4D55",
   /** Headings at small sizes: the logo's sky, darkened enough to read on white. */
   skyInk: "#15668F",
   sky: "#3EB8E7",
@@ -23,15 +23,15 @@ export const REPORT_THEME = {
   limeSoft: "#F1F8E8",
   black: "#0C0D0D",
   ink: "#2C2E35",
-  muted: "#5F6B7A",
-  border: "#DCE3EA",
-  surface: "#F5F8FA",
+  muted: "#63666B",
+  border: "#E1E3E6",
+  surface: "#F6F7F8",
   white: "#FFFFFF",
   // The names the renderers used before, kept on the same brand.
-  primary: "#072032",
-  primaryDark: "#072032",
+  primary: "#0C0D0D",
+  primaryDark: "#0C0D0D",
   primaryLight: "#F1F8E8",
-  tableHeader: "#072032",
+  tableHeader: "#0C0D0D",
   accent: "#A4D36B",
 } as const;
 
@@ -182,12 +182,12 @@ export function renderReportHtml(input: {
     padding: 0;
   }
   .cover-top { display: flex; justify-content: space-between; align-items: flex-end; padding: 0 0 14px; }
-  .cover-top .kind { text-align: right; font-size: 8pt; font-weight: 700; letter-spacing: .16em; color: ${t.navy}; }
+  .cover-top .kind { text-align: right; font-size: 8pt; font-weight: 700; letter-spacing: .16em; color: ${t.dark}; }
   .cover-top .kind span { display: block; font-weight: 400; letter-spacing: 0; color: ${t.muted}; }
   .band { display: flex; height: 5px; }
   .band span { flex: 1; }
   .cover {
-    background: ${t.navy};
+    background: ${t.dark};
     color: ${t.white};
     padding: 28px 32px 24px;
     margin: 0 0 28px 0;
@@ -217,7 +217,7 @@ export function renderReportHtml(input: {
   .content { padding: 0 8px 24px; }
   h1 {
     font-size: 18pt;
-    color: ${t.navy};
+    color: ${t.dark};
     margin: 22px 0 10px;
     padding-bottom: 6px;
     border-bottom: 2px solid ${t.lime};
@@ -225,7 +225,7 @@ export function renderReportHtml(input: {
   h2 {
     font-size: 13.5pt;
     color: ${t.white};
-    background: ${t.navy};
+    background: ${t.dark};
     border-left: 5px solid ${t.lime};
     margin: 22px 0 10px;
     padding: 6px 10px;
@@ -252,7 +252,7 @@ export function renderReportHtml(input: {
     font-size: 10pt;
   }
   th {
-    background: ${t.navy};
+    background: ${t.dark};
     color: ${t.white};
     text-align: left;
     padding: 8px 10px;
@@ -272,19 +272,19 @@ export function renderReportHtml(input: {
     font-size: 9pt;
     color: ${t.muted};
   }
-  tr.total td { font-weight: 700; background: ${t.limeSoft}; color: ${t.navy}; border-top: 2px solid ${t.lime}; }
+  tr.total td { font-weight: 700; background: ${t.limeSoft}; color: ${t.dark}; border-top: 2px solid ${t.lime}; }
   .kpis { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 12px; }
-  .kpi { flex: 1 1 22%; border: 1px solid ${t.border}; border-top: 3px solid ${t.navy}; background: ${t.white}; padding: 7px 9px; }
+  .kpi { flex: 1 1 22%; border: 1px solid ${t.border}; border-top: 3px solid ${t.dark}; background: ${t.white}; padding: 7px 9px; }
   .kpi:nth-child(3n+2) { border-top-color: ${t.sky}; }
   .kpi:nth-child(3n) { border-top-color: ${t.lime}; }
-  .kpi-value { font-size: 14pt; font-weight: 700; color: ${t.navy}; }
+  .kpi-value { font-size: 14pt; font-weight: 700; color: ${t.dark}; }
   .kpi-label { font-size: 7.5pt; color: ${t.muted}; text-transform: uppercase; letter-spacing: .03em; }
   .card { border-left: 4px solid; padding: 8px 12px; margin: 0 0 9px; }
   .card-head { margin-bottom: 4px; }
   .tag { color: #fff; font-size: 8pt; font-weight: 700; padding: 1px 6px; margin-right: 7px; border-radius: 2px; }
   .field { display: flex; gap: 8px; font-size: 10pt; margin-top: 2px; }
   .field-label { flex: 0 0 110px; font-weight: 600; color: ${t.muted}; }
-  .read { background: ${t.limeSoft}; border-left: 3px solid ${t.lime}; color: ${t.navy}; padding: 4px 9px; font-size: 10pt; margin-top: -6px; }
+  .read { background: ${t.limeSoft}; border-left: 3px solid ${t.lime}; color: ${t.dark}; padding: 4px 9px; font-size: 10pt; margin-top: -6px; }
   .footnote { color: ${t.muted}; font-size: 8.5pt; }
 </style>
 </head>
