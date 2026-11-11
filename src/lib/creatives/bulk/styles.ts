@@ -11,7 +11,12 @@
  */
 import type { BulkAngle } from "@/lib/creatives/bulk/angles";
 
-export type StyleFamily = "photo" | "render3d" | "graphic" | "native" | "proof" | "compare";
+export type StyleFamily = "photo" | "render3d" | "graphic" | "native" | "proof" | "compare" | "reference";
+
+/** Most reference images one run takes. */
+export const STYLE_IMAGE_LIMIT = 3;
+/** Images that follow the operator's reference closely when they have not asked for all of them. */
+export const REFERENCE_CLOSE_COUNT = 5;
 
 export type BulkStyle = {
   key: string;

@@ -3,7 +3,8 @@ import { z } from "zod";
 import { ADSPIRER_META_CTAS } from "@/lib/adspirer/skills/ad-copywriting";
 import { directionWithText, findSimilarOnImageText, pickModel } from "@/lib/creatives/concept-writer";
 import { pickBulkAngles, STAGE_LABEL, type BulkAngle } from "@/lib/creatives/bulk/angles";
-import { pickBulkStyles, type BulkStyle } from "@/lib/creatives/bulk/styles";
+import type { BulkStyle } from "@/lib/creatives/bulk/styles";
+import { assignStyles, hasStyleGuide, referenceBlock, type StyleGuide } from "@/lib/creatives/bulk/style-reference";
 
 /** Images (and hooks) in one run. */
 export const BULK_RUN_SIZE = 15;
@@ -156,8 +157,21 @@ export function directionForHook(hook: BulkHook): string {
   );
 }
 
-const CONCEPT_FIRST =
-  "CONCEPT FIRST — THE VISUAL IS THE AD. For each hook find a surprising, specific visual idea that makes it felt in one second with the text covered: a clever metaphor, a vivid contrast, a staged scene of real objects, a hero object doing something unexpected. Think like a top creative director, not a layout designer. The idea comes from THIS business and THIS hook, never a stock device, and no two hooks may share a visual idea or a style. Render-ready realism: tactile materials, believable light and depth, a deliberate colour grade in the brand palette. The picture takes 60-70% of the frame; words support it: a short headline sized to complement the scene, at most three small labels set into it, and one button. No rows of badges, no stat boxes, no clip-art. Everything printed is spelled exactly and readable at thumbnail size.";
+const CONCEPT_FIRST_HEAD =
+  "CONCEPT FIRST — THE VISUAL IS THE AD. For each hook find a surprising, specific visual idea that makes it felt in one second with the text covered: a clever metaphor, a vivid contrast, a staged scene of real objects, a hero object doing something unexpected. Think like a top creative director, not a layout designer. The idea comes from THIS business and THIS hook, never a stock device, and no two hooks may share a visual idea";
+const CONCEPT_FIRST_TAIL =
+  " Render-ready realism: tactile materials, believable light and depth, a deliberate colour grade in the brand palette. The picture takes 60-70% of the frame; words support it: a short headline sized to complement the scene, at most three small labels set into it, and one button. No rows of badges, no stat boxes, no clip-art. Everything printed is spelled exactly and readable at thumbnail size.";
+
+/** With a reference style several images share one look on purpose, but never one idea. */
+function conceptFirst(sharedLook: boolean): string {
+  return `${CONCEPT_FIRST_HEAD}${sharedLook ? " (images in the reference style share a look on purpose, but each still needs its own idea)." : " or a style."}${CONCEPT_FIRST_TAIL}`;
+}
+
+const STYLE_RULE_CATALOGUE =
+  "Every hook is made in its ASSIGNED STYLE, so the run looks like a set of genuinely different ads: the visual idea is yours, the treatment (lighting, medium, layout, mood) is the style's. Write the creative_direction in that style and set style to its name exactly.";
+
+const STYLE_RULE_REFERENCE =
+  "Every hook is made in its ASSIGNED STYLE, and each assigned style points back to the REFERENCE STYLE above: the visual idea is yours, the treatment (medium, light, colour treatment, layout, mood) is the reference's. The image model never sees the reference, only your creative_direction, so write each creative_direction with the reference's concrete traits in your own words (what it is made as, how it is lit, how colour and type are handled, how the frame is built); never just say 'in the reference style'. The brand palette still sets the hues. The operator's own words beat any assigned style when they conflict. Set style to the assigned name exactly.";
 
 function briefLines(b: BulkBrief): string[] {
   return [
@@ -184,7 +198,12 @@ const SYSTEM =
  * Write a run: the message map, the shared bodies and CTAs, then `count` hooks, each for its own
  * angle. Three model calls for the whole run, not one per image.
  */
-export async function writeBulkPlan(brief: BulkBrief, count = BULK_RUN_SIZE, avoidAngles: string[] = []): Promise<BulkPlan> {
+export async function writeBulkPlan(
+  brief: BulkBrief,
+  count = BULK_RUN_SIZE,
+  avoidAngles: string[] = [],
+  styleGuide: StyleGuide | null = null,
+): Promise<BulkPlan> {
   const model = pickModel();
   if (!model) throw new Error("No language model is configured to write ad copy (set ANTHROPIC_API_KEY or OPENAI_API_KEY).");
   const facts = briefLines(brief).join("\n");
@@ -218,7 +237,9 @@ export async function writeBulkPlan(brief: BulkBrief, count = BULK_RUN_SIZE, avo
 
   // 3. One hook per assigned angle, no angle twice.
   const assigned = pickBulkAngles(count, { avoid: avoidAngles });
-  const styles = new Map(pickBulkStyles(assigned).map((style, i) => [assigned[i]!.key, style] as const));
+  const guide = hasStyleGuide(styleGuide) ? styleGuide : null;
+  const guided = guide !== null;
+  const styles = assignStyles(assigned, guide);
   const writeHooks = async (angles: BulkAngle[], extra?: string) => {
     const { object } = await generateObject({
       model,
@@ -231,15 +252,16 @@ export async function writeBulkPlan(brief: BulkBrief, count = BULK_RUN_SIZE, avo
         `\nBodies (reused behind the hooks):\n${bodies.map((b) => `${b.id} [${b.format}]: ${b.text}`).join("\n")}`,
         `\nCTAs: ${ctas.map((c, i) => `${i}: ${c.label}`).join("; ")}`,
         `\nWrite ${angles.length} hooks, one for EACH assigned angle below, using the exact angle_key. Each hook targets a different pain, hope, objection or belief, so the set tests genuinely different reasons a prospect might care, not rewordings. Pick for each the body that best proves or fulfils it (a "how we cut setup time" hook must sit on a body that shows that), and rephrase that body so it flows from the hook, keeping its facts.`,
+        guide ? `\n${referenceBlock(guide)}\n` : null,
         angles
           .map((a, i) => {
             const st = styles.get(a.key)!;
             return `${i + 1}. key "${a.key}" · ${a.name} · ${STAGE_LABEL[a.stage]} · targets a ${a.kind}: ${a.brief}\n   ASSIGNED STYLE "${st.name}": ${st.brief}`;
           })
           .join("\n"),
-        "Every hook is made in its ASSIGNED STYLE, so the run looks like a set of genuinely different ads: the visual idea is yours, the treatment (lighting, medium, layout, mood) is the style's. Write the creative_direction in that style and set style to its name exactly.",
+        guided ? STYLE_RULE_REFERENCE : STYLE_RULE_CATALOGUE,
         `\nON-IMAGE WORDS MUST DIFFER: no two hooks share a headline wording or an on-image label, and no label repeats across the run.`,
-        CONCEPT_FIRST,
+        conceptFirst(guided),
         extra ?? null,
       ]
         .filter(Boolean)

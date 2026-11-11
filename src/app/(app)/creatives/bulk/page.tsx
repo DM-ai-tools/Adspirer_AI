@@ -3,7 +3,7 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, ChevronDown, Pencil, ChevronUp, Copy, Download, FileSpreadsheet, Layers, Loader2, Send, X } from "lucide-react";
+import { ArrowLeft, ChevronDown, Pencil, ChevronUp, Copy, Download, FileSpreadsheet, ImagePlus, Layers, Loader2, Send, X } from "lucide-react";
 import { toast } from "sonner";
 import { useApp } from "@/components/layout/app-provider";
 import { PageHeader } from "@/components/shared/page-header";
@@ -14,6 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ImageFormatPicker } from "@/components/creatives/image-format-picker";
@@ -22,6 +23,8 @@ import { apiFetch } from "@/lib/api-client";
 import { creativeDownloadUrl } from "@/lib/creatives/download";
 import type { ImageFormat } from "@/lib/creatives/formats";
 import { STAGE_LABEL, type AwarenessStage } from "@/lib/creatives/bulk/angles";
+import { REFERENCE_CLOSE_COUNT, STYLE_IMAGE_LIMIT } from "@/lib/creatives/bulk/styles";
+import { shrinkImageToDataUri } from "@/lib/creatives/shrink-image";
 import { cn } from "@/lib/utils";
 import type { ClientService } from "@/types";
 
@@ -108,6 +111,12 @@ function BulkInner() {
   const [landingUrl, setLandingUrl] = useState("");
   const [notes, setNotes] = useState("");
   const [pastedCopy, setPastedCopy] = useState("");
+  // The operator's own style: reference images (shrunk data URIs), words on the look, and whether all images follow it.
+  const [styleImages, setStyleImages] = useState<string[]>([]);
+  const [styleDirection, setStyleDirection] = useState("");
+  const [styleMatchAll, setStyleMatchAll] = useState(false);
+  const [readingImages, setReadingImages] = useState(false);
+  const styleFileInput = useRef<HTMLInputElement>(null);
   const [format, setFormat] = useState<ImageFormat>("4:5");
   const [tab, setTab] = useState<"new" | "history">(searchParams.get("tab") === "history" ? "history" : "new");
   const [starting, setStarting] = useState(false);
@@ -194,6 +203,29 @@ function BulkInner() {
 
   const canStart = Boolean(selectedClientId) && Boolean(landingUrl.trim() || notes.trim() || pastedCopy.trim() || serviceId);
 
+  const hasStyle = styleImages.length > 0 || styleDirection.trim().length > 0;
+
+  async function addStyleImages(files: FileList | null) {
+    if (!files?.length) return;
+    const room = STYLE_IMAGE_LIMIT - styleImages.length;
+    if (room <= 0) {
+      toast.error(`Up to ${STYLE_IMAGE_LIMIT} reference images.`);
+      return;
+    }
+    setReadingImages(true);
+    try {
+      const added: string[] = [];
+      for (const file of Array.from(files).slice(0, room)) added.push(await shrinkImageToDataUri(file));
+      setStyleImages((current) => [...current, ...added]);
+      if (files.length > room) toast.message(`Only ${STYLE_IMAGE_LIMIT} reference images are used.`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not read that image");
+    } finally {
+      setReadingImages(false);
+      if (styleFileInput.current) styleFileInput.current.value = "";
+    }
+  }
+
   async function start() {
     if (!selectedClientId) return;
     setStarting(true);
@@ -206,6 +238,9 @@ function BulkInner() {
           landingPageUrl: landingUrl.trim() || undefined,
           notes: notes.trim() || undefined,
           pastedCopy: pastedCopy.trim() || undefined,
+          styleDirection: styleDirection.trim() || undefined,
+          styleImages: styleImages.length ? styleImages : undefined,
+          styleMatchAll: hasStyle && styleMatchAll ? true : undefined,
           format,
         }),
       });
@@ -465,6 +500,76 @@ function BulkInner() {
                     placeholder="Paste copy that already works and the bodies will be based on it."
                     className="min-h-[72px]"
                   />
+                </div>
+                <div className="space-y-3 rounded-lg border border-border p-3">
+                  <div>
+                    <p className="text-xs font-medium">Style reference (optional)</p>
+                    <p className="text-[11px] text-muted">
+                      Show or describe the look you want. Without one, every image gets a different style.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {styleImages.map((src, i) => (
+                      <div key={i} className="relative">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={src} alt={`Reference ${i + 1}`} className="h-16 w-16 rounded-md border border-border object-cover" />
+                        <button
+                          type="button"
+                          aria-label={`Remove reference image ${i + 1}`}
+                          onClick={() => setStyleImages((current) => current.filter((_, j) => j !== i))}
+                          className="absolute -right-1.5 -top-1.5 rounded-full border border-border bg-background p-0.5 text-muted hover:text-foreground"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ))}
+                    {styleImages.length < STYLE_IMAGE_LIMIT ? (
+                      <>
+                        <input
+                          ref={styleFileInput}
+                          type="file"
+                          accept="image/png,image/jpeg,image/webp"
+                          multiple
+                          className="hidden"
+                          onChange={(e) => void addStyleImages(e.target.files)}
+                        />
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          disabled={readingImages || starting}
+                          onClick={() => styleFileInput.current?.click()}
+                        >
+                          {readingImages ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <ImagePlus className="mr-1 h-3.5 w-3.5" />}
+                          {styleImages.length ? "Add another" : "Add reference image"}
+                        </Button>
+                      </>
+                    ) : null}
+                    <span className="text-[11px] text-muted">
+                      {styleImages.length}/{STYLE_IMAGE_LIMIT} images
+                    </span>
+                  </div>
+                  <div>
+                    <p className="mb-1 text-xs text-muted">Describe the look, or add style rules</p>
+                    <Textarea
+                      value={styleDirection}
+                      onChange={(e) => setStyleDirection(e.target.value)}
+                      maxLength={1500}
+                      placeholder="e.g. Dark, moody product photography with neon edge light. Real people only, no 3D renders or illustrations."
+                      className="min-h-[72px]"
+                    />
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <Switch id="style-match-all" checked={hasStyle && styleMatchAll} disabled={!hasStyle} onCheckedChange={setStyleMatchAll} />
+                    <label htmlFor="style-match-all" className="text-xs">
+                      <span className="font-medium">Make all {summary?.runSize ?? 15} in this style</span>
+                      <span className="block text-[11px] text-muted">
+                        {hasStyle && styleMatchAll
+                          ? "Every image shares this look. Each still gets its own idea and words."
+                          : `Off: the first ${REFERENCE_CLOSE_COUNT} follow it closely and the rest are variations on it. Your brand colours still set the hues.`}
+                      </span>
+                    </label>
+                  </div>
                 </div>
                 <ImageFormatPicker value={format} onChange={setFormat} disabled={starting} />
                 <div className="flex flex-wrap items-center gap-3">
