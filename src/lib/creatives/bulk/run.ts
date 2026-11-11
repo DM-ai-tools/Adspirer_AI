@@ -12,7 +12,17 @@ import {
   upsertCreativeDraftAsync,
   type CreativeDraft,
 } from "@/lib/creatives/drafts";
+import { nanoid } from "nanoid";
 import { BULK_RUN_SIZE, directionForHook, writeBulkPlan, type BulkBrief } from "@/lib/creatives/bulk/plan";
+import {
+  describeStyleImages,
+  hasStyleGuide,
+  loadStyleImages,
+  logStyleFailure,
+  prepareStyleImages,
+  saveStyleImages,
+  type StyleGuide,
+} from "@/lib/creatives/bulk/style-reference";
 import {
   claimLease,
   createRun,
@@ -72,16 +82,31 @@ export async function startBulkRun(input: {
   landingPageUrl?: string | null;
   notes?: string | null;
   pastedCopy?: string | null;
+  /** The operator's own words on the look they want, and any style rules. */
+  styleDirection?: string | null;
+  /** Reference images as data URIs. Checked and stored before the run is created. */
+  styleImages?: string[];
+  /** Make every image follow the reference, not just the first few. */
+  styleMatchAll?: boolean;
   format: ImageFormat;
 }): Promise<CreativeRun> {
   const config = getConfig();
   if (!config.hasOpenAI) throw new Error("Image generation is not configured (OPENAI_API_KEY).");
+  // Bad images are refused before anything is created, so a failed start leaves no half-made run.
+  const styleImages = input.styleImages?.length ? await prepareStyleImages(input.styleImages) : [];
+  const styleImageKeys = styleImages.length ? await saveStyleImages(`ref_${nanoid(10)}`, styleImages) : [];
   const run = await createRun({
     clientId: input.clientId,
     serviceId: input.serviceId,
     createdBy: input.createdBy,
     landingPageUrl: input.landingPageUrl,
-    inputs: { notes: input.notes ?? null, pastedCopy: input.pastedCopy ?? null },
+    inputs: {
+      notes: input.notes ?? null,
+      pastedCopy: input.pastedCopy ?? null,
+      styleDirection: input.styleDirection?.trim() || null,
+      styleImageKeys,
+      styleMatchAll: Boolean(input.styleMatchAll),
+    },
     format: input.format,
   });
   const items: RunItem[] = [];
@@ -114,6 +139,34 @@ export async function startBulkRun(input: {
     items.push({ draft_id: draft.id, angle_key: null, angle_name: null, stage: null, kind: null, targets: null, body_id: null, cta_label: null });
   }
   return updateRun(run.id, { items });
+}
+
+/**
+ * The operator's style for this run, or null when they gave none. Uploaded images are read once
+ * and the brief kept on the run. If the images cannot be read the run only carries on when there
+ * are also words to go on; otherwise it stops with a clear message instead of quietly ignoring
+ * the reference the operator chose.
+ */
+export async function resolveStyleGuide(run: CreativeRun): Promise<StyleGuide | null> {
+  const direction = run.inputs.styleDirection?.trim() || null;
+  let imageBrief = run.inputs.styleBrief?.trim() || null;
+  const keys = run.inputs.styleImageKeys ?? [];
+  if (!imageBrief && keys.length) {
+    try {
+      const images = await loadStyleImages(keys);
+      if (!images.length) throw new Error("the uploaded images could not be found");
+      imageBrief = await describeStyleImages(images);
+      await updateRun(run.id, { inputs: { ...run.inputs, styleBrief: imageBrief } });
+    } catch (error) {
+      logStyleFailure(error);
+      if (!direction) {
+        const why = error instanceof Error ? error.message : String(error);
+        throw new Error(`Could not read the reference image (${why}). Try again, or describe the style in words.`);
+      }
+    }
+  }
+  const guide: StyleGuide = { imageBrief, direction, matchAll: Boolean(run.inputs.styleMatchAll) };
+  return hasStyleGuide(guide) ? guide : null;
 }
 
 /** Read the brand, write the run's copy, and fill the placeholder drafts. Then render. */
@@ -161,7 +214,8 @@ export async function planAndRender(runId: string): Promise<void> {
 
     // Angles earlier runs for this client used are held back, so a second run reaches for new ones.
     const earlier = (await listRuns(run.client_id, 6)).filter((r) => r.id !== run.id).flatMap((r) => r.items.map((i) => i.angle_key ?? ""));
-    const plan = await writeBulkPlan(brief, BULK_RUN_SIZE, earlier.filter(Boolean));
+    const styleGuide = await resolveStyleGuide(run);
+    const plan = await writeBulkPlan(brief, BULK_RUN_SIZE, earlier.filter(Boolean), styleGuide);
 
     const items: RunItem[] = [];
     for (const [index, slot] of run.items.entries()) {

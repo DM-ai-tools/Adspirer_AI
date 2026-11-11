@@ -7,6 +7,7 @@ import { listCreativeDraftsAsync, toPublicDraft } from "@/lib/creatives/drafts";
 import { planAndRender, startBulkRun } from "@/lib/creatives/bulk/run";
 import { MONTHLY_TARGET, monthlyCount } from "@/lib/creatives/bulk/view";
 import { BULK_RUN_SIZE } from "@/lib/creatives/bulk/plan";
+import { STYLE_IMAGE_LIMIT } from "@/lib/creatives/bulk/styles";
 import { runAfterResponse } from "@/lib/api/background";
 import { jsonOk, parseBody, withApiHandler } from "@/lib/api/response";
 
@@ -18,6 +19,10 @@ const startSchema = z.object({
   landingPageUrl: z.string().url().optional(),
   notes: z.string().max(4000).optional(),
   pastedCopy: z.string().max(4000).optional(),
+  styleDirection: z.string().max(1500).optional(),
+  /** Reference images as data URIs, already shrunk by the page. Three of this size stay inside a request's body limit. */
+  styleImages: z.array(z.string().max(1_300_000).regex(/^data:image\/(png|jpe?g|webp);base64,/i)).max(STYLE_IMAGE_LIMIT).optional(),
+  styleMatchAll: z.boolean().optional(),
   format: z.enum(IMAGE_FORMATS).optional().default("4:5"),
 });
 
@@ -75,6 +80,9 @@ export async function POST(request: Request) {
       landingPageUrl: body.landingPageUrl,
       notes: body.notes,
       pastedCopy: body.pastedCopy,
+      styleDirection: body.styleDirection,
+      styleImages: body.styleImages,
+      styleMatchAll: body.styleMatchAll,
       format: body.format,
     });
     runAfterResponse("bulk-creative-run", () => planAndRender(run.id));

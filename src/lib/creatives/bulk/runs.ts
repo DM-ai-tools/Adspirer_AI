@@ -30,7 +30,19 @@ export type CreativeRun = {
   service_id: string | null;
   created_by: string | null;
   landing_page_url: string | null;
-  inputs: { notes?: string | null; pastedCopy?: string | null; brandUrl?: string | null };
+  inputs: {
+    notes?: string | null;
+    pastedCopy?: string | null;
+    brandUrl?: string | null;
+    /** The operator's own words on the look they want, and any style rules. */
+    styleDirection?: string | null;
+    /** Storage keys of the reference images they uploaded. */
+    styleImageKeys?: string[];
+    /** True when every image must follow the reference, not just the first few. */
+    styleMatchAll?: boolean;
+    /** The reference images written up as a style brief (kept so it is read once). */
+    styleBrief?: string | null;
+  };
   image_format: ImageFormat;
   status: RunStatus;
   error: string | null;
