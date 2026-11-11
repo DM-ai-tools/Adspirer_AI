@@ -20,6 +20,18 @@ export const REPORT_THEME = {
   accent: "#14B8A6",
 } as const;
 
+/** Card colours: the bar and tag colour, and the faint fill behind the card. Same in every format. */
+export const CARD_TONES = {
+  critical: { bar: "#DC2626", fill: "#FEF2F2", label: "Critical" },
+  high: { bar: "#EA580C", fill: "#FFF7ED", label: "High" },
+  medium: { bar: "#CA8A04", fill: "#FEFCE8", label: "Medium" },
+  low: { bar: "#64748B", fill: "#F8FAFC", label: "Low" },
+  action: { bar: "#0F766E", fill: "#F0FDFA", label: "Action" },
+  positive: { bar: "#16A34A", fill: "#F0FDF4", label: "Justified" },
+  negative: { bar: "#DC2626", fill: "#FEF2F2", label: "Wrong call" },
+  neutral: { bar: "#94A3B8", fill: "#F8FAFC", label: "" },
+} as const;
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
@@ -76,14 +88,24 @@ function renderBlocksHtml(blocks: ReportBlock[]): string {
             .join("");
           const body = block.rows
             .map(
-              (row) =>
-                `<tr>${row.map((c) => `<td>${escapeHtml(c)}</td>`).join("")}</tr>`,
+              (row, r) =>
+                `<tr${block.strongRows?.includes(r) ? ' class="total"' : ""}>${row.map((c) => `<td>${escapeHtml(c)}</td>`).join("")}</tr>`,
             )
             .join("");
           return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
         }
         case "hr":
           return `<hr />`;
+        case "kpis":
+          return `<div class="kpis">${block.items.map((i) => `<div class="kpi"><div class="kpi-value">${escapeHtml(i.value)}</div><div class="kpi-label">${escapeHtml(i.label)}</div></div>`).join("")}</div>`;
+        case "card": {
+          const tone = CARD_TONES[block.tone];
+          const fields = block.fields.map((f) => `<div class="field"><span class="field-label">${escapeHtml(f.label)}</span><span>${renderSpansHtml(f.value)}</span></div>`).join("");
+          const notes = block.notes.map((n) => `<div class="field"><span class="field-label">•</span><span>${renderSpansHtml(n)}</span></div>`).join("");
+          return `<div class="card" style="border-left-color:${tone.bar};background:${tone.fill}"><div class="card-head">${block.tag ? `<span class="tag" style="background:${tone.bar}">${escapeHtml(block.tag)}</span>` : ""}<strong>${escapeHtml(block.title)}</strong></div>${fields}${notes}</div>`;
+        }
+        case "note":
+          return `<p class="${block.kind === "read" ? "read" : "footnote"}">${renderSpansHtml(block.spans)}</p>`;
         default:
           return "";
       }
@@ -223,6 +245,18 @@ export function renderReportHtml(input: {
     font-size: 9pt;
     color: ${t.muted};
   }
+  tr.total td { font-weight: 700; background: ${t.tableHeader}; color: ${t.primaryDark}; }
+  .kpis { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 12px; }
+  .kpi { flex: 1 1 22%; border: 1px solid ${t.border}; border-top: 3px solid ${t.primary}; background: ${t.surface}; padding: 7px 9px; }
+  .kpi-value { font-size: 14pt; font-weight: 700; color: ${t.primaryDark}; }
+  .kpi-label { font-size: 7.5pt; color: ${t.muted}; text-transform: uppercase; letter-spacing: .03em; }
+  .card { border-left: 4px solid; padding: 8px 12px; margin: 0 0 9px; }
+  .card-head { margin-bottom: 4px; }
+  .tag { color: #fff; font-size: 8pt; font-weight: 700; padding: 1px 6px; margin-right: 7px; border-radius: 2px; }
+  .field { display: flex; gap: 8px; font-size: 10pt; margin-top: 2px; }
+  .field-label { flex: 0 0 110px; font-weight: 600; color: ${t.muted}; }
+  .read { background: ${t.tableHeader}; color: ${t.primaryDark}; padding: 4px 9px; font-size: 10pt; margin-top: -6px; }
+  .footnote { color: ${t.muted}; font-size: 8.5pt; }
 </style>
 </head>
 <body>

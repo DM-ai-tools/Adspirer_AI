@@ -11,11 +11,40 @@ import {
 
 const AUDIT_TITLE = /^Meta Ads Account Audit\b/i;
 
+/** Sections that belong in the chat only: the full audit checklist (every checkpoint, passed ones included). */
+const CHAT_ONLY_SECTION = /^#{1,2}\s*(?:\d{1,2}\.\s*)?Audit checklist\b/i;
+
+/**
+ * Leave chat-only sections out of a download. A section runs from its heading to the next heading
+ * of the same or a higher level (its own ### sub-headings go with it), or to the end.
+ */
+export function stripChatOnlySections(markdown: string): string {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const out: string[] = [];
+  let skipping = 0;
+  for (const line of lines) {
+    const t = line.trim().replace(/\*\*/g, "");
+    const heading = /^(#{1,6})\s+/.exec(t);
+    if (skipping) {
+      if (heading && heading[1]!.length <= skipping) skipping = 0;
+      else continue;
+    }
+    if (CHAT_ONLY_SECTION.test(t)) {
+      skipping = heading ? heading[1]!.length : 2;
+      // A rule written just before the section belongs to it.
+      while (out.length && /^(---+|\*\*\*+|)$/.test(out[out.length - 1]!.trim())) out.pop();
+      continue;
+    }
+    out.push(line);
+  }
+  return out.join("\n").trimEnd() + "\n";
+}
+
 /**
  * Turn operator chat audit text into neat markdown while keeping every detail.
  */
 export function prepareExportMarkdown(raw: string, fallbackTitle?: string): string {
-  const text = sanitizeReportText(raw).replace(/\r\n/g, "\n").trim();
+  const text = sanitizeReportText(stripChatOnlySections(raw)).replace(/\r\n/g, "\n").trim();
   if (!text) return fallbackTitle ? `# ${fallbackTitle}\n` : "";
 
   const lines = text.split("\n");

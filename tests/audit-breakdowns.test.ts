@@ -155,7 +155,9 @@ describe("settingsInUse", () => {
 describe("audit method", () => {
   it("tells the writer to keep splits honest and to phase recommendations", () => {
     expect(META_AUDIT_FRAMEWORK).toMatch(/not used in the audited period/i);
-    expect(META_AUDIT_FRAMEWORK).toMatch(/### What the splits show/);
+    expect(META_AUDIT_FRAMEWORK).toMatch(/Performance Breakdown/);
+    expect(META_AUDIT_FRAMEWORK).toContain("[[PERFORMANCE_TABLES]]");
+    expect(META_AUDIT_FRAMEWORK).toMatch(/Never write those tables yourself/);
     expect(META_AUDIT_FRAMEWORK).toMatch(/Week 1 \/ Weeks 2/);
   });
 });

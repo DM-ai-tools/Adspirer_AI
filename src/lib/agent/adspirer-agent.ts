@@ -144,6 +144,7 @@ import {
   renderScorecardMarkdown,
 } from "@/lib/audit/render";
 import { renderBreakdownEvidence } from "@/lib/audit/breakdowns";
+import { PERFORMANCE_TABLES_MARKER, renderPerformanceTables } from "@/lib/audit/performance-tables";
 import { loadCatalogEvidence } from "@/lib/meta/catalog/audit-evidence";
 import type { Task } from "@/types";
 import { getConfig } from "@/lib/config";
@@ -1853,8 +1854,10 @@ export async function gatherDiagnoseEvidence(input: {
   targetingPicker?: TargetingPickerUi;
   /** True when audit needs scope/dates/campaigns before full analysis. */
   auditBriefingIncomplete?: boolean;
-  /** Deterministic checklist table appended to the audit reply (and exports). */
+  /** Deterministic checklist appended to the audit reply in chat. Downloads leave it out. */
   auditAppendix?: string;
+  /** Deterministic performance tables, inserted into the audit at the writer's marker. */
+  auditTables?: string;
   /** True when a strategy needs a daily budget or target ROAS before planning. */
   strategyBriefIncomplete?: boolean;
   /** True only once the strategy plan engine has produced a plan this turn. */
@@ -1892,6 +1895,7 @@ export async function gatherDiagnoseEvidence(input: {
   let targetingPicker: TargetingPickerUi | undefined;
   let auditBriefingIncomplete = false;
   let auditAppendix: string | undefined;
+  let auditTables: string | undefined;
   let strategyBriefIncomplete = false;
   let strategyPlanBuilt = false;
 
@@ -2599,6 +2603,17 @@ export async function gatherDiagnoseEvidence(input: {
               sections.push(renderAdSetEvidence(snapshot));
               sections.push(renderChangesEvidence(snapshot));
               sections.push(renderBreakdownEvidence(snapshot));
+              auditTables = renderPerformanceTables(snapshot);
+              if (auditTables) {
+                sections.push(
+                  [
+                    `### Performance tables (computed from live Meta rows, authoritative; inserted into the report automatically where you write ${PERFORMANCE_TABLES_MARKER})`,
+                    "Do not copy these tables into your report. Read them to write the Performance Breakdown summary and the Recommended Meta Structure. Quote figures exactly as they appear here.",
+                    "",
+                    auditTables,
+                  ].join("\n"),
+                );
+              }
               const catalogSection = await loadCatalogEvidence(input.clientId, snapshot.adSets);
               if (catalogSection) sections.push(catalogSection);
               auditAppendix = renderScorecardMarkdown(scorecard, snapshot);
@@ -2634,9 +2649,12 @@ export async function gatherDiagnoseEvidence(input: {
               "- Write each problem out once, in Risks & Issues (numbered R1, R2…); other sections mention it briefly and point to it. The same explanation must not appear twice.",
               "- Cover the edits made in the audited period under \"### Changes during this period\" (inside Account Snapshot): the verdict tally, then one card per meaningful change (date, who, schedule, numbers that day, before → after, and a ✅ Justified / ❌ Wrong call / ⚠️ Inconclusive verdict with the figures behind it). Judge only from the \"Numbers around each edit\" evidence. If the change history could not be read, say so; never say nothing changed.",
               "- **Layout:** write in short bullets, never paragraphs of more than two sentences. Tables only for numbers/dates/short statuses; Risks & Issues and Prioritised Recommendations are cards (a bold title line then labelled bullets), not tables — text in table cells is unreadable in the exported PDF.",
-              "- **REQUIRED: audit every ad set** listed in “Ad sets” inside section 4 (Active Campaigns): the 9-column ad set table from the report format (IDs, budgets and optimisation events go in the verdict bullets, not the table), then a short verdict per ad set (Scale / Keep / Fix / Pause) with its numbers and the reason. Cover learning status, budget vs results, frequency, audience/placement setup and its ads.",
+              "- **Performance Breakdown (section 3):** write the heading, the line [[PERFORMANCE_TABLES]] alone, then the Summary bullets. The tables are inserted for you from the “Performance tables” evidence — never write them, and copy any figure you quote exactly.",
+              "- **Recommended Meta Structure (section 8):** a Layer | Campaign | Audience | Budget share | Creative focus table (1–5 words a cell, shares adding to 100%), then at most three bullets; built only from what this account's numbers show.",
+              "- **REQUIRED: audit every ad set** listed in “Ad sets” inside section 5 (Ad Sets): the 9-column ad set table from the report format (IDs, budgets and optimisation events go in the verdict bullets, not the table), then a short verdict per ad set (Scale / Keep / Fix / Pause) with its numbers and the reason. Cover learning status, budget vs results, frequency, audience/placement setup and its ads.",
               "- Spend, results and cost per result for the period come from the evidence above — never say they are unavailable when “Ad sets” or “Campaign performance” lists them.",
-              "- **REQUIRED section: Landing pages** — use Website URLs + CTA types from “Ad CTA & destination inventory” and scores from “Landing page analysis”.",
+              "- **REQUIRED section: Landing Pages** — a short Page | Score | Message match | Main fix table, from Website URLs + CTA types in “Ad CTA & destination inventory” and scores in “Landing page analysis”.",
+              "- Do not write a What's Working section or a checklist: strengths get one Executive Summary bullet, and the checklist is added in chat automatically (it is left out of downloads).",
               "- NEVER say destinations are unavailable because the campaign is paused or had $0 spend.",
               "- NEVER use workspace-document URLs (e.g. competitor copy docs) as the campaign destination.",
               "- If a destination URL is missing from Meta, say so and recommend fixing the CTA / Website URL in Ads Manager.",
@@ -3710,6 +3728,7 @@ export async function gatherDiagnoseEvidence(input: {
     targetingPicker,
     auditBriefingIncomplete,
     auditAppendix,
+    auditTables,
     strategyBriefIncomplete,
     strategyPlanBuilt,
   };

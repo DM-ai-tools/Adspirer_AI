@@ -223,10 +223,12 @@ describe("audit method wording", () => {
     expect(META_AUDIT_FRAMEWORK).toMatch(/never write that nothing changed/i);
   });
 
-  it("makes each problem live in one place and keeps What's Working and the checklist", () => {
+  it("makes each problem live in one place, drops the What's Working section and keeps the checklist in chat only", () => {
     expect(META_AUDIT_FRAMEWORK).toMatch(/Say each thing once/);
-    expect(META_AUDIT_FRAMEWORK).toContain("What's Working");
-    expect(META_AUDIT_FRAMEWORK).toContain('"Audit checklist" table is appended automatically');
+    expect(META_AUDIT_FRAMEWORK).not.toContain("What's Working");
+    expect(META_AUDIT_FRAMEWORK).toMatch(/strongest thing working/);
+    expect(META_AUDIT_FRAMEWORK).toContain('"Audit checklist" is appended automatically after your report in the chat');
+    expect(META_AUDIT_FRAMEWORK).toMatch(/not part of the downloaded report/);
   });
 });
 

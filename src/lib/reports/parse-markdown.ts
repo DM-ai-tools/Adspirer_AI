@@ -15,12 +15,22 @@ export type InlineSpan =
   | { type: "italic"; text: string }
   | { type: "code"; text: string };
 
+/** How a card is coloured: a risk's severity, an action, a change's verdict, or plain. */
+export type CardTone = "critical" | "high" | "medium" | "low" | "action" | "positive" | "negative" | "neutral";
+
 export type ReportBlock =
   | { type: "heading"; level: 1 | 2 | 3; text: string }
   | { type: "paragraph"; spans: InlineSpan[] }
   | { type: "list"; ordered: boolean; items: InlineSpan[][] }
-  | { type: "table"; headers: string[]; rows: string[][] }
-  | { type: "hr" };
+  /** `strongRows`: rows printed as totals (bold, tinted). Set by the presentation pass. */
+  | { type: "table"; headers: string[]; rows: string[][]; strongRows?: number[] }
+  | { type: "hr" }
+  /** Printed exports only (see present.ts): key figures as tiles. */
+  | { type: "kpis"; items: Array<{ label: string; value: string }> }
+  /** Printed exports only: a risk, a recommendation or a change, as one framed card. */
+  | { type: "card"; tone: CardTone; tag: string | null; title: string; fields: Array<{ label: string; value: InlineSpan[] }>; notes: InlineSpan[][] }
+  /** Printed exports only: a one-line takeaway under a table ("Read: …") or a footnote. */
+  | { type: "note"; kind: "read" | "footnote"; spans: InlineSpan[] };
 
 /** Unicode space / separator chars that must become normal spaces (not deleted). */
 const UNICODE_SPACES =
