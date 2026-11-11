@@ -197,6 +197,7 @@ function toModel(p: Omit<CreativePlan, "validation">) {
     scenes: p.scenes.map((s) => ({
       ...s,
       overlays: s.overlays.map((o) => ({ kind: o.kind, text: o.text ?? null, claimId: o.claimId ?? null, assetId: o.assetId ?? null })),
+      editingNotes: [],
     })),
   };
 }

@@ -103,6 +103,20 @@ export type LogoAsset = {
 
 export type ClaimKind = "number" | "statement" | "offer" | "credential";
 
+/** What an uploaded file is for. A file that carries figures is the operator's approved proof; anything else supports the brief. */
+export type AssetPurpose = "approved_proof_screenshot" | "supporting_image";
+
+/** What a figure measures. Kept apart because they are not interchangeable: a platform's tracked conversion value is not audited sales revenue. */
+export type StatMetric = "ad_spend" | "conversion_value" | "sales_revenue" | "cost_per_conversion" | "conversion_value_per_cost" | "other";
+
+/** Something to settle before a figure from an image is used. */
+export type EvidenceCaution = {
+  code: "label_differs" | "time_claim_unsupported" | "currency_unstated";
+  /** The figure it concerns, when it concerns one. */
+  figure?: string;
+  message: string;
+};
+
 export type ApprovedClaim = {
   id: string;
   /** The claim as it may be shown or spoken, e.g. "$12M+ in e-commerce sales generated". */
@@ -115,6 +129,10 @@ export type ApprovedClaim = {
   provenance: Provenance;
   /** An uploaded image id this claim was read from, when it came from one. */
   assetId?: string;
+  /** What the figure measures according to the source's own label (not a note added on top of it). */
+  metric?: StatMetric;
+  /** The period the source says the figure covers, as printed. */
+  dateRange?: string | null;
 };
 
 export type BrandManifest = {
@@ -195,9 +213,27 @@ export type SpeechLine = {
 
 export type SceneTransition = { kind: "cut" | "match_cut" | "dissolve" | "dip_to_colour"; rationale: string };
 
+/**
+ * A suggestion for the person finishing a clean video by hand: a piece of text or a file they may
+ * add. Kept apart from everything the video model is told, and never rendered by this application.
+ */
+export type EditingNote = {
+  kind: "stat" | "keyword" | "cta" | "url" | "logo" | "image" | "end_card";
+  /** The exact wording suggested, when it is text. */
+  text?: string;
+  claimId?: string;
+  assetId?: string;
+  /** Where it could sit, in plain words ("lower third, centred"). */
+  position?: string;
+  /** Why it is worth adding, or what to watch for. */
+  note?: string;
+};
+
 export type SceneBrief = {
   /** The script scene this brief belongs to. */
   number: number;
+  /** Optional suggestions for manual graphics. Never part of the footage request. */
+  editingNotes?: EditingNote[];
   purpose: string;
   /** What this scene adds that no other scene does: information or emotion. */
   informationAdded: string;
@@ -240,6 +276,8 @@ export type PlanIssue = { scene: number | null; code: string; severity: "error" 
 export type CreativePlan = {
   version: 1;
   createdAt: string;
+  /** "clean": the footage is the whole picture and nothing is composited. Absent on plans made before clean video existed. */
+  mode?: "clean" | "branded";
   /** What the plan was derived from, so a change in inputs visibly changes the plan. */
   basis: { product: string; audience: string; offer: string; platform: string; objective: string; targetSeconds: number; assetIds: string[] };
   narrative: { approach: string; whyItFits: string; arc: string[] };

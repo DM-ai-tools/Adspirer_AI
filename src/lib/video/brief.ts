@@ -21,7 +21,8 @@ import type { AnglePlan, CreativeBrief } from "@/lib/video/script-types";
 import type { VideoScript } from "@/lib/video/script";
 import { pickModel } from "@/lib/creatives/concept-writer";
 import { adCopyForUploaded, applyChangeRequest, assembleUploaded, structureUploadedScript } from "@/lib/video/uploaded-script";
-import { analyzeAssets } from "@/lib/video/assets";
+import { analyzeAssets, assetCautions } from "@/lib/video/assets";
+import { splitLabel } from "@/lib/video/evidence";
 import { advanceProgress, initialProgress } from "@/lib/video/progress";
 
 /** The original bytes of the logo the operator saved for the client, as a data URI (never resized or re-encoded). */
@@ -147,7 +148,12 @@ export async function buildBrief(project: VideoProject): Promise<{ brief: VideoB
     instructions: project.inputs.instructions,
     offerDetails: project.inputs.offerDetails,
     stats: project.inputs.stats ?? [],
-    images: project.assets.map((a) => ({ id: a.id, name: a.name, summary: a.analysis?.summary ?? a.caption, stats: a.analysis?.stats ?? [], mainStat: a.analysis?.mainStat ?? null })),
+    // Each image goes to the writer with what has to be settled about its figures (a relabelled figure, a time claim its period does not support, an unnamed currency), so those are not repeated silently.
+    images: project.assets.map((a) => {
+      const cautions = assetCautions(a).map((c) => c.message);
+      const period = a.analysis?.dateRange ? ` Period shown: ${a.analysis.dateRange}.` : "";
+      return { id: a.id, name: a.name, summary: `${a.analysis?.summary ?? a.caption}${period}${cautions.length ? ` BEFORE USING ITS FIGURES: ${cautions.join(" ")}` : ""}`, stats: (a.analysis?.stats ?? []).map((s) => ({ value: s.value, label: splitLabel(s).label })), mainStat: a.analysis?.mainStat ? { value: a.analysis.mainStat.value, label: splitLabel(a.analysis.mainStat).label } : null };
+    }),
     targetSeconds: project.inputs.targetSeconds,
     style: project.inputs.style,
     locale: project.inputs.locale,

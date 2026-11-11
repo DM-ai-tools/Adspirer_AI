@@ -14,7 +14,9 @@ import { correctionLines, createVisionReviewer, decideClip, redesignReasons, rev
 import { estimateClipUsd, SEEDANCE_SPECS, splitIntoClips, type SeedanceModelKey, type VideoResolution } from "@/lib/video/seedance";
 import { unsourcedFigures, type VideoScript } from "@/lib/video/script";
 import { withTimes } from "@/lib/video/overlays";
-import { manifestReady, type ApprovedClaim, type BrandManifest, type ClipAttemptRecord, type CreativePlan, type QaFinding, type QaReport, type SceneBrief, type SpeechLine } from "@/lib/video/pipeline-types";
+import { resolveFinishing, type VideoMode } from "@/lib/video/clean-mode";
+import { makeNarrationStandalone, type NarrationChange } from "@/lib/video/standalone";
+import { type ApprovedClaim, type BrandManifest, type ClipAttemptRecord, type CreativePlan, type QaFinding, type QaReport, type SceneBrief, type SpeechLine } from "@/lib/video/pipeline-types";
 import type { ClipState, GenerationPlan } from "@/lib/video/generation-types";
 import type { VideoProject } from "@/lib/video/projects";
 
@@ -36,11 +38,19 @@ export function spentUsd(clips: ClipState[]): number {
   return Math.round(total * 100) / 100;
 }
 
-/** Why the brand is not ready, in the operator's words, or null. */
-export function brandBlockers(manifest: BrandManifest | null | undefined): string | null {
-  if (!manifest) return "The brand has not been checked yet. Check the brand first so the video uses the verified company name and logo.";
-  if (manifestReady(manifest)) return null;
-  const blocking = manifest.issues.filter((i) => i.severity === "blocking");
+/** Which kind of video this project makes: clean unless graphics were asked for by name. */
+export function videoMode(project: Pick<VideoProject, "plan">): VideoMode {
+  return resolveFinishing(project.plan?.finishing).mode;
+}
+
+/**
+ * Why the brand is not ready, in the operator's words, or null. A clean video never shows a logo, so
+ * a missing or unverified logo does not hold it up; the company name still matters, because it is spoken.
+ */
+export function brandBlockers(manifest: BrandManifest | null | undefined, mode: VideoMode = "branded"): string | null {
+  if (!manifest) return "The brand has not been checked yet. Check the brand first so the video uses the verified company name.";
+  const blocking = manifest.issues.filter((i) => i.severity === "blocking" && !(mode === "clean" && i.field === "logo"));
+  if (!blocking.length) return null;
   return `The brand check found ${blocking.length === 1 ? "a problem" : `${blocking.length} problems`} to resolve first: ${blocking.map((i) => i.message).join(" ")}`;
 }
 
@@ -51,14 +61,15 @@ export function claimBlockers(script: VideoScript, manifest: BrandManifest, clai
   return `Some figures in the script have no recorded source: ${open.slice(0, 6).map((o) => `"${o.figure}" (${o.where})`).join(", ")}. Add the source (a stat, an image, the offer details) or edit the script.`;
 }
 
-export function planInputFor(project: VideoProject, script: VideoScript, manifest: BrandManifest): PlanInput {
+export function planInputFor(project: VideoProject, script: VideoScript, manifest: BrandManifest, mode: VideoMode = project.plan?.creative?.mode ?? videoMode(project)): PlanInput {
   const capabilities = providerCapabilities();
   return {
+    mode,
     brandName: manifest.name.value ?? "",
     product: manifest.offer.value ?? script.title,
     audience: manifest.audience.value ?? "",
     offer: manifest.offer.value ?? script.title,
-    platform: `Meta Reels and Stories, ${project.inputs.format} vertical video, watched mostly muted`,
+    platform: mode === "clean" ? `Meta Reels and Stories, ${project.inputs.format} vertical video; the footage must carry the message through picture and voice alone` : `Meta Reels and Stories, ${project.inputs.format} vertical video, watched mostly muted`,
     objective: `${script.angle.name} (${script.angle.stage}): ${script.pain}`,
     targetSeconds: project.inputs.targetSeconds,
     locale: project.inputs.locale,
@@ -103,7 +114,7 @@ export function clipsFor(script: VideoScript, model: SeedanceModelKey): ClipStat
   }));
 }
 
-export type PreparedCreative = { creative: CreativePlan; speech: NonNullable<GenerationPlan["speech"]>; script: VideoScript; capabilities: ReturnType<typeof providerCapabilities> };
+export type PreparedCreative = { creative: CreativePlan; speech: NonNullable<GenerationPlan["speech"]>; script: VideoScript; capabilities: ReturnType<typeof providerCapabilities>; narrationChanges: NarrationChange[] };
 
 /**
  * Everything decided before a single clip is paid for: the brand and the claims are checked, how
@@ -111,13 +122,27 @@ export type PreparedCreative = { creative: CreativePlan; speech: NonNullable<Gen
  * plain explanation when something blocks the video.
  */
 export async function prepareCreative(project: VideoProject): Promise<PreparedCreative> {
-  const script = project.chosen_script;
+  let script = project.chosen_script;
   if (!script) throw new Error("Confirm a script first.");
+  const mode = videoMode(project);
   const manifest = project.brand?.manifest ?? null;
-  const brand = brandBlockers(manifest);
+  const brand = brandBlockers(manifest, mode);
   if (brand) throw new Error(brand);
   const claims = claimBlockers(script, manifest!, effectiveClaims(project.brand));
   if (claims) throw new Error(claims);
+
+  // A clean video shows no screenshot: a line that points at one is reworded so the video stands on its own.
+  let narrationChanges: NarrationChange[] = [];
+  if (mode === "clean") {
+    const standalone = await makeNarrationStandalone(script);
+    if (standalone.unresolved.length) {
+      throw new Error(
+        `${standalone.unresolved.map((u) => `Scene ${u.scene} says "${u.phrase}"`).join("; ")}, which points at an image, and a clean video shows none. Reopen the script and reword ${standalone.unresolved.length === 1 ? "that line" : "those lines"} so the video makes sense on its own.`,
+      );
+    }
+    script = standalone.script;
+    narrationChanges = standalone.changes;
+  }
 
   const capabilities = providerCapabilities();
   const lexicon = await buildLexicon({
@@ -130,13 +155,13 @@ export async function prepareCreative(project: VideoProject): Promise<PreparedCr
   });
   const lines: SpeechLine[] = script.scenes.filter((s) => s.line.trim()).map((s) => applyLexicon(s.number, s.line, lexicon));
 
-  const input = planInputFor(project, script, manifest!);
+  const input = planInputFor(project, script, manifest!, mode);
   const creative = await planCreative(input);
   if (!creative.validation.ok) {
     const errors = creative.validation.issues.filter((i) => i.severity === "error");
     throw new Error(`The creative plan did not pass its checks, so nothing was generated: ${errors.slice(0, 5).map((i) => i.message).join(" ")}`);
   }
-  return { creative, speech: { lexicon, lines }, script: applyPlanDurations(script, creative), capabilities };
+  return { creative, speech: { lexicon, lines }, script: applyPlanDurations(script, creative), capabilities, narrationChanges };
 }
 
 // ------------------------------------------------------------------ continuity

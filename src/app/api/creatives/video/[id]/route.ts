@@ -8,6 +8,9 @@ import { effectiveProject, viewGeneration } from "@/lib/video/generation";
 import { getObjectStorage } from "@/lib/storage/r2";
 import { operatorClaims, writeProjectScripts } from "@/lib/video/brief";
 import { brandView } from "@/lib/video/brand-view";
+import { logoState } from "@/lib/video/brand-resolve";
+import { assetCautions, purposeOf } from "@/lib/video/assets";
+import { splitLabel } from "@/lib/video/evidence";
 import { markEdited, requiredStatsForProject, withSpeech } from "@/lib/video/script-actions";
 import { attachImageStats, linkImageStats, pickMainStat } from "@/lib/video/required-stats";
 import { checkScript, MAX_SECONDS, type VideoScript } from "@/lib/video/script";
@@ -29,9 +32,11 @@ async function load(ctx: Ctx) {
   return project;
 }
 
-function view(raw: VideoProject) {
+async function view(raw: VideoProject) {
   const project = effectiveProject(raw);
   const chosen = project.chosen_script;
+  // Read from storage now: the screen shows a logo as verified only while its file can actually be loaded.
+  const logo = await logoState(project.brand?.manifest, project.inputs.brandChoice?.logoApprovedKey);
   return {
     id: project.id,
     name: projectName(project),
@@ -47,10 +52,19 @@ function view(raw: VideoProject) {
       mainStat: pickMainStat(a.analysis?.stats ?? [], a.analysis?.mainStat),
       analysed: Boolean(a.analysis),
       url: `/api/creatives/video/${project.id}/assets/${a.id}`,
+      downloadUrl: `/api/creatives/video/${project.id}/assets/${a.id}?download=1`,
+      purpose: purposeOf(a),
+      version: a.version ?? 1,
+      sha256: a.sha256 ?? null,
+      /** Each figure with the label the image itself prints, and separately any label added on top of it. */
+      labels: (a.analysis?.stats ?? []).map((s) => ({ value: s.value, ...splitLabel(s) })),
+      dateRange: a.analysis?.dateRange ?? null,
+      annotations: a.analysis?.annotations ?? [],
+      cautions: assetCautions(a).map((c) => c.message),
     })),
     progress: project.progress ?? null,
-    brand: project.brand ? { name: project.brand.name, colors: project.brand.colors, hasLogo: Boolean(project.brand.manifest?.logo) } : null,
-    brandCheck: brandView(project),
+    brand: project.brand ? { name: project.brand.name, colors: project.brand.colors, hasLogo: logo.saved && logo.accessible } : null,
+    brandCheck: brandView(project, logo),
     contextBrief: project.brand?.brief ?? null,
     angleLimitation: project.brand?.angleLimitation ?? null,
     wordsPerSecond: project.inputs.speechRate ?? null,
@@ -64,7 +78,7 @@ function view(raw: VideoProject) {
 }
 
 export async function GET(_request: Request, ctx: Ctx) {
-  return withApiHandler(async () => jsonOk(view(await load(ctx))));
+  return withApiHandler(async () => jsonOk(await view(await load(ctx))));
 }
 
 const sceneEdit = z.object({
@@ -142,7 +156,7 @@ export async function PATCH(request: Request, ctx: Ctx) {
     }
     const withLength = linked;
     const updated = await updateProject(project.id, { chosen_script: withLength, status: "confirmed", ...(brand !== project.brand ? { brand } : {}) });
-    return jsonOk(view(updated));
+    return jsonOk(await view(updated));
   });
 }
 

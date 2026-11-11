@@ -5,7 +5,7 @@ import type { VideoScript } from "@/lib/video/script";
 import type { AssetAnalysis } from "@/lib/video/assets";
 import type { ScriptProgress } from "@/lib/video/progress";
 import type { ClipState, FinalVideo, GenerationPlan } from "@/lib/video/generation-types";
-import type { BrandManifest } from "@/lib/video/pipeline-types";
+import type { AssetPurpose, BrandManifest } from "@/lib/video/pipeline-types";
 import type { AnglePlan, CreativeBrief } from "@/lib/video/script-types";
 
 export type VideoAsset = {
@@ -17,6 +17,14 @@ export type VideoAsset = {
   mime: string;
   /** What the image is and which stats it carries, read automatically. */
   analysis?: AssetAnalysis | null;
+  /** What the file is for. A file that carries figures is the operator's approved proof. */
+  purpose?: AssetPurpose;
+  /** SHA-256 of the original bytes, taken when it was uploaded. The file is the same file only while this matches. */
+  sha256?: string;
+  bytes?: number;
+  /** Goes up when a file is replaced; an id plus a version names exactly one set of bytes. */
+  version?: number;
+  uploadedAt?: string;
 };
 
 export type VideoInputs = {
@@ -56,6 +64,8 @@ export type VideoInputs = {
     logoUploadName?: string | null;
     /** Use the verified company name as text when no logo can be verified. */
     allowTextOnly?: boolean;
+    /** The stored logo file the operator looked at and approved (its storage key). A different file is not approved. */
+    logoApprovedKey?: string | null;
     cta?: string | null;
     offer?: string | null;
   };

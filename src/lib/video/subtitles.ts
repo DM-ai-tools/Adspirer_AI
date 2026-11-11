@@ -696,3 +696,13 @@ export function safeCaptionY(candidates: number[], avoid: Array<{ top: number; b
   }
   return null;
 }
+
+/**
+ * Cues kept inside the video: one that starts at or after the end is dropped, and one that runs past
+ * the end stops there. (Speech located near the very end can otherwise yield a cue that outlasts the file.)
+ */
+export function clampCues(cues: SubtitleCue[], videoSeconds: number): SubtitleCue[] {
+  return cues
+    .filter((c) => c.start < videoSeconds - 0.05)
+    .map((c) => (c.end <= videoSeconds ? c : { ...c, end: videoSeconds, words: c.words.map((w) => ({ ...w, start: Math.min(w.start, videoSeconds), end: Math.min(w.end, videoSeconds) })) }));
+}

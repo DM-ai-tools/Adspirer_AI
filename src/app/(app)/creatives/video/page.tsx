@@ -104,6 +104,8 @@ type GenClip = {
   qaAttempts?: number;
   unresolved?: boolean;
   acceptedWithIssues?: boolean;
+  checkStatus?: CheckStatus;
+  override?: OverrideView | null;
   corrections?: string[];
   qa?: { verdict: string; framesInspected: number; limitations: string[]; findings: Array<{ code: string; severity: "critical" | "major" | "minor"; message: string; atSeconds?: number }> } | null;
   error: string | null;
@@ -112,8 +114,26 @@ type GenClip = {
   videoUrl: string | null;
 };
 
+/** How a clip or an export stands. One approved by a person despite findings is never shown as having passed. */
+type CheckStatus = "passed" | "issues" | "approved_despite_warnings" | "unchecked";
+type OverrideView = { at: string; by: string | null; findings: Array<{ code: string; severity: "critical" | "major" | "minor"; message: string; atSeconds?: number }> };
+
+const CHECK_LABEL: Record<CheckStatus, string> = { passed: "Passed its checks", issues: "Issues detected", approved_despite_warnings: "Approved by you despite warnings", unchecked: "Not inspected" };
+
+function CheckBadge({ status }: { status: CheckStatus }) {
+  return <Badge variant={status === "passed" ? "secondary" : status === "issues" ? "danger" : "warning"}>{CHECK_LABEL[status]}</Badge>;
+}
+
 type FinalView = {
   state: "running" | "done" | "failed" | "blocked";
+  /** "clean": footage and sound only. Absent on exports made before clean video existed. */
+  mode?: "clean" | "branded";
+  transcriptUrl?: string | null;
+  planUrl?: string | null;
+  planJsonUrl?: string | null;
+  suggestedOverlays?: number;
+  checkStatus?: CheckStatus;
+  override?: OverrideView | null;
   acceptedAnyway?: boolean;
   reviewUrl?: string | null;
   srtUrl?: string | null;
@@ -146,8 +166,14 @@ type ClipDecisionView = {
   remainingUsd: number;
 };
 
+type JobFile = { id: string; name: string; purpose: "approved_proof_screenshot" | "supporting_image"; version: number; sha256: string | null; bytes: number | null; url: string; downloadUrl: string; available: boolean; cautions: string[] };
+
 type GenerationView = {
   status: "generating" | "paused" | "stopped" | "clips_ready" | "assembling" | "done" | "failed" | "idle";
+  assets?: JobFile[];
+  cautions?: string[];
+  storageDurable?: boolean;
+  plan?: { narrationChanges?: Array<{ scene: number; was: string; now: string; reason: string }> } | null;
   reviewClip: number | null;
   decision?: ClipDecisionView | null;
   remainingUsd: number;
@@ -158,7 +184,7 @@ type GenerationView = {
   error: string | null;
 };
 
-type Asset = { id: string; name: string; summary: string; kind: string | null; stats: Array<{ value: string; label: string }>; mainStat?: { value: string; label: string } | null; analysed: boolean; url: string };
+type Asset = { id: string; name: string; summary: string; kind: string | null; stats: Array<{ value: string; label: string }>; mainStat?: { value: string; label: string } | null; analysed: boolean; url: string; downloadUrl?: string; dateRange?: string | null; cautions?: string[] };
 
 type ProjectView = {
   id: string;
@@ -328,19 +354,68 @@ function FixBar({
   );
 }
 
-function FinishingOptions({ value, onChange }: { value: { captions: boolean; logo: boolean; endCard: boolean }; onChange: (v: { captions: boolean; logo: boolean; endCard: boolean }) => void }) {
-  const item = (key: "captions" | "logo" | "endCard", label: string) => (
-    <label className="flex items-center gap-2 text-xs">
-      <Checkbox checked={value[key]} onCheckedChange={(c) => onChange({ ...value, [key]: c === true })} />
-      {label}
-    </label>
-  );
+/** What a clean video is, where the old "add to the video" switches used to be. Nothing here can turn a graphic on. */
+function CleanVideoNote() {
   return (
-    <div className="flex flex-wrap items-center gap-4">
-      <span className="text-[11px] font-medium">Add to the finished video:</span>
-      {item("captions", "Captions and highlighted words")}
-      {item("logo", "Your logo")}
-      {item("endCard", "End card with the call to action")}
+    <div className="rounded-md border border-border bg-secondary/40 p-2 text-[11px]">
+      <p className="font-medium">Clean video</p>
+      <p className="text-muted">
+        The MP4 is finished footage and sound only. No subtitles, highlighted words, logo, on-screen text, proof image or end card is added to it. Subtitle files, a transcript, a placement plan and your original logo and images are
+        supplied separately, for you to add by hand.
+      </p>
+    </div>
+  );
+}
+
+/** The files this video works from: the actual thumbnail, file name and checksum of each, exactly as selected when it was started. */
+function JobFiles({ files, cautions, started }: { files: JobFile[]; cautions: string[]; started: boolean }) {
+  if (!files.length && !cautions.length) return null;
+  return (
+    <div className="space-y-2 rounded-md border border-border p-3 text-xs">
+      {files.length ? (
+        <>
+          <p className="font-medium">{started ? "Files this video was started with" : "Files this video will use"}</p>
+          <p className="text-[11px] text-muted">{started ? "Fixed when the video was started: a later upload or change does not alter it." : "They are fixed when you start the video."} They are never drawn into the video or recreated by the video model.</p>
+          <div className="grid gap-2 md:grid-cols-2">
+            {files.map((f) => (
+              <div key={`${f.id}-${f.version}`} className="flex gap-3 rounded-md border border-border p-2">
+                {f.available ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={f.url} alt={f.name} className="h-16 w-16 shrink-0 rounded bg-white object-contain" />
+                ) : (
+                  <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded border border-dashed border-destructive/60 text-center text-[10px] text-destructive">File missing</div>
+                )}
+                <div className="min-w-0 space-y-0.5">
+                  <p className="truncate font-medium" title={f.name}>{f.name}</p>
+                  <p className="text-[11px] text-muted">
+                    {f.purpose === "approved_proof_screenshot" ? "Approved proof screenshot" : "Supporting image"} · version {f.version}
+                    {f.sha256 ? ` · checksum ${f.sha256.slice(0, 10)}` : ""}
+                  </p>
+                  {f.available ? (
+                    <a href={f.downloadUrl} download className="text-[11px] text-accent underline">
+                      Download the original
+                    </a>
+                  ) : (
+                    <p className="text-[11px] text-destructive">The file is not in storage. Upload it again; nothing else is used in its place.</p>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : null}
+      {cautions.length ? (
+        <div className="space-y-1 rounded-md border border-amber-500/40 bg-amber-500/5 p-2">
+          <p className="flex items-center gap-1.5 font-medium">
+            <AlertTriangle className="h-3.5 w-3.5 text-amber-500" /> To settle before these figures are used
+          </p>
+          <ul className="list-disc space-y-0.5 pl-4 text-[11px]">
+            {cautions.map((c) => (
+              <li key={c}>{c}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -632,8 +707,8 @@ function VersionSummary({
           <p className="text-muted">{script.visualDirection ?? "See the scenes below."}</p>
         </div>
         <div className="space-y-1">
-          <p className="font-medium">On screen and the ask</p>
-          {script.onScreen?.length ? <p className="text-muted">On screen: {script.onScreen.join(" · ")}</p> : null}
+          <p className="font-medium">Optional on-screen text, and the ask</p>
+          {script.onScreen?.length ? <p className="text-muted">Could be added by hand (not in the video): {script.onScreen.join(" · ")}</p> : null}
           {script.cta ? (
             <p className="text-muted">
               Ends with: “{script.cta.spoken}” → button <span className="text-foreground">{script.cta.label}</span>
@@ -723,7 +798,11 @@ type BrandCheck =
       internalLabels: string[];
       conflicts: Array<{ field: string; chosen: string | null; reason: string; values: Array<{ value: string; source: string }> }>;
       hasLogo: boolean;
-      logo: { width: number; height: number; hasAlpha: boolean; origin: string; source: string | null; url: string } | null;
+      /** The logo is on record but its file cannot be read from storage. */
+      logoMissing?: boolean;
+      readyForClean?: boolean;
+      logoState?: { nameVerified: boolean; found: boolean; saved: boolean; accessible: boolean; approved: boolean };
+      logo: { width: number; height: number; hasAlpha: boolean; origin: string; source: string | null; url: string; downloadUrl?: string } | null;
       logoCandidates: Array<{ url: string | null; role: string; score: number; rejectedReason: string | null; source: string }>;
       allowTextOnly: boolean;
       colors: string[];
@@ -792,10 +871,13 @@ function BrandCheckCard({ projectId, brand, onChanged }: { projectId: string; br
   const [name, setName] = useState("");
   const [page, setPage] = useState("");
   const [open, setOpen] = useState(false);
+  // The preview is the proof that the file loads: if the picture fails, the logo is not shown as present.
+  const [logoBroken, setLogoBroken] = useState(false);
 
   async function post(body: Record<string, unknown>) {
     setBusy(true);
     try {
+      setLogoBroken(false);
       onChanged(await apiFetch<BrandCheck>(`/api/creatives/video/${projectId}/brand`, { method: "POST", body: JSON.stringify(body) }));
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not check the brand");
@@ -825,7 +907,7 @@ function BrandCheckCard({ projectId, brand, onChanged }: { projectId: string; br
       <Card>
         <CardContent className="flex flex-wrap items-center gap-3 p-4 text-sm">
           <ShieldCheck className="h-4 w-4 text-muted" />
-          <span>The brand has not been checked. The video uses only a verified company name and logo.</span>
+          <span>The brand has not been checked. The video says only a verified company name.</span>
           <Button size="sm" disabled={busy} onClick={() => void post({ action: "refresh" })}>
             {busy ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : null}Check the brand
           </Button>
@@ -834,8 +916,11 @@ function BrandCheckCard({ projectId, brand, onChanged }: { projectId: string; br
     );
   }
 
-  const blocking = brand.issues.filter((i) => i.severity === "blocking");
+  // A clean video shows no logo, so a logo problem never holds the video up: it is shown, but as something for the manual finish.
+  const blocking = brand.issues.filter((i) => i.severity === "blocking" && i.field !== "logo");
+  const logoIssues = brand.issues.filter((i) => i.severity === "blocking" && i.field === "logo");
   const warnings = brand.issues.filter((i) => i.severity === "warning");
+  const state = brand.logoState;
   const pickable = brand.logoCandidates.filter((c) => c.url && c.role !== "icon" && c.role !== "decorative");
   return (
     <Card className={blocking.length ? "border-amber-500/60" : "border-accent/40"}>
@@ -843,7 +928,7 @@ function BrandCheckCard({ projectId, brand, onChanged }: { projectId: string; br
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="flex items-center gap-2 font-medium">
             {blocking.length ? <AlertTriangle className="h-4 w-4 text-amber-500" /> : <ShieldCheck className="h-4 w-4 text-accent" />}
-            Brand check {blocking.length ? "· needs a decision before video is made" : "· verified"}
+            Brand check {blocking.length ? "· needs a decision before video is made" : "· company name verified"}
           </p>
           <Button size="sm" variant="ghost" disabled={busy} onClick={() => void post({ action: "refresh" })}>
             {busy ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1 h-3.5 w-3.5" />}Check again
@@ -851,21 +936,52 @@ function BrandCheckCard({ projectId, brand, onChanged }: { projectId: string; br
         </div>
         <div className="grid gap-4 md:grid-cols-[160px_1fr]">
           <div className="space-y-1">
-            {brand.logo ? (
+            {brand.logo && !logoBroken ? (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={brand.logo.url} alt="Verified logo" className="max-h-24 w-full rounded border border-border bg-white object-contain p-2" />
+              <img src={brand.logo.url} alt="Saved logo" onError={() => setLogoBroken(true)} className="max-h-24 w-full rounded border border-border bg-white object-contain p-2" />
+            ) : brand.logoMissing || logoBroken ? (
+              <div className="flex h-24 items-center justify-center rounded border border-dashed border-destructive/60 p-2 text-center text-[11px] text-destructive">The saved logo file cannot be loaded</div>
             ) : (
-              <div className="flex h-24 items-center justify-center rounded border border-dashed border-border text-[11px] text-muted">No verified logo</div>
+              <div className="flex h-24 items-center justify-center rounded border border-dashed border-border text-[11px] text-muted">No logo saved</div>
             )}
-            {brand.logo ? (
+            {brand.logo && !logoBroken ? (
               <p className="text-[10px] text-muted">
                 {brand.logo.width}x{brand.logo.height}{brand.logo.hasAlpha ? ", transparent" : ""}, {brand.logo.origin === "page" ? "from the page" : brand.logo.origin === "client" ? "saved for this client" : "uploaded"}
               </p>
             ) : null}
+            {state ? (
+              <ul className="space-y-0.5 text-[10px]">
+                {(
+                  [
+                    ["Logo found", state.found],
+                    ["Logo saved", state.saved],
+                    ["Logo file loads", state.accessible && !logoBroken],
+                    ["Approved by you", state.approved && !logoBroken],
+                  ] as Array<[string, boolean]>
+                ).map(([label, ok]) => (
+                  <li key={label} className={cn("flex items-center gap-1", ok ? "text-muted" : "text-amber-500")}>
+                    {ok ? <Check className="h-3 w-3 text-accent" /> : <X className="h-3 w-3" />} {label}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {brand.logo && !logoBroken ? (
+              <div className="flex flex-wrap gap-2 text-[11px]">
+                {brand.logo.downloadUrl ? (
+                  <a href={brand.logo.downloadUrl} download className="text-accent underline">
+                    Download the original
+                  </a>
+                ) : null}
+                <button type="button" disabled={busy} className="text-accent underline" onClick={() => void post({ action: "approve_logo", approved: !state?.approved })}>
+                  {state?.approved ? "Withdraw approval" : "This is the right logo"}
+                </button>
+              </div>
+            ) : null}
+            {brand.logoMissing || logoBroken ? <p className="text-[10px] text-muted">Choose &quot;Check again&quot; to fetch it again, or upload the logo below. A clean video does not need it.</p> : null}
           </div>
           <div className="space-y-1 text-xs">
             <p>
-              <span className="text-muted">Company name shown to viewers:</span> <span className="font-medium">{brand.name ?? "not verified"}</span>
+              <span className="text-muted">Company name as it is said:</span> <span className="font-medium">{brand.name ?? "not verified"}</span>
             </p>
             {brand.nameSources.length ? <p className="text-[11px] text-muted">Source: {brand.nameSources.join("; ")}</p> : null}
             {brand.internalLabels.length ? <p className="text-[11px] text-muted">Kept out of the video (internal labels): {brand.internalLabels.slice(0, 4).join("; ")}</p> : null}
@@ -877,6 +993,11 @@ function BrandCheckCard({ projectId, brand, onChanged }: { projectId: string; br
         {blocking.map((i) => (
           <p key={i.code + i.message} className="rounded border border-amber-500/40 bg-amber-500/5 p-2 text-xs">
             <span className="font-medium">{i.message}</span> <span className="text-muted">{i.resolution}</span>
+          </p>
+        ))}
+        {logoIssues.map((i) => (
+          <p key={i.code + i.message} className="text-[11px] text-muted">
+            {i.message} This does not hold up a clean video, which shows no logo.
           </p>
         ))}
         {warnings.map((i) => (
@@ -913,7 +1034,7 @@ function BrandCheckCard({ projectId, brand, onChanged }: { projectId: string; br
               </label>
               <label className="inline-flex items-center gap-2 text-xs">
                 <Checkbox checked={brand.allowTextOnly} onCheckedChange={(v) => void post({ action: "choose", allowTextOnly: v === true })} />
-                No logo: show the verified company name as text
+                No logo on record (only matters if you add an end card by hand)
               </label>
             </div>
             {pickable.length ? (
@@ -978,12 +1099,11 @@ function PlanCard({ creative }: { creative: CreativeView }) {
 }
 
 /** Starts the video, follows each clip and keeps the work moving while the page is open. */
-function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: string; status: ProjectView["status"]; initial: GenerationView | null; onStatus: (s: ProjectView["status"]) => void }) {
+function GenerationPanel({ projectId, status, initial, onStatus, logoDownloadUrl }: { projectId: string; status: ProjectView["status"]; initial: GenerationView | null; onStatus: (s: ProjectView["status"]) => void; logoDownloadUrl?: string | null }) {
   const [gen, setGen] = useState<GenerationView | null>(initial);
   const [starting, setStarting] = useState(false);
   const [busyClip, setBusyClip] = useState<number | null>(null);
   const advancing = useRef(false);
-  const [finishing, setFinishing] = useState({ captions: true, logo: true, endCard: true });
   // Where to wait for a look at a clip before paying for the next one.
   const [checkpoint, setCheckpoint] = useState<"after_first" | "each" | "none">("after_first");
   const [confirmStop, setConfirmStop] = useState(false);
@@ -1041,13 +1161,15 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
     return (
       <div className="space-y-2">
         <div className="flex flex-wrap items-center gap-3">
-          <Button disabled={starting || Boolean(blocked)} onClick={() => void post({ action: "start", finishing, checkpoint }, () => setStarting(true), () => setStarting(false))}>
+          <Button disabled={starting || Boolean(blocked)} onClick={() => void post({ action: "start", checkpoint }, () => setStarting(true), () => setStarting(false))}>
             {starting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Film className="mr-2 h-4 w-4" />}
             Generate video
           </Button>
           <p className="text-[11px] text-muted">Makes the clips one after another so the person and voice carry through, then joins them. It takes several minutes and keeps going if you leave.</p>
         </div>
-        <FinishingOptions value={finishing} onChange={setFinishing} />
+        <CleanVideoNote />
+        {gen?.storageDurable === false ? <p className="text-xs text-amber-500">Files are being kept on this server&apos;s own disk and would be lost on a restart or redeploy. Set up the storage bucket before relying on a video made now.</p> : null}
+        <JobFiles files={gen?.assets ?? []} cautions={gen?.cautions ?? []} started={false} />
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <span className="text-[11px] font-medium">Check before spending more:</span>
           <Select value={checkpoint} onValueChange={(v) => setCheckpoint(v as typeof checkpoint)}>
@@ -1069,9 +1191,24 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
 
   const final = gen?.final ?? null;
   const allClips = clips.length > 0 && finished === clips.length;
+  const isClean = final?.mode === "clean";
+  const reworded = gen?.plan?.narrationChanges ?? [];
+  const overridden = final?.override?.findings ?? (final?.acceptedAnyway ? (final.report?.findings.filter((f) => f.severity !== "minor") ?? []) : []);
 
   return (
     <div className="space-y-3">
+      <JobFiles files={gen?.assets ?? []} cautions={gen?.cautions ?? []} started />
+      {reworded.length ? (
+        <div className="space-y-1 rounded-md border border-border p-3 text-xs">
+          <p className="font-medium">Spoken lines that were reworded</p>
+          <p className="text-[11px] text-muted">They pointed at an image, and a clean video shows none, so each was reworded to make sense on its own.</p>
+          {reworded.map((c) => (
+            <p key={c.scene} className="text-[11px]">
+              Scene {c.scene}: <span className="text-muted line-through">{c.was}</span> {c.now}
+            </p>
+          ))}
+        </div>
+      ) : null}
       {status === "paused" && gen?.decision ? (
         <DecisionCard
           decision={gen.decision}
@@ -1124,7 +1261,7 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
           <Loader2 className="h-4 w-4 animate-spin" />
           <span>
             Finishing the video{final?.stage ? `: ${final.stage}` : ""}…
-            <span className="block text-[11px] text-muted">Joining the clips, timing the captions to the voice, adding your graphics, then checking the result. About a minute.</span>
+            <span className="block text-[11px] text-muted">Joining the clips, levelling the sound, timing the subtitle files to the voice, writing the placement plan, then checking the result. Nothing is drawn onto the video. About a minute.</span>
           </span>
         </div>
       ) : null}
@@ -1132,13 +1269,26 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
       {final?.state === "done" && final.videoUrl ? (
         <div className="space-y-3 rounded-md border border-accent/40 p-3">
           {final.acceptedAnyway ? (
-            <p className="rounded-md bg-amber-500/10 p-2 text-[11px] text-amber-500">
-              You chose to use this video although the inspection did not approve it{final.report?.findings.filter((f) => f.severity !== "minor").length ? `: ${final.report.findings.filter((f) => f.severity !== "minor").slice(0, 3).map((f) => f.message).join(" ")}` : "."}
-            </p>
+            <div className="space-y-1 rounded-md bg-amber-500/10 p-2 text-[11px] text-amber-500">
+              <p className="font-medium">Approved by you despite warnings{final.override?.at ? ` on ${new Date(final.override.at).toLocaleString()}` : ""}. It did not pass every check.</p>
+              {overridden.length ? (
+                <ul className="list-disc space-y-0.5 pl-4">
+                  {overridden.slice(0, 8).map((f, i) => (
+                    <li key={f.code + i}>
+                      {f.severity}: {f.message}
+                      {f.atSeconds !== undefined ? ` (${f.atSeconds.toFixed(1)}s)` : ""}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              {overridden.length > 8 ? <p>And {overridden.length - 8} more, kept with the video.</p> : null}
+            </div>
           ) : null}
-          <p className="flex items-center gap-2 text-sm font-medium">
-            <Check className="h-4 w-4 text-accent" /> Finished video · {final.seconds}s · {final.width}x{final.height}
+          <p className="flex flex-wrap items-center gap-2 text-sm font-medium">
+            {final.acceptedAnyway ? <AlertTriangle className="h-4 w-4 text-amber-500" /> : <Check className="h-4 w-4 text-accent" />} {isClean ? "Clean video" : "Earlier export, with graphics burned in"} · {final.seconds}s · {final.width}x{final.height}
+            <CheckBadge status={final.checkStatus ?? (final.acceptedAnyway ? "approved_despite_warnings" : "passed")} />
           </p>
+          {!isClean ? <p className="text-[11px] text-muted">This export was made before clean video. Finish the video again below to get a clean MP4 with the subtitles, transcript and placement plan supplied separately.</p> : null}
           <div className="grid gap-4 md:grid-cols-[minmax(0,320px)_1fr]">
             {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
             <video src={final.videoUrl} controls playsInline preload="metadata" className="aspect-[9/16] max-h-[560px] w-full rounded-md bg-black object-contain" />
@@ -1147,7 +1297,7 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
                 <Button size="sm" asChild>
                   <a href={`${final.videoUrl.split("?")[0]}?download=1`} download>
                     <Download className="mr-1 h-3.5 w-3.5" />
-                    Download MP4
+                    {isClean ? "Download clean MP4" : "Download MP4"}
                   </a>
                 </Button>
                 {final.srtUrl ? (
@@ -1160,15 +1310,61 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
                     <a href={final.vttUrl} download>Subtitles (VTT)</a>
                   </Button>
                 ) : null}
+                {final.transcriptUrl ? (
+                  <Button size="sm" variant="secondary" asChild>
+                    <a href={final.transcriptUrl} download>Transcript</a>
+                  </Button>
+                ) : null}
+                {final.planUrl ? (
+                  <Button size="sm" variant="secondary" asChild>
+                    <a href={final.planUrl} download>Text and asset placement plan</a>
+                  </Button>
+                ) : null}
+                {final.planJsonUrl ? (
+                  <Button size="sm" variant="ghost" asChild>
+                    <a href={final.planJsonUrl} download>Plan as JSON</a>
+                  </Button>
+                ) : null}
               </div>
+              {isClean ? (
+                <div className="space-y-1 rounded-md border border-border p-2">
+                  <p className="text-[11px] font-medium">Original files, to add by hand</p>
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px]">
+                    {logoDownloadUrl ? (
+                      <a href={logoDownloadUrl} download className="text-accent underline">
+                        Logo (original file)
+                      </a>
+                    ) : (
+                      <span className="text-muted">No logo file is available.</span>
+                    )}
+                    {(gen?.assets ?? []).map((f) =>
+                      f.available ? (
+                        <a key={f.id} href={f.downloadUrl} download className="text-accent underline" title={f.sha256 ? `SHA-256 ${f.sha256}` : undefined}>
+                          {f.name}
+                        </a>
+                      ) : (
+                        <span key={f.id} className="text-destructive">
+                          {f.name} (missing from storage)
+                        </span>
+                      ),
+                    )}
+                  </div>
+                </div>
+              ) : null}
+              {isClean ? (
+                <p className="text-muted">
+                  In the MP4: the footage and its sound. Not in the MP4: subtitles, logo, on-screen text, proof images and an end card. The subtitle files{final.subtitleCues ? ` (${final.subtitleCues} cues)` : ""} follow the final audio
+                  {final.includes?.captionTiming === "estimated" ? " (the speech could not be located, so their timing is estimated)" : ""}, and the placement plan suggests {final.suggestedOverlays ?? 0} piece{final.suggestedOverlays === 1 ? "" : "s"} of on-screen text with times from this export.
+                </p>
+              ) : null}
               {final.speech?.measuredSeconds ? (
                 <p className="text-muted">
                   Narration measured from the audio: {final.speech.measuredSeconds}s{final.speech.estimatedSeconds ? ` (the script estimated ${Math.round(final.speech.estimatedSeconds)}s)` : ""}.
                 </p>
               ) : null}
-              {final.brand ? <p className="text-muted">Brand on screen: {final.brand.name ?? "none"}{final.brand.logo ? ", with the verified logo" : final.brand.textOnly ? ", as text (no logo)" : ""}.</p> : null}
+              {final.brand && !isClean ? <p className="text-muted">Brand on screen: {final.brand.name ?? "none"}{final.brand.logo ? ", with the verified logo" : final.brand.textOnly ? ", as text (no logo)" : ", with no logo"}.</p> : null}
               <div className="space-y-1">
-                <p className="text-[11px] font-medium">Checked before showing you</p>
+                <p className="text-[11px] font-medium">{final.acceptedAnyway ? "What the inspection found (you approved it anyway)" : "Checked before showing you"}</p>
                 <ul className="space-y-1">
                   {final.qa.map((c) => (
                     <li key={c.name} className={cn("flex gap-1.5", c.ok ? "text-muted" : "text-amber-500")}>
@@ -1180,9 +1376,9 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
                   ))}
                 </ul>
               </div>
-              {final.includes ? (
+              {final.includes && !isClean ? (
                 <p className="text-muted">
-                  Includes: {[final.includes.captions ? (final.includes.captionTiming === "transcript" ? "captions timed to the voice" : "captions (timing estimated)") : null, final.includes.logo ? "logo" : null, final.includes.stats ? `${final.includes.stats} stat${final.includes.stats === 1 ? "" : "s"}` : null, final.includes.images ? `${final.includes.images} of your image${final.includes.images === 1 ? "" : "s"}` : null, final.includes.endCard ? "end card" : null].filter(Boolean).join(", ")}.
+                  Burned into this file: {[final.includes.captions ? (final.includes.captionTiming === "transcript" ? "captions timed to the voice" : "captions (timing estimated)") : null, final.includes.logo ? "logo" : null, final.includes.stats ? `${final.includes.stats} stat${final.includes.stats === 1 ? "" : "s"}` : null, final.includes.images ? `${final.includes.images} of your image${final.includes.images === 1 ? "" : "s"}` : null, final.includes.endCard ? "end card" : null].filter(Boolean).join(", ")}.
                 </p>
               ) : null}
             </div>
@@ -1230,10 +1426,10 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
 
       {allClips && status !== "assembling" && status !== "generating" ? (
         <div className="space-y-2">
-          <FinishingOptions value={finishing} onChange={setFinishing} />
-          <Button size="sm" variant={final?.state === "done" ? "secondary" : "default"} disabled={starting} onClick={() => void post({ action: "assemble", finishing }, () => setStarting(true), () => setStarting(false), "assembling")}>
+          <CleanVideoNote />
+          <Button size="sm" variant={final?.state === "done" ? "secondary" : "default"} disabled={starting} onClick={() => void post({ action: "assemble" }, () => setStarting(true), () => setStarting(false), "assembling")}>
             {starting ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Film className="mr-1 h-3.5 w-3.5" />}
-            {final?.state === "done" ? "Finish the video again with these options" : "Join the clips and finish the video"}
+            {final?.state === "done" ? (isClean ? "Finish the clean video again" : "Finish it again as a clean video") : "Join the clips into the clean video"}
           </Button>
         </div>
       ) : null}
@@ -1277,7 +1473,7 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
               <span className="font-medium">
                 Clip {c.number} · {c.seconds}s
               </span>
-              <Badge variant={c.status === "failed" ? "danger" : "secondary"}>{c.status === "waiting" ? ((c.qaAttempts ?? 0) > 0 ? "Making again" : "Waiting") : c.status === "running" ? "Making" : c.status === "reviewing" ? "Inspecting" : c.status === "succeeded" ? (c.acceptedWithIssues ? "Used as it is" : "Done") : c.unresolved ? "Not approved" : "Failed"}</Badge>
+              <Badge variant={c.status === "failed" ? "danger" : c.acceptedWithIssues ? "warning" : "secondary"}>{c.status === "waiting" ? ((c.qaAttempts ?? 0) > 0 ? "Making again" : "Waiting") : c.status === "running" ? "Making" : c.status === "reviewing" ? "Inspecting" : c.status === "succeeded" ? (c.acceptedWithIssues ? "Approved by you despite warnings" : c.checkStatus === "passed" ? "Passed its checks" : "Done") : c.unresolved ? "Issues detected" : "Failed"}</Badge>
             </div>
             <p className="text-[11px] text-muted">
               Scenes {c.sceneNumbers[0]}
@@ -1308,6 +1504,7 @@ function GenerationPanel({ projectId, status, initial, onStatus }: { projectId: 
                     {f.atSeconds !== undefined ? ` (${f.atSeconds.toFixed(1)}s)` : ""}
                   </li>
                 ))}
+                {c.acceptedWithIssues ? <li className="text-amber-500">You used this clip with {c.override?.findings.length ?? c.qa.findings.filter((f) => f.severity !== "minor").length} open finding(s){c.override?.at ? ` on ${new Date(c.override.at).toLocaleString()}` : ""}. It is not counted as passed.</li> : null}
               </ul>
             ) : c.qa ? (
               <p className="text-[11px] text-muted">Inspected {c.qa.framesInspected} frames: no problems found.</p>
@@ -1889,7 +2086,7 @@ function VideoInner() {
 
                 <div className="space-y-2">
                   <p className="text-[11px] font-medium">Images to use in the video (screenshots of results, stats, product)</p>
-                  <p className="text-[11px] text-muted">We read each image automatically and pick its main stat (you can change it). The script says that stat, and the image is shown on screen when it is said. PNG, JPG or WebP, up to 8.</p>
+                  <p className="text-[11px] text-muted">We read each image automatically and pick its main stat (you can change it). The script says that stat. The image itself is not put into the video: it is kept exactly as uploaded and handed back with a note on where it could go. PNG, JPG or WebP, up to 8.</p>
                   <div className="flex flex-wrap gap-2">
                     {images.map((img, i) => (
                       <div key={i} className="relative">
@@ -2066,7 +2263,7 @@ function VideoInner() {
                   ) : null}
                   <BrandCheckCard projectId={view.id} brand={view.brandCheck} onChanged={(b) => setView((v) => (v ? { ...v, brandCheck: b } : v))} />
                   {view.creative ? <PlanCard creative={view.creative} /> : null}
-                  <GenerationPanel projectId={view.id} status={view.status} initial={view.generation} onStatus={setProjectStatus} />
+                  <GenerationPanel projectId={view.id} status={view.status} initial={view.generation} onStatus={setProjectStatus} logoDownloadUrl={view.brandCheck?.checked ? (view.brandCheck.logo?.downloadUrl ?? null) : null} />
                 </CardContent>
               </Card>
               <ScriptBody script={view.chosenScript} assets={view.assets} />
@@ -2094,7 +2291,13 @@ function VideoInner() {
                           <img src={a.url} alt={a.name} className="h-16 w-16 shrink-0 rounded object-cover" />
                           <div className="min-w-0 space-y-1 text-xs">
                             <p className="truncate font-medium">{a.name}</p>
-                            <p className="text-muted">{a.summary || (a.analysed ? "No description" : "Could not be read, so it is shown but no stats were taken from it.")}</p>
+                            <p className="text-muted">{a.summary || (a.analysed ? "No description" : "Could not be read, so no stats were taken from it.")}</p>
+                            {a.dateRange ? <p className="text-[11px] text-muted">Period shown in the image: {a.dateRange}</p> : null}
+                            {a.cautions?.map((c) => (
+                              <p key={c} className="flex gap-1 text-[11px] text-amber-500">
+                                <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" /> {c}
+                              </p>
+                            ))}
                             <div className="flex flex-wrap gap-1">
                               {a.stats.length ? (
                                 a.stats.map((s, i) => {
@@ -2317,7 +2520,7 @@ function VideoInner() {
                                   </SelectContent>
                                 </Select>
                               </Field>
-                              <Field label="What is said (exact words)" hint={draft.source === "uploaded" ? "Your words. Change them only if you want to." : "Spoken aloud and used for the captions"}>
+                              <Field label="What is said (exact words)" hint={draft.source === "uploaded" ? "Your words. Change them only if you want to." : "Spoken aloud. It is heard, not shown: the subtitle files are made from it."}>
                                 <Textarea className="min-h-[72px] text-xs" value={draft.scenes[i]!.line} onChange={(e) => editScene(i, { line: e.target.value })} />
                               </Field>
                               {draft.scenes[i]!.originalLine && draft.scenes[i]!.originalLine !== draft.scenes[i]!.line ? (
@@ -2329,14 +2532,14 @@ function VideoInner() {
                                 </div>
                               ) : null}
                               <div className="grid grid-cols-2 gap-2">
-                                <Field label="Words to highlight" hint="Up to 3, comma separated">
+                                <Field label="Words that could be emphasised (optional, added by hand)" hint="Up to 3, comma separated. Not shown in the video.">
                                   <Input className="text-xs" value={draft.scenes[i]!.keywords.join(", ")} onChange={(e) => editScene(i, { keywords: e.target.value.split(",").map((k) => k.trim()).filter(Boolean).slice(0, 3) })} placeholder="e.g. free audit" />
                                 </Field>
-                                <Field label="Big stat on screen" hint="Only a real number">
+                                <Field label="Figure that could be shown (optional, added by hand)" hint="Only a real number. Not shown in the video.">
                                   <Input className="text-xs" value={draft.scenes[i]!.stat ?? ""} onChange={(e) => editScene(i, { stat: e.target.value.trim() ? e.target.value : null })} placeholder="e.g. 255%" />
                                 </Field>
                               </div>
-                              <Field label="Your image shown in this scene">
+                              <Field label="Your image that belongs with this scene (not put in the video)">
                                 <Select value={draft.scenes[i]!.assetId ?? "none"} onValueChange={(v) => editScene(i, { assetId: v === "none" ? null : v })}>
                                   <SelectTrigger className="h-9 text-xs">
                                     <SelectValue />
@@ -2367,7 +2570,8 @@ function VideoInner() {
                     </div>
 
                     <div className="space-y-2 rounded-md border border-border p-3">
-                      <p className="text-sm font-medium">What appears on screen, and when</p>
+                      <p className="text-sm font-medium">Optional on-screen text and images, to add by hand</p>
+            <p className="text-[11px] text-muted">None of this is in the video. It is kept apart from what is spoken and goes into the placement plan, with times from the finished video.</p>
                       {events.length ? (
                         <ul className="space-y-1 text-xs text-muted">
                           {events.map((e, i) => (
@@ -2375,7 +2579,7 @@ function VideoInner() {
                           ))}
                         </ul>
                       ) : (
-                        <p className="text-xs text-muted">No highlights, stats or images yet. Add them in the scenes above.</p>
+                        <p className="text-xs text-muted">Nothing suggested. The video does not need any.</p>
                       )}
                     </div>
 
@@ -2475,7 +2679,8 @@ function ScriptBody({ script, assets }: { script: Script; assets: Asset[] }) {
         </div>
         {events.length ? (
           <div className="space-y-1">
-            <p className="text-sm font-medium">What appears on screen, and when</p>
+            <p className="text-sm font-medium">Optional on-screen text and images, to add by hand</p>
+            <p className="text-[11px] text-muted">None of this is in the video. It is kept apart from what is spoken and goes into the placement plan, with times from the finished video.</p>
             <ul className="space-y-1 text-xs text-muted">
               {events.map((e, i) => (
                 <li key={i}>{describeEvent(e, name)}</li>

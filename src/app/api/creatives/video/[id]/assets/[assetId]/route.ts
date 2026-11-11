@@ -4,22 +4,32 @@ import { getObjectStorage } from "@/lib/storage/r2";
 import { z } from "zod";
 import { getProject, updateProject } from "@/lib/video/projects";
 import { pickMainStat } from "@/lib/video/required-stats";
+import { jobAssets, sha256 } from "@/lib/video/assets";
 import { jsonOk, parseBody, withApiHandler } from "@/lib/api/response";
 
 type Ctx = { params: Promise<{ id: string; assetId: string }> };
 
-/** An image the operator uploaded for the video, served to people with access to the client. */
-export async function GET(_request: Request, ctx: Ctx) {
+/**
+ * An image the operator uploaded for the video: the exact original bytes, for the thumbnail in the
+ * job details and, with `?download=1`, as the file to add to a clean video by hand (under its own
+ * file name). It is looked up by its id among the files this video was started with, never by name,
+ * and a stored copy whose checksum no longer matches is refused rather than served as the original.
+ */
+export async function GET(request: Request, ctx: Ctx) {
   const user = await getCurrentUser();
   assertAuthenticated(user);
   const { id, assetId } = await ctx.params;
   const project = await getProject(id);
-  const asset = project?.assets.find((a) => a.id === assetId);
-  if (!project || !asset) return new Response("Not found", { status: 404 });
+  if (!project) return new Response("Not found", { status: 404 });
+  const asset = jobAssets(project).find((a) => a.id === assetId) ?? project.assets.map((a) => ({ id: a.id, name: a.name, key: a.key, mime: a.mime, sha256: a.sha256 ?? null })).find((a) => a.id === assetId);
+  if (!asset) return new Response("Not found", { status: 404 });
   await assertClientAccess(user.id, project.client_id);
   const bytes = await getObjectStorage().get(asset.key);
-  if (!bytes) return new Response("Not found", { status: 404 });
-  return new Response(new Uint8Array(bytes), { headers: { "Content-Type": asset.mime, "Cache-Control": "private, max-age=3600" } });
+  if (!bytes) return new Response(`The uploaded file "${asset.name}" is no longer in storage.`, { status: 404 });
+  if (asset.sha256 && sha256(bytes) !== asset.sha256) return new Response(`The stored copy of "${asset.name}" is not the file that was uploaded.`, { status: 409 });
+  const headers: Record<string, string> = { "Content-Type": asset.mime, "Cache-Control": "private, max-age=3600" };
+  if (new URL(request.url).searchParams.has("download")) headers["Content-Disposition"] = `attachment; filename="${asset.name.replace(/[^\w .()-]/g, "_")}"`;
+  return new Response(new Uint8Array(bytes), { headers });
 }
 
 const mainStatBody = z.object({ value: z.string().min(1).max(60) });

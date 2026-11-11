@@ -10,8 +10,9 @@ type Ctx = { params: Promise<{ id: string }> };
 /**
  * The finished video, for the player and for download. A video that failed a critical check is
  * never served as the finished video: only `?review=1` shows it, to see what failed, and it is not
- * offered for download. `?subtitles=srt|vtt` serves the subtitle file made from the same timing as
- * the burned-in captions.
+ * offered for download. `?subtitles=srt|vtt` serves the subtitle file timed to this export's audio,
+ * and `?file=transcript|plan|plan-json` the transcript and the placement plan handed over beside a
+ * clean video. None of those is inside the MP4.
  */
 export async function GET(request: Request, ctx: Ctx) {
   const user = await getCurrentUser();
@@ -38,6 +39,18 @@ export async function GET(request: Request, ctx: Ctx) {
     });
   }
 
+  const file = params.get("file");
+  if (file === "transcript" || file === "plan" || file === "plan-json") {
+    if (final.state !== "done" || !final.deliverables) return new Response("Not found", { status: 404 });
+    const d = final.deliverables;
+    const bytes = await storage.get(file === "transcript" ? d.transcriptKey : file === "plan" ? d.planTextKey : d.planJsonKey);
+    if (!bytes) return new Response("Not found", { status: 404 });
+    const name = file === "transcript" ? `${slug}-transcript.txt` : file === "plan" ? `${slug}-placement-plan.txt` : `${slug}-placement-plan.json`;
+    return new Response(new Uint8Array(bytes), {
+      headers: { "Content-Type": file === "plan-json" ? "application/json; charset=utf-8" : "text/plain; charset=utf-8", "Content-Disposition": `attachment; filename="${name}"` },
+    });
+  }
+
   if (params.get("review") === "1") {
     if (!final.reviewKey) return new Response("Not found", { status: 404 });
     const bytes = await storage.get(final.reviewKey);
@@ -49,5 +62,5 @@ export async function GET(request: Request, ctx: Ctx) {
   if (final.state !== "done" || !final.key) return new Response("This video has not passed its checks.", { status: 409 });
   const bytes = await storage.get(final.key);
   if (!bytes) return new Response("Not found", { status: 404 });
-  return streamVideo(request, bytes, `${slug}.mp4`);
+  return streamVideo(request, bytes, final.mode === "clean" ? `${slug}-clean.mp4` : `${slug}.mp4`);
 }

@@ -17,7 +17,10 @@ import {
 import { createReferenceImage } from "@/lib/video/seedream";
 import { assembleVideo } from "@/lib/video/assemble";
 import { generationRatio, previewPlan } from "@/lib/video/plan-view";
-import { DEFAULT_FINISHING, type Checkpoint, type ClipState, type Finishing, type GenerationPlan, type GenerationView } from "@/lib/video/generation-types";
+import type { AssetView, CheckStatus, Checkpoint, ClipState, FinalVideo, GenerationPlan, GenerationView, OverrideRecord } from "@/lib/video/generation-types";
+import { resolveFinishing, type FinishingInput } from "@/lib/video/clean-mode";
+import { assetCautions, jobAssets, snapshotAssets, snapshotLogo } from "@/lib/video/assets";
+import { narrationCautions } from "@/lib/video/evidence";
 import { claimProjectLease, getProject, releaseProjectLease, updateProject, type VideoProject } from "@/lib/video/projects";
 import { buildPlannedClipPrompt } from "@/lib/video/clip-prompt";
 import { effectiveClaims } from "@/lib/video/claims";
@@ -37,8 +40,9 @@ import {
   reviewDownloadedClip,
   secondsToAdd,
   spentUsd,
+  videoMode,
 } from "@/lib/video/pipeline";
-import { hasCritical, type CreativePlan, type QaReport } from "@/lib/video/pipeline-types";
+import { hasCritical, type CreativePlan, type QaFinding, type QaReport } from "@/lib/video/pipeline-types";
 
 /** A reference image or clip address from ModelArk stops working after 24 hours; stop using one well before. */
 const FRESH_MS = 20 * 60 * 60 * 1000;
@@ -52,8 +56,8 @@ const fresh = (iso: string | null | undefined, now = Date.now()) => Boolean(iso)
 /** Why a video cannot be made right now, or null. */
 export function blockedReason(project: VideoProject): string | null {
   if (!project.chosen_script) return "Confirm a script first.";
-  // Nothing is generated from an unverified brand: a wrong name or an invented logo is far costlier than a pause.
-  const brand = brandBlockers(project.brand?.manifest);
+  // Nothing is generated from an unverified brand: a wrong name is far costlier than a pause. (A clean video shows no logo, so a missing one does not hold it up.)
+  const brand = brandBlockers(project.brand?.manifest, videoMode(project));
   if (brand) return brand;
   const claims = claimBlockers(project.chosen_script, project.brand!.manifest!, effectiveClaims(project.brand));
   if (claims) return claims;
@@ -68,7 +72,7 @@ export function blockedReason(project: VideoProject): string | null {
 }
 
 /** The plan and the empty clip list for a confirmed script. */
-export function buildPlan(project: VideoProject, finishing: Finishing = DEFAULT_FINISHING, checkpoint: Checkpoint = "after_first"): { plan: GenerationPlan; clips: ClipState[] } {
+export function buildPlan(project: VideoProject, finishing: FinishingInput = {}, checkpoint: Checkpoint = "after_first"): { plan: GenerationPlan; clips: ClipState[] } {
   const script = project.chosen_script;
   if (!script) throw new Error("Confirm a script first.");
   const preview = previewPlan(script, project.inputs, project.assets.length);
@@ -86,7 +90,8 @@ export function buildPlan(project: VideoProject, finishing: Finishing = DEFAULT_
     character: null,
     setting: null,
     chainVideo,
-    finishing,
+    // Clean unless graphics were asked for by name. A new video never inherits the finishing of an earlier one.
+    finishing: resolveFinishing(finishing),
     checkpoint,
     budgetUsd: budgetFor(preview.estimatedUsd),
     createdAt: new Date().toISOString(),
@@ -110,11 +115,37 @@ export function buildPlan(project: VideoProject, finishing: Finishing = DEFAULT_
   return { plan, clips };
 }
 
-export async function startGeneration(projectId: string, finishing: Finishing = DEFAULT_FINISHING, checkpoint: Checkpoint = "after_first"): Promise<VideoProject> {
+export async function startGeneration(projectId: string, finishing: FinishingInput = {}, checkpoint: Checkpoint = "after_first"): Promise<VideoProject> {
   const project = await getProject(projectId);
   if (!project) throw new Error("Video project not found");
   const { plan, clips } = buildPlan(project, finishing, checkpoint);
+  // The files selected for this video are fixed here, by id, version and checksum. Whatever is uploaded or changed on the project later, this video keeps using exactly these.
+  plan.assets = await snapshotAssets(project.assets);
+  plan.logo = await snapshotLogo(project.brand?.manifest);
   return updateProject(projectId, { plan, clips, final: null, status: "generating", error: null });
+}
+
+/** What was open on a clip or an export when the operator approved it anyway. */
+export function overrideRecord(findings: QaFinding[] | undefined, limitations: string[] | undefined, by: string | null, now = new Date().toISOString()): OverrideRecord {
+  const open = (findings ?? []).filter((f) => f.severity !== "minor").map((f) => ({ code: f.code, severity: f.severity, message: f.message, ...(f.atSeconds !== undefined ? { atSeconds: f.atSeconds } : {}) }));
+  // An inspection that could not run leaves no findings: what was overridden is then that it was never inspected.
+  const none = !open.length && (limitations ?? []).length ? [{ code: "not_inspected", severity: "major" as const, message: `Approved without a completed inspection: ${(limitations ?? []).join(" ")}` }] : [];
+  return { at: now, by, findings: [...open, ...none] };
+}
+
+/** How a clip stands. One the operator used despite findings is never reported as having passed. */
+export function clipCheckStatus(clip: Pick<ClipState, "status" | "qa" | "acceptedWithIssues" | "unresolved" | "decision">): CheckStatus {
+  if (clip.acceptedWithIssues) return "approved_despite_warnings";
+  if (clip.decision || clip.unresolved) return "issues";
+  if (!clip.qa) return "unchecked";
+  return clip.qa.verdict === "pass" ? "passed" : "issues";
+}
+
+export function finalCheckStatus(final: Pick<FinalVideo, "state" | "report" | "acceptedAnyway">): CheckStatus {
+  if (final.acceptedAnyway) return "approved_despite_warnings";
+  if (final.state === "blocked") return "issues";
+  if (final.state !== "done") return "unchecked";
+  return final.report ? (final.report.verdict === "pass" ? "passed" : "issues") : "unchecked";
 }
 
 /** A clip's request built from the creative plan: per-scene briefs, the references each scene needs, the speech text, and corrections. */
@@ -154,6 +185,8 @@ function buildPlannedClipRequest(project: VideoProject, plan: GenerationPlan, cl
     refs: { characterIds: chosenPeople.map((r) => r.id), environmentIds: chosenPlaces.map((r) => r.id), previousFrame: Boolean(previousFrame), previousVideo: Boolean(previousVideo) },
     corrections: clip.corrections ?? [],
     nextContinues,
+    // A clean video's footage is the finished picture: the prompt then says nothing about graphics, even for a plan made before clean video existed.
+    clean: videoMode(project) === "clean",
   });
   const content: ArkContent[] = [{ type: "text", text: prompt }];
   for (const url of [...chosenPeople.map((r) => r.url), ...chosenPlaces.map((r) => r.url), previousFrame]) {
@@ -287,6 +320,7 @@ export async function step(projectId: string, now = Date.now()): Promise<StepRes
       plan.creative = prepared.creative;
       plan.speech = prepared.speech;
       plan.capabilities = prepared.capabilities;
+      plan.narrationChanges = prepared.narrationChanges;
       plan.references = { characters: {}, environments: {} };
       plan.character = null;
       plan.setting = null;
@@ -578,7 +612,7 @@ export type DecisionChoice = "remake" | "use" | "inspect";
  * - use: keep the clip as it is and carry on. The findings stay on the clip and are not hidden.
  * - inspect: look at the same clip again (no video is paid for); for when the inspection itself could not run.
  */
-export async function resolveDecision(projectId: string, clipNumber: number, choice: DecisionChoice): Promise<VideoProject> {
+export async function resolveDecision(projectId: string, clipNumber: number, choice: DecisionChoice, by: string | null = null): Promise<VideoProject> {
   const project = await getProject(projectId);
   if (!project?.plan || !project.clips) throw new Error("There is nothing to decide.");
   if (project.status !== "paused" && project.status !== "stopped") throw new Error("This video is not waiting for a decision.");
@@ -594,6 +628,8 @@ export async function resolveDecision(projectId: string, clipNumber: number, cho
     clip.approved = true;
     clip.unresolved = false;
     clip.acceptedWithIssues = true;
+    // The clip did not pass: what was open is kept beside the approval, so it is never shown as a clip that passed.
+    clip.override = overrideRecord(clip.qa?.findings, clip.qa?.limitations, by);
     clip.decision = null;
     clip.error = null;
     clip.corrections = [];
@@ -651,11 +687,13 @@ export async function resolveDecision(projectId: string, clipNumber: number, cho
 }
 
 /** The operator delivers an export the inspection blocked: it becomes the finished video, with the findings kept on record. */
-export async function acceptBlockedFinal(projectId: string): Promise<VideoProject> {
+export async function acceptBlockedFinal(projectId: string, by: string | null = null): Promise<VideoProject> {
   const project = await getProject(projectId);
   const final = project?.final;
   if (!project || !final || final.state !== "blocked" || !final.reviewKey) throw new Error("There is no blocked export to use.");
-  return updateProject(projectId, { final: { ...final, state: "done", key: final.reviewKey, reviewKey: null, error: null, acceptedAnyway: true }, status: "done", error: null });
+  // Only a person does this, and only for the export they are looking at. The inspection's findings stay on the video with the approval.
+  const override = overrideRecord(final.report?.findings, final.report?.limitations, by);
+  return updateProject(projectId, { final: { ...final, state: "done", key: final.reviewKey, reviewKey: null, error: null, acceptedAnyway: true, override }, status: "done", error: null });
 }
 
 /**
@@ -670,7 +708,7 @@ export async function regenerateFrom(projectId: string, fromClip: number, option
     if (c.number < fromClip) return c;
     if (c.videoKey) void storage.delete(c.videoKey).catch(() => undefined);
     // The attempt log stays: what a rejected take cost and why it was rejected is part of the video's history.
-    return { ...c, approved: false, status: "waiting" as const, taskId: null, attempts: 0, error: null, videoKey: null, lastFrameUrl: null, sourceVideoUrl: null, finishedAt: null, tokens: null, usd: null, prompt: null, qa: null, corrections: [], qaAttempts: 0, redesigns: 0, unresolved: false, decision: null, acceptedWithIssues: false };
+    return { ...c, approved: false, status: "waiting" as const, taskId: null, attempts: 0, error: null, videoKey: null, lastFrameUrl: null, sourceVideoUrl: null, finishedAt: null, tokens: null, usd: null, prompt: null, qa: null, corrections: [], qaAttempts: 0, redesigns: 0, unresolved: false, decision: null, acceptedWithIssues: false, override: null };
   });
   // From clip 1 the references are made fresh too, so a new take starts from new, matching people and places.
   const replan = Boolean(options.replan) && fromClip === 1;
@@ -682,6 +720,11 @@ export async function regenerateFrom(projectId: string, fromClip: number, option
     // A new plan is made from scratch only when asked for; otherwise the approved plan is kept and only the shots are made again.
     creative: replan ? null : project.plan.creative,
     speech: replan ? null : project.plan.speech,
+    // New footage is always clean footage: an older video's captions, logo or end-card settings are not carried into it.
+    finishing: resolveFinishing(project.plan.finishing?.mode ? project.plan.finishing : null),
+    // A video started before files were snapshotted gets its snapshot now; one that has a snapshot keeps it.
+    assets: project.plan.assets ?? (await snapshotAssets(project.assets)),
+    logo: project.plan.logo === undefined ? await snapshotLogo(project.brand?.manifest) : project.plan.logo,
   };
   return updateProject(projectId, { clips, plan, final: null, status: "generating", error: null });
 }
@@ -701,12 +744,26 @@ export function viewGeneration(raw: VideoProject): GenerationView {
   const project = effectiveProject(raw);
   const clips = project.clips ?? [];
   const status = project.status === "generating" ? "generating" : project.status === "clips_ready" ? "clips_ready" : project.status === "paused" ? "paused" : project.status === "stopped" ? "stopped" : project.status === "assembling" ? "assembling" : project.status === "done" ? "done" : project.status === "failed" && clips.length ? "failed" : "idle";
+  const currentById = new Map(project.assets.map((a) => [a.id, a]));
+  const assets: AssetView[] = jobAssets(project).map((a) => {
+    const url = `/api/creatives/video/${project.id}/assets/${a.id}?v=${a.version}${a.sha256 ? `-${a.sha256.slice(0, 8)}` : ""}`;
+    const current = currentById.get(a.id);
+    return { id: a.id, name: a.name, purpose: a.purpose, version: a.version, sha256: a.sha256, bytes: a.bytes, url, downloadUrl: `${url}&download=1`, available: a.sha256 !== null || !project.plan?.assets, cautions: current ? assetCautions(current).map((c) => c.message) : [] };
+  });
+  const lines = (project.chosen_script?.scenes ?? []).filter((s) => s.line.trim()).map((s) => ({ sceneNumber: s.number, text: s.line }));
+  const cautions = [...project.assets.flatMap((a) => assetCautions(a).map((c) => `${a.name}: ${c.message}`)), ...narrationCautions(lines, project.assets.map((a) => a.analysis))];
   return {
     status,
+    assets,
+    cautions,
+    // Files kept on this server's own disk are lost on a restart or redeploy: the screen says so before a video is relied on.
+    storageDurable: getObjectStorage().name !== "LocalMockStorage",
     // The reference images' addresses and the prompts stay on the server.
     plan: project.plan
-      ? (({ speech, ...rest }) => ({
+      ? // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the storage keys of the files and the logo stay on the server
+        (({ speech, assets: _files, logo: _logo, ...rest }) => ({
           ...rest,
+          finishing: resolveFinishing(rest.finishing?.mode ? rest.finishing : null),
           references: undefined,
           character: Boolean(project.plan!.character),
           setting: Boolean(project.plan!.setting),
@@ -726,6 +783,9 @@ export function viewGeneration(raw: VideoProject): GenerationView {
       redesigns: c.redesigns,
       unresolved: c.unresolved,
       approved: c.approved,
+      acceptedWithIssues: c.acceptedWithIssues,
+      override: c.override ?? null,
+      checkStatus: clipCheckStatus(c),
       error: c.error,
       finishedAt: c.finishedAt,
       tokens: c.tokens,
@@ -759,11 +819,17 @@ export function viewGeneration(raw: VideoProject): GenerationView {
       return Math.round(left.reduce((t, c) => t + estimateClipUsd(plan.model as SeedanceModelKey, plan.resolution as VideoResolution, plan.ratio as "9:16", c.seconds, plan.chainVideo && c.number > 1 ? (clips[c.number - 2]?.seconds ?? 0) : 0), 0) * 100) / 100;
     })(),
     final: project.final
-      ? (({ key, reviewKey, subtitles, ...rest }) => {
+      ? (({ key, reviewKey, subtitles, deliverables, ...rest }) => {
           const v = encodeURIComponent(rest.createdAt ?? "");
           const base = `/api/creatives/video/${project.id}/final`;
+          const handedOver = deliverables && rest.state === "done";
           return {
             ...rest,
+            transcriptUrl: handedOver ? `${base}?file=transcript&v=${v}` : null,
+            planUrl: handedOver ? `${base}?file=plan&v=${v}` : null,
+            planJsonUrl: handedOver ? `${base}?file=plan-json&v=${v}` : null,
+            suggestedOverlays: deliverables?.overlays ?? 0,
+            checkStatus: finalCheckStatus({ state: rest.state, report: rest.report, acceptedAnyway: rest.acceptedAnyway }),
             videoUrl: key && rest.state === "done" ? `${base}?v=${v}` : null,
             reviewUrl: reviewKey ? `${base}?review=1&v=${v}` : null,
             srtUrl: subtitles && rest.state === "done" ? `${base}?subtitles=srt&v=${v}` : null,

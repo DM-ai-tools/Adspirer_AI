@@ -1,5 +1,6 @@
 import { mmss } from "@/lib/video/overlays";
 import { classifyStyle, clipVisual, SIMPLE_ACTION_RULE, STYLE_LOOKS, TEXT_FREE_RULE } from "@/lib/video/visual-rules";
+import { CLEAN_ENDING_RULE, CLEAN_FOOTAGE_RULE, footageOnly, graphicReference, stripGraphicPhrases } from "@/lib/video/clean-mode";
 import type { VideoScene, VideoScript } from "@/lib/video/script";
 import type { PlanCharacter, PlanEnvironment, SceneBrief } from "@/lib/video/pipeline-types";
 
@@ -137,14 +138,35 @@ export type PlannedClipPromptInput = {
   corrections: string[];
   /** True when the clip that follows opens from where this one ends. */
   nextContinues: boolean;
+  /**
+   * Clean video: the footage is the finished picture. The prompt then carries nothing about graphics
+   * (no "a graphic is added afterwards", no check that names an overlay, no style clause about a
+   * composited asset), because the video model draws whatever its prompt mentions.
+   */
+  clean?: boolean;
 };
+
+/** A footage field as it may be sent in a clean prompt: a sentence that mentions a graphic is dropped rather than sent. */
+function filmed(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (!graphicReference(flat)) return flat;
+  return flat
+    .split(/(?<=[.;!?])\s+|\s+[\u2014\u2013-]\s+/)
+    .filter((part) => part.trim() && !graphicReference(part))
+    .join(" ")
+    .trim();
+}
 
 /** Mentions in the prompt of the same person across clips ("Video 1") only make sense when that person also speaks here. */
 export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
   const { scenes, refs } = input;
   if (!scenes.length) throw new Error("A clip needs at least one scene.");
   const total = scenes.reduce((t, s) => t + s.seconds, 0);
-  const clean = (t: string) => t.replace(/\s+/g, " ").trim();
+  const isClean = Boolean(input.clean);
+  // In a clean video every footage field is passed through `filmed`, so a stray mention of a graphic never reaches the video model.
+  const clean = (t: string) => (isClean ? filmed(t) : t.replace(/\s+/g, " ").trim());
+  const style = isClean ? stripGraphicPhrases(input.style) || "Live action" : clean(input.style);
+  const isLastClip = input.clipNumber >= input.clipCount;
 
   // Assets are named by type and attach order: "Image 1", "Image 2", "Video 1".
   const imageLabels: Array<{ label: string; text: string }> = [];
@@ -167,7 +189,7 @@ export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
     ...people.map((c) => `Person (${c.id}): ${clean(c.description)}.`),
     !people.length ? "No person appears on camera in this clip; keep the look of every shot consistent." : null,
     speaks ? `Voice: the speaker's voice is the same in every shot, natural and conversational, with ${accentFor(input.locale)}, speaking at an easy pace, saying every word clearly and completely.` : null,
-    `Look: ${clean(input.style)}. Real skin texture, natural light, believable materials.`,
+    `Look: ${style}. Real skin texture, natural light, believable materials.`,
     "Hands, faces and objects are anatomically correct and undistorted; faces stay stable with no morphing, glowing marks or flicker.",
   ].filter((l): l is string => Boolean(l));
 
@@ -175,38 +197,43 @@ export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
   const shots = scenes.map((s) => {
     const range = `${offset}s-${offset + s.seconds}s`;
     offset += s.seconds;
+    // A field that had to be dropped from a clean prompt (it described a graphic) is replaced by a plain description, never left as a gap.
+    const or = (text: string, fallback: string) => clean(text).replace(/[.\s]+$/, "") || fallback;
     const parts = [
-      `${range}: Shot ${s.number}. ${clean(s.framing)} of ${clean(s.subject)} in ${clean(s.setting)}. Action: ${clean(s.action)}.`,
-      `Camera: ${clean(s.camera)}. Light: ${clean(s.lighting)}.`,
+      `${range}: Shot ${s.number}. ${or(s.framing, "Medium shot")} of ${or(s.subject, s.characterId ? "the person" : "the scene")} in ${or(s.setting, "the same place")}. Action: ${or(s.action, s.characterId ? "the person holds a natural, relaxed posture" : "the scene plays out naturally")}.`,
+      `Camera: ${or(s.camera, "steady, eye level")}. Light: ${or(s.lighting, "soft natural light")}.`,
     ];
     const say = input.spoken[s.number];
     if (say && say.text.trim()) {
       const who = say.speaker === "on_camera" ? "The person on camera says, in real time" : "A voice off camera says";
-      parts.push(`${who}: "${clean(say.text)}"`);
+      // The spoken words are passed on exactly: they are speech, and are never filtered as if they described the picture.
+      parts.push(`${who}: "${say.text.split(/\s+/).join(" ").trim()}"`);
       if (say.speaker !== "on_camera" && s.characterId) parts.push("The person's mouth stays closed and still while the voice speaks.");
     } else {
       parts.push("No one speaks." + (s.characterId ? " The person's mouth stays closed and relaxed." : ""));
     }
-    if (s.screenTreatment !== "none" || s.overlays.some((o) => o.kind === "stat" || o.kind === "image")) {
+    if (!isClean && (s.screenTreatment !== "none" || s.overlays.some((o) => o.kind === "stat" || o.kind === "image"))) {
       parts.push("A graphic is added over this shot afterwards: keep that part of the frame calm and uncluttered, with no readable screens, charts or text drawn anywhere.");
     }
-    const musts = s.acceptance.slice(0, 3).map(clean).filter(Boolean);
+    // Only checks about the filmed footage are shown to the video model: one that names an overlay would be drawn into the picture.
+    const musts = (isClean ? footageOnly(s.acceptance) : s.acceptance).slice(0, 3).map(clean).filter(Boolean);
     if (musts.length) parts.push(`This shot must show: ${musts.join("; ")}.`);
     return parts.join(" ");
   });
 
   const rules = [
-    "Do not draw any subtitles, captions, on-screen text, numbers, charts, logos, brand names, buttons or watermarks anywhere in the frame; the real ones are added afterwards.",
+    isClean ? CLEAN_FOOTAGE_RULE : "Do not draw any subtitles, captions, on-screen text, numbers, charts, logos, brand names, buttons or watermarks anywhere in the frame; the real ones are added afterwards.",
     TEXT_FREE_RULE,
     SIMPLE_ACTION_RULE,
     "No background music; natural room sound and the speaker's voice only.",
     "Cut cleanly between shots. Keep the same person, clothes and colour grade for the shots they share; a new place may have its own light.",
+    ...(isClean && isLastClip ? [CLEAN_ENDING_RULE] : []),
   ];
-  const fixes = input.corrections.length ? ["Fix these problems from the previous attempt:", ...input.corrections.map((c) => `- ${clean(c)}`)] : [];
+  const fixes = input.corrections.length ? ["Fix these problems from the previous attempt:", ...input.corrections.map((c) => `- ${c.split(/\s+/).join(" ").trim()}`)] : [];
 
   return [
     ...assetLines,
-    `${clean(input.style)}, realistic live-action vertical video for a Meta ad, ${total} seconds, clip ${input.clipNumber} of ${input.clipCount}.`,
+    `${style}, realistic live-action vertical video${isClean ? "" : " for a Meta ad"}, ${total} seconds, clip ${input.clipNumber} of ${input.clipCount}.`,
     ...constant,
     "Shot list:",
     ...shots,

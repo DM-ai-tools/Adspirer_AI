@@ -10,21 +10,28 @@ import { jsonOk, parseBody, withApiHandler } from "@/lib/api/response";
 export const maxDuration = 300;
 type Ctx = { params: Promise<{ id: string }> };
 
-async function load(ctx: Ctx) {
+async function loadWithUser(ctx: Ctx) {
   const user = await getCurrentUser();
   assertAuthenticated(user);
   const { id } = await ctx.params;
   const project = await getProject(id);
   if (!project) throw new Error("Video project not found");
   await assertClientAccess(user.id, project.client_id);
-  return project;
+  return { project, userId: user.id };
 }
+
+const load = async (ctx: Ctx) => (await loadWithUser(ctx)).project;
 
 export async function GET(_request: Request, ctx: Ctx) {
   return withApiHandler(async () => jsonOk(viewGeneration(await load(ctx))));
 }
 
-const finishing = z.object({ captions: z.boolean(), logo: z.boolean(), endCard: z.boolean() });
+/**
+ * How the video is finished. Left out, or without a mode, it is a clean video: footage and sound
+ * only. The three flags are honoured only together with `mode: "branded"`, so a request (or a setting
+ * kept from an older video) that merely carries `captions: true` cannot put graphics into a clean export.
+ */
+const finishing = z.object({ mode: z.enum(["clean", "branded"]).optional(), captions: z.boolean().optional(), logo: z.boolean().optional(), endCard: z.boolean().optional() });
 
 const bodySchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("start"), finishing: finishing.optional(), checkpoint: z.enum(["after_first", "each", "none"]).optional() }),
@@ -45,7 +52,7 @@ const bodySchema = z.discriminatedUnion("action", [
 
 export async function POST(request: Request, ctx: Ctx) {
   return withApiHandler(async () => {
-    const project = await load(ctx);
+    const { project, userId } = await loadWithUser(ctx);
     const body = await parseBody(request, bodySchema);
 
     if (body.action === "start") {
@@ -69,13 +76,14 @@ export async function POST(request: Request, ctx: Ctx) {
     }
 
     if (body.action === "decide") {
-      const next = await resolveDecision(project.id, body.clip, body.choice);
+      // "use" is the operator's own decision to keep a clip the inspection did not approve: recorded with who made it and what was open.
+      const next = await resolveDecision(project.id, body.clip, body.choice, userId);
       if (next.status === "generating") runAfterResponse("video-generation", () => runGeneration(project.id));
       return jsonOk(viewGeneration(next));
     }
 
     if (body.action === "accept_final") {
-      return jsonOk(viewGeneration(await acceptBlockedFinal(project.id)));
+      return jsonOk(viewGeneration(await acceptBlockedFinal(project.id, userId)));
     }
 
     if (body.action === "assemble") {
