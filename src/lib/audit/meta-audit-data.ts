@@ -78,6 +78,8 @@ export type PeriodPerformance = {
   addToCart?: number | null;
   initiateCheckout?: number | null;
   leads?: number | null;
+  /** Messaging conversations started (Messenger, Instagram Direct, WhatsApp), when Meta returned any. */
+  messagingConversations?: number | null;
   /**
    * Set on totals added up across campaigns: people overlap between
    * campaigns, so reach (and frequency) can't be summed — `reach` and
@@ -359,6 +361,8 @@ function performanceFrom(row: Row | undefined): PeriodPerformance | null {
   const leads = actionCount("lead", "onsite_conversion.lead_grouped");
   const addToCart = actionCount("omni_add_to_cart", "add_to_cart");
   const initiateCheckout = actionCount("omni_initiated_checkout", "initiate_checkout");
+  // The 7-day action is Meta's own "Messaging conversations started"; the older name is a fallback, never added to it.
+  const messagingConversations = actionCount("onsite_conversion.messaging_conversation_started_7d") ?? actionCount("onsite_conversion.total_messaging_connection");
   return {
     spendCents,
     impressions: num(row.impressions),
@@ -376,6 +380,7 @@ function performanceFrom(row: Row | undefined): PeriodPerformance | null {
     ...(addToCart != null ? { addToCart } : {}),
     ...(initiateCheckout != null ? { initiateCheckout } : {}),
     ...(leads != null ? { leads } : {}),
+    ...(messagingConversations != null ? { messagingConversations } : {}),
     ...(row.inline_link_clicks != null ? { linkClicks: num(row.inline_link_clicks) } : {}),
     ...(row.actions !== undefined ? { landingPageViews: lpv ? num(lpv.value) : 0 } : {}),
     ...(videoView ? { videoViews3s: num(videoView.value), thruplays: thru ? num(thru.value) : null } : {}),
@@ -1133,7 +1138,8 @@ function sumPerformance(rows: PeriodPerformance[]): PeriodPerformance | null {
       | "purchaseValueCents"
       | "addToCart"
       | "initiateCheckout"
-      | "leads",
+      | "leads"
+      | "messagingConversations",
   >(
     key: K,
   ) => {
@@ -1153,6 +1159,7 @@ function sumPerformance(rows: PeriodPerformance[]): PeriodPerformance | null {
     ...optional("addToCart"),
     ...optional("initiateCheckout"),
     ...optional("leads"),
+    ...optional("messagingConversations"),
     spendCents,
     impressions,
     reach,

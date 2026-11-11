@@ -144,7 +144,15 @@ import {
   renderScorecardMarkdown,
 } from "@/lib/audit/render";
 import { renderBreakdownEvidence } from "@/lib/audit/breakdowns";
-import { PERFORMANCE_TABLES_MARKER, renderPerformanceTables } from "@/lib/audit/performance-tables";
+import {
+  LANDING_PAGE_TABLES_MARKER,
+  PERFORMANCE_TABLES_MARKER,
+  landingTargets,
+  pageKey,
+  renderLandingPageTables,
+  renderPerformanceTables,
+} from "@/lib/audit/performance-tables";
+import type { LandingPageAnalysis } from "@/lib/landing/analyze-page";
 import { loadCatalogEvidence } from "@/lib/meta/catalog/audit-evidence";
 import type { Task } from "@/types";
 import { getConfig } from "@/lib/config";
@@ -387,14 +395,14 @@ export async function runAdspirerAgent(input: {
 
   // An incomplete strategy brief gets the clarifying question verbatim, in every
   // mode: the next turn's routing keys on its wording, so no writer rephrases it.
-  const question = strategyBriefQuestion(input);
+  const question = strategyBriefQuestion(input) ?? auditBriefQuestion(input);
   // Settings saved (or not) this turn are said first; routing finds the brief marker anywhere.
   const settingsLines = settingsNoticeLines(input.toolEvidence);
   const briefQuestion = question && settingsLines.length ? [...settingsLines, "", question].join("\n") : question;
   if (briefQuestion) {
     await input.onProgress?.({
       phase: "write_report",
-      label: "Asking for the goal & budget…",
+      label: question === strategyBriefQuestion(input) ? "Asking for the goal & budget…" : "Asking for the audit scope & dates…",
       stepId: "write_report",
       summary: briefQuestion,
       delta: briefQuestion,
@@ -668,6 +676,23 @@ export function writerNoticeRules(evidence: string): string[] {
 }
 
 /** The clarifying question for an incomplete strategy brief, rebuilt from the evidence's "Missing" line. */
+const AUDIT_QUESTION_OPEN = "<!-- audit-brief-question -->";
+const AUDIT_QUESTION_CLOSE = "<!-- /audit-brief-question -->";
+
+/**
+ * An audit whose scope or dates could not be read gets only the clarifying question. Writing an
+ * audit from the campaign list alone (no insights, checkpoints or tables) is what produced a
+ * report in the wrong format with half its sections missing.
+ */
+export function auditBriefQuestion(input: Pick<WriterInput, "toolEvidence" | "reportDraft">): string | null {
+  if (input.reportDraft) return null;
+  const evidence = input.toolEvidence ?? "";
+  const open = evidence.indexOf(AUDIT_QUESTION_OPEN);
+  const close = evidence.indexOf(AUDIT_QUESTION_CLOSE);
+  if (open < 0 || close < open) return null;
+  return evidence.slice(open + AUDIT_QUESTION_OPEN.length, close).trim() || null;
+}
+
 function strategyBriefQuestion(input: WriterInput): string | null {
   if (input.reportDraft || resolveWriterIntent(input) !== "strategy") return null;
   const evidence = input.toolEvidence ?? "";
@@ -1858,6 +1883,8 @@ export async function gatherDiagnoseEvidence(input: {
   auditAppendix?: string;
   /** Deterministic performance tables, inserted into the audit at the writer's marker. */
   auditTables?: string;
+  /** Deterministic landing page tables (every page that took spend, and the page checks), inserted at their marker. */
+  auditLandingTables?: string;
   /** True when a strategy needs a daily budget or target ROAS before planning. */
   strategyBriefIncomplete?: boolean;
   /** True only once the strategy plan engine has produced a plan this turn. */
@@ -1896,6 +1923,7 @@ export async function gatherDiagnoseEvidence(input: {
   let auditBriefingIncomplete = false;
   let auditAppendix: string | undefined;
   let auditTables: string | undefined;
+  let auditLandingTables: string | undefined;
   let strategyBriefIncomplete = false;
   let strategyPlanBuilt = false;
 
@@ -2181,7 +2209,13 @@ export async function gatherDiagnoseEvidence(input: {
               "Ask ONLY for the missing fields below. Do NOT invent an audit yet.",
               "Do NOT queue optimize or execute tools.",
               "",
+              // The question is sent as the reply word for word (see auditBriefQuestion): no audit is written from partial evidence.
+              AUDIT_QUESTION_OPEN,
+              brief.activeCampaigns && matchedCampaigns.length === 0
+                ? "No campaign is active right now, so there is nothing live to audit. Which campaign(s) should I audit instead?\n"
+                : "",
               buildAuditClarifyingQuestion(askBrief),
+              AUDIT_QUESTION_CLOSE,
               "",
               campaigns.length
                 ? "You may briefly list a few live campaign names to help them pick (from Campaigns evidence)."
@@ -2385,6 +2419,8 @@ export async function gatherDiagnoseEvidence(input: {
             label: "Fetching ad destinations & analysing landing pages…",
             stepId: "landing_pages",
           });
+          // Kept for the landing page tables, which are built once the snapshot says which pages took spend.
+          let landingAnalyses: LandingPageAnalysis[] = [];
           try {
             const creatives = await creativesPromise;
 
@@ -2528,6 +2564,7 @@ export async function gatherDiagnoseEvidence(input: {
                 ...ownTargets,
                 ...competitorTargets,
               ]);
+              landingAnalyses = analyses;
               sections.push(formatLandingAnalysesForEvidence(analyses));
             } else {
               sections.push(
@@ -2604,6 +2641,29 @@ export async function gatherDiagnoseEvidence(input: {
               sections.push(renderChangesEvidence(snapshot));
               sections.push(renderBreakdownEvidence(snapshot));
               auditTables = renderPerformanceTables(snapshot);
+              // Landing pages by spend: analyse the pages that took the most spend and were not analysed above (up to 8 in all).
+              try {
+                const done = new Set(landingAnalyses.filter((a) => a.role === "own").map((a) => pageKey(a.url)));
+                const missing = landingTargets(snapshot, 8).filter((t) => !done.has(t.key)).slice(0, Math.max(0, 8 - done.size));
+                if (missing.length) {
+                  const more = await analyzeLandingPages(missing.map((t) => ({ url: t.url, role: "own" as const, adContext: t.adContext })));
+                  landingAnalyses = [...landingAnalyses, ...more];
+                  sections.push(formatLandingAnalysesForEvidence(more).replace("### Landing page analysis", "### Landing page analysis (more pages, by spend)"));
+                }
+              } catch (error) {
+                logger.warn("Extra landing page analysis failed", { error: error instanceof Error ? error.message : String(error) });
+              }
+              auditLandingTables = renderLandingPageTables(snapshot, landingAnalyses);
+              if (auditLandingTables) {
+                sections.push(
+                  [
+                    `### Landing page tables (computed from live Meta rows and the page checks, authoritative; inserted into the report automatically where you write ${LANDING_PAGE_TABLES_MARKER})`,
+                    "Do not copy these tables. Read them to write one line per page with a problem, and quote figures exactly.",
+                    "",
+                    auditLandingTables,
+                  ].join("\n"),
+                );
+              }
               if (auditTables) {
                 sections.push(
                   [
@@ -2653,7 +2713,7 @@ export async function gatherDiagnoseEvidence(input: {
               "- **Recommended Meta Structure (section 8):** a Layer | Campaign | Audience | Budget share | Creative focus table (1–5 words a cell, shares adding to 100%), then at most three bullets; built only from what this account's numbers show.",
               "- **REQUIRED: audit every ad set** listed in “Ad sets” inside section 5 (Ad Sets): the 9-column ad set table from the report format (IDs, budgets and optimisation events go in the verdict bullets, not the table), then a short verdict per ad set (Scale / Keep / Fix / Pause) with its numbers and the reason. Cover learning status, budget vs results, frequency, audience/placement setup and its ads.",
               "- Spend, results and cost per result for the period come from the evidence above — never say they are unavailable when “Ad sets” or “Campaign performance” lists them.",
-              "- **REQUIRED section: Landing Pages** — a short Page | Score | Message match | Main fix table, from Website URLs + CTA types in “Ad CTA & destination inventory” and scores in “Landing page analysis”.",
+              "- **REQUIRED section: Landing Pages (section 6):** write the heading, the line [[LANDING_PAGE_TABLES]] alone (the tables of every page that took spend, with its numbers and checks, are inserted for you), then one bullet per page with a problem: \"**<page>** — <the problem with its figure>: <the fix>\". If most spend went to ads with no website link, say so in one bullet.",
               "- Do not write a What's Working section or a checklist: strengths get one Executive Summary bullet, and the checklist is added in chat automatically (it is left out of downloads).",
               "- NEVER say destinations are unavailable because the campaign is paused or had $0 spend.",
               "- NEVER use workspace-document URLs (e.g. competitor copy docs) as the campaign destination.",
@@ -3729,6 +3789,7 @@ export async function gatherDiagnoseEvidence(input: {
     auditBriefingIncomplete,
     auditAppendix,
     auditTables,
+    auditLandingTables,
     strategyBriefIncomplete,
     strategyPlanBuilt,
   };

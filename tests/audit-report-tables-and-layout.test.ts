@@ -215,13 +215,67 @@ describe("the performance tables", () => {
     expect(one).not.toContain("### Landing page type");
   });
 
-  it("uses results and cost per result for an account with no add to carts", () => {
-    const leads = renderPerformanceTables(shop({
-      totals: { ...perf(1000, 0, 0, 0), addToCart: null, purchases: null, results: 40 },
-      ads: shop().ads.map((a) => ({ ...a, performance: { ...a.performance!, addToCart: null, purchases: null, results: 20 } })),
-    }));
-    expect(leads).toMatch(/\| Format \| Ads \| Spend \(AUD\) \| Share \| Link CTR \| Results \| Cost \/ result \(AUD\) \|/);
-    expect(leads).not.toContain("Reported purchases");
+  it("uses results and cost per result for an account with no funnel figures at all", () => {
+    const bare = (p: PeriodPerformance | null): PeriodPerformance | null => (p ? { ...p, addToCart: null, purchases: null, landingPageViews: null, results: 20 } : p);
+    const s = shop();
+    const out = renderPerformanceTables({
+      ...s,
+      totals: bare(s.totals),
+      campaigns: s.campaigns.map((c) => ({ ...c, performance: bare(c.performance) })),
+      adSets: s.adSets.map((a) => ({ ...a, performance: bare(a.performance) })),
+      ads: s.ads.map((a) => ({ ...a, performance: bare(a.performance) })),
+      monthly: s.monthly?.map((m) => ({ ...m, performance: bare(m.performance)! })),
+    });
+    expect(out).toMatch(/\| Format \| Ads \| Spend \(AUD\) \| Share \| Link CTR \| Results \| Cost \/ result \(AUD\) \|/);
+    expect(out).not.toContain("Reported purchases");
+  });
+
+  it("shows every funnel a messaging and lead account has: conversations, leads and the odd purchase", () => {
+    const chat = (spend: number, leads: number, convs: number, purchases = 0): PeriodPerformance => ({
+      ...perf(spend, 0, 0, purchases, 2, 25),
+      landingPageViews: null,
+      addToCart: null,
+      purchases: purchases || null,
+      leads,
+      messagingConversations: convs,
+      results: convs,
+      resultLabel: "Messaging conversations started",
+    });
+    const s = shop();
+    const sales = chat(300, 0, 0, 2);
+    const msgs = chat(4000, 38, 495);
+    const store = chat(2400, 24, 329);
+    const out = renderPerformanceTables({
+      ...s,
+      totals: chat(6700, 62, 824, 2),
+      campaigns: [
+        { ...s.campaigns[0]!, id: "m1", name: "TR | Messages x Sleepless III", objective: "OUTCOME_ENGAGEMENT", performance: msgs },
+        { ...s.campaigns[0]!, id: "m2", name: "TR | Store Ad | Messages", objective: "OUTCOME_ENGAGEMENT", performance: store },
+        { ...s.campaigns[0]!, id: "m3", name: "TR | EOFY Sales", objective: "OUTCOME_SALES", performance: sales },
+      ],
+      adSets: [
+        { ...s.adSets[0]!, id: "x1", campaignId: "m1", performance: msgs },
+        { ...s.adSets[1]!, id: "x2", campaignId: "m2", performance: store },
+        { ...s.adSets[0]!, id: "x3", campaignId: "m3", performance: sales },
+      ],
+      ads: [
+        { ...s.ads[0]!, id: "y1", adSetId: "x1", campaignId: "m1", linkUrl: null, copy: "Send us a message", performance: msgs },
+        { ...s.ads[1]!, id: "y2", adSetId: "x2", campaignId: "m2", linkUrl: null, copy: "Visit our store", performance: store },
+        { ...s.ads[1]!, id: "y3", adSetId: "x3", campaignId: "m3", linkUrl: "https://shop.test/collections/sale?utm_source=fb", copy: "Save up to 60% off", performance: sales },
+      ],
+      monthly: [
+        { month: "2026-09", campaignId: "m1", performance: chat(2000, 20, 250) },
+        { month: "2026-10", campaignId: "m1", performance: chat(2000, 18, 245) },
+        { month: "2026-09", campaignId: "m3", performance: sales },
+      ],
+    });
+    const head = out.split("\n").find((l) => l.startsWith("| Campaign |"))!;
+    expect(head).toContain("| Reported purchases* | Cost / purchase (AUD) | Leads | Cost / lead (AUD) | Conversations | Cost / conversation (AUD) |");
+    expect(head).not.toMatch(/Add to carts|Landing-page views/);
+    // The one small sales test does not stand in for the whole account month by month.
+    expect(out).toContain("### Campaigns month by month");
+    expect(out).toMatch(/\| Sep 2026 \| 2 \|/);
+    expect(out).toMatch(/cost per messaging conversation/);
   });
 
   it("goes where the writer left the marker, or under the heading, or before Risks", () => {

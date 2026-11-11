@@ -40,6 +40,22 @@ export type LandingPageAnalysis = {
   };
   /** Ad creative text used for message-match when role=own */
   adContext?: string | null;
+  /** The measured checks as data, for the report's landing page table. null = not measured. */
+  checks?: {
+    httpStatus: number | null;
+    reachable: boolean | null;
+    mobileLcpMs: number | null;
+    pageSpeed: number | null;
+    formFields: number | null;
+    metaPixel: boolean | null;
+    mobileViewport: boolean | null;
+    clickToCall: boolean | null;
+    https: boolean | null;
+    keepsTracking: boolean | null;
+    redirects: number | null;
+    trust: boolean;
+    cta: boolean;
+  };
 };
 
 const CTA_RE =
@@ -283,6 +299,21 @@ export async function analyzeLandingPage(
       suggestions: suggestions.slice(0, 6),
       signals: { hasCtaLanguage, hasFormCue, hasPhoneCue: Boolean(hasPhoneCue), hasTrustCue, wordCount, h1Guess },
       adContext: input.adContext ?? null,
+      checks: {
+        httpStatus: status,
+        reachable,
+        mobileLcpMs: speed?.lcpMs ?? null,
+        pageSpeed: speed?.performance ?? null,
+        formFields: html ? html.formFields : null,
+        metaPixel: html ? html.hasMetaPixel : null,
+        mobileViewport: html ? html.hasViewport : null,
+        clickToCall: html ? html.hasTelLink : null,
+        https: checks ? checks.https : null,
+        keepsTracking: checks ? checks.keepsTracking : null,
+        redirects: checks ? checks.redirects : null,
+        trust: hasTrustCue,
+        cta: hasCtaLanguage,
+      },
     };
   } catch (error) {
     logger.warn("Landing page analysis failed", {

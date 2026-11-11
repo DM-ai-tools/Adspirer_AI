@@ -71,6 +71,44 @@ export function completedDaysRange(text: string): { dateStart: string; dateStop:
   return { dateStart, dateStop, dateLabel: parsed.dateLabel, days };
 }
 
+const NUMBER_WORDS: Record<string, number> = {
+  a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
+  fourteen: 14, fifteen: 15, twenty: 20, thirty: 30, sixty: 60, ninety: 90,
+};
+
+/**
+ * "last/past/previous N days, weeks or months" (digits or words), and "last fortnight". The window
+ * ends today, like "last N days"; months count back by calendar month (11 Nov back 2 months starts
+ * 12 Sep). "last month" and "last week" on their own keep their existing meaning (handled below).
+ */
+function relativeRange(lower: string, today: Date): { dateStart: string; dateStop: string; dateLabel: string } | null {
+  if (/\b(?:last|past|previous|prior)\s+fortnight\b/.test(lower)) {
+    const start = new Date(today);
+    start.setUTCDate(start.getUTCDate() - 13);
+    return { dateStart: isoDate(start), dateStop: isoDate(today), dateLabel: "last 14 days" };
+  }
+  const m = /\b(?:the\s+)?(?:last|past|previous|prior|recent)\s+(\d{1,3}|[a-z]+)\s+(days?|weeks?|months?)\b/.exec(lower);
+  if (!m) return null;
+  const n = /^\d+$/.test(m[1]!) ? Number(m[1]) : NUMBER_WORDS[m[1]!];
+  if (!n || n < 1) return null;
+  const unit = m[2]!.replace(/s$/, "");
+  const start = new Date(today);
+  if (unit === "day") {
+    start.setUTCDate(start.getUTCDate() - (Math.min(n, 730) - 1));
+    return { dateStart: isoDate(start), dateStop: isoDate(today), dateLabel: `last ${n} days` };
+  }
+  if (unit === "week") {
+    start.setUTCDate(start.getUTCDate() - (Math.min(n, 104) * 7 - 1));
+    return { dateStart: isoDate(start), dateStop: isoDate(today), dateLabel: `last ${n} week${n === 1 ? "" : "s"}` };
+  }
+  const months = Math.min(n, 24);
+  const back = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - months, today.getUTCDate()));
+  // Day 31 in a 30-day month rolls forward into the next month: keep it in the intended month.
+  if (back.getUTCMonth() !== (((today.getUTCMonth() - months) % 12) + 12) % 12) back.setUTCDate(0);
+  back.setUTCDate(back.getUTCDate() + 1);
+  return { dateStart: isoDate(back), dateStop: isoDate(today), dateLabel: `last ${months} month${months === 1 ? "" : "s"}` };
+}
+
 /** Parse relative / absolute date ranges from operator text. */
 export function parseDateRangeFromText(text: string): {
   dateStart: string;
@@ -80,6 +118,10 @@ export function parseDateRangeFromText(text: string): {
   const lower = text.toLowerCase();
   const today = startOfUtcDay(new Date());
   const stop = isoDate(today);
+
+  // "last 2 months", "past six weeks", "the last one month", "previous 3 months", "last fortnight".
+  const relative = relativeRange(lower, today);
+  if (relative) return relative;
 
   const lastN = /\blast\s+(\d+)\s+days?\b/.exec(lower);
   if (lastN) {
@@ -165,7 +207,7 @@ function isNotACampaignName(hint: string): boolean {
   // Only a hint that is nothing but a date — "TR | Lead Gen | Sep 2026" is a name.
   if (parseDateRangeFromText(h) && !h.replace(DATE_WORDS, "").trim()) return true;
   if (/^(that|which|currently|active|live|running|delivering)\b/i.test(h)) return true;
-  if (/^(the\s+)?(same|whole|entire|full|this|that|previous|last|next)\b/i.test(h)) return true;
+  if (/^(the\s+)?(same|whole|entire|full|this|that|previous|last|next|past|prior|recent)\b/i.test(h)) return true;
   if (/^(the\s+)?(audit|report|account|period|dates?|range|days?|weeks?|months?|time|it|me|us)\b/i.test(h)) return true;
   return false;
 }
@@ -490,7 +532,7 @@ export function buildAuditClarifyingQuestion(brief: AuditBrief): string {
   }
   if (brief.missing.includes("date_range")) {
     step(
-      "**Date range** — e.g. last 7 days, last 30 days, this month, or `YYYY-MM-DD` to `YYYY-MM-DD`.",
+      "**Date range** — e.g. last 7 days, last 2 months, this month, August to October, or `YYYY-MM-DD` to `YYYY-MM-DD`.",
     );
   }
   if (brief.missing.includes("competitor_landing")) {

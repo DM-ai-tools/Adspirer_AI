@@ -29,6 +29,9 @@ export type Group = {
   landingPageViews: number;
   addToCart: number;
   purchases: number;
+  purchaseValueCents: number;
+  leads: number;
+  messagingConversations: number;
   results: number;
 };
 
@@ -46,6 +49,9 @@ export function groupOf(label: string, rows: Perf[], count = rows.filter((p) => 
     landingPageViews: sum((p) => p.landingPageViews),
     addToCart: sum((p) => p.addToCart),
     purchases: sum((p) => p.purchases),
+    purchaseValueCents: sum((p) => p.purchaseValueCents),
+    leads: sum((p) => p.leads),
+    messagingConversations: sum((p) => p.messagingConversations),
     results: sum((p) => p.results),
   };
 }
@@ -150,11 +156,24 @@ export function landingTypeOf(linkUrl: string | null | undefined): string {
 
 // ------------------------------------------------------------------ formatting
 
-type Mode = "sales" | "results";
+/** The account's main outcome: the figure each table's cost and read are about. */
+export type PrimaryMetric = "addToCart" | "purchases" | "leads" | "messagingConversations" | "results";
+
+const PRIMARY_NOUN: Record<PrimaryMetric, { one: string; many: string; short: string }> = {
+  addToCart: { one: "add to cart", many: "add to carts", short: "ATC" },
+  purchases: { one: "purchase", many: "purchases", short: "purchase" },
+  leads: { one: "lead", many: "leads", short: "lead" },
+  messagingConversations: { one: "messaging conversation", many: "messaging conversations", short: "conversation" },
+  results: { one: "result", many: "results", short: "result" },
+};
 
 export type Fmt = {
   currency: string;
-  mode: Mode;
+  /** "sales" when the account records add to carts or purchases; kept for the purchases footnote. */
+  mode: "sales" | "results";
+  primary: PrimaryMetric;
+  /** Which funnel figures the account has: every one it has gets its columns, in every table. */
+  has: { lpv: boolean; atc: boolean; purchases: boolean; revenue: boolean; leads: boolean; messaging: boolean };
   /** For table cells: the currency is in the column header. */
   money: (cents: number) => string;
   money2: (cents: number) => string;
@@ -163,10 +182,37 @@ export type Fmt = {
 };
 
 export function fmtFor(snap: MetaAuditSnapshot): Fmt {
-  const t = snap.totals;
-  const sales = Boolean(t && ((t.addToCart ?? 0) > 0 || (t.purchases ?? 0) > 0)) || snap.ads.some((a) => (a.performance?.addToCart ?? 0) > 0);
+  // Totals first; ad and ad set rows as a fallback, so a figure Meta returned anywhere gets its column.
+  const rows = [snap.totals, ...snap.campaigns.map((c) => c.performance), ...snap.adSets.map((a) => a.performance), ...snap.ads.map((a) => a.performance)];
+  const total = (pick: (p: PeriodPerformance) => number | null | undefined) => {
+    const t = snap.totals ? pick(snap.totals) ?? 0 : 0;
+    return t > 0 ? t : Math.max(0, ...rows.map((p) => (p ? pick(p) ?? 0 : 0)));
+  };
+  const atc = total((p) => p.addToCart);
+  const purchases = total((p) => p.purchases);
+  const leads = total((p) => p.leads);
+  const messaging = total((p) => p.messagingConversations);
+  const has = {
+    lpv: total((p) => p.landingPageViews) > 0,
+    atc: atc > 0,
+    purchases: purchases > 0,
+    revenue: total((p) => p.purchaseValueCents) > 0,
+    leads: leads > 0,
+    messaging: messaging > 0,
+  };
+  const primary: PrimaryMetric = has.atc
+    ? "addToCart"
+    : purchases >= MIN_VOLUME
+      ? "purchases"
+      : has.leads || has.messaging
+        ? messaging > leads
+          ? "messagingConversations"
+          : "leads"
+        : has.purchases
+          ? "purchases"
+          : "results";
   const n = (digits: number) => (cents: number) => (cents / 100).toLocaleString("en", { minimumFractionDigits: digits, maximumFractionDigits: digits });
-  return { currency: snap.account.currency, mode: sales ? "sales" : "results", money: n(0), money2: n(2), say: (cents) => `${snap.account.currency} ${n(2)(cents)}` };
+  return { currency: snap.account.currency, mode: has.atc || has.purchases ? "sales" : "results", primary, has, money: n(0), money2: n(2), say: (cents) => `${snap.account.currency} ${n(2)(cents)}` };
 }
 
 const int = (v: number) => Math.round(v).toLocaleString("en");
@@ -174,36 +220,41 @@ const pct = (part: number, whole: number) => (whole > 0 ? `${((part / whole) * 1
 /** Campaign names often contain "|" ("TR | Sales"): escaped, so the cell is not split. */
 const pipe = (s: string) => s.replace(/\|/g, "\\|");
 
-/** Cost of one add to cart (or one result), in cents; null when there are none. */
-export const unitCost = (g: Group, mode: Mode) => {
-  const units = mode === "sales" ? g.addToCart : g.results;
-  return units > 0 ? g.spendCents / units : null;
-};
-const volume = (g: Group, mode: Mode) => (mode === "sales" ? g.addToCart : g.results);
+const volume = (g: Group, f: Pick<Fmt, "primary">) => g[f.primary];
+/** Cost of one unit of the account's main outcome, in cents; null when there are none. */
+export const unitCost = (g: Group, f: Pick<Fmt, "primary">) => (volume(g, f) > 0 ? g.spendCents / volume(g, f) : null);
 
 type Column = { head: string; cell: (g: Group, total: Group) => string };
 
 function columns(f: Fmt, opts: { count?: string; share?: boolean; ctr?: boolean; cpm?: boolean; lpv?: boolean }): Column[] {
   const cur = f.currency;
+  const cost = (units: (g: Group) => number) => (g: Group) => (units(g) > 0 ? f.money2(g.spendCents / units(g)) : "–");
   const cols: Column[] = [];
   if (opts.count) cols.push({ head: opts.count, cell: (g) => int(g.count) });
   cols.push({ head: `Spend (${cur})`, cell: (g) => f.money(g.spendCents) });
   if (opts.share) cols.push({ head: "Share", cell: (g, t) => pct(g.spendCents, t.spendCents) });
   if (opts.cpm) cols.push({ head: `CPM (${cur})`, cell: (g) => (g.impressions > 0 ? f.money2((g.spendCents / g.impressions) * 1000) : "–") });
   if (opts.ctr) cols.push({ head: "Link CTR", cell: (g) => pct(g.linkClicks, g.impressions) });
-  if (f.mode === "sales") {
-    if (opts.lpv !== false) cols.push({ head: "Landing-page views", cell: (g) => int(g.landingPageViews) });
-    cols.push(
-      { head: "Add to carts", cell: (g) => int(g.addToCart) },
-      { head: `Cost / ATC (${cur})`, cell: (g) => (g.addToCart > 0 ? f.money2(g.spendCents / g.addToCart) : "–") },
-    );
-    if (opts.lpv !== false) cols.push({ head: "ATC rate", cell: (g) => pct(g.addToCart, g.landingPageViews) });
+  const lpv = opts.lpv !== false && f.has.lpv;
+  if (lpv) cols.push({ head: "Landing-page views", cell: (g) => int(g.landingPageViews) });
+  if (f.has.atc) {
+    cols.push({ head: "Add to carts", cell: (g) => int(g.addToCart) }, { head: `Cost / ATC (${cur})`, cell: cost((g) => g.addToCart) });
+    if (lpv) cols.push({ head: "ATC rate", cell: (g) => pct(g.addToCart, g.landingPageViews) });
+  }
+  if (f.has.purchases) {
     cols.push({ head: "Reported purchases*", cell: (g) => int(g.purchases) });
-  } else {
+    if (!f.has.atc) cols.push({ head: `Cost / purchase (${cur})`, cell: cost((g) => g.purchases) });
+  }
+  if (f.has.revenue) {
     cols.push(
-      { head: "Results", cell: (g) => int(g.results) },
-      { head: `Cost / result (${cur})`, cell: (g) => (g.results > 0 ? f.money2(g.spendCents / g.results) : "–") },
+      { head: `Purchase value* (${cur})`, cell: (g) => f.money(g.purchaseValueCents) },
+      { head: "ROAS*", cell: (g) => (g.spendCents > 0 ? (g.purchaseValueCents / g.spendCents).toFixed(2) : "–") },
     );
+  }
+  if (f.has.leads) cols.push({ head: "Leads", cell: (g) => int(g.leads) }, { head: `Cost / lead (${cur})`, cell: cost((g) => g.leads) });
+  if (f.has.messaging) cols.push({ head: "Conversations", cell: (g) => int(g.messagingConversations) }, { head: `Cost / conversation (${cur})`, cell: cost((g) => g.messagingConversations) });
+  if (!f.has.atc && !f.has.purchases && !f.has.leads && !f.has.messaging) {
+    cols.push({ head: "Results", cell: (g) => int(g.results) }, { head: `Cost / result (${cur})`, cell: cost((g) => g.results) });
   }
   return cols;
 }
@@ -225,18 +276,18 @@ function read(groups: Group[], total: Group, f: Fmt, noun = "groups"): string {
   if (!spenders.length) return "";
   const top = [...spenders].sort((a, b) => b.spendCents - a.spendCents)[0]!;
   const parts = [`${top.label} takes ${pct(top.spendCents, total.spendCents)} of spend`];
-  const metric = f.mode === "sales" ? "cost per add to cart" : "cost per result";
+  const metric = `cost per ${PRIMARY_NOUN[f.primary].one}`;
   // A group Meta returned no link or copy for is not a format, page or message: it is never called best or worst.
-  const qualifying = spenders.filter((g) => !/not returned/i.test(g.label) && volume(g, f.mode) >= MIN_VOLUME && g.spendCents >= total.spendCents * MIN_SHARE && unitCost(g, f.mode) != null);
-  const overall = unitCost(total, f.mode);
+  const qualifying = spenders.filter((g) => !/not returned|no website link/i.test(g.label) && volume(g, f) >= MIN_VOLUME && g.spendCents >= total.spendCents * MIN_SHARE && unitCost(g, f) != null);
+  const overall = unitCost(total, f);
   if (qualifying.length >= 2) {
-    const sorted = [...qualifying].sort((a, b) => unitCost(a, f.mode)! - unitCost(b, f.mode)!);
+    const sorted = [...qualifying].sort((a, b) => unitCost(a, f)! - unitCost(b, f)!);
     const best = sorted[0]!;
     const worst = sorted[sorted.length - 1]!;
-    parts.push(`lowest ${metric}: ${best.label} at ${f.say(unitCost(best, f.mode)!)}${overall != null ? ` (overall ${f.say(overall)})` : ""}`);
-    if (worst !== best) parts.push(`highest: ${worst.label} at ${f.say(unitCost(worst, f.mode)!)}`);
+    parts.push(`lowest ${metric}: ${best.label} at ${f.say(unitCost(best, f)!)}${overall != null ? ` (overall ${f.say(overall)})` : ""}`);
+    if (worst !== best) parts.push(`highest: ${worst.label} at ${f.say(unitCost(worst, f)!)}`);
   } else {
-    parts.push(`too few ${noun} with ${MIN_VOLUME}+ ${f.mode === "sales" ? "add to carts" : "results"} to compare costs reliably`);
+    parts.push(`too few ${noun} with ${MIN_VOLUME}+ ${PRIMARY_NOUN[f.primary].many} to compare costs reliably`);
   }
   return `*Read: ${parts.join("; ")}.*`;
 }
@@ -258,8 +309,14 @@ export function monthLabel(month: string, since: string, until: string): string 
 export function monthlyTable(snap: MetaAuditSnapshot, f: Fmt): string | null {
   if (!snap.monthly?.length) return null;
   const campaignById = new Map(snap.campaigns.map((c) => [c.id, c]));
-  const anySales = snap.monthly.some((r) => campaignById.get(r.campaignId) && isSalesCampaign(campaignById.get(r.campaignId)!));
-  const rows = snap.monthly.filter((r) => delivered(r.performance) && (!anySales || (campaignById.get(r.campaignId) && isSalesCampaign(campaignById.get(r.campaignId)!))));
+  // Only sales campaigns when they carry most of the spend (a sales account); otherwise every campaign,
+  // so a messaging or lead account with one small sales test is not reduced to that test.
+  const isSales = (r: { campaignId: string }) => Boolean(campaignById.get(r.campaignId) && isSalesCampaign(campaignById.get(r.campaignId)!));
+  const spent = snap.monthly.filter((r) => delivered(r.performance));
+  const salesSpend = spent.filter(isSales).reduce((t, r) => t + r.performance.spendCents, 0);
+  const allSpend = spent.reduce((t, r) => t + r.performance.spendCents, 0);
+  const anySales = allSpend > 0 && salesSpend / allSpend >= 0.5;
+  const rows = spent.filter((r) => !anySales || isSales(r));
   const months = [...new Set(rows.map((r) => r.month))].sort();
   if (months.length < 2) return null;
   const groups = months.map((m) => {
@@ -270,12 +327,12 @@ export function monthlyTable(snap: MetaAuditSnapshot, f: Fmt): string | null {
   const cols = columns(f, { count: anySales ? "Sales campaigns" : "Campaigns", cpm: true });
   const out = [`### ${anySales ? "Sales campaigns" : "Campaigns"} month by month`, "", table("Month", groups, cols, total)];
   // The read for a trend: the cheapest and dearest full-volume months, and spend at the start against the end.
-  const q = groups.filter((g) => volume(g, f.mode) >= MIN_VOLUME);
+  const q = groups.filter((g) => volume(g, f) >= MIN_VOLUME);
   const parts: string[] = [];
   if (q.length >= 2) {
-    const sorted = [...q].sort((a, b) => unitCost(a, f.mode)! - unitCost(b, f.mode)!);
-    const metric = f.mode === "sales" ? "cost per add to cart" : "cost per result";
-    parts.push(`lowest ${metric} in ${sorted[0]!.label} (${f.say(unitCost(sorted[0]!, f.mode)!)}), highest in ${sorted[sorted.length - 1]!.label} (${f.say(unitCost(sorted[sorted.length - 1]!, f.mode)!)})`);
+    const sorted = [...q].sort((a, b) => unitCost(a, f)! - unitCost(b, f)!);
+    const metric = `cost per ${PRIMARY_NOUN[f.primary].one}`;
+    parts.push(`lowest ${metric} in ${sorted[0]!.label} (${f.say(unitCost(sorted[0]!, f)!)}), highest in ${sorted[sorted.length - 1]!.label} (${f.say(unitCost(sorted[sorted.length - 1]!, f)!)})`);
   }
   const busiest = [...groups].sort((a, b) => b.spendCents - a.spendCents)[0]!;
   parts.push(`most spend in ${busiest.label} (${f.currency} ${f.money(busiest.spendCents)})`);
@@ -348,9 +405,12 @@ const totalOf = (groups: Group[]) =>
       landingPageViews: t.landingPageViews + g.landingPageViews,
       addToCart: t.addToCart + g.addToCart,
       purchases: t.purchases + g.purchases,
+      purchaseValueCents: t.purchaseValueCents + g.purchaseValueCents,
+      leads: t.leads + g.leads,
+      messagingConversations: t.messagingConversations + g.messagingConversations,
       results: t.results + g.results,
     }),
-    { label: "Total", count: 0, spendCents: 0, impressions: 0, linkClicks: 0, landingPageViews: 0, addToCart: 0, purchases: 0, results: 0 },
+    { label: "Total", count: 0, spendCents: 0, impressions: 0, linkClicks: 0, landingPageViews: 0, addToCart: 0, purchases: 0, purchaseValueCents: 0, leads: 0, messagingConversations: 0, results: 0 },
   );
 
 function section(title: string, first: string, groups: Group[], f: Fmt, opts: Parameters<typeof columns>[1], noun: string, note?: string): string | null {
@@ -442,9 +502,11 @@ export function renderPerformanceTables(snap: MetaAuditSnapshot): string {
     .filter((p): p is string => Boolean(p));
   if (!parts.length) return "";
   const notes: string[] = [];
-  if (f.mode === "sales") {
+  if (f.has.purchases || f.has.revenue) {
     const window = attributionLabel(snap);
-    notes.push(`*Reported purchases: as Meta reports them${window ? ` (${window} attribution)` : ""}, Meta's own claim and not verified sales. ATC rate = add to carts ÷ landing-page views.*`);
+    notes.push(
+      `*Reported purchases${f.has.revenue ? ", purchase value and ROAS" : ""}: as Meta reports them${window ? ` (${window} attribution)` : ""}, Meta's own claim and not verified sales.${f.has.atc && f.has.lpv ? " ATC rate = add to carts ÷ landing-page views." : ""}*`,
+    );
   }
   const accountSpend = snap.totals?.spendCents ?? 0;
   const adSpend = snap.ads.reduce((a, x) => a + (x.performance?.spendCents ?? 0), 0);
@@ -469,6 +531,173 @@ export function insertPerformanceTables(report: string, tables: string): string 
   }
   const risks = lines.findIndex((l) => /^#{1,3}\s*(\d+\.\s*)?Risks\b/i.test(l.trim()));
   const block = ["## Performance Breakdown", "", tables, ""];
+  if (risks >= 0) {
+    lines.splice(risks, 0, ...block);
+    return lines.join("\n");
+  }
+  return `${report.trimEnd()}\n\n${block.join("\n")}`;
+}
+
+// ------------------------------------------------------------------ landing pages
+
+/** The marker the writer puts in the Landing Pages section. */
+export const LANDING_PAGE_TABLES_MARKER = "[[LANDING_PAGE_TABLES]]";
+
+/** No website destination: Messenger, Instagram Direct, WhatsApp, calls, lead forms, or a link Meta didn't return. */
+export const NO_WEBSITE_LINK = "No website link (messaging, call, lead form or not returned)";
+
+/** One page, whatever the tracking parameters: "https://Shop.com/products/x/?utm_source=fb" and "https://shop.com/products/x" are the same page. */
+export function pageKey(url: string | null | undefined): string | null {
+  if (!url || !/^https?:\/\//i.test(url.trim())) return null;
+  try {
+    const u = new URL(url.trim());
+    const path = u.pathname.replace(/\/+$/, "") || "/";
+    return `${u.hostname.toLowerCase().replace(/^www\./, "")}${path === "/" ? "" : path}`;
+  } catch {
+    return null;
+  }
+}
+
+/** A page as it is shown in a table: host and path, shortened from the middle when long. */
+export function pageLabel(key: string, max = 52): string {
+  if (key.length <= max) return key;
+  const keep = max - 1;
+  return `${key.slice(0, Math.ceil(keep * 0.55))}…${key.slice(key.length - Math.floor(keep * 0.45))}`;
+}
+
+/** What the landing page check measured, as the table needs it (a structural subset of the analysis). */
+export type LandingCheck = {
+  url: string;
+  role: "own" | "competitor";
+  score100?: number | null;
+  messageMatch: string;
+  checks?: {
+    httpStatus: number | null;
+    reachable: boolean | null;
+    mobileLcpMs: number | null;
+    pageSpeed: number | null;
+    formFields: number | null;
+    metaPixel: boolean | null;
+    keepsTracking: boolean | null;
+    trust: boolean;
+    cta: boolean;
+  };
+};
+
+/** Every page the audited ads sent people to, by spend (pages of ads that didn't spend are left out). */
+export function landingPageGroups(snap: MetaAuditSnapshot): Array<Group & { key: string | null; urls: string[] }> {
+  const byKey = new Map<string, { key: string | null; urls: Set<string>; ads: AuditAd[] }>();
+  for (const ad of snap.ads) {
+    if (!delivered(ad.performance)) continue;
+    const key = pageKey(ad.linkUrl);
+    const k = key ?? NO_WEBSITE_LINK;
+    const entry = byKey.get(k) ?? { key, urls: new Set<string>(), ads: [] };
+    if (ad.linkUrl) entry.urls.add(ad.linkUrl.trim());
+    entry.ads.push(ad);
+    byKey.set(k, entry);
+  }
+  return [...byKey.entries()]
+    .map(([label, e]) => ({ ...groupOf(e.key ? pageLabel(label) : label, e.ads.map((a) => a.performance)), key: e.key, urls: [...e.urls] }))
+    .sort((a, b) => b.spendCents - a.spendCents);
+}
+
+const yesNo = (v: boolean | null | undefined, yes = "Yes", no = "No") => (v == null ? "–" : v ? yes : no);
+const MATCH_WORD: Record<string, string> = { exact: "Strong", partial: "Partial", weak: "Weak", mismatch: "Mismatch", unknown: "–" };
+
+/**
+ * The Landing Pages section's tables: every page that took spend in the period with its numbers,
+ * then the checks for each page that was analysed (score, message match, mobile speed, form,
+ * pixel, tracking kept through redirects, trust and call to action).
+ */
+export function renderLandingPageTables(snap: MetaAuditSnapshot, analyses: LandingCheck[] = []): string {
+  const f = fmtFor(snap);
+  const groups = landingPageGroups(snap);
+  if (!groups.length) return "";
+  const total = totalOf(groups);
+  const out: string[] = ["### Landing pages in this period", "", table("Page", groups, columns(f, { count: "Ads", share: true, ctr: true }), total)];
+  const withPage = groups.filter((g) => g.key);
+  const none = groups.find((g) => !g.key);
+  const facts: string[] = [`${withPage.length} landing page${withPage.length === 1 ? "" : "s"} took spend`];
+  if (none) facts.push(`${pct(none.spendCents, total.spendCents)} of ad spend went to ads with no website link (messaging, call or lead-form ads, or a link Meta didn't return)`);
+  out.push("", `*Read: ${facts.join("; ")}.*`);
+  const line = withPage.length >= 2 ? read(withPage, totalOf(withPage), f, "pages") : "";
+  if (line) out.push("", line);
+
+  const own = analyses.filter((a) => a.role === "own");
+  const analysedKeys = new Set(own.map((a) => pageKey(a.url)).filter(Boolean));
+  if (own.length) {
+    const spendBy = new Map(withPage.map((g) => [g.key, g.spendCents]));
+    const rows = [...own].sort((a, b) => (spendBy.get(pageKey(b.url)) ?? 0) - (spendBy.get(pageKey(a.url)) ?? 0));
+    const head = ["Page", "Score", "Message match", "Mobile LCP", "PageSpeed", "Form fields", "Meta pixel", "UTMs kept", "Trust", "CTA"];
+    const cells = (a: LandingCheck) => {
+      const c = a.checks;
+      const dead = c?.reachable === false;
+      return [
+        pageLabel(pageKey(a.url) ?? a.url),
+        dead ? `0 (HTTP ${c?.httpStatus ?? "error"})` : a.score100 != null ? `${a.score100}/100` : "–",
+        MATCH_WORD[a.messageMatch] ?? a.messageMatch,
+        c?.mobileLcpMs != null ? `${(c.mobileLcpMs / 1000).toFixed(1)} s` : "–",
+        c?.pageSpeed != null ? `${c.pageSpeed}/100` : "–",
+        c?.formFields != null ? String(c.formFields) : "–",
+        yesNo(c?.metaPixel, "Found", "Not found"),
+        yesNo(c?.keepsTracking),
+        c ? yesNo(c.trust) : "–",
+        c ? yesNo(c.cta) : "–",
+      ];
+    };
+    out.push(
+      "",
+      "### Landing page checks",
+      "",
+      `| ${head.join(" | ")} |`,
+      `|${head.map(() => "---").join("|")}|`,
+      ...rows.map((a) => `| ${cells(a).map(pipe).join(" | ")} |`),
+      "",
+      "*Mobile LCP: how long the main content takes to appear on a phone (under 2.5 s is good). Meta pixel \"Not found\" means it isn't in the page source; it may still load through a tag manager.*",
+    );
+  }
+  const unchecked = withPage.filter((g) => !analysedKeys.has(g.key));
+  if (unchecked.length && own.length) out.push("", `*Not analysed (lower spend): ${unchecked.map((g) => g.label).join(", ")}.*`);
+  const competitors = analyses.filter((a) => a.role === "competitor");
+  if (competitors.length) {
+    out.push(
+      "",
+      "### Competitor pages",
+      "",
+      "| Page | Score | Mobile LCP | Form fields | Trust | CTA |",
+      "|---|---|---|---|---|---|",
+      ...competitors.map(
+        (a) =>
+          `| ${pipe(pageLabel(pageKey(a.url) ?? a.url))} | ${a.score100 != null ? `${a.score100}/100` : "–"} | ${a.checks?.mobileLcpMs != null ? `${(a.checks.mobileLcpMs / 1000).toFixed(1)} s` : "–"} | ${a.checks?.formFields ?? "–"} | ${a.checks ? yesNo(a.checks.trust) : "–"} | ${a.checks ? yesNo(a.checks.cta) : "–"} |`,
+      ),
+    );
+  }
+  return out.join("\n");
+}
+
+/** The pages worth analysing: by spend, up to `limit`, with the first matching ad's words for the message-match check. */
+export function landingTargets(snap: MetaAuditSnapshot, limit = 8): Array<{ url: string; key: string; adContext: string | null }> {
+  return landingPageGroups(snap)
+    .filter((g) => g.key)
+    .slice(0, limit)
+    .map((g) => {
+      const ad = snap.ads.find((a) => pageKey(a.linkUrl) === g.key && a.copy);
+      return { url: g.urls[0]!, key: g.key!, adContext: ad?.copy ?? null };
+    });
+}
+
+/** Put the landing page tables where the writer left the marker, or under its Landing Pages heading, or before Risks. */
+export function insertLandingPageTables(report: string, tables: string): string {
+  if (!tables.trim()) return report.replace(LANDING_PAGE_TABLES_MARKER, "").replace(/\n{3,}/g, "\n\n");
+  if (report.includes(LANDING_PAGE_TABLES_MARKER)) return report.replace(LANDING_PAGE_TABLES_MARKER, tables);
+  const lines = report.split("\n");
+  const heading = lines.findIndex((l) => /^#{1,3}\s*(\d+\.\s*)?Landing Pages?\b/i.test(l.trim()));
+  if (heading >= 0) {
+    lines.splice(heading + 1, 0, "", tables, "");
+    return lines.join("\n");
+  }
+  const risks = lines.findIndex((l) => /^#{1,3}\s*(\d+\.\s*)?Risks\b/i.test(l.trim()));
+  const block = ["## Landing Pages", "", tables, ""];
   if (risks >= 0) {
     lines.splice(risks, 0, ...block);
     return lines.join("\n");

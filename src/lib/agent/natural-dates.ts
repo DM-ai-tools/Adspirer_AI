@@ -130,6 +130,20 @@ export function parseNaturalDateRange(text: string, now = new Date()): ParsedRan
         : null;
     if (start && stop) return finish(start, stop, today);
   }
+  // A span of whole months: "August to October", "from Aug 2025 till Jan 2026", "Sept - Nov".
+  m = re(`\\b${MONTH}(?:\\s+(20\\d{2}))?${SEP}${MONTH}(?:\\s+(20\\d{2}))?\\b`).exec(t);
+  if (m && !(m[1]!.toLowerCase() === "may" && !m[2] && m[3]!.toLowerCase() === "may")) {
+    const startMonth = monthOf(m[1]!)!;
+    const stopMonth = monthOf(m[3]!)!;
+    const stopYear = m[4] ? Number(m[4]) : null;
+    const startYear = m[2] ? Number(m[2]) : null;
+    const lastDay = (y: number) => utc(y, stopMonth + 1, 0).getUTCDate();
+    let sy = stopYear ?? startYear ?? today.getUTCFullYear();
+    // No year: the most recent such span that has started.
+    if (stopYear == null && startYear == null && utc(sy, startMonth > stopMonth ? startMonth - 12 : startMonth, 1) > today) sy -= 1;
+    const range = finish({ day: 1, month: startMonth, year: startYear ?? (startMonth > stopMonth ? sy - 1 : sy) }, { day: lastDay(sy), month: stopMonth, year: sy }, today);
+    if (range) return range;
+  }
   // Previous calendar month.
   if (/\b(last|previous|prior)\s+(calendar\s+)?month\b/.test(t)) {
     const first = utc(today.getUTCFullYear(), today.getUTCMonth() - 1, 1);
