@@ -10,6 +10,51 @@ import { assignStyles, hasStyleGuide, referenceBlock, type StyleGuide } from "@/
 export const BULK_RUN_SIZE = 15;
 /** Bodies reused across the hooks of one run. */
 export const BULK_BODY_COUNT = 4;
+/**
+ * Hooks written per model call. One: measured on the live writer, asked for 3-15 hooks in one call
+ * it often stopped after a single hook (so most of a run came back empty), and a 15-hook call also
+ * took about two minutes. One hook per call is always complete, and the calls run side by side.
+ */
+export const HOOK_BATCH_SIZE = 1;
+/** Hook calls in flight at once. */
+export const HOOK_CONCURRENCY = 8;
+/** How many times a hook the writer skipped or failed is asked for again. */
+export const HOOK_ROUNDS = 3;
+/** How many times hooks whose on-image words clash with another image's are rewritten. */
+export const CLASH_ROUNDS = 2;
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
+/** Run `work` over `items`, at most `limit` at a time, keeping results in order. */
+async function mapLimit<T, R>(items: T[], limit: number, work: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      const i = next;
+      next += 1;
+      if (i >= items.length) return;
+      out[i] = await work(items[i]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
+  return out;
+}
+
+/** Indexes of hooks whose on-image words are too close to an earlier hook's. */
+export function clashingHookIndexes(hooks: BulkHook[]): number[] {
+  const kept: BulkHook[] = [];
+  const bad: number[] = [];
+  hooks.forEach((hook, i) => {
+    if (findSimilarOnImageText([...kept.map((k) => k.onImage), hook.onImage])) bad.push(i);
+    else kept.push(hook);
+  });
+  return bad;
+}
 
 export type BulkBrief = {
   brandName: string;
@@ -59,6 +104,15 @@ const bodiesSchema = z.object({
     .array(z.object({ label: z.string().describe("Button text, 2-4 words, the page's own call to action where it has one"), cta: z.enum(CTA_VALUES) }))
     .min(1)
     .max(2),
+});
+
+const ideaSchema = z.object({
+  ideas: z.array(
+    z.object({
+      angle_key: z.string().describe("Exactly the angle key"),
+      idea: z.string().describe("ONE sentence: the surprising, specific visual idea (a metaphor, contrast, staged scene or hero object) that makes this hook felt in a second with the text covered"),
+    }),
+  ),
 });
 
 const hookSchema = z.object({
@@ -240,6 +294,40 @@ export async function writeBulkPlan(
   const guide = hasStyleGuide(styleGuide) ? styleGuide : null;
   const guided = guide !== null;
   const styles = assignStyles(assigned, guide);
+
+  // Each hook is written in its own call, so the set is kept varied up front: one short call plans a
+  // different visual idea per hook, and each hook call is handed its own. A short list is returned
+  // complete far more reliably than long hooks; any idea still missing is asked for again, told which
+  // ideas are taken, and a hook left without one simply invents its own.
+  const ideas = new Map<string, string>();
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const todo = assigned.filter((a) => !ideas.has(a.key));
+    if (!todo.length) break;
+    try {
+      const { object } = await generateObject({
+        model,
+        schema: ideaSchema,
+        temperature: 0.9,
+        system: SYSTEM,
+        prompt: [
+          facts,
+          `\nMessage map:\n${JSON.stringify(messageMap)}`,
+          guide ? `\n${referenceBlock(guide)}\n` : null,
+          `\nWrite one visual idea for EACH angle below, using the exact angle_key. They are for ${assigned.length} different ads in one test, so every idea must be clearly different from every other: no repeated metaphor, object, scene or composition. Each idea comes from THIS business and THIS hook, never a stock device (no light bulbs, rockets, handshakes, graphs going up, piles of money unless the hook truly needs one).`,
+          ideas.size ? `Ideas already taken, do not repeat or resemble them: ${[...ideas.values()].join(" | ")}` : null,
+          todo.map((a, i) => `${i + 1}. key "${a.key}" · ${a.name} · targets a ${a.kind}: ${a.brief}`).join("\n"),
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      });
+      for (const item of object.ideas) {
+        if (todo.some((a) => a.key === item.angle_key) && item.idea.trim() && !ideas.has(item.angle_key)) ideas.set(item.angle_key, item.idea.trim());
+      }
+    } catch {
+      // The hooks can still be written without a planned idea.
+    }
+  }
+
   const writeHooks = async (angles: BulkAngle[], extra?: string) => {
     const { object } = await generateObject({
       model,
@@ -251,16 +339,20 @@ export async function writeBulkPlan(
         `\nMessage map:\n${JSON.stringify(messageMap)}`,
         `\nBodies (reused behind the hooks):\n${bodies.map((b) => `${b.id} [${b.format}]: ${b.text}`).join("\n")}`,
         `\nCTAs: ${ctas.map((c, i) => `${i}: ${c.label}`).join("; ")}`,
-        `\nWrite ${angles.length} hooks, one for EACH assigned angle below, using the exact angle_key. Each hook targets a different pain, hope, objection or belief, so the set tests genuinely different reasons a prospect might care, not rewordings. Pick for each the body that best proves or fulfils it (a "how we cut setup time" hook must sit on a body that shows that), and rephrase that body so it flows from the hook, keeping its facts.`,
+        `\nWrite ${angles.length} hook${angles.length === 1 ? "" : "s"}, one for EACH assigned angle below, using the exact angle_key${angles.length === 1 ? "" : ", and return all of them in the hooks array"}. Each hook targets a different pain, hope, objection or belief, so the set tests genuinely different reasons a prospect might care, not rewordings. Pick for each the body that best proves or fulfils it (a "how we cut setup time" hook must sit on a body that shows that), and rephrase that body so it flows from the hook, keeping its facts.`,
         guide ? `\n${referenceBlock(guide)}\n` : null,
         angles
           .map((a, i) => {
             const st = styles.get(a.key)!;
-            return `${i + 1}. key "${a.key}" · ${a.name} · ${STAGE_LABEL[a.stage]} · targets a ${a.kind}: ${a.brief}\n   ASSIGNED STYLE "${st.name}": ${st.brief}`;
+            const idea = ideas.get(a.key);
+            return `${i + 1}. key "${a.key}" · ${a.name} · ${STAGE_LABEL[a.stage]} · targets a ${a.kind}: ${a.brief}\n   ASSIGNED STYLE "${st.name}": ${st.brief}${idea ? `\n   VISUAL IDEA for this hook (planned so no two ads share one; keep its core, sharpen it into the scene): ${idea}` : ""}`;
           })
           .join("\n"),
         guided ? STYLE_RULE_REFERENCE : STYLE_RULE_CATALOGUE,
         `\nON-IMAGE WORDS MUST DIFFER: no two hooks share a headline wording or an on-image label, and no label repeats across the run.`,
+        angles.length < assigned.length
+          ? "The other hooks of this run are written separately for other angles, so keep every headline and label specific to YOUR angles' own pain, hope or proof; generic phrases are what clash."
+          : null,
         conceptFirst(guided),
         extra ?? null,
       ]
@@ -270,32 +362,50 @@ export async function writeBulkPlan(
     return object.hooks;
   };
 
-  let matched = matchHooksToAngles(assigned, await writeHooks(assigned), bodies, ctas.length, styles);
-  // Anything the model skipped gets one more try on its own.
-  if (matched.missing.length) {
-    const again = matchHooksToAngles(matched.missing, await writeHooks(matched.missing), bodies, ctas.length, styles);
-    const done = new Map([...matched.hooks, ...again.hooks].map((h) => [h.angle.key, h]));
-    matched = { hooks: assigned.map((a) => done.get(a.key)).filter((h): h is BulkHook => Boolean(h)), missing: again.missing };
-  }
-  let hooks = matched.hooks;
-
-  // The same words on several images is the failure to avoid: ask once more for the clashing set.
-  const clash = findSimilarOnImageText(hooks.map((h) => h.onImage));
-  if (clash) {
-    try {
-      const retry = matchHooksToAngles(
-        assigned,
-        await writeHooks(assigned, `Your previous attempt reused wording across images (${clash}). Rewrite so every hook's headline and labels are clearly different.`),
-        bodies,
-        ctas.length,
-        styles,
-      );
-      if (retry.hooks.length >= hooks.length) hooks = retry.hooks;
-    } catch {
-      // keep the first set
+  // The writer sometimes stops after a hook or two when asked for fifteen in one go, and a single
+  // fifteen-hook call takes about two minutes. So the hooks are written in small batches that run
+  // side by side, and whatever a round leaves missing is asked for again in the next round.
+  let lastError: unknown = null;
+  const writeAllHooks = async (angles: BulkAngle[], extra?: string): Promise<BulkHook[]> => {
+    const done = new Map<string, BulkHook>();
+    let pending = angles;
+    for (let round = 0; round < HOOK_ROUNDS && pending.length; round += 1) {
+      const results = await mapLimit(chunk(pending, HOOK_BATCH_SIZE), HOOK_CONCURRENCY, async (batch) => {
+        try {
+          return matchHooksToAngles(batch, await writeHooks(batch, extra), bodies, ctas.length, styles).hooks;
+        } catch (error) {
+          lastError = error;
+          return [];
+        }
+      });
+      for (const hook of results.flat()) done.set(hook.angle.key, hook);
+      pending = angles.filter((a) => !done.has(a.key));
     }
+    return angles.map((a) => done.get(a.key)).filter((h): h is BulkHook => Boolean(h));
+  };
+
+  let hooks = await writeAllHooks(assigned);
+
+  // The same words on several images is the failure to avoid. Each hook is written on its own, so
+  // check the set and rewrite only the hooks that clash, telling the writer the wording already taken.
+  for (let round = 0; round < CLASH_ROUNDS; round += 1) {
+    const bad = clashingHookIndexes(hooks);
+    if (!bad.length) break;
+    const taken = hooks
+      .filter((_, i) => !bad.includes(i))
+      .map((h) => `"${h.onImage.headline}"${h.onImage.highlights.length ? ` [${h.onImage.highlights.join(", ")}]` : ""}`)
+      .join("; ");
+    const rewritten = await writeAllHooks(
+      bad.map((i) => hooks[i]!.angle),
+      `These headlines and labels are already used on other images in this run: ${taken}. Yours must not repeat or closely resemble any of them: different words and a different structure.`,
+    );
+    const byKey = new Map(rewritten.map((h) => [h.angle.key, h] as const));
+    hooks = hooks.map((h) => byKey.get(h.angle.key) ?? h);
   }
 
-  if (!hooks.length) throw new Error("The ad copy writer returned no usable hooks. Try again.");
+  if (!hooks.length) {
+    const why = lastError instanceof Error ? ` (${lastError.message.slice(0, 200)})` : "";
+    throw new Error(`The ad copy writer returned no usable hooks${why}. Try again.`);
+  }
   return { messageMap, bodies, ctas, hooks };
 }

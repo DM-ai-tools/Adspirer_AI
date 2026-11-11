@@ -38,6 +38,10 @@ vi.mock("ai", () => ({
         },
       };
     }
+    if (prompt.includes("Write one visual idea")) {
+      const ideaKeys = BULK_ANGLES.map((a) => a.key).filter((k) => prompt.includes(`key "${k}"`));
+      return { object: { ideas: ideaKeys.map((k) => ({ angle_key: k, idea: `idea for ${k}` })) } };
+    }
     // hooks: one per assigned angle named in the prompt
     const keys = BULK_ANGLES.map((a) => a.key).filter((k) => prompt.includes(`key "${k}"`));
     return {
@@ -49,7 +53,7 @@ vi.mock("ai", () => ({
           body_id: "ABCD"[i % 4],
           primary_text: `copy ${i} ${k}`,
           cta_index: 0,
-          on_image_text: { headline: `Unique words number ${i} ${k}`, highlights: [`label ${i}`], cta_label: "Go" },
+          on_image_text: { headline: `qa${BULK_ANGLES.findIndex((a) => a.key === k)}x qa${BULK_ANGLES.findIndex((a) => a.key === k)}y qa${BULK_ANGLES.findIndex((a) => a.key === k)}z`, highlights: [`label ${k}`], cta_label: "Go" },
           style: `style ${i}`,
           creative_direction: `idea ${i}`,
         })),
