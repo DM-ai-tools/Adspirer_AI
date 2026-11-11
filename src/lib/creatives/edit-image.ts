@@ -5,6 +5,7 @@ import { getCreativeDraftAsync, upsertCreativeDraftAsync, type CreativeDraft } f
 import { generateImageForDraft, storeDraftImage } from "@/lib/creatives/generate-draft-image";
 import { generationSize, readAspectMarker, readLogoMarker, readRunMarker, type ImageFormat } from "@/lib/creatives/formats";
 import { getRun, updateRun, type ImageVersion, type RunItem } from "@/lib/creatives/bulk/runs";
+import { resolveEditInstruction } from "@/lib/creatives/resolve-instruction";
 
 /**
  * Changing one thing in an image without redrawing it.
@@ -136,18 +137,29 @@ export async function editImage(input: { draftId: string; instruction: string; m
   await recordVersion(existing, null, null);
 
   try {
+    // The image model cannot open a web page. When the instruction points at the landing page (or a
+    // pasted link), read it and swap in the real words and numbers before the image model sees it.
+    const resolved = await resolveEditInstruction({
+      instruction,
+      mode: input.mode,
+      landingPageUrl: existing.landing_page_url,
+      headline: existing.headline,
+      primaryText: existing.primary_text,
+      creativeDirection: existing.creative_direction,
+    });
+    const change = resolved.instruction;
     if (input.mode === "full") {
-      const result = await generateImageForDraft(existing.id, undefined, instruction, format);
+      const result = await generateImageForDraft(existing.id, undefined, change, format);
       if (result.imageStatus !== "succeeded") throw new Error(result.imageError ?? "The image could not be regenerated.");
     } else {
-      const edited = await callImageEdit(original, buildEditPrompt(instruction, Boolean(existing.logo_url)), generationSize(format));
+      const edited = await callImageEdit(original, buildEditPrompt(change, Boolean(existing.logo_url)), generationSize(format));
       const finished = await finishEdit(original, edited, readLogoMarker(existing.creative_direction));
       await storeDraftImage(existing, {
         b64: finished.toString("base64"),
         imageUrl: null,
         mime: "image/png",
         model: getConfig().OPENAI_IMAGE_MODEL,
-        prompt: buildEditPrompt(instruction, Boolean(existing.logo_url)),
+        prompt: buildEditPrompt(change, Boolean(existing.logo_url)),
         status: "succeeded",
         error: null,
         revisionNotes: instruction,

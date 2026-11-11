@@ -183,3 +183,83 @@ describe("editing an image of a bulk run", () => {
     await expect(editImage({ draftId: draft.id, instruction: "  ", mode: "edit" })).rejects.toThrow(/what you want changed/);
   });
 });
+
+describe("editing with the landing page", () => {
+  it("hands the image model the real words from the page, not the pointer to it", async () => {
+    vi.resetModules();
+    vi.doMock("@/lib/creatives/resolve-instruction", () => ({
+      resolveEditInstruction: async (i: { instruction: string; landingPageUrl?: string | null }) => {
+        if (/landing page/.test(i.instruction)) {
+          expect(i.landingPageUrl).toBe("https://acme.test/");
+          return { instruction: 'Replace the chips with "1,500+ Australian Businesses" and "$120M+ Ad Spend Managed".', usedPage: i.landingPageUrl, facts: [] };
+        }
+        return { instruction: i.instruction, usedPage: null, facts: [] };
+      },
+    }));
+    process.env.OPENAI_API_KEY = "test";
+    resetConfigCache();
+    const seen: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).endsWith("/images/edits")) {
+          seen.push(String((init!.body as FormData).get("prompt")));
+          return new Response(JSON.stringify({ data: [{ b64_json: (await solid(1024, 1280, { r: 1, g: 2, b: 3 })).toString("base64") }] }), { status: 200 });
+        }
+        throw new Error("unexpected fetch");
+      }),
+    );
+    const { upsertCreativeDraftAsync } = await import("@/lib/creatives/drafts");
+    const { createRun, updateRun } = await import("@/lib/creatives/bulk/runs");
+    const { editImage } = await import("@/lib/creatives/edit-image");
+    const run = await createRun({ clientId: "c1", inputs: {}, format: "4:5" });
+    const draft = await upsertCreativeDraftAsync({
+      client_id: "c1", service_id: null, conversation_id: null, task_id: null, brief_id: null, concept: "Acme — Hook", headline: "Stop wasting spend", primary_text: "copy", description: null, cta: null,
+      creative_direction: withRunMarker(withAspectMarker("STYLE: x.", "4:5"), run.id), image_url: null, image_b64: (await solid(1024, 1280, { r: 240, g: 240, b: 240 })).toString("base64"), image_mime: "image/png",
+      image_model: null, image_prompt: null, image_status: "succeeded", image_error: null, landing_page_url: "https://acme.test/", brand_colors: null, logo_url: null, revision_notes: null, status: "ready",
+    });
+    await updateRun(run.id, { items: [{ draft_id: draft.id, angle_key: null, angle_name: null, stage: null, kind: null, targets: null, body_id: null, cta_label: null }] });
+
+    const result = await editImage({ draftId: draft.id, instruction: "use the client stats from the landing page", mode: "edit" });
+    expect(result.ok).toBe(true);
+    expect(seen[0]).toContain('"1,500+ Australian Businesses"');
+    expect(seen[0]).not.toContain("landing page");
+    vi.unstubAllGlobals();
+    vi.doUnmock("@/lib/creatives/resolve-instruction");
+  });
+
+  it("leaves the image as it was and says why when the page has nothing to give", async () => {
+    vi.resetModules();
+    vi.doMock("@/lib/creatives/resolve-instruction", () => ({
+      resolveEditInstruction: async () => {
+        throw new Error("The page has no customer testimonials.");
+      },
+    }));
+    process.env.OPENAI_API_KEY = "test";
+    resetConfigCache();
+    const fetchSpy = vi.fn(async () => {
+      throw new Error("the image model must not be called");
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const { upsertCreativeDraftAsync, getCreativeDraftAsync } = await import("@/lib/creatives/drafts");
+    const { createRun, updateRun, getRun } = await import("@/lib/creatives/bulk/runs");
+    const { editImage } = await import("@/lib/creatives/edit-image");
+    const run = await createRun({ clientId: "c1", inputs: {}, format: "4:5" });
+    const original = await solid(1024, 1280, { r: 240, g: 240, b: 240 });
+    const draft = await upsertCreativeDraftAsync({
+      client_id: "c1", service_id: null, conversation_id: null, task_id: null, brief_id: null, concept: "Acme — Hook", headline: "h", primary_text: "copy", description: null, cta: null,
+      creative_direction: withRunMarker(withAspectMarker("STYLE: x.", "4:5"), run.id), image_url: null, image_b64: original.toString("base64"), image_mime: "image/png",
+      image_model: null, image_prompt: null, image_status: "succeeded", image_error: null, landing_page_url: "https://acme.test/", brand_colors: null, logo_url: null, revision_notes: null, status: "ready",
+    });
+    await updateRun(run.id, { items: [{ draft_id: draft.id, angle_key: null, angle_name: null, stage: null, kind: null, targets: null, body_id: null, cta_label: null }] });
+    const result = await editImage({ draftId: draft.id, instruction: "use the testimonials from the landing page", mode: "edit" });
+    expect(result.ok).toBe(false);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    const after = (await getCreativeDraftAsync(draft.id, { withImageData: true }))!;
+    expect(after.image_status).toBe("succeeded");
+    expect(Buffer.from(after.image_b64!, "base64").equals(original)).toBe(true);
+    expect((await getRun(run.id))!.items[0]!.edit_error).toMatch(/no customer testimonials/);
+    vi.unstubAllGlobals();
+    vi.doUnmock("@/lib/creatives/resolve-instruction");
+  });
+});

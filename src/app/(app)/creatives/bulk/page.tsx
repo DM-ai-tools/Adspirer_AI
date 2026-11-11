@@ -723,7 +723,7 @@ function BulkInner() {
                               className="min-h-[64px] text-xs"
                               value={editing[card.id]!.text}
                               onChange={(e) => setEditing((m) => ({ ...m, [card.id]: { ...m[card.id]!, text: e.target.value } }))}
-                              placeholder={'What should change? e.g. "make the headline say Free Audit", "swap the background to dark blue", "remove the badge on the right"'}
+                              placeholder={'What should change? e.g. "make the headline say Free Audit", "swap the background to dark blue", "show the client stats from the landing page" (or paste a link to any page and say which section to use)'}
                             />
                             <div className="space-y-1 text-[11px]">
                               <label className="flex items-start gap-1.5">

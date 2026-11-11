@@ -48,10 +48,11 @@ export type WebsiteScrapeResult = {
  */
 export async function scrapeWebsiteServices(
   url: string,
-  options: { extractServices?: boolean } = {},
+  options: { extractServices?: boolean; /** Most characters of page text kept (default 12,000). */ maxChars?: number } = {},
 ): Promise<WebsiteScrapeResult> {
   // Landing-page scoring only needs the text: skip the service-extraction model call.
   const extract = options.extractServices ?? true;
+  const maxChars = options.maxChars ?? 12_000;
   const normalized = normalizeUrl(url);
   const config = getConfig();
 
@@ -65,7 +66,7 @@ export async function scrapeWebsiteServices(
       return {
         url: normalized,
         title: scraped.title,
-        markdown: scraped.markdown?.slice(0, 12_000),
+        markdown: scraped.markdown?.slice(0, maxChars),
         branding: scraped.branding ?? null,
         services,
         source: "firecrawl",
@@ -78,12 +79,12 @@ export async function scrapeWebsiteServices(
     }
   }
 
-  const fetched = await scrapeWithFetch(normalized);
+  const fetched = await scrapeWithFetch(normalized, maxChars);
   const services = extract ? await extractServices(fetched.markdown ?? "", normalized) : [];
   return {
     url: normalized,
     title: fetched.title,
-    markdown: fetched.markdown?.slice(0, 12_000),
+    markdown: fetched.markdown?.slice(0, maxChars),
     services,
     source: fetched.source,
   };
@@ -137,6 +138,7 @@ async function scrapeWithFirecrawl(
 
 async function scrapeWithFetch(
   url: string,
+  maxChars = 12_000,
 ): Promise<{ title?: string; markdown?: string; source: "fetch" | "heuristic" }> {
   try {
     const { assertPublicUrl } = await import("@/lib/security/public-url");
@@ -163,7 +165,7 @@ async function scrapeWithFetch(
       .trim();
     return {
       title,
-      markdown: text.slice(0, 12_000),
+      markdown: text.slice(0, maxChars),
       source: "fetch",
     };
   } catch {
