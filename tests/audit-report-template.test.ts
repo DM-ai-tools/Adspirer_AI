@@ -154,8 +154,9 @@ Objective: OUTCOME_LEADS
     const xml = await zip.file("word/document.xml")!.async("string");
     // Each table cell is its own paragraph — join them with " | ".
     const text = xml.replace(/<\/w:p>/g, " | ").replace(/<[^>]+>/g, "");
-    expect(text).toContain("Active campaigns | 2 |");
-    expect(text).toContain("Paused campaigns | 55 |");
+    // A Metric | Value table prints as tiles: the value, then its label.
+    expect(text).toContain("2 | ACTIVE CAMPAIGNS |");
+    expect(text).toContain("55 | PAUSED CAMPAIGNS |");
     expect(text).toContain("$27.18");
     expect(text).toContain("TR AUDIT FINAL");
     expect(text).toContain("No conversion tracking");

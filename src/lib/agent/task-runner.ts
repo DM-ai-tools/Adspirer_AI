@@ -66,6 +66,7 @@ import { nowIso } from "@/lib/utils";
 import { logger, newCorrelationId } from "@/lib/observability/logger";
 import { findRepeatedFigures } from "@/lib/audit/repeat-check";
 import { startCreativeGeneration } from "@/lib/creatives/service";
+import { insertPerformanceTables } from "@/lib/audit/performance-tables";
 import { runAfterResponse } from "@/lib/api/background";
 import {
   getSelectedCreativeDraftAsync,
@@ -687,8 +688,12 @@ export async function runTask(
       }
     }
 
-    // The audit checklist table comes from the checkpoint engine, not the
-    // model, so it is always complete and exports with the report.
+    // The performance tables come from Meta's rows, not the model: they go where the writer left the marker.
+    if (gathered.auditAppendix && agentResult.summary.trim()) {
+      agentResult.summary = insertPerformanceTables(agentResult.summary, gathered.auditTables ?? "");
+    }
+    // The audit checklist comes from the checkpoint engine, not the model, so it is always complete.
+    // It is shown in chat; downloaded reports leave it out (see stripChatOnlySections).
     if (gathered.auditAppendix && agentResult.summary.trim()) {
       agentResult.summary = `${agentResult.summary.trimEnd()}\n\n${gathered.auditAppendix}`;
     }

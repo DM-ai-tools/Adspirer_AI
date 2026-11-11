@@ -4,6 +4,7 @@
  * text and the landing page. Every figure used in a script is then compared with the registry by its
  * NORMALISED value ("$12M+" is 12,000,000 dollars, "doubled" is 2x), never by a loose substring.
  */
+import { metricOf, splitLabel } from "@/lib/video/evidence";
 import type { ApprovedClaim, Provenance } from "@/lib/video/pipeline-types";
 import type { BriefFact } from "@/lib/video/script-types";
 
@@ -322,7 +323,7 @@ export function findClaimsInText(text: string): Array<{ figure: string; text: st
 
 export type ClaimRegistryInput = {
   stats: string[];
-  assets: Array<{ id: string; name: string; analysis?: { stats: Array<{ value: string; label: string }> } | null }>;
+  assets: Array<{ id: string; name: string; analysis?: { stats: Array<{ value: string; label: string; annotationLabel?: string | null }>; dateRange?: string | null } | null }>;
   offerDetails?: string | null;
   instructions?: string | null;
   pageExcerpt?: string | null;
@@ -376,16 +377,20 @@ export function buildClaimRegistry(input: ClaimRegistryInput): ApprovedClaim[] {
   for (const asset of input.assets) {
     for (const s of asset.analysis?.stats ?? []) {
       const value = s.value.trim();
-      const label = s.label.trim();
+      // The claim is what the image itself prints. A label someone added on top of it ("Sales Revenue" beside "Conv. value") is not part of the claim.
+      const { label } = splitLabel(s);
       if (!value) continue;
       const text = `${value} ${label}`.trim();
+      const dateRange = asset.analysis?.dateRange?.trim() || null;
       push({
         text,
         kind: "number",
         figure: value,
-        evidence: `${value} ${label} printed in ${asset.name}`.replace(/\s+/g, " "),
+        evidence: `${value} ${label} printed in ${asset.name}${dateRange ? ` for ${dateRange}` : ""}`.replace(/\s+/g, " "),
         provenance: { source: "image_reading", detail: `Read from the uploaded image "${asset.name}"`, confidence: "medium" },
         assetId: asset.id,
+        metric: metricOf(label),
+        ...(dateRange ? { dateRange } : {}),
       });
     }
   }

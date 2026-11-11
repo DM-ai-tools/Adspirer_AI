@@ -1,4 +1,5 @@
-import type { ClipAttemptRecord, CreativePlan, ProviderCapabilities, PronunciationLexicon, QaReport, SpeechLine } from "@/lib/video/pipeline-types";
+import type { AssetPurpose, ClipAttemptRecord, CreativePlan, ProviderCapabilities, PronunciationLexicon, QaReport, QaSeverity, SpeechLine } from "@/lib/video/pipeline-types";
+import type { VideoMode } from "@/lib/video/clean-mode";
 
 /** What is stored while a video is being made, and what the screen reads back. Client-safe: types only. */
 
@@ -64,18 +65,54 @@ export type ClipState = {
   decision?: ClipDecision | null;
   /** The operator used this clip although the inspection did not approve it. */
   acceptedWithIssues?: boolean;
+  /** What was open when they did, kept so an approved clip is never shown as one that passed. */
+  override?: OverrideRecord | null;
 };
 
 /** When to wait for the operator before spending on the next clip. */
 export type Checkpoint = "after_first" | "each" | "none";
 
+/**
+ * What the finishing step does to the picture. "clean" (the default) adds nothing: the three flags
+ * are then always false. They mean something only for "branded", the earlier behaviour of burning
+ * captions, the logo and an end card into the file.
+ */
 export type Finishing = {
+  mode?: VideoMode;
   captions: boolean;
   logo: boolean;
   endCard: boolean;
 };
 
-export const DEFAULT_FINISHING: Finishing = { captions: true, logo: true, endCard: true };
+export const DEFAULT_FINISHING: Finishing = { mode: "clean", captions: false, logo: false, endCard: false };
+
+/** An uploaded file as it was when the video was started: the job keeps using exactly this file whatever is uploaded or changed afterwards. */
+export type AssetSnapshot = {
+  id: string;
+  name: string;
+  /** What the file is for, e.g. "approved_proof_screenshot". */
+  purpose: AssetPurpose;
+  /** Where the original bytes are kept. Never an expiring address. */
+  key: string;
+  mime: string;
+  version: number;
+  /** SHA-256 of the original bytes, checked whenever the file is used or handed over. Null when the file could not be read at the time. */
+  sha256: string | null;
+  bytes: number | null;
+};
+
+export type LogoSnapshot = { key: string; mime: string; sha256: string | null; bytes: number | null; sourceUrl: string | null; origin: "page" | "upload" | "client" };
+
+/** What a person approved although an inspection had not: who decided is the operator; what they overrode is kept word for word. */
+export type OverrideRecord = {
+  at: string;
+  by: string | null;
+  /** The findings that were open when they approved it. */
+  findings: Array<{ code: string; severity: QaSeverity; message: string; atSeconds?: number }>;
+};
+
+/** How a clip or an export stands: it passed, it has open findings, or a person approved it despite them. Never "passed" for an override. */
+export type CheckStatus = "passed" | "issues" | "approved_despite_warnings" | "unchecked";
 
 export type QaCheck = { name: string; ok: boolean; detail: string };
 
@@ -109,6 +146,12 @@ export type FinalVideo = {
   reviewKey?: string | null;
   /** The operator delivered this export although the inspection did not approve it. */
   acceptedAnyway?: boolean;
+  /** What was open when they did. */
+  override?: OverrideRecord | null;
+  /** "clean": footage and sound only. Absent on exports made before clean video existed, which had their graphics burned in. */
+  mode?: VideoMode;
+  /** The files handed over beside a clean video: the transcript and the placement plan (subtitles are in `subtitles`). */
+  deliverables?: { transcriptKey: string; planJsonKey: string; planTextKey: string; overlays: number } | null;
 };
 
 export type ReferenceImage = {
@@ -145,10 +188,28 @@ export type GenerationPlan = {
   capabilities?: ProviderCapabilities;
   /** The most that may be spent on one video including clips that were rejected and made again. */
   budgetUsd?: number;
+  /** The uploaded files and the logo exactly as they were when this video was started. */
+  assets?: AssetSnapshot[];
+  logo?: LogoSnapshot | null;
+  /** Spoken lines reworded because they pointed at an image a clean video does not show. */
+  narrationChanges?: Array<{ scene: number; was: string; now: string; reason: string }>;
   createdAt: string;
 };
 
-export type FinalView = Omit<FinalVideo, "key" | "reviewKey" | "subtitles"> & { videoUrl: string | null; reviewUrl: string | null; srtUrl: string | null; vttUrl: string | null; subtitleCues: number };
+export type FinalView = Omit<FinalVideo, "key" | "reviewKey" | "subtitles" | "deliverables"> & {
+  videoUrl: string | null;
+  reviewUrl: string | null;
+  srtUrl: string | null;
+  vttUrl: string | null;
+  subtitleCues: number;
+  transcriptUrl: string | null;
+  planUrl: string | null;
+  planJsonUrl: string | null;
+  suggestedOverlays: number;
+  checkStatus: CheckStatus;
+};
+
+export type AssetView = { id: string; name: string; purpose: AssetPurpose; version: number; sha256: string | null; bytes: number | null; url: string; downloadUrl: string; available: boolean; cautions: string[] };
 
 export type GenerationView = {
   status: "generating" | "paused" | "stopped" | "clips_ready" | "assembling" | "done" | "failed" | "idle";
@@ -159,8 +220,14 @@ export type GenerationView = {
   /** About what the clips not yet made would cost. */
   remainingUsd: number;
   final: FinalView | null;
-  plan: (Omit<GenerationPlan, "character" | "setting" | "references" | "speech"> & { character: boolean; setting: boolean; speech: { uncertain: string[]; terms: number } | null }) | null;
-  clips: Array<Omit<ClipState, "taskId" | "sourceVideoUrl" | "lastFrameUrl" | "videoKey" | "prompt" | "attemptLog"> & { hasVideo: boolean; videoUrl: string | null; attemptCount: number }>;
+  plan: (Omit<GenerationPlan, "character" | "setting" | "references" | "speech" | "assets" | "logo"> & { character: boolean; setting: boolean; speech: { uncertain: string[]; terms: number } | null }) | null;
+  clips: Array<Omit<ClipState, "taskId" | "sourceVideoUrl" | "lastFrameUrl" | "videoKey" | "prompt" | "attemptLog"> & { hasVideo: boolean; videoUrl: string | null; attemptCount: number; checkStatus: CheckStatus }>;
+  /** The files this video was started with (or, before it starts, the files it would start with): the actual thumbnail and file name of each. */
+  assets: AssetView[];
+  /** Things to settle about the evidence before it is used: a relabelled figure, a time claim the date range does not support, an unstated currency. */
+  cautions: string[];
+  /** False when files are kept on this server's own disk and would be lost on a restart. */
+  storageDurable: boolean;
   spentUsd: number;
   /** Why generation cannot start, e.g. no key for the model. */
   blocked: string | null;

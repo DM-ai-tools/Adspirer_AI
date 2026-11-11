@@ -407,7 +407,15 @@ export type VisionObservation = { category: QaCategory; severity: QaSeverity; at
 
 export type VisionResult = {
   observations: VisionObservation[];
-  textSeen: Array<{ text: string; atSeconds: number | null; kind: "word" | "logo_like" | "ui" | "number" | "gibberish" }>;
+  textSeen: Array<{
+    text: string;
+    atSeconds: number | null;
+    kind: "word" | "logo_like" | "ui" | "number" | "gibberish";
+    /** "graphic": drawn over the picture (a caption, title, badge, button, floating panel). "scene": physically part of the filmed place (a book spine, a far-off sign). */
+    placement?: "graphic" | "scene";
+    /** "incidental": small, in the background, out of focus or barely readable, and nothing a viewer would take as a message. */
+    prominence?: "prominent" | "incidental";
+  }>;
   faceConsistent: boolean | null;
   summary: string;
 };
@@ -435,13 +443,13 @@ export function visionRubric(ctx: { scenes: SceneBrief[]; characterDescription: 
     "4. BODY AND OBJECTS (category anatomy): impossible limbs, objects that bend, melt, duplicate or change shape between frames, incoherent reflections or shadows.",
     "5. FLICKER AND CONSISTENCY (category temporal): flicker, popping details, a background that changes, unexplained wardrobe or hair changes between frames.",
     "6. STRAY GRAPHICS (category composition): lines, bars, borders, glows or overlays that cut or split the frame, watermarks, floating panels or dashboards hanging in the air.",
-    "7. TEXT OF ANY KIND (category text or branding): words, letters, numbers, wordmarks, logo-like marks, buttons, labels, signs, legible gibberish, dashboards or interface screens. Real text is added later by the video editor, never by the footage, so any of it is a defect. List EVERY piece in textSeen, verbatim when you can read it (kind: word, number, logo_like, ui or gibberish) with the time. For a logo-like mark you cannot read, put a short description as its text. Fabricated branding or a product name drawn in the footage is critical.",
+    "7. TEXT OF ANY KIND (category text or branding): words, letters, numbers, wordmarks, logo-like marks, buttons, labels, signs, legible gibberish, dashboards or interface screens. The footage is meant to carry no text at all. List EVERY piece in textSeen, verbatim when you can read it (kind: word, number, logo_like, ui or gibberish) with the time. For a logo-like mark you cannot read, put a short description as its text. For each piece also say: placement = graphic when it is drawn OVER the picture (a subtitle or caption, a title or headline, a highlighted word, a statistic badge, a button, a web address, a watermark, a panel or dashboard floating in the air), or scene when it is physically part of the filmed place (lettering on a book spine, a far-off sign, a label on an object); and prominence = incidental ONLY when it is small, in the background, out of focus or barely readable AND a viewer would not take it as part of the ad's message, otherwise prominent. Anything drawn over the picture is prominent. Fabricated branding or a product name drawn in the footage is critical.",
     "8. RELEVANCE (category relevance): does the footage show each scene's subject, setting and action, and satisfy its acceptance checks? Report what is missing or wrong.",
     ctx.expectsSpeech ? "9. SPEECH (category lipsync): do the mouth movements look plausible for talking: opening and closing in rhythm, lips matching a person speaking, no frozen or rubbery mouth? Report a mouth that moves without speech or stays still while speaking." : "9. Skip speech checks.",
     "",
     ctx.allowedText.length ? `Text that is allowed to appear in the footage itself: ${ctx.allowedText.map((t) => `"${t}"`).join(", ")}. Still list it in textSeen.` : "No text at all is allowed in the footage itself.",
     "",
-    "SEVERITY: critical = unusable as an ad (identity change, prominent face artifact, any readable text or logo or UI in the footage, a frame-splitting line, wrong subject). major = clearly noticeable defect a viewer would see (finger errors, warping object, flicker, wrong action). minor = small imperfection. In each observation's evidence say exactly what you see and where. In correction say, in positive terms, what the frame should show instead.",
+    "SEVERITY: critical = unusable as an ad (identity change, prominent face artifact, any graphic, caption or prominent readable text, logo or UI in the footage, a frame-splitting line, wrong subject). A small incidental background detail is not a reason to reject a shot. major = clearly noticeable defect a viewer would see (finger errors, warping object, flicker, wrong action). minor = small imperfection. In each observation's evidence say exactly what you see and where. In correction say, in positive terms, what the frame should show instead.",
     "Fill summary with two sentences on the clip's overall state.",
   ].join("\n");
 }
@@ -460,7 +468,15 @@ const visionSchema = z.object({
     )
     .max(24),
   textSeen: z
-    .array(z.object({ text: z.string(), atSeconds: z.number().nullable(), kind: z.enum(["word", "logo_like", "ui", "number", "gibberish"]) }))
+    .array(
+      z.object({
+        text: z.string(),
+        atSeconds: z.number().nullable(),
+        kind: z.enum(["word", "logo_like", "ui", "number", "gibberish"]),
+        placement: z.enum(["graphic", "scene"]).describe("graphic: drawn over the picture. scene: physically part of the filmed place."),
+        prominence: z.enum(["prominent", "incidental"]).describe("incidental only for a small, background, barely readable detail that is not part of the message"),
+      }),
+    )
     .max(40)
     .describe("Every piece of text, number, logo-like mark or interface visible, verbatim when readable"),
   faceConsistent: z.boolean().nullable(),
@@ -545,6 +561,20 @@ export function visionToFindings(result: VisionResult, allowedText: string[]): Q
     if (t.kind !== "logo_like" && isAllowedText(t.text, allowedText)) continue;
     const shown = t.text.trim() ? `"${t.text.trim()}"` : "an unreadable mark";
     const at = t.atSeconds ?? undefined;
+    // A small detail in the background of the filmed place (never an interface, never something drawn over the picture) is noted, not a reason to pay for the shot again.
+    if (t.placement === "scene" && t.prominence === "incidental" && t.kind !== "ui") {
+      findings.push({
+        code: "incidental_text",
+        severity: "minor",
+        category: "text",
+        message: `A small background detail (${shown}) is faintly readable in the scene.`,
+        evidence: `Incidental ${t.kind === "logo_like" ? "mark" : "lettering"} ${shown}${at !== undefined ? ` at ${fmtT(at)}` : ""}: part of the filmed place, small or out of focus, and not a graphic or a message.`,
+        atSeconds: at,
+        correction: "",
+        source: "vision",
+      });
+      continue;
+    }
     if (t.kind === "logo_like") {
       findings.push({
         code: "invented_branding",

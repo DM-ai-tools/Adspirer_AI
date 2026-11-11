@@ -24,7 +24,7 @@ import {
 import type { InlineSpan, ReportBlock } from "@/lib/reports/parse-markdown";
 import { parseMarkdownToBlocks, sanitizeReportText } from "@/lib/reports/parse-markdown";
 import { columnAlignments, columnWeights, padRows } from "@/lib/reports/layout";
-import { REPORT_THEME as T } from "@/lib/reports/template";
+import { CARD_TONES, REPORT_THEME as T } from "@/lib/reports/template";
 
 /**
  * Native Word (.docx) export. Replaces the old HTML-renamed-to-.doc file,
@@ -43,6 +43,83 @@ const CONTENT_TWIP = PAGE_WIDTH_TWIP - MARGIN_TWIP * 2;
 
 const URL_RE = /(https?:\/\/[^\s)]+)/g;
 const HAIRLINE = { style: BorderStyle.SINGLE, size: 4, color: hex(T.border) };
+const NO_BORDER = { style: BorderStyle.NONE, size: 0, color: "auto" };
+const NO_BORDERS = { top: NO_BORDER, bottom: NO_BORDER, left: NO_BORDER, right: NO_BORDER, insideHorizontal: NO_BORDER, insideVertical: NO_BORDER };
+const spacer = () => new Paragraph({ spacing: { before: 0, after: 120 }, children: [] });
+
+/** Key figures as tiles: four to a row, the value large and the label small beneath it. */
+function kpiTiles(block: Extract<ReportBlock, { type: "kpis" }>): Table {
+  const perRow = 4;
+  const width = Math.floor(CONTENT_TWIP / perRow);
+  const rows: TableRow[] = [];
+  for (let i = 0; i < block.items.length; i += perRow) {
+    const slice = block.items.slice(i, i + perRow);
+    while (slice.length < perRow) slice.push({ label: "", value: "" });
+    rows.push(
+      new TableRow({
+        cantSplit: true,
+        children: slice.map(
+          (item) =>
+            new TableCell({
+              width: { size: width, type: WidthType.DXA },
+              shading: item.value ? { type: ShadingType.CLEAR, color: "auto", fill: hex(T.surface) } : undefined,
+              borders: item.value
+                ? { top: { style: BorderStyle.SINGLE, size: 18, color: hex(T.primary) }, bottom: HAIRLINE, left: { style: BorderStyle.SINGLE, size: 24, color: "FFFFFF" }, right: { style: BorderStyle.SINGLE, size: 24, color: "FFFFFF" } }
+                : { top: NO_BORDER, bottom: NO_BORDER, left: NO_BORDER, right: NO_BORDER },
+              margins: { top: 100, bottom: 100, left: 140, right: 140 },
+              children: [
+                new Paragraph({ spacing: { after: 20 }, children: [new TextRun({ text: item.value, font: FONT, bold: true, size: 28, color: hex(T.primaryDark) })] }),
+                new Paragraph({ children: [new TextRun({ text: item.label.toUpperCase(), font: FONT, size: 14, color: hex(T.muted) })] }),
+              ],
+            }),
+        ),
+      }),
+    );
+  }
+  return new Table({ layout: TableLayoutType.FIXED, width: { size: CONTENT_TWIP, type: WidthType.DXA }, columnWidths: Array(perRow).fill(width), borders: NO_BORDERS, rows });
+}
+
+/** A risk, recommendation or change: one shaded cell with a coloured bar, the tag and title, then label / value lines. */
+function card(block: Extract<ReportBlock, { type: "card" }>): Table {
+  const tone = CARD_TONES[block.tone];
+  const labelWidth = 1500;
+  const line = (label: string, value: ParagraphChild[]) =>
+    new Paragraph({
+      spacing: { before: 20, after: 20, line: 270 },
+      tabStops: [{ type: TabStopType.LEFT, position: labelWidth }],
+      indent: { left: labelWidth, hanging: labelWidth },
+      children: [new TextRun({ text: `${label}\t`, font: FONT, bold: true, size: 17, color: hex(T.muted) }), ...value],
+    });
+  return new Table({
+    layout: TableLayoutType.FIXED,
+    width: { size: CONTENT_TWIP, type: WidthType.DXA },
+    columnWidths: [CONTENT_TWIP],
+    borders: { ...NO_BORDERS, left: { style: BorderStyle.SINGLE, size: 24, color: hex(tone.bar) } },
+    rows: [
+      new TableRow({
+        cantSplit: true,
+        children: [
+          new TableCell({
+            width: { size: CONTENT_TWIP, type: WidthType.DXA },
+            shading: { type: ShadingType.CLEAR, color: "auto", fill: hex(tone.fill) },
+            margins: { top: 100, bottom: 100, left: 180, right: 160 },
+            children: [
+              new Paragraph({
+                spacing: { after: 60 },
+                children: [
+                  ...(block.tag ? [new TextRun({ text: ` ${block.tag} `, font: FONT, bold: true, size: 16, color: "FFFFFF", shading: { type: ShadingType.CLEAR, color: "auto", fill: hex(tone.bar) } }), new TextRun({ text: "  ", size: 16 })] : []),
+                  new TextRun({ text: block.title, font: FONT, bold: true, size: 21, color: hex(T.ink) }),
+                ],
+              }),
+              ...block.fields.map((f) => line(f.label, spanRuns(f.value).map((r) => r))),
+              ...block.notes.map((n) => line("•", spanRuns(n))),
+            ],
+          }),
+        ],
+      }),
+    ],
+  });
+}
 
 function runsFor(text: string, style: { bold?: boolean; italics?: boolean; mono?: boolean; color?: string; size?: number } = {}): ParagraphChild[] {
   const base = {
@@ -77,11 +154,11 @@ function tableFor(block: Extract<ReportBlock, { type: "table" }>): Table {
   const { headers, rows, columns } = padRows(block.headers, block.rows);
   const widths = columnWeights(headers, rows).map((w) => Math.round(w * CONTENT_TWIP));
   const align = columnAlignments(rows, columns);
-  const cell = (text: string, c: number, opts: { header?: boolean; zebra?: boolean }) =>
+  const cell = (text: string, c: number, opts: { header?: boolean; zebra?: boolean; strong?: boolean }) =>
     new TableCell({
       width: { size: widths[c], type: WidthType.DXA },
       verticalAlign: VerticalAlign.TOP,
-      shading: opts.header
+      shading: opts.header || opts.strong
         ? { type: ShadingType.CLEAR, color: "auto", fill: hex(T.tableHeader) }
         : opts.zebra
           ? { type: ShadingType.CLEAR, color: "auto", fill: hex(T.surface) }
@@ -92,8 +169,8 @@ function tableFor(block: Extract<ReportBlock, { type: "table" }>): Table {
           alignment: align[c] === "right" ? AlignmentType.RIGHT : AlignmentType.LEFT,
           spacing: { before: 0, after: 0, line: 260 },
           children: runsFor(text, {
-            bold: opts.header,
-            color: opts.header ? hex(T.primaryDark) : undefined,
+            bold: opts.header || opts.strong,
+            color: opts.header || opts.strong ? hex(T.primaryDark) : undefined,
             size: 18,
           }),
         }),
@@ -123,7 +200,7 @@ function tableFor(block: Extract<ReportBlock, { type: "table" }>): Table {
         (row, r) =>
           new TableRow({
             cantSplit: true,
-            children: row.map((value, c) => cell(value, c, { zebra: r % 2 === 1 })),
+            children: row.map((value, c) => cell(value, c, { zebra: r % 2 === 1, strong: block.strongRows?.includes(r) })),
           }),
       ),
     ],
@@ -175,6 +252,23 @@ function blockChildren(blocks: ReportBlock[]): Array<Paragraph | Table> {
             border: { bottom: { ...HAIRLINE, space: 1 } },
             children: [],
           }),
+        );
+        break;
+      case "kpis":
+        out.push(kpiTiles(block), spacer());
+        break;
+      case "card":
+        out.push(card(block), spacer());
+        break;
+      case "note":
+        out.push(
+          block.kind === "read"
+            ? new Paragraph({
+                spacing: { before: 0, after: 200 },
+                shading: { type: ShadingType.CLEAR, color: "auto", fill: hex(T.tableHeader) },
+                children: spanRuns(block.spans).map((r) => r),
+              })
+            : new Paragraph({ spacing: { after: 120 }, children: block.spans.flatMap((s) => runsFor(s.text, { size: 15, color: hex(T.muted), italics: true })) }),
         );
         break;
     }
@@ -301,10 +395,12 @@ export async function renderReportDocx(input: {
           name: "Report heading 2",
           basedOn: "Normal",
           next: "Body",
-          run: { size: 26, bold: true, color: hex(T.ink) },
+          run: { size: 26, bold: true, color: hex(T.primaryDark) },
           paragraph: {
-            spacing: { before: 320, after: 120 },
-            border: { bottom: { ...HAIRLINE, space: 4 } },
+            spacing: { before: 360, after: 140 },
+            shading: { type: ShadingType.CLEAR, color: "auto", fill: hex(T.tableHeader) },
+            border: { left: { style: BorderStyle.SINGLE, size: 24, color: hex(T.primary), space: 6 } },
+            indent: { left: 120 },
           },
         },
         {

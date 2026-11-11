@@ -13,7 +13,7 @@ import type { InlineSpan, ReportBlock } from "@/lib/reports/parse-markdown";
 import { parseMarkdownToBlocks, sanitizeReportText } from "@/lib/reports/parse-markdown";
 import { chunkWord, columnAlignments, fitTableColumns, padRows } from "@/lib/reports/layout";
 import { ensureReportFonts } from "@/lib/report/pdf/fonts";
-import { REPORT_THEME as T } from "@/lib/reports/template";
+import { CARD_TONES, REPORT_THEME as T } from "@/lib/reports/template";
 
 /**
  * Branded report PDF, typeset by @react-pdf with the embedded Inter font.
@@ -102,14 +102,16 @@ const s = StyleSheet.create({
     lineHeight: 1.3,
   },
   h2: {
-    fontSize: 12,
-    fontWeight: 600,
-    color: T.ink,
-    marginTop: 16,
-    marginBottom: 7,
-    paddingBottom: 4,
-    borderBottomWidth: 0.75,
-    borderBottomColor: T.border,
+    fontSize: 12.5,
+    fontWeight: 700,
+    color: T.primaryDark,
+    marginTop: 18,
+    marginBottom: 8,
+    paddingVertical: 5,
+    paddingLeft: 8,
+    borderLeftWidth: 3,
+    borderLeftColor: T.primary,
+    backgroundColor: T.tableHeader,
     lineHeight: 1.3,
   },
   h3: {
@@ -168,6 +170,38 @@ const s = StyleSheet.create({
     backgroundColor: T.border,
     marginVertical: 10,
   },
+  strongRow: { backgroundColor: T.tableHeader, borderTopWidth: 0.75, borderTopColor: T.primaryLight },
+  strongCell: { fontWeight: 700, color: T.primaryDark },
+  // KPI tiles: four to a row.
+  kpis: { flexDirection: "row", flexWrap: "wrap", marginTop: 2, marginBottom: 10, marginHorizontal: -3 },
+  kpi: {
+    width: "25%",
+    paddingHorizontal: 3,
+    marginBottom: 6,
+  },
+  kpiInner: {
+    borderWidth: 0.5,
+    borderColor: T.border,
+    borderTopWidth: 2,
+    borderTopColor: T.primary,
+    backgroundColor: T.surface,
+    paddingVertical: 7,
+    paddingHorizontal: 8,
+    minHeight: 46,
+  },
+  kpiValue: { fontSize: 13, fontWeight: 700, color: T.primaryDark, lineHeight: "16pt" },
+  kpiLabel: { fontSize: 7.2, color: T.muted, marginTop: 3, lineHeight: "9pt", textTransform: "uppercase", letterSpacing: 0.3 },
+  // Cards: risks, recommendations, changes.
+  card: { marginBottom: 8, borderLeftWidth: 3, paddingVertical: 7, paddingHorizontal: 10 },
+  cardHead: { flexDirection: "row", alignItems: "flex-start", marginBottom: 4 },
+  cardTag: { fontSize: 7.5, fontWeight: 700, color: T.white, paddingVertical: 2, paddingHorizontal: 5, marginRight: 7, borderRadius: 2 },
+  cardTitle: { flex: 1, fontSize: 10, fontWeight: 600, color: T.ink, lineHeight: "13pt" },
+  field: { flexDirection: "row", marginTop: 2 },
+  fieldLabel: { width: 92, fontSize: 8.3, fontWeight: 600, color: T.muted, lineHeight: "12pt" },
+  fieldValue: { flex: 1, fontSize: 8.8, lineHeight: "12pt" },
+  // A takeaway under a table, and a footnote.
+  read: { marginTop: -6, marginBottom: 12, paddingVertical: 4, paddingHorizontal: 8, backgroundColor: T.tableHeader, fontSize: 8.6, lineHeight: "12pt", color: T.primaryDark },
+  footnote: { marginBottom: 8, fontSize: 7.5, lineHeight: "10pt", color: T.muted },
 });
 
 const URL_RE = /(https?:\/\/[^\s)]+)/g;
@@ -277,17 +311,20 @@ function Table({ block }: { block: Extract<ReportBlock, { type: "table" }> }) {
           </Text>
         ))}
       </View>
-      {rows.map((row, r) => (
-        <View
-          key={r}
-          wrap={false}
-          style={[s.row, r > 0 ? s.rowDivider : {}, r % 2 === 1 ? s.rowAlt : {}]}
-        >
-          {row.map((cell, c) => (
-            <TextWithLinks key={c} style={cellStyle(c)} text={cell} hyphenationCallback={breakAt(c)} />
-          ))}
-        </View>
-      ))}
+      {rows.map((row, r) => {
+        const strong = block.strongRows?.includes(r);
+        return (
+          <View
+            key={r}
+            wrap={false}
+            style={[s.row, r > 0 ? s.rowDivider : {}, r % 2 === 1 ? s.rowAlt : {}, strong ? s.strongRow : {}]}
+          >
+            {row.map((cell, c) => (
+              <TextWithLinks key={c} style={[...cellStyle(c), strong ? s.strongCell : {}]} text={cell} hyphenationCallback={breakAt(c)} />
+            ))}
+          </View>
+        );
+      })}
     </View>
   );
 }
@@ -328,6 +365,52 @@ function Block({ block }: { block: ReportBlock }) {
       return <Table block={block} />;
     case "hr":
       return <View style={s.hr} />;
+    case "kpis":
+      return (
+        <View style={s.kpis}>
+          {block.items.map((item, i) => (
+            <View key={i} style={s.kpi} wrap={false}>
+              <View style={s.kpiInner}>
+                <Text style={s.kpiValue}>{glyphSafe(item.value)}</Text>
+                <Text style={s.kpiLabel}>{glyphSafe(item.label)}</Text>
+              </View>
+            </View>
+          ))}
+        </View>
+      );
+    case "card": {
+      const tone = CARD_TONES[block.tone];
+      return (
+        <View style={[s.card, { borderLeftColor: tone.bar, backgroundColor: tone.fill }]} wrap={false}>
+          <View style={s.cardHead}>
+            {block.tag ? <Text style={[s.cardTag, { backgroundColor: tone.bar }]}>{glyphSafe(block.tag)}</Text> : null}
+            <Text style={s.cardTitle}>{glyphSafe(block.title)}</Text>
+          </View>
+          {block.fields.map((f, i) => (
+            <View key={i} style={s.field}>
+              <Text style={s.fieldLabel}>{glyphSafe(f.label)}</Text>
+              <Text style={s.fieldValue}>
+                <Spans spans={f.value} />
+              </Text>
+            </View>
+          ))}
+          {block.notes.map((n, i) => (
+            <View key={`n${i}`} style={s.field}>
+              <Text style={[s.fieldLabel, { width: 10 }]}>•</Text>
+              <Text style={s.fieldValue}>
+                <Spans spans={n} />
+              </Text>
+            </View>
+          ))}
+        </View>
+      );
+    }
+    case "note":
+      return (
+        <Text style={block.kind === "read" ? s.read : s.footnote}>
+          <Spans spans={block.spans} />
+        </Text>
+      );
     default:
       return null;
   }

@@ -129,6 +129,11 @@ export type AuditAdSet = {
   advantageAudience: boolean | null;
   publisherPlatforms: string[];
   countries: string[];
+  /** Age range targeted; absent when not loaded. */
+  ageMin?: number | null;
+  ageMax?: number | null;
+  /** Detailed-targeting interests and behaviours by name; [] = none set; absent when not loaded. */
+  interests?: string[];
   /** Frequency over the last 7 days (benchmarks are weekly). */
   frequency7d: number | null;
   /** Scheduled start and end (YYYY-MM-DD); null/absent when Meta reports none. */
@@ -153,6 +158,8 @@ export type AuditAd = {
   urlTags?: string | null;
   /** The creative's destination link, when Meta returns it. */
   linkUrl?: string | null;
+  /** The ad's own words (primary text, headline, description), joined; absent when Meta returned none. */
+  copy?: string | null;
   /** Frequency over the last 7 days (fatigue is judged weekly). */
   frequency7d?: number | null;
   /** Meta's quality / engagement / conversion rankings, when reported. */
@@ -255,6 +262,11 @@ export type MetaAuditSnapshot = {
   catalogProducts?: AuditCatalogProduct[];
   /** Spend by publisher platform (facebook, instagram, audience_network…). */
   placements: Array<{ platform: string; spendCents: number; results: number | null }>;
+  /**
+   * Campaign delivery per calendar month, loaded only when the audited period spans more than one
+   * month. Absent when not asked for or when Meta wouldn't return it.
+   */
+  monthly?: Array<{ month: string; campaignId: string; performance: PeriodPerformance }>;
   /** Account-level age × gender split (whole-account audits only); absent when Meta wouldn't return it. */
   demographics?: Array<{ age: string; gender: string; performance: PeriodPerformance }>;
   /** Account-level platform × position split (e.g. facebook / feed); absent when Meta wouldn't return it. */
@@ -656,7 +668,7 @@ export async function fetchMetaAuditSnapshot(
 
   const [
     pixels, customConversions, audiences, campaigns, adSets, ads, totals, campaignIns, adSetIns, adIns, placements, adSetWeek,
-    previousTotals, previousCampaignIns, previousAdSetIns, adWeek, productIns, activityRows, demographicIns, positionIns,
+    previousTotals, previousCampaignIns, previousAdSetIns, adWeek, productIns, activityRows, demographicIns, positionIns, monthlyIns,
   ] =
     await Promise.all([
       settle("Pixels", warnings, paged(graph, `${id}/adspixels`, {
@@ -678,7 +690,7 @@ export async function fetchMetaAuditSnapshot(
       })),
       settle("Ad sets", warnings, paged(graph, `${id}/adsets`, {
         fields:
-          "id,name,campaign_id,effective_status,start_time,end_time,optimization_goal,bid_strategy,daily_budget,lifetime_budget,learning_stage_info,promoted_object,attribution_spec,targeting{custom_audiences,excluded_custom_audiences,targeting_automation,publisher_platforms,geo_locations}",
+          "id,name,campaign_id,effective_status,start_time,end_time,optimization_goal,bid_strategy,daily_budget,lifetime_budget,learning_stage_info,promoted_object,attribution_spec,targeting{custom_audiences,excluded_custom_audiences,targeting_automation,publisher_platforms,geo_locations,age_min,age_max,flexible_spec,interests,behaviors}",
         effective_status: notDeleted,
         limit: 200,
       })),
@@ -743,6 +755,12 @@ export async function fetchMetaAuditSnapshot(
       settle("Placement position breakdown", warnings, paged(graph, `${id}/insights`, {
         level: "account", time_range: timeRange, breakdowns: "publisher_platform,platform_position", fields: insightFields, limit: 200,
       }, 2)),
+      // Month by month, only when the period crosses a month boundary (a one-month audit has nothing to split).
+      since.slice(0, 7) !== until.slice(0, 7)
+        ? settle("Month-by-month campaign performance", warnings, paged(graph, `${id}/insights`, {
+            level: "campaign", time_range: timeRange, time_increment: "monthly", fields: `campaign_id,${insightFields}`, limit: 500,
+          }, 4))
+        : null,
     ]);
 
   const byKey = (rows: Row[] | null, key: string) => new Map((rows ?? []).map((r) => [String(r[key] ?? ""), r]));
@@ -792,6 +810,9 @@ export async function fetchMetaAuditSnapshot(
       advantageAudience: automation.advantage_audience == null ? null : num(automation.advantage_audience) === 1,
       publisherPlatforms: Array.isArray(targeting.publisher_platforms) ? (targeting.publisher_platforms as string[]) : [],
       countries: Array.isArray(geo.countries) ? (geo.countries as string[]) : [],
+      ageMin: num(targeting.age_min) > 0 ? num(targeting.age_min) : null,
+      ageMax: num(targeting.age_max) > 0 ? num(targeting.age_max) : null,
+      interests: interestNames(targeting),
       frequency7d: weekFrequency.has(String(a.id)) ? num(weekFrequency.get(String(a.id))!.frequency) : null,
       startDate: scheduleDay(a.start_time),
       endDate: scheduleDay(a.end_time),
@@ -1027,6 +1048,7 @@ export async function fetchMetaAuditSnapshot(
         performance: performanceFrom(adPerf.get(String(a.id))),
         urlTags: str(creative.url_tags),
         linkUrl: str(creative.link_url) ?? extractCreativeDestination(creative).landing_page_url,
+        copy: creativeCopy(creative),
         frequency7d: adWeekFrequency.has(String(a.id)) ? num(adWeekFrequency.get(String(a.id))!.frequency) : null,
         rankings: (() => {
           const row = adPerf.get(String(a.id));
@@ -1045,6 +1067,15 @@ export async function fetchMetaAuditSnapshot(
         results: perf?.results ?? null,
       };
     }),
+    ...(monthlyIns
+      ? {
+          monthly: monthlyIns.flatMap((r) => {
+            const performance = performanceFrom(r);
+            const month = String(r.date_start ?? "").slice(0, 7);
+            return performance && month ? [{ month, campaignId: String(r.campaign_id ?? ""), performance }] : [];
+          }),
+        }
+      : {}),
     ...(demographicIns
       ? {
           demographics: demographicIns.flatMap((r) => {
@@ -1143,6 +1174,51 @@ function sumPerformance(rows: PeriodPerformance[]): PeriodPerformance | null {
  * campaigns depend on it. The placement split is account-level only, so it is
  * dropped rather than credited to these campaigns.
  */
+/** Interest and behaviour names an ad set targets, from detailed targeting (flexible_spec) and the older top-level lists. */
+export function interestNames(targeting: Record<string, unknown>): string[] {
+  const names = new Set<string>();
+  const take = (v: unknown) => {
+    if (!Array.isArray(v)) return;
+    for (const x of v as Array<Record<string, unknown>>) if (x && typeof x.name === "string" && x.name.trim()) names.add(x.name.trim());
+  };
+  take(targeting.interests);
+  take(targeting.behaviors);
+  if (Array.isArray(targeting.flexible_spec)) {
+    for (const spec of targeting.flexible_spec as Array<Record<string, unknown>>) {
+      for (const key of ["interests", "behaviors", "work_positions", "industries", "life_events", "family_statuses"]) take(spec?.[key]);
+    }
+  }
+  return [...names];
+}
+
+/** The words of an ad, from its post (object_story_spec) or its flexible creative (asset_feed_spec). Null when none came back. */
+export function creativeCopy(creative: Record<string, unknown>): string | null {
+  const parts: string[] = [];
+  const add = (v: unknown) => {
+    if (typeof v === "string" && v.trim()) parts.push(v.trim());
+  };
+  const story = (creative.object_story_spec ?? {}) as Record<string, Record<string, unknown> | undefined>;
+  for (const key of ["link_data", "video_data", "photo_data", "template_data"]) {
+    const d = story[key];
+    if (!d) continue;
+    add(d.message);
+    add(d.name);
+    add(d.title);
+    add(d.description);
+    add(d.caption);
+    if (Array.isArray(d.child_attachments)) for (const c of d.child_attachments as Array<Record<string, unknown>>) {
+      add(c.name);
+      add(c.description);
+    }
+  }
+  const feed = (creative.asset_feed_spec ?? {}) as Record<string, unknown>;
+  for (const key of ["bodies", "titles", "descriptions"]) {
+    if (Array.isArray(feed[key])) for (const x of feed[key] as Array<Record<string, unknown>>) add(x?.text);
+  }
+  const text = [...new Set(parts)].join(" | ");
+  return text ? text.slice(0, 1200) : null;
+}
+
 export function scopeAuditSnapshot(snap: MetaAuditSnapshot, campaignIds: string[]): MetaAuditSnapshot {
   const ids = new Set(campaignIds);
   const campaigns = snap.campaigns.filter((c) => ids.has(c.id));
@@ -1182,6 +1258,7 @@ export function scopeAuditSnapshot(snap: MetaAuditSnapshot, campaignIds: string[
     campaigns,
     adSets: snap.adSets.filter((a) => ids.has(a.campaignId)),
     ads: snap.ads.filter((a) => ids.has(a.campaignId)),
+    ...(snap.monthly ? { monthly: snap.monthly.filter((m) => ids.has(m.campaignId)) } : {}),
     ...(snap.catalogProducts
       ? {
           catalogProducts: snap.catalogProducts.filter((p) => scopedAdIds.has(p.adId)),

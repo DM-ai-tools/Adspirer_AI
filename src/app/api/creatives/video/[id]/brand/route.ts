@@ -8,6 +8,7 @@ import { loadScope } from "@/lib/creatives/service";
 import { getProject, updateProject, type VideoProject } from "@/lib/video/projects";
 import { buildBrandForProject } from "@/lib/video/brief";
 import { brandView } from "@/lib/video/brand-view";
+import { logoState, restoreManifestLogo } from "@/lib/video/brand-resolve";
 import { jsonOk, parseBody, withApiHandler } from "@/lib/api/response";
 
 export const maxDuration = 120;
@@ -26,13 +27,27 @@ async function load(ctx: Ctx) {
   return project;
 }
 
+/**
+ * The brand as the screen shows it, with the logo's state read from storage now: found, saved,
+ * readable, approved. A logo whose file has gone is first put back from where it came from (the
+ * operator's upload, or the page it was read from) when that yields the same file.
+ */
+async function view(project: VideoProject) {
+  const manifest = project.brand?.manifest ?? null;
+  const choice = project.inputs.brandChoice ?? {};
+  if (manifest?.logo) await restoreManifestLogo(manifest, { uploadKey: choice.logoUploadKey }).catch(() => false);
+  return brandView(project, await logoState(manifest, choice.logoApprovedKey));
+}
+
 export async function GET(_request: Request, ctx: Ctx) {
-  return withApiHandler(async () => jsonOk(brandView(await load(ctx))));
+  return withApiHandler(async () => jsonOk(await view(await load(ctx))));
 }
 
 const bodySchema = z.discriminatedUnion("action", [
   /** Check the brand again (a project made before the brand check existed, or after the page changed). */
   z.object({ action: z.literal("refresh") }),
+  /** The operator has looked at the saved logo and approves this exact file (or withdraws that). */
+  z.object({ action: z.literal("approve_logo"), approved: z.boolean() }),
   /** The operator's decisions. They are kept and applied every time the brand is checked. */
   z.object({
     action: z.literal("choose"),
@@ -74,11 +89,21 @@ export async function POST(request: Request, ctx: Ctx) {
       const key = `video/${project.id}/brand-upload-${nanoid(8)}.${EXT[mime]}`;
       await getObjectStorage().put(key, Buffer.from(await file.arrayBuffer()), mime);
       const prior = project.inputs.brandChoice ?? {};
-      project = await updateProject(project.id, { inputs: { ...project.inputs, brandChoice: { ...prior, logoUploadKey: key, logoUploadName: file.name, logoUrl: null } } });
-      return jsonOk(brandView(await recheck(project)));
+      // A newly uploaded logo is a different file: an approval given to the earlier one does not carry over.
+      project = await updateProject(project.id, { inputs: { ...project.inputs, brandChoice: { ...prior, logoUploadKey: key, logoUploadName: file.name, logoUrl: null, logoApprovedKey: null } } });
+      return jsonOk(await view(await recheck(project)));
     }
 
     const body = await parseBody(request, bodySchema);
+    if (body.action === "approve_logo") {
+      const logo = project.brand?.manifest?.logo;
+      if (!logo) throw new Error("There is no saved logo to approve.");
+      const state = await logoState(project.brand!.manifest, null);
+      if (body.approved && !state.accessible) throw new Error("The logo file cannot be read from storage, so it cannot be approved. Check the brand again or upload the logo.");
+      const prior = project.inputs.brandChoice ?? {};
+      project = await updateProject(project.id, { inputs: { ...project.inputs, brandChoice: { ...prior, logoApprovedKey: body.approved ? logo.storageKey : null } } });
+      return jsonOk(await view(project));
+    }
     if (body.action === "choose") {
       const prior = project.inputs.brandChoice ?? {};
       const next = { ...prior };
@@ -93,6 +118,6 @@ export async function POST(request: Request, ctx: Ctx) {
       if (body.offer !== undefined) next.offer = body.offer?.trim() || null;
       project = await updateProject(project.id, { inputs: { ...project.inputs, brandChoice: next } });
     }
-    return jsonOk(brandView(await recheck(project)));
+    return jsonOk(await view(await recheck(project)));
   });
 }

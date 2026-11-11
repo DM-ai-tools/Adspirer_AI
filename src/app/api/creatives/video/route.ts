@@ -9,6 +9,7 @@ import { projectName } from "@/lib/video/naming";
 import { DEFAULT_SECONDS, MAX_SECONDS } from "@/lib/video/script";
 import { extractDocumentText } from "@/lib/documents/extract-text";
 import { MIN_SCRIPT_WORDS, scriptWordCount } from "@/lib/video/uploaded-script";
+import { sha256 } from "@/lib/video/assets";
 import { runAfterResponse } from "@/lib/api/background";
 import { jsonOk, withApiHandler } from "@/lib/api/response";
 
@@ -135,8 +136,10 @@ export async function POST(request: Request) {
       if (file.size > MAX_IMAGE_BYTES) throw new Error(`${file.name} is over ${MAX_IMAGE_BYTES / 1_000_000} MB.`);
       const id = `img_${nanoid(8)}`;
       const key = `video/${project.id}/${id}.${EXT[mime]}`;
-      await getObjectStorage().put(key, Buffer.from(await file.arrayBuffer()), mime);
-      assets.push({ id, name: file.name, caption: body.images[i]?.caption ?? "", role: body.images[i]?.role ?? "show", key, mime });
+      const bytes = Buffer.from(await file.arrayBuffer());
+      await getObjectStorage().put(key, bytes, mime);
+      // The file is known from here on by its id, its version and the checksum of these exact bytes: never by its name or an address.
+      assets.push({ id, name: file.name, caption: body.images[i]?.caption ?? "", role: body.images[i]?.role ?? "show", key, mime, sha256: sha256(bytes), bytes: bytes.length, version: 1, uploadedAt: new Date().toISOString() });
     }
     if (assets.length) await updateProject(project.id, { assets });
 

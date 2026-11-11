@@ -252,3 +252,60 @@ export function manifestSummary(m: BrandManifest): { name: string | null; logo: 
     warnings: m.issues.filter((i) => i.severity === "warning"),
   };
 }
+
+/**
+ * Where a logo stands, as five separate facts. A logo that was found and saved but whose file can no
+ * longer be read is NOT shown as verified: `accessible` is checked against storage every time.
+ */
+export type LogoState = {
+  /** The public company name is verified. */
+  nameVerified: boolean;
+  /** A candidate for the company's own logo was found (on the page, on the client record, or uploaded). */
+  found: boolean;
+  /** One was verified and its original bytes were saved for this project. */
+  saved: boolean;
+  /** The saved file can be read from storage right now. */
+  accessible: boolean;
+  /** The operator has looked at this exact file and approved it. */
+  approved: boolean;
+};
+
+export async function logoState(manifest: BrandManifest | null | undefined, approvedKey: string | null | undefined, storage?: ObjectStorage): Promise<LogoState> {
+  const saved = Boolean(manifest?.logo);
+  const accessible = saved ? Boolean(await loadManifestLogo(manifest!, storage)) : false;
+  return {
+    nameVerified: Boolean(manifest?.name.value) && !manifest!.issues.some((i) => i.field === "name" && i.severity === "blocking"),
+    found: saved || Boolean(manifest?.logoCandidates.some((c) => c.role === "company" && !c.rejectedReason)),
+    saved,
+    accessible,
+    approved: accessible && Boolean(approvedKey) && approvedKey === manifest!.logo!.storageKey,
+  };
+}
+
+/**
+ * Put a saved logo's file back when storage has lost it: from the operator's own upload, or from
+ * the address it was first read from. Only the SAME file is restored (the storage key carries a hash
+ * of its bytes): if what comes back now is different, nothing is saved and the brand has to be
+ * checked again, because a different picture must never quietly take the verified one's place.
+ */
+export async function restoreManifestLogo(manifest: BrandManifest, sources: { uploadKey?: string | null }, deps: { storage?: ObjectStorage; fetchAsset?: (url: string) => Promise<FetchedAsset> } = {}): Promise<boolean> {
+  const logo = manifest.logo;
+  if (!logo || !manifest.projectId) return false;
+  const storage = deps.storage ?? getObjectStorage();
+  if (await loadManifestLogo(manifest, storage)) return true;
+  const candidates: Array<() => Promise<Buffer | null>> = [];
+  if (sources.uploadKey) candidates.push(() => storage.get(sources.uploadKey!));
+  if (logo.sourceUrl && /^https?:/i.test(logo.sourceUrl)) candidates.push(async () => (await (deps.fetchAsset ?? defaultFetchAsset)(logo.sourceUrl!)).bytes);
+  for (const load of candidates) {
+    try {
+      const bytes = await load();
+      if (!bytes?.length) continue;
+      if (brandStorageKey(manifest.projectId, bytes, logo.verification.format) !== logo.storageKey) continue;
+      await storage.put(logo.storageKey, bytes, logo.mime);
+      return true;
+    } catch {
+      // try the next source
+    }
+  }
+  return false;
+}

@@ -114,7 +114,7 @@ export function scriptPrompt(ctx: WriteContext, angle: AnglePlan, opts: WriteOpt
     ctx.goal ? `Campaign goal (from the operator): ${ctx.goal}` : null,
     ctx.platform ? `Platform (from the operator): ${ctx.platform}` : null,
     `Locale and spelling: ${ctx.brief.locale}. Preferred look: ${ctx.brief.style && ctx.brief.style !== "auto" ? ctx.brief.style : "choose what suits this idea"}.`,
-    `Scene detail: each scene has its visual, camera, who speaks (on_camera = the presenter speaks to camera, voiceover = an unseen voice over the visuals, none), the exact line, up to 3 on-screen keywords from the line, a stat only if it is an approved claim or an operator stat, an uploaded image id only where it makes the point, and sound. Use the uploaded images listed in the brief where they carry proof: set the stat exactly as printed and asset_id to the image it came from.`,
+    `Scene detail: each scene has its visual, camera, who speaks (on_camera = the presenter speaks to camera, voiceover = an unseen voice over the visuals, none), the exact line, up to 3 keywords from the line, a stat only if it is an approved claim or an operator stat, an uploaded image id only where it makes the point, and sound. The keywords, the stat and the image id are notes for whoever finishes the video by hand: the video itself shows no text, figure or screenshot, so the spoken line must make complete sense with nothing on screen and must never point at an image ("shown here", "as you can see", "on screen"). Use the uploaded images listed in the brief where they carry proof: set the stat exactly as printed and asset_id to the image it came from.`,
     requiredStatsPrompt(requiredStatsFrom(ctx.brief.images), Object.fromEntries(ctx.brief.images.map((i) => [i.id, i.summary]))),
     HUMAN_VOICE,
     VISUAL_DIRECTION_RULES,
@@ -333,7 +333,7 @@ export async function ensureMainStats(
         const next = await rewrite({
           script: current,
           sceneNumber: target.number,
-          feedback: `This scene must say the main figure from the operator's image: ${need.value}${need.label ? ` (${need.label})` : ""}. Say it naturally as part of the point this scene is making${forms[0] ? `, for example as ${forms[0]}` : ""}, as digits. Describe it only as what the image shows (for example "in the account shown here"): do not add a period, whose it is, or any comparison. Keep the scene short.`,
+          feedback: `This scene must say the main figure from the operator's image: ${need.value}${need.label ? ` (${need.label})` : ""}. Say it naturally as part of the point this scene is making${forms[0] ? `, for example as ${forms[0]}` : ""}, as digits. Describe it only as what the source shows (for example "in one account's results"), in words that make sense with no image on screen: never "shown here" or "as you can see"; do not add a period, whose it is, or any comparison. Keep the scene short.`,
         });
         const scenes = current.scenes.map((s) => (s.number === target.number ? { ...next, number: s.number, start: s.start, assetId: need.assetId, stat: need.value } : s));
         const timed = retime(scenes);

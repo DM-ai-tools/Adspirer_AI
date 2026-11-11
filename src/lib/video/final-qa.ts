@@ -38,12 +38,22 @@ export type FinalQaInput = {
    * counted as text in the footage.
    */
   verifiedAssetWindows?: Array<{ start: number; end: number }>;
+  /**
+   * Clean video: the export is footage and sound only. A missing logo, missing captions and a missing
+   * end card are then correct, not faults; any caption, graphic, logo or card in the picture is the fault.
+   */
+  clean?: boolean;
 };
 
 export type FinalTextRegion = "caption" | "overlay" | "footage" | "end_card" | "unknown";
 
+export type FinalEnding = { state: "composed" | "mid_speech" | "frozen_or_distorted" | "card_or_text" | "unclear"; detail: string };
+
 export type FinalVisionResult = {
-  textSeen: Array<{ text: string; atSeconds: number | null; region: FinalTextRegion; legible: boolean }>;
+  /** `prominence` is "incidental" only for a small background detail of the filmed place that is not a graphic and not part of the message. */
+  textSeen: Array<{ text: string; atSeconds: number | null; region: FinalTextRegion; legible: boolean; prominence?: "prominent" | "incidental" }>;
+  /** How the film ends, from its last frames. */
+  ending?: FinalEnding | null;
   logoSeen: Array<{ atSeconds: number | null; matchesReference: boolean | null; region: string }>;
   captionIssues: Array<{ atSeconds: number | null; problem: "covers_face" | "covers_logo" | "unreadable" | "off_safe_area" | "other"; detail: string }>;
   summary: string;
@@ -53,7 +63,19 @@ export type FinalVisionReviewer = (input: { frames: Array<{ at: number; bytes: B
 
 // ------------------------------------------------------------------ vision
 
-export function finalRubric(ctx: { endCardSeconds: number; hasLogoReference: boolean }): string {
+export function finalRubric(ctx: { endCardSeconds: number; hasLogoReference: boolean; clean?: boolean }): string {
+  if (ctx.clean) {
+    return [
+      "You are a meticulous inspector for a finished CLEAN video ad. A clean video is footage and sound only: it must contain NO subtitles, captions, highlighted words, titles, headlines, statistic badges, buttons, web addresses, logos, watermarks, screenshots, dashboards or closing card. You are given frames sampled in time order across the WHOLE export, each labelled with its time. Report only what is visible. Read, do not guess, and never correct or complete what you see.",
+      "",
+      "1. TEXT. List EVERY piece of visible text in textSeen, copied VERBATIM, with the time and the region: caption (a subtitle line), overlay (any graphic, title, badge, button or panel drawn over the picture, including a dashboard or interface floating in the air), footage (lettering that is physically part of the filmed place: a sign, a label, a book spine, a screen), end_card (a full-frame card), or unknown. Set legible=false for text you cannot read with certainty. Set prominence=incidental ONLY for footage text that is small, in the background, out of focus or barely readable and that a viewer would not take as part of the ad's message; everything else is prominent.",
+      "2. LOGOS. For every logo, wordmark or brand mark you see in any frame, add a logoSeen entry with the time and region. Set matchesReference to null.",
+      "3. CAPTIONS. There should be none: leave captionIssues empty and report any subtitle line under TEXT with region caption.",
+      "4. ENDING. Look at the last frames. Set ending.state: composed (the film ends on a settled, natural shot: a person with a relaxed expression and a closed or resting mouth, or a closing visual that completes the story), mid_speech (the mouth is open mid-word or the person is plainly cut off), frozen_or_distorted (a frozen, smeared, warped or blank face or frame), card_or_text (a card, a block of colour, a logo or text instead of footage), or unclear. Say what you see in ending.detail.",
+      "",
+      "Be exhaustive about text and graphics: a missed one is a worse mistake than a doubtful one flagged as not legible. Do not invent items; an empty list is a good result. Fill summary with two sentences on what the video shows on screen.",
+    ].join("\n");
+  }
   return [
     "You are a meticulous proofreader and brand-compliance inspector for a finished video ad. You are given frames sampled in time order across the WHOLE export, each labelled with its time and what it is expected to contain. Report only what is visible. Read, do not guess, and never correct or complete what you see.",
     "",
@@ -70,9 +92,21 @@ export function finalRubric(ctx: { endCardSeconds: number; hasLogoReference: boo
 
 const finalSchema = z.object({
   textSeen: z
-    .array(z.object({ text: z.string(), atSeconds: z.number().nullable(), region: z.enum(["caption", "overlay", "footage", "end_card", "unknown"]), legible: z.boolean() }))
+    .array(
+      z.object({
+        text: z.string(),
+        atSeconds: z.number().nullable(),
+        region: z.enum(["caption", "overlay", "footage", "end_card", "unknown"]),
+        legible: z.boolean(),
+        prominence: z.enum(["prominent", "incidental"]).describe("incidental only for a small background detail of the filmed place that is not a graphic and not part of the message"),
+      }),
+    )
     .max(80)
     .describe("Every piece of visible text, verbatim"),
+  ending: z
+    .object({ state: z.enum(["composed", "mid_speech", "frozen_or_distorted", "card_or_text", "unclear"]), detail: z.string() })
+    .nullable()
+    .describe("How the film ends, from its last frames. null when not asked for."),
   logoSeen: z.array(z.object({ atSeconds: z.number().nullable(), matchesReference: z.boolean().nullable(), region: z.string() })).max(30),
   captionIssues: z.array(z.object({ atSeconds: z.number().nullable(), problem: z.enum(["covers_face", "covers_logo", "unreadable", "off_safe_area", "other"]), detail: z.string() })).max(30),
   summary: z.string(),
@@ -97,8 +131,15 @@ export function createFinalVisionReviewer(): FinalVisionReviewer | null {
 
 // ------------------------------------------------------------------ which moments to look at
 
-export function finalFrameTimes(input: Pick<FinalQaInput, "seconds" | "endCardSeconds" | "cues">): Array<{ at: number; note: string }> {
+export function finalFrameTimes(input: Pick<FinalQaInput, "seconds" | "endCardSeconds" | "cues" | "clean">): Array<{ at: number; note: string }> {
   const total = Math.max(input.seconds, 0);
+  if (input.clean) {
+    // A clean video has no captions or card to aim at: the frames are spread across the whole film, with the last second looked at closely for the ending.
+    const body = frameTimes(Math.max(total - 1, 0), 12).map((at) => ({ at, note: "footage: should carry no text or graphics" }));
+    const ending = [total - 0.9, total - 0.45, total - 0.12].filter((t) => t > 0).map((t) => ({ at: Math.round(t * 100) / 100, note: "the ending" }));
+    const all = [...body, ...ending].sort((a, b) => a.at - b.at);
+    return all.filter((o, i) => i === 0 || o.at - all[i - 1]!.at >= 0.1).slice(0, 24);
+  }
   const endStart = input.endCardSeconds > 0 ? Math.max(total - input.endCardSeconds, 0) : total;
   const out: Array<{ at: number; note: string }> = [];
   const bodyEnd = input.endCardSeconds > 0 ? Math.max(endStart - 0.1, 0) : total;
@@ -168,7 +209,93 @@ function overlap(seen: string[], reference: Set<string>): number {
   return seen.length ? seen.filter((w) => reference.has(w)).length / seen.length : 1;
 }
 
+/**
+ * The findings for a clean video. Nothing on screen is "expected", so nothing is "missing": the
+ * faults are a caption, graphic, logo or card that is there, prominent lettering inside the footage,
+ * and an ending that is cut off, frozen or replaced by a card. A small background detail is noted only.
+ */
+export function cleanFindings(input: FinalQaInput, vision: FinalVisionResult): QaFinding[] {
+  const findings: QaFinding[] = [];
+  const seen = new Set<string>();
+  for (const t of vision.textSeen.filter((x) => x.text.trim())) {
+    const key = `${t.region}:${normaliseText(t.text)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const internal = input.manifest.internalLabels.find((l) => normaliseText(l.value).length >= 3 && normaliseText(t.text).includes(normaliseText(l.value)));
+    if (internal) {
+      findings.push({ code: "internal_label_visible", severity: "critical", category: "branding", message: "An internal label (a project or campaign title) is visible on screen.", evidence: `"${t.text}"${fmtT(t.atSeconds)} matches the internal label "${internal.value}" (${t.region}).`, atSeconds: t.atSeconds ?? undefined, correction: "Regenerate the affected clip with plain surfaces and no lettering.", source: "vision" });
+      continue;
+    }
+    if (t.region === "footage" || t.region === "unknown") {
+      if (!t.legible || t.prominence === "incidental") {
+        if (t.region === "footage" && t.legible) findings.push({ code: "incidental_text", severity: "minor", category: "text", message: `A small background detail ("${t.text}") is faintly readable in the scene.`, evidence: `"${t.text}"${fmtT(t.atSeconds)}: part of the filmed place, small or out of focus, not a graphic.`, atSeconds: t.atSeconds ?? undefined, correction: "", source: "vision" });
+        continue;
+      }
+      findings.push({
+        code: "fabricated_text",
+        severity: t.region === "unknown" ? "major" : "critical",
+        category: "text",
+        message: `Readable text ("${t.text}") appears inside the footage.`,
+        evidence: `"${t.text}"${fmtT(t.atSeconds)} is prominent in the picture. A clean video carries no lettering.`,
+        atSeconds: t.atSeconds ?? undefined,
+        correction: "Regenerate the affected clip with plain surfaces (clothing, walls, props and screens show solid colours and natural texture).",
+        source: "vision",
+      });
+      continue;
+    }
+    // caption, overlay or end card: a graphic that a clean video must not contain, whether this application or the video model drew it.
+    findings.push({
+      code: "graphic_in_clean_video",
+      severity: "critical",
+      category: t.region === "caption" ? "subtitles" : "text",
+      message: `${t.region === "caption" ? "A subtitle" : t.region === "end_card" ? "A closing card" : "A graphic"} ("${t.text}") is in the picture of a clean video.`,
+      evidence: `"${t.text}"${fmtT(t.atSeconds)} (${t.region}). A clean video contains no subtitles, headlines, badges, buttons or cards; those are supplied separately.`,
+      atSeconds: t.atSeconds ?? undefined,
+      correction: "Regenerate the affected clip without any wording about graphics, so the footage is the whole picture.",
+      source: "vision",
+    });
+  }
+  for (const l of vision.logoSeen) {
+    findings.push({
+      code: "invented_branding",
+      severity: "critical",
+      category: "branding",
+      message: "A logo or brand mark appears in a clean video.",
+      evidence: `Mark seen${fmtT(l.atSeconds)} in ${l.region}. A clean video carries no logo; the original file is supplied separately.`,
+      atSeconds: l.atSeconds ?? undefined,
+      correction: "Regenerate the affected clip with unmarked clothing, props and surfaces.",
+      source: "vision",
+    });
+  }
+  const ending = vision.ending;
+  if (ending && ending.state !== "composed" && ending.state !== "unclear") {
+    findings.push({
+      code: ending.state === "card_or_text" ? "ending_card" : ending.state === "mid_speech" ? "ending_cut_off" : "ending_frozen",
+      severity: "major",
+      category: ending.state === "mid_speech" ? "speech" : "composition",
+      message: ending.state === "card_or_text" ? "The video ends on a card or text instead of footage." : ending.state === "mid_speech" ? "The video ends while the speaker is still mid-word." : "The video ends on a frozen or distorted frame.",
+      evidence: `${ending.detail}`.trim() || "Seen in the last frames.",
+      atSeconds: Math.max(input.seconds - 0.5, 0),
+      correction: "End on the speaker finishing the last word, then holding a relaxed, composed expression for about a second.",
+      source: "vision",
+    });
+  }
+  return findings;
+}
+
+/** From the audio: the last word must not run into the very end of the file. */
+export function endingFromAudio(seconds: number, asr: AsrWord[] | null): QaFinding[] {
+  if (!asr?.length) return [];
+  const lastEnd = Math.max(...asr.map((w) => w.end));
+  const tail = seconds - lastEnd;
+  if (tail < 0.15) {
+    return [{ code: "ending_cut_off", severity: "major", category: "speech", message: "The last word runs to the very end of the video, so it sounds cut off.", evidence: `The last word ends at ${lastEnd.toFixed(2)}s and the video at ${seconds.toFixed(2)}s (${Math.max(tail, 0).toFixed(2)}s after it).`, atSeconds: lastEnd, correction: "Give the closing shot about a second after the last word.", source: "asr" }];
+  }
+  return [];
+}
+
 export function finalFindings(input: FinalQaInput, vision: FinalVisionResult): QaFinding[] {
+  if (input.clean) return cleanFindings(input, vision);
   const findings: QaFinding[] = [];
   const endStart = input.endCardSeconds > 0 ? Math.max(input.seconds - input.endCardSeconds, 0) : null;
   const onCard = (region: string, at: number | null) => (endStart !== null ? region === "end_card" || (at !== null && at >= endStart - 0.05 && region !== "footage") : region !== "footage" && region !== "caption");
@@ -436,19 +563,20 @@ export async function reviewFinal(input: FinalQaInput, deps: { reviewer?: FinalV
   } else {
     try {
       const plan = finalFrameTimes(input);
+      if (input.clean) findings.push(...endingFromAudio(input.seconds, input.asr));
       const frames = await extractFramesAt(input.file, plan.map((p) => p.at), path.join(input.workDir, `final-a${input.attempt}`), { width: 900 });
       if (!frames.length) throw new Error("no frames could be extracted from the export");
       const notes = new Map(plan.map((p) => [p.at, p.note]));
       const result = await reviewer({
         frames: frames.map((f) => ({ at: f.at, bytes: f.bytes, note: notes.get(f.at) ?? "" })),
         logoReference: input.logoReference ?? null,
-        rubric: finalRubric({ endCardSeconds: input.endCardSeconds, hasLogoReference: Boolean(input.logoReference) }),
+        rubric: finalRubric({ endCardSeconds: input.endCardSeconds, hasLogoReference: Boolean(input.logoReference), clean: input.clean }),
       });
       visionOk = true;
       framesInspected = frames.length;
       const v = finalFindings(input, result);
       findings.push(...v);
-      checks.push({ name: "On-screen text and brand marks", ok: !v.some((f) => f.severity !== "minor"), detail: result.summary || `${frames.length} frames inspected`, severity: hasCritical(v) ? "critical" : v.some((f) => f.severity === "major") ? "major" : undefined });
+      checks.push({ name: input.clean ? "Clean picture: no text, graphics or logos" : "On-screen text and brand marks", ok: !v.some((f) => f.severity !== "minor"), detail: result.summary || `${frames.length} frames inspected`, severity: hasCritical(v) ? "critical" : v.some((f) => f.severity === "major") ? "major" : undefined });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.warn("Visual review of the final video failed", { error: message });
