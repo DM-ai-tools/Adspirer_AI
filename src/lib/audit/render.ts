@@ -260,6 +260,8 @@ function periodLine(
             : null,
           p.leads != null && !resultIsLeads ? `leads ${n(p.leads)}` : null,
           p.leads && !resultIsLeads ? `cost per lead ${money(Math.round(p.spendCents / p.leads))}` : null,
+          p.messagingConversations != null ? `messaging conversations started ${n(p.messagingConversations)}` : null,
+          p.messagingConversations ? `cost per messaging conversation ${money(Math.round(p.spendCents / p.messagingConversations))}` : null,
           p.videoViews3s != null ? `3-second video plays ${n(p.videoViews3s)}` : null,
           p.thruplays != null ? `ThruPlays ${n(p.thruplays)}` : null,
           hasSales ? null : "sales revenue: no purchase value reported in the period",

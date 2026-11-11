@@ -66,7 +66,7 @@ import { nowIso } from "@/lib/utils";
 import { logger, newCorrelationId } from "@/lib/observability/logger";
 import { findRepeatedFigures } from "@/lib/audit/repeat-check";
 import { startCreativeGeneration } from "@/lib/creatives/service";
-import { insertPerformanceTables } from "@/lib/audit/performance-tables";
+import { insertLandingPageTables, insertPerformanceTables } from "@/lib/audit/performance-tables";
 import { runAfterResponse } from "@/lib/api/background";
 import {
   getSelectedCreativeDraftAsync,
@@ -690,7 +690,7 @@ export async function runTask(
 
     // The performance tables come from Meta's rows, not the model: they go where the writer left the marker.
     if (gathered.auditAppendix && agentResult.summary.trim()) {
-      agentResult.summary = insertPerformanceTables(agentResult.summary, gathered.auditTables ?? "");
+      agentResult.summary = insertLandingPageTables(insertPerformanceTables(agentResult.summary, gathered.auditTables ?? ""), gathered.auditLandingTables ?? "");
     }
     // The audit checklist comes from the checkpoint engine, not the model, so it is always complete.
     // It is shown in chat; downloaded reports leave it out (see stripChatOnlySections).
@@ -1299,7 +1299,7 @@ export async function runTask(
 
     const waiting =
       !agentResult.report &&
-      (awaitsOperator(agentResult) || Boolean(gathered.strategyBriefIncomplete));
+      (awaitsOperator(agentResult) || Boolean(gathered.strategyBriefIncomplete) || Boolean(gathered.auditBriefingIncomplete));
     // Only a stage still in progress gets parked; a finished audit that ends on
     // "want me to pause it?" has genuinely completed its checklist.
     const holdPlan = waiting && steps.some((s) => s.state === "active");
