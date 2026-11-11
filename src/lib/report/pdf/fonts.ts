@@ -27,6 +27,16 @@ export function ensureReportFonts(): void {
     ],
   });
 
+  // Traffic Radius's typeface (trafficradius.com.au), for headings and the cover. SIL Open Font License.
+  Font.register({
+    family: "Montserrat",
+    fonts: [
+      { src: fontPath("Montserrat-SemiBold.ttf"), fontWeight: 600 },
+      { src: fontPath("Montserrat-Bold.ttf"), fontWeight: 700 },
+      { src: fontPath("Montserrat-ExtraBold.ttf"), fontWeight: 800 },
+    ],
+  });
+
   Font.register({
     family: "JetBrainsMono",
     fonts: [
