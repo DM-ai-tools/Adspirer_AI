@@ -47,7 +47,7 @@ type Card = {
   image_error?: string | null;
   status?: string | null;
   item: Item;
-  edits: Array<{ id: string; at: string; instruction: string; mode: "edit" | "full" }>;
+  edits: Array<{ id: string; at: string; instruction: string; mode: "edit" | "full"; understood?: string }>;
   editError: string | null;
 };
 
@@ -723,7 +723,7 @@ function BulkInner() {
                               className="min-h-[64px] text-xs"
                               value={editing[card.id]!.text}
                               onChange={(e) => setEditing((m) => ({ ...m, [card.id]: { ...m[card.id]!, text: e.target.value } }))}
-                              placeholder={'What should change? e.g. "make the headline say Free Audit", "swap the background to dark blue", "show the client stats from the landing page" (or paste a link to any page and say which section to use)'}
+                              placeholder={'Say what you want in your own words. You do not need exact text: e.g. "make the headline punchier", "swap the background to dark blue", "a different concept with more of a people feel", "show the client stats from the landing page" (or paste a link to any page and say which section to use)'}
                             />
                             <div className="space-y-1 text-[11px]">
                               <label className="flex items-start gap-1.5">
@@ -760,6 +760,9 @@ function BulkInner() {
                             <button type="button" className="font-medium text-accent hover:underline" disabled={busyId === card.id} onClick={() => void undoEdit(card.id)}>
                               Undo
                             </button>
+                            {card.edits[card.edits.length - 1]!.understood ? (
+                              <span className="mt-0.5 block">Understood as: {card.edits[card.edits.length - 1]!.understood}</span>
+                            ) : null}
                           </p>
                         ) : null}
                       </div>

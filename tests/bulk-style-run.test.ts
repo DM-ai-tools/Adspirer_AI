@@ -11,6 +11,7 @@ vi.mock("@/lib/creatives/service", () => ({
   }),
 }));
 vi.mock("@/lib/brand/analyze-url", () => ({ analyzeBrandFromUrl: async () => ({ brand_name: "Acme", colors: ["#37ca37"], logo_url: null, title: "Acme" }) }));
+vi.mock("@/lib/creatives/page-text", () => ({ readPageText: async () => ({ at: 0, text: "", readable: false }), cleanPageText: (s: string) => s, clearPageCache: () => undefined }));
 vi.mock("@/lib/creatives/uploaded-logo", () => ({ loadUploadedLogoDataUri: async () => null }));
 vi.mock("@/lib/creatives/concept-writer", async (orig) => ({ ...(await orig<typeof import("@/lib/creatives/concept-writer")>()), pickModel: () => ({}) }));
 vi.mock("@/lib/creatives/generate-draft-image", async () => {

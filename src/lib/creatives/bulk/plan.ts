@@ -5,6 +5,7 @@ import { directionWithText, findSimilarOnImageText, pickModel } from "@/lib/crea
 import { pickBulkAngles, STAGE_LABEL, type BulkAngle } from "@/lib/creatives/bulk/angles";
 import type { BulkStyle } from "@/lib/creatives/bulk/styles";
 import { assignStyles, hasStyleGuide, referenceBlock, type StyleGuide } from "@/lib/creatives/bulk/style-reference";
+import { isResultAngle, resultAngles, resultFacts, type ClientResult } from "@/lib/creatives/bulk/results";
 
 /** Images (and hooks) in one run. */
 export const BULK_RUN_SIZE = 15;
@@ -74,6 +75,8 @@ export type BulkBrief = {
   notes?: string | null;
   /** Copy the operator already has; it seeds the bodies. */
   pastedCopy?: string | null;
+  /** Real client results and stats found on the landing page. Up to three images are reserved to showcase them. */
+  results?: ClientResult[] | null;
 };
 
 const CTA_VALUES = ADSPIRER_META_CTAS as unknown as [string, ...string[]];
@@ -221,6 +224,9 @@ function conceptFirst(sharedLook: boolean): string {
   return `${CONCEPT_FIRST_HEAD}${sharedLook ? " (images in the reference style share a look on purpose, but each still needs its own idea)." : " or a style."}${CONCEPT_FIRST_TAIL}`;
 }
 
+const RESULT_RULE =
+  "RESULT HOOKS: an angle whose key starts with client_result_ exists only to showcase the real result in its brief. Its image shows the client's industry or audience in a creative, recognisable visual (the people, setting or objects of that industry, or a vivid metaphor for the outcome) with the figure as the hero, large and readable, copied EXACTLY as written (symbols included). Never change, round or add numbers, and never print a client's name unless the brief gives it. Its headline states the result in plain words; its highlights are drawn from the brief only.";
+
 const STYLE_RULE_CATALOGUE =
   "Every hook is made in its ASSIGNED STYLE, so the run looks like a set of genuinely different ads: the visual idea is yours, the treatment (lighting, medium, layout, mood) is the style's. Write the creative_direction in that style and set style to its name exactly.";
 
@@ -241,6 +247,8 @@ function briefLines(b: BulkBrief): string[] {
     `Offer being advertised: ${b.offerName}${b.offerDescription ? ` — ${b.offerDescription}` : ""}`,
     b.landingPageUrl ? `Landing page: ${b.landingPageUrl}` : null,
     b.notes ? `Operator notes: ${b.notes.slice(0, 1500)}` : null,
+    b.results?.length ? `
+${resultFacts(b.results)}` : null,
     b.pageExcerpt ? `\nWhat their site says:\n${b.pageExcerpt.slice(0, 3000)}` : null,
   ].filter((l): l is string => l !== null);
 }
@@ -290,7 +298,10 @@ export async function writeBulkPlan(
   const ctas: BulkCta[] = bodyPack.ctas.map((c) => ({ label: c.label, cta: c.cta }));
 
   // 3. One hook per assigned angle, no angle twice.
-  const assigned = pickBulkAngles(count, { avoid: avoidAngles });
+  // Two or three images are reserved for real client results from the page (none when the page has
+  // none); the rest are the usual spread of angles.
+  const showcase = resultAngles(brief.results ?? []).slice(0, Math.max(0, count - 1));
+  const assigned = [...pickBulkAngles(count - showcase.length, { avoid: avoidAngles }), ...showcase];
   const guide = hasStyleGuide(styleGuide) ? styleGuide : null;
   const guided = guide !== null;
   const styles = assignStyles(assigned, guide);
@@ -314,6 +325,7 @@ export async function writeBulkPlan(
           `\nMessage map:\n${JSON.stringify(messageMap)}`,
           guide ? `\n${referenceBlock(guide)}\n` : null,
           `\nWrite one visual idea for EACH angle below, using the exact angle_key. They are for ${assigned.length} different ads in one test, so every idea must be clearly different from every other: no repeated metaphor, object, scene or composition. Each idea comes from THIS business and THIS hook, never a stock device (no light bulbs, rockets, handshakes, graphs going up, piles of money unless the hook truly needs one).`,
+          todo.some(isResultAngle) ? RESULT_RULE : null,
           ideas.size ? `Ideas already taken, do not repeat or resemble them: ${[...ideas.values()].join(" | ")}` : null,
           todo.map((a, i) => `${i + 1}. key "${a.key}" · ${a.name} · targets a ${a.kind}: ${a.brief}`).join("\n"),
         ]
@@ -349,6 +361,7 @@ export async function writeBulkPlan(
           })
           .join("\n"),
         guided ? STYLE_RULE_REFERENCE : STYLE_RULE_CATALOGUE,
+        angles.some(isResultAngle) ? RESULT_RULE : null,
         `\nON-IMAGE WORDS MUST DIFFER: no two hooks share a headline wording or an on-image label, and no label repeats across the run.`,
         angles.length < assigned.length
           ? "The other hooks of this run are written separately for other angles, so keep every headline and label specific to YOUR angles' own pain, hope or proof; generic phrases are what clash."

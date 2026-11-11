@@ -4,10 +4,10 @@ import { pendingDrafts } from "@/lib/creatives/bulk/run";
 import { leaseActive, type CreativeRun, type RunItem } from "@/lib/creatives/bulk/runs";
 
 /** Images per client per calendar month the bulk tool aims for. */
-export const MONTHLY_TARGET = 150;
+export const MONTHLY_TARGET = 300;
 
 /** The card's item without storage keys, plus what edits it has had. */
-export type BulkCard = ReturnType<typeof toPublicDraft> & { item: Omit<RunItem, "versions">; edits: Array<{ id: string; at: string; instruction: string; mode: "edit" | "full" }>; editError: string | null };
+export type BulkCard = ReturnType<typeof toPublicDraft> & { item: Omit<RunItem, "versions">; edits: Array<{ id: string; at: string; instruction: string; mode: "edit" | "full"; understood?: string }>; editError: string | null };
 
 export type BulkProgress = { total: number; succeeded: number; failed: number; rendering: number; waiting: number };
 
@@ -37,7 +37,7 @@ export async function loadRunView(run: CreativeRun) {
         ...pub,
         image_status: d.image_status === "pending" ? ("pending" as const) : pub.image_status,
         item: rest,
-        edits: (versions ?? []).map((v) => ({ id: v.id, at: v.at, instruction: v.instruction, mode: v.mode })),
+        edits: (versions ?? []).map((v) => ({ id: v.id, at: v.at, instruction: v.instruction, mode: v.mode, ...(v.understood ? { understood: v.understood } : {}) })),
         editError: item.edit_error ?? null,
       };
     })
