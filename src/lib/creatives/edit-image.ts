@@ -137,11 +137,14 @@ export async function editImage(input: { draftId: string; instruction: string; m
   await recordVersion(existing, null, null);
 
   try {
-    // The image model cannot open a web page. When the instruction points at the landing page (or a
-    // pasted link), read it and swap in the real words and numbers before the image model sees it.
+    // The image model only draws what it is told, literally, and cannot open a web page. So the request
+    // is understood first: what exactly should change, with the words or idea filled in when the
+    // operator did not give them, and the page's real words and numbers when they pointed at a page.
     const resolved = await resolveEditInstruction({
       instruction,
       mode: input.mode,
+      image: original,
+      brandName: existing.concept.split("—")[0]?.trim() || null,
       landingPageUrl: existing.landing_page_url,
       headline: existing.headline,
       primaryText: existing.primary_text,
@@ -166,7 +169,7 @@ export async function editImage(input: { draftId: string; instruction: string; m
         direction: existing.creative_direction,
       });
     }
-    await recordVersion(existing, version, null);
+    await recordVersion(existing, { ...version, understood: resolved.summary }, null);
     return { ok: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

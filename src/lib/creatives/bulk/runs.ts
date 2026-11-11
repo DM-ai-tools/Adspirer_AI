@@ -5,7 +5,7 @@ import type { ImageFormat } from "@/lib/creatives/formats";
 import type { BulkBody, BulkCta, MessageMap } from "@/lib/creatives/bulk/plan";
 
 /** An earlier look of an image, kept when it is edited so the edit can be undone. */
-export type ImageVersion = { id: string; key: string; at: string; instruction: string; mode: "edit" | "full" };
+export type ImageVersion = { id: string; key: string; at: string; instruction: string; mode: "edit" | "full"; /** What the app understood the request to mean and changed. */ understood?: string };
 
 export type RunItem = {
   draft_id: string;

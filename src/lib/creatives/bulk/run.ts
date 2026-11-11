@@ -13,6 +13,8 @@ import {
   type CreativeDraft,
 } from "@/lib/creatives/drafts";
 import { nanoid } from "nanoid";
+import { readPageText } from "@/lib/creatives/page-text";
+import { findClientResults, type ClientResult } from "@/lib/creatives/bulk/results";
 import { BULK_RUN_SIZE, directionForHook, writeBulkPlan, type BulkBrief } from "@/lib/creatives/bulk/plan";
 import {
   describeStyleImages,
@@ -169,6 +171,17 @@ export async function resolveStyleGuide(run: CreativeRun): Promise<StyleGuide | 
   return hasStyleGuide(guide) ? guide : null;
 }
 
+/** The client results written on a page, or none when the page cannot be read or holds none. Never throws. */
+async function findResultsOnPage(url: string): Promise<ClientResult[]> {
+  try {
+    const page = await readPageText(url);
+    return page.readable ? await findClientResults(page.text) : [];
+  } catch (error) {
+    logger.warn("Bulk run: could not look for client results on the landing page", { url, error: error instanceof Error ? error.message : String(error) });
+    return [];
+  }
+}
+
 /** Read the brand, write the run's copy, and fill the placeholder drafts. Then render. */
 export async function planAndRender(runId: string): Promise<void> {
   const run = await getRun(runId);
@@ -178,6 +191,10 @@ export async function planAndRender(runId: string): Promise<void> {
     const { client, service } = scope;
     const landing = run.landing_page_url || service?.landing_page_url || undefined;
     const brandSource = landing || client.website_url || undefined;
+    // Real client results and stats on the landing page, read alongside the brand analysis. Two or
+    // three images of the run showcase them; a page with none (or one that cannot be read) simply
+    // reserves nothing.
+    const resultsLookup = landing ? findResultsOnPage(landing) : Promise.resolve<ClientResult[]>([]);
 
     let analysis: Awaited<ReturnType<typeof analyzeBrandFromUrl>> | null = null;
     if (brandSource) {
@@ -210,6 +227,7 @@ export async function planAndRender(runId: string): Promise<void> {
       landingPageUrl: landing,
       notes: run.inputs.notes,
       pastedCopy: run.inputs.pastedCopy,
+      results: await resultsLookup,
     };
 
     // Angles earlier runs for this client used are held back, so a second run reaches for new ones.
