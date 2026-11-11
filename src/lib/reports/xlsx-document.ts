@@ -98,7 +98,7 @@ export function renderReportXlsx(input: {
   // "Report" sheet — the narrative in reading order.
   const lines: string[][] = [
     [title],
-    [`Generated ${(input.generatedAt ?? new Date()).toLocaleString("en-AU", { dateStyle: "medium", timeStyle: "short" })} · CampaignForge`],
+    [`Generated ${(input.generatedAt ?? new Date()).toLocaleString("en-AU", { dateStyle: "medium", timeStyle: "short" })} · Prepared by Traffic Radius · trafficradius.com.au`],
     [],
   ];
   let lastHeading = "";

@@ -127,7 +127,8 @@ describe("parseMarkdownToBlocks", () => {
 describe("exportWordHtml", () => {
   it("renders branded HTML without raw markdown markers in body tables", () => {
     const html = exportWordHtml("Campaign publish report", SAMPLE);
-    expect(html).toContain("CampaignForge");
+    expect(html).toContain("Prepared by Traffic Radius");
+    expect(html).toContain("/brand/traffic-radius-logo.png");
     expect(html).toContain("<table>");
     expect(html).toContain("<th>");
     expect(html).toContain("TR Internal Marketing");
@@ -172,8 +173,10 @@ describe("exportPdf", () => {
     const pdf = await exportPdf("Campaign publish report", SAMPLE);
     expect(new TextDecoder().decode(pdf.slice(0, 5))).toBe("%PDF-");
     const text = await pdfText(pdf);
-    // The letter-spaced wordmark extracts as "S P E N D …".
-    expect(text.replace(/(?<=\b[A-Z]) (?=[A-Z]\b)/g, "")).toContain("CAMPAIGNFORGE");
+    // Traffic Radius branding: the footer names the agency on every page, and the logo image is embedded.
+    expect(text).toContain("Prepared by Traffic Radius");
+    expect(text).toContain("trafficradius.com.au");
+    expect(Buffer.from(pdf).toString("latin1")).toMatch(/\/Subtype\s*\/Image/);
     expect(text).toContain("TR Internal Marketing");
     expect(text).toMatch(/Page 1 of \d/);
     expect(text).not.toContain("## ");

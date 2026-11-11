@@ -1,6 +1,7 @@
 import { presentBlocks } from "@/lib/reports/present";
 import {
   Document,
+  Image,
   Link,
   Page,
   StyleSheet,
@@ -13,19 +14,20 @@ import type { InlineSpan, ReportBlock } from "@/lib/reports/parse-markdown";
 import { parseMarkdownToBlocks, sanitizeReportText } from "@/lib/reports/parse-markdown";
 import { chunkWord, columnAlignments, fitTableColumns, padRows } from "@/lib/reports/layout";
 import { ensureReportFonts } from "@/lib/report/pdf/fonts";
-import { CARD_TONES, REPORT_THEME as T } from "@/lib/reports/template";
+import { BRAND_BARS, CARD_TONES, REPORT_THEME as T } from "@/lib/reports/template";
+import { BRAND, brandLogo, brandMark } from "@/lib/reports/brand-assets";
 
 /**
- * Branded report PDF, typeset by @react-pdf with the embedded Inter font.
- *
- * Replaces the old hand-written PDF writer, which positioned every word from
- * estimated character widths (words overlapped or drifted apart) and could
- * only draw ASCII (→, –, ₹, curly quotes vanished, merging neighbouring text).
+ * Report PDF in the Traffic Radius brand, typeset by @react-pdf: Montserrat (the site's typeface)
+ * for headings and the cover, Inter for body text and tables. Page one opens with the logo on
+ * white, a band in the logo's three colours and a navy title panel; every later page carries the
+ * bar mark in its header and the agency's name in its footer.
  */
 
-const PAGE_X = 48;
-const PAGE_TOP = 62;
-const PAGE_BOTTOM = 58;
+const PAGE_X = 46;
+const PAGE_TOP = 64;
+const PAGE_BOTTOM = 60;
+const HEAD = "Montserrat";
 
 const s = StyleSheet.create({
   page: {
@@ -41,117 +43,101 @@ const s = StyleSheet.create({
   // Running header (pages 2+) and footer.
   runningHeader: {
     position: "absolute",
-    top: 26,
+    top: 22,
     left: PAGE_X,
     right: PAGE_X,
     flexDirection: "row",
     justifyContent: "space-between",
-    fontSize: 7.5,
-    color: T.muted,
-    borderBottomWidth: 0.5,
-    borderBottomColor: T.border,
-    paddingBottom: 6,
+    alignItems: "center",
+    paddingBottom: 7,
+    borderBottomWidth: 1.5,
+    borderBottomColor: T.lime,
   },
+  headerBrand: { flexDirection: "row", alignItems: "center" },
+  headerMark: { width: 9, height: 14, marginRight: 6 },
+  headerName: { fontFamily: HEAD, fontWeight: 700, fontSize: 8.5, color: T.navy, letterSpacing: 0.3 },
+  headerTitle: { fontSize: 7.5, color: T.muted, maxWidth: 330, textAlign: "right" },
   footer: {
     position: "absolute",
-    bottom: 26,
+    bottom: 22,
     left: PAGE_X,
     right: PAGE_X,
     flexDirection: "row",
     justifyContent: "space-between",
-    fontSize: 7.5,
+    fontSize: 7.2,
     color: T.muted,
     borderTopWidth: 0.5,
     borderTopColor: T.border,
-    paddingTop: 6,
+    paddingTop: 7,
   },
-  // Cover band on page one, bleeding to the page edges.
-  cover: {
+  footerBrand: { fontFamily: HEAD, fontWeight: 600, color: T.navy },
+  // Cover: logo on white, the logo's three colours as a band, then the navy title panel.
+  coverTop: {
     marginTop: -PAGE_TOP,
     marginHorizontal: -PAGE_X,
+    paddingTop: 30,
+    paddingBottom: 18,
+    paddingHorizontal: PAGE_X,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-end",
+    backgroundColor: T.white,
+  },
+  coverLogo: { width: 190, height: 190 / BRAND.logoAspect },
+  coverLogoText: { fontFamily: HEAD, fontWeight: 800, fontSize: 20, color: T.ink },
+  coverMeta: { alignItems: "flex-end" },
+  coverKind: { fontFamily: HEAD, fontWeight: 700, fontSize: 8, letterSpacing: 1.6, color: T.navy },
+  coverDate: { fontSize: 8, color: T.muted, marginTop: 3 },
+  band: { flexDirection: "row", marginHorizontal: -PAGE_X, height: 5 },
+  hero: {
+    marginHorizontal: -PAGE_X,
     marginBottom: 22,
-    paddingTop: 34,
+    paddingTop: 26,
     paddingBottom: 24,
     paddingHorizontal: PAGE_X,
-    backgroundColor: T.primary,
+    backgroundColor: T.navy,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-end",
   },
-  brand: {
-    fontSize: 8,
-    fontWeight: 600,
-    letterSpacing: 1.6,
-    color: T.primaryLight,
-    marginBottom: 10,
-  },
-  title: {
-    fontSize: 20,
-    fontWeight: 700,
-    lineHeight: 1.25,
-    color: T.white,
-  },
-  subtitle: {
-    marginTop: 8,
-    fontSize: 9,
-    color: T.primaryLight,
-  },
-  h1: {
-    fontSize: 15,
-    fontWeight: 700,
-    color: T.primaryDark,
-    marginTop: 16,
-    marginBottom: 6,
-    lineHeight: 1.3,
-  },
+  heroText: { flex: 1, paddingRight: 24 },
+  eyebrow: { fontFamily: HEAD, fontWeight: 700, fontSize: 8.5, letterSpacing: 1.8, color: T.lime, marginBottom: 8 },
+  title: { fontFamily: HEAD, fontWeight: 800, fontSize: 24, lineHeight: 1.18, color: T.white },
+  subtitle: { marginTop: 10, fontSize: 8.8, color: "#B9C7D3" },
+  heroBars: { flexDirection: "row", alignItems: "flex-end", height: 62 },
+  heroBar: { width: 11, marginLeft: 6 },
+  h1: { fontFamily: HEAD, fontSize: 16, fontWeight: 800, color: T.navy, marginTop: 16, marginBottom: 6, lineHeight: 1.25 },
   h2: {
+    fontFamily: HEAD,
     fontSize: 12.5,
     fontWeight: 700,
-    color: T.primaryDark,
-    marginTop: 18,
-    marginBottom: 8,
-    paddingVertical: 5,
-    paddingLeft: 8,
-    borderLeftWidth: 3,
-    borderLeftColor: T.primary,
-    backgroundColor: T.tableHeader,
-    lineHeight: 1.3,
+    color: T.white,
+    backgroundColor: T.navy,
+    marginTop: 20,
+    marginBottom: 10,
+    paddingVertical: 6,
+    paddingLeft: 10,
+    borderLeftWidth: 4,
+    borderLeftColor: T.lime,
+    lineHeight: 1.25,
   },
-  h3: {
-    fontSize: 10.5,
-    fontWeight: 600,
-    color: T.primary,
-    marginTop: 11,
-    marginBottom: 4,
-    lineHeight: 1.3,
-  },
+  h3: { fontFamily: HEAD, fontSize: 10.5, fontWeight: 700, color: T.skyInk, marginTop: 13, marginBottom: 5, lineHeight: 1.3 },
   // Line heights are absolute (pt): a unitless value compounds on nested
   // text runs in react-pdf and double-spaces paragraphs.
   paragraph: { marginBottom: 7, lineHeight: "14pt" },
-  link: { color: T.primary, textDecoration: "none" },
-  bold: { fontWeight: 600 },
+  link: { color: T.skyInk, textDecoration: "none" },
+  bold: { fontWeight: 600, color: T.navy },
   italic: { fontStyle: "italic" },
-  code: {
-    fontFamily: "JetBrainsMono",
-    fontSize: 8.5,
-    color: T.primaryDark,
-  },
+  code: { fontFamily: "JetBrainsMono", fontSize: 8.5, color: T.navy },
   list: { marginBottom: 7 },
   listItem: { flexDirection: "row", marginBottom: 3 },
-  bullet: { width: 14, color: T.primary, lineHeight: "14pt" },
-  number: { width: 18, color: T.primary, fontWeight: 600, lineHeight: "14pt" },
+  bullet: { width: 13, color: T.lime, fontWeight: 700, lineHeight: "14pt" },
+  number: { width: 18, color: T.skyInk, fontWeight: 600, lineHeight: "14pt" },
   listText: { flex: 1, lineHeight: "14pt" },
-  table: {
-    marginTop: 4,
-    marginBottom: 12,
-    borderWidth: 0.5,
-    borderColor: T.border,
-  },
+  table: { marginTop: 4, marginBottom: 12, borderWidth: 0.5, borderColor: T.border },
   row: { flexDirection: "row" },
   rowAlt: { backgroundColor: T.surface },
-  headRow: {
-    flexDirection: "row",
-    backgroundColor: T.tableHeader,
-    borderBottomWidth: 0.75,
-    borderBottomColor: T.primaryLight,
-  },
+  headRow: { flexDirection: "row", backgroundColor: T.navy },
   cell: {
     paddingVertical: 4,
     paddingHorizontal: 6,
@@ -160,48 +146,47 @@ const s = StyleSheet.create({
     borderRightWidth: 0.5,
     borderRightColor: T.border,
   },
-  headCell: {
-    fontWeight: 600,
-    color: T.primaryDark,
-  },
+  headCell: { fontWeight: 600, color: T.white, borderRightColor: "#1C3A50" },
   rowDivider: { borderTopWidth: 0.5, borderTopColor: T.border },
-  hr: {
-    height: 0.75,
-    backgroundColor: T.border,
-    marginVertical: 10,
-  },
-  strongRow: { backgroundColor: T.tableHeader, borderTopWidth: 0.75, borderTopColor: T.primaryLight },
-  strongCell: { fontWeight: 700, color: T.primaryDark },
-  // KPI tiles: four to a row.
+  hr: { height: 0.75, backgroundColor: T.border, marginVertical: 10 },
+  strongRow: { backgroundColor: T.limeSoft, borderTopWidth: 1, borderTopColor: T.lime },
+  strongCell: { fontWeight: 700, color: T.navy },
+  // KPI tiles: four to a row, each edged in one of the logo's colours.
   kpis: { flexDirection: "row", flexWrap: "wrap", marginTop: 2, marginBottom: 10, marginHorizontal: -3 },
-  kpi: {
-    width: "25%",
-    paddingHorizontal: 3,
-    marginBottom: 6,
-  },
+  kpi: { width: "25%", paddingHorizontal: 3, marginBottom: 6 },
   kpiInner: {
     borderWidth: 0.5,
     borderColor: T.border,
-    borderTopWidth: 2,
-    borderTopColor: T.primary,
-    backgroundColor: T.surface,
+    borderTopWidth: 3,
+    backgroundColor: T.white,
     paddingVertical: 7,
     paddingHorizontal: 8,
-    minHeight: 46,
+    minHeight: 48,
   },
-  kpiValue: { fontSize: 13, fontWeight: 700, color: T.primaryDark, lineHeight: "16pt" },
-  kpiLabel: { fontSize: 7.2, color: T.muted, marginTop: 3, lineHeight: "9pt", textTransform: "uppercase", letterSpacing: 0.3 },
+  kpiValue: { fontFamily: HEAD, fontSize: 13, fontWeight: 700, color: T.navy, lineHeight: "16pt" },
+  kpiLabel: { fontSize: 7, color: T.muted, marginTop: 3, lineHeight: "9pt", textTransform: "uppercase", letterSpacing: 0.4 },
   // Cards: risks, recommendations, changes.
-  card: { marginBottom: 8, borderLeftWidth: 3, paddingVertical: 7, paddingHorizontal: 10 },
-  cardHead: { flexDirection: "row", alignItems: "flex-start", marginBottom: 4 },
-  cardTag: { fontSize: 7.5, fontWeight: 700, color: T.white, paddingVertical: 2, paddingHorizontal: 5, marginRight: 7, borderRadius: 2 },
-  cardTitle: { flex: 1, fontSize: 10, fontWeight: 600, color: T.ink, lineHeight: "13pt" },
+  card: { marginBottom: 8, borderLeftWidth: 4, paddingVertical: 8, paddingHorizontal: 11 },
+  cardHead: { flexDirection: "row", alignItems: "flex-start", marginBottom: 5 },
+  cardTag: { fontFamily: HEAD, fontSize: 7.5, fontWeight: 700, color: T.white, paddingVertical: 2, paddingHorizontal: 6, marginRight: 8, borderRadius: 2 },
+  cardTitle: { flex: 1, fontFamily: HEAD, fontSize: 10, fontWeight: 700, color: T.navy, lineHeight: "13pt" },
   field: { flexDirection: "row", marginTop: 2 },
-  fieldLabel: { width: 92, fontSize: 8.3, fontWeight: 600, color: T.muted, lineHeight: "12pt" },
+  fieldLabel: { width: 94, fontSize: 8.3, fontWeight: 600, color: T.navySoft, lineHeight: "12pt" },
   fieldValue: { flex: 1, fontSize: 8.8, lineHeight: "12pt" },
   // A takeaway under a table, and a footnote.
-  read: { marginTop: -6, marginBottom: 12, paddingVertical: 4, paddingHorizontal: 8, backgroundColor: T.tableHeader, fontSize: 8.6, lineHeight: "12pt", color: T.primaryDark },
-  footnote: { marginBottom: 8, fontSize: 7.5, lineHeight: "10pt", color: T.muted },
+  read: {
+    marginTop: -6,
+    marginBottom: 12,
+    paddingVertical: 5,
+    paddingHorizontal: 9,
+    backgroundColor: T.limeSoft,
+    borderLeftWidth: 3,
+    borderLeftColor: T.lime,
+    fontSize: 8.6,
+    lineHeight: "12pt",
+    color: T.navy,
+  },
+  footnote: { marginBottom: 8, fontSize: 7.4, lineHeight: "10pt", color: T.muted },
 });
 
 const URL_RE = /(https?:\/\/[^\s)]+)/g;
@@ -335,7 +320,7 @@ function Block({ block }: { block: ReportBlock }) {
       const style = block.level === 1 ? s.h1 : block.level === 2 ? s.h2 : s.h3;
       // Keep a heading on the same page as the first lines below it.
       return (
-        <Text style={style} minPresenceAhead={48}>
+        <Text style={style} minPresenceAhead={56}>
           {glyphSafe(block.text)}
         </Text>
       );
@@ -351,9 +336,7 @@ function Block({ block }: { block: ReportBlock }) {
         <View style={s.list}>
           {block.items.map((item, i) => (
             <View key={i} style={s.listItem} wrap={false}>
-              <Text style={block.ordered ? s.number : s.bullet}>
-                {block.ordered ? `${i + 1}.` : "•"}
-              </Text>
+              <Text style={block.ordered ? s.number : s.bullet}>{block.ordered ? `${i + 1}.` : "■"}</Text>
               <Text style={s.listText}>
                 <Spans spans={item} />
               </Text>
@@ -370,7 +353,7 @@ function Block({ block }: { block: ReportBlock }) {
         <View style={s.kpis}>
           {block.items.map((item, i) => (
             <View key={i} style={s.kpi} wrap={false}>
-              <View style={s.kpiInner}>
+              <View style={[s.kpiInner, { borderTopColor: [T.navy, T.sky, T.lime][i % 3] }]}>
                 <Text style={s.kpiValue}>{glyphSafe(item.value)}</Text>
                 <Text style={s.kpiLabel}>{glyphSafe(item.label)}</Text>
               </View>
@@ -383,7 +366,7 @@ function Block({ block }: { block: ReportBlock }) {
       return (
         <View style={[s.card, { borderLeftColor: tone.bar, backgroundColor: tone.fill }]} wrap={false}>
           <View style={s.cardHead}>
-            {block.tag ? <Text style={[s.cardTag, { backgroundColor: tone.bar }]}>{glyphSafe(block.tag)}</Text> : null}
+            {block.tag ? <Text style={[s.cardTag, { backgroundColor: block.tone === "action" ? T.navy : tone.bar }]}>{glyphSafe(block.tag)}</Text> : null}
             <Text style={s.cardTitle}>{glyphSafe(block.title)}</Text>
           </View>
           {block.fields.map((f, i) => (
@@ -396,7 +379,7 @@ function Block({ block }: { block: ReportBlock }) {
           ))}
           {block.notes.map((n, i) => (
             <View key={`n${i}`} style={s.field}>
-              <Text style={[s.fieldLabel, { width: 10 }]}>•</Text>
+              <Text style={[s.fieldLabel, { width: 10, color: T.lime }]}>■</Text>
               <Text style={s.fieldValue}>
                 <Spans spans={n} />
               </Text>
@@ -416,15 +399,25 @@ function Block({ block }: { block: ReportBlock }) {
   }
 }
 
+/** "Meta Ads Account Audit — Chiro Care - TR" → eyebrow "META ADS ACCOUNT AUDIT", name "Chiro Care - TR". */
+export function splitTitle(title: string): { eyebrow: string | null; name: string } {
+  const m = /^(.{6,60}?)\s+[—–]\s+(.+)$/.exec(title.trim());
+  return m ? { eyebrow: m[1]!.toUpperCase(), name: m[2]!.trim() } : { eyebrow: null, name: title.trim() };
+}
+
 export function ReportPdfDocument(props: {
   title: string;
   subtitle: string;
   generatedLabel: string;
   blocks: ReportBlock[];
+  logo?: Buffer | null;
+  mark?: Buffer | null;
 }) {
   const title = glyphSafe(props.title);
+  const { eyebrow, name } = splitTitle(title);
+  const kind = /audit/i.test(title) ? "META ADS AUDIT" : "META ADS REPORT";
   return (
-    <Document title={title} author="CampaignForge" creator="CampaignForge" producer="CampaignForge">
+    <Document title={title} author={BRAND.name} creator={BRAND.name} producer={BRAND.name}>
       <Page size="A4" style={s.page}>
         <View
           style={s.runningHeader}
@@ -432,19 +425,40 @@ export function ReportPdfDocument(props: {
           render={({ pageNumber }) =>
             pageNumber > 1 ? (
               <>
-                <Text>{title}</Text>
-                <Text>CAMPAIGNFORGE</Text>
+                <View style={s.headerBrand}>
+                  {props.mark ? <Image src={props.mark} style={s.headerMark} /> : null}
+                  <Text style={s.headerName}>{BRAND.name.toUpperCase()}</Text>
+                </View>
+                <Text style={s.headerTitle}>{title}</Text>
               </>
             ) : null
           }
         />
 
-        <View style={s.cover}>
-          <Text style={s.brand}>CAMPAIGNFORGE</Text>
-          <Text style={s.title}>{title}</Text>
-          <Text style={s.subtitle}>
-            {props.subtitle} · {props.generatedLabel}
-          </Text>
+        <View style={s.coverTop}>
+          {props.logo ? <Image src={props.logo} style={s.coverLogo} /> : <Text style={s.coverLogoText}>{BRAND.name}</Text>}
+          <View style={s.coverMeta}>
+            <Text style={s.coverKind}>{kind}</Text>
+            <Text style={s.coverDate}>{props.generatedLabel}</Text>
+          </View>
+        </View>
+        <View style={s.band}>
+          {BRAND_BARS.map((c) => (
+            <View key={c} style={{ flex: 1, backgroundColor: c }} />
+          ))}
+        </View>
+        <View style={s.hero}>
+          <View style={s.heroText}>
+            {eyebrow ? <Text style={s.eyebrow}>{eyebrow}</Text> : null}
+            <Text style={s.title}>{name}</Text>
+            <Text style={s.subtitle}>{props.subtitle}</Text>
+          </View>
+          {/* The logo's three bars, as the cover's mark. */}
+          <View style={s.heroBars}>
+            {[0.42, 0.7, 1].map((h, i) => (
+              <View key={i} style={[s.heroBar, { height: 62 * h, backgroundColor: i === 0 ? T.white : BRAND_BARS[i] }]} />
+            ))}
+          </View>
         </View>
 
         {props.blocks.map((block, i) => (
@@ -452,10 +466,10 @@ export function ReportPdfDocument(props: {
         ))}
 
         <View style={s.footer} fixed>
-          <Text>Confidential · Generated {props.generatedLabel}</Text>
-          <Text
-            render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`}
-          />
+          <Text>
+            <Text style={s.footerBrand}>Prepared by {BRAND.name}</Text> · {BRAND.site} · Confidential
+          </Text>
+          <Text render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`} />
         </View>
       </Page>
     </Document>
@@ -486,9 +500,11 @@ export async function renderReportPdf(input: {
   const buffer = await renderToBuffer(
     <ReportPdfDocument
       title={title}
-      subtitle={input.subtitle ?? "Meta Ads report"}
+      subtitle={input.subtitle ?? `Meta Ads report · Prepared by ${BRAND.name}`}
       generatedLabel={generatedLabel}
       blocks={blocks}
+      logo={brandLogo()}
+      mark={brandMark()}
     />,
   );
   return new Uint8Array(buffer);

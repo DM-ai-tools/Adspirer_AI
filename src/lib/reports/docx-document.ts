@@ -6,6 +6,8 @@ import {
   ExternalHyperlink,
   Footer,
   Header,
+  HeightRule,
+  ImageRun,
   LevelFormat,
   Packer,
   PageNumber,
@@ -24,7 +26,9 @@ import {
 import type { InlineSpan, ReportBlock } from "@/lib/reports/parse-markdown";
 import { parseMarkdownToBlocks, sanitizeReportText } from "@/lib/reports/parse-markdown";
 import { columnAlignments, columnWeights, padRows } from "@/lib/reports/layout";
-import { CARD_TONES, REPORT_THEME as T } from "@/lib/reports/template";
+import { BRAND_BARS, CARD_TONES, REPORT_THEME as T } from "@/lib/reports/template";
+import { BRAND, brandLogo, brandMark } from "@/lib/reports/brand-assets";
+import { splitTitle } from "@/lib/reports/pdf-document";
 
 /**
  * Native Word (.docx) export. Replaces the old HTML-renamed-to-.doc file,
@@ -59,16 +63,16 @@ function kpiTiles(block: Extract<ReportBlock, { type: "kpis" }>): Table {
       new TableRow({
         cantSplit: true,
         children: slice.map(
-          (item) =>
+          (item, k) =>
             new TableCell({
               width: { size: width, type: WidthType.DXA },
               shading: item.value ? { type: ShadingType.CLEAR, color: "auto", fill: hex(T.surface) } : undefined,
               borders: item.value
-                ? { top: { style: BorderStyle.SINGLE, size: 18, color: hex(T.primary) }, bottom: HAIRLINE, left: { style: BorderStyle.SINGLE, size: 24, color: "FFFFFF" }, right: { style: BorderStyle.SINGLE, size: 24, color: "FFFFFF" } }
+                ? { top: { style: BorderStyle.SINGLE, size: 24, color: hex([T.navy, T.sky, T.lime][(i + k) % 3]!) }, bottom: HAIRLINE, left: { style: BorderStyle.SINGLE, size: 24, color: "FFFFFF" }, right: { style: BorderStyle.SINGLE, size: 24, color: "FFFFFF" } }
                 : { top: NO_BORDER, bottom: NO_BORDER, left: NO_BORDER, right: NO_BORDER },
               margins: { top: 100, bottom: 100, left: 140, right: 140 },
               children: [
-                new Paragraph({ spacing: { after: 20 }, children: [new TextRun({ text: item.value, font: FONT, bold: true, size: 28, color: hex(T.primaryDark) })] }),
+                new Paragraph({ spacing: { after: 20 }, children: [new TextRun({ text: item.value, font: FONT, bold: true, size: 28, color: hex(T.navy) })] }),
                 new Paragraph({ children: [new TextRun({ text: item.label.toUpperCase(), font: FONT, size: 14, color: hex(T.muted) })] }),
               ],
             }),
@@ -88,7 +92,7 @@ function card(block: Extract<ReportBlock, { type: "card" }>): Table {
       spacing: { before: 20, after: 20, line: 270 },
       tabStops: [{ type: TabStopType.LEFT, position: labelWidth }],
       indent: { left: labelWidth, hanging: labelWidth },
-      children: [new TextRun({ text: `${label}\t`, font: FONT, bold: true, size: 17, color: hex(T.muted) }), ...value],
+      children: [new TextRun({ text: `${label}\t`, font: FONT, bold: true, size: 17, color: hex(T.navySoft) }), ...value],
     });
   return new Table({
     layout: TableLayoutType.FIXED,
@@ -107,8 +111,8 @@ function card(block: Extract<ReportBlock, { type: "card" }>): Table {
               new Paragraph({
                 spacing: { after: 60 },
                 children: [
-                  ...(block.tag ? [new TextRun({ text: ` ${block.tag} `, font: FONT, bold: true, size: 16, color: "FFFFFF", shading: { type: ShadingType.CLEAR, color: "auto", fill: hex(tone.bar) } }), new TextRun({ text: "  ", size: 16 })] : []),
-                  new TextRun({ text: block.title, font: FONT, bold: true, size: 21, color: hex(T.ink) }),
+                  ...(block.tag ? [new TextRun({ text: ` ${block.tag} `, font: FONT, bold: true, size: 16, color: "FFFFFF", shading: { type: ShadingType.CLEAR, color: "auto", fill: hex(block.tone === "action" ? T.navy : tone.bar) } }), new TextRun({ text: "  ", size: 16 })] : []),
+                  new TextRun({ text: block.title, font: FONT, bold: true, size: 21, color: hex(T.navy) }),
                 ],
               }),
               ...block.fields.map((f) => line(f.label, spanRuns(f.value).map((r) => r))),
@@ -158,9 +162,11 @@ function tableFor(block: Extract<ReportBlock, { type: "table" }>): Table {
     new TableCell({
       width: { size: widths[c], type: WidthType.DXA },
       verticalAlign: VerticalAlign.TOP,
-      shading: opts.header || opts.strong
-        ? { type: ShadingType.CLEAR, color: "auto", fill: hex(T.tableHeader) }
-        : opts.zebra
+      shading: opts.header
+        ? { type: ShadingType.CLEAR, color: "auto", fill: hex(T.navy) }
+        : opts.strong
+          ? { type: ShadingType.CLEAR, color: "auto", fill: hex(T.limeSoft) }
+          : opts.zebra
           ? { type: ShadingType.CLEAR, color: "auto", fill: hex(T.surface) }
           : undefined,
       margins: { top: 60, bottom: 60, left: 100, right: 100 },
@@ -170,7 +176,7 @@ function tableFor(block: Extract<ReportBlock, { type: "table" }>): Table {
           spacing: { before: 0, after: 0, line: 260 },
           children: runsFor(text, {
             bold: opts.header || opts.strong,
-            color: opts.header || opts.strong ? hex(T.primaryDark) : undefined,
+            color: opts.header ? hex(T.white) : opts.strong ? hex(T.navy) : undefined,
             size: 18,
           }),
         }),
@@ -265,7 +271,9 @@ function blockChildren(blocks: ReportBlock[]): Array<Paragraph | Table> {
           block.kind === "read"
             ? new Paragraph({
                 spacing: { before: 0, after: 200 },
-                shading: { type: ShadingType.CLEAR, color: "auto", fill: hex(T.tableHeader) },
+                shading: { type: ShadingType.CLEAR, color: "auto", fill: hex(T.limeSoft) },
+                border: { left: { style: BorderStyle.SINGLE, size: 18, color: hex(T.lime), space: 6 } },
+                indent: { left: 120 },
                 children: spanRuns(block.spans).map((r) => r),
               })
             : new Paragraph({ spacing: { after: 120 }, children: block.spans.flatMap((s) => runsFor(s.text, { size: 15, color: hex(T.muted), italics: true })) }),
@@ -276,51 +284,93 @@ function blockChildren(blocks: ReportBlock[]): Array<Paragraph | Table> {
   return out;
 }
 
-function cover(title: string, subtitle: string, dateLabel: string): Table {
-  const white = hex(T.white);
-  return new Table({
-    width: { size: CONTENT_TWIP, type: WidthType.DXA },
-    columnWidths: [CONTENT_TWIP],
-    borders: {
-      top: { style: BorderStyle.NONE, size: 0, color: "auto" },
-      bottom: { style: BorderStyle.NONE, size: 0, color: "auto" },
-      left: { style: BorderStyle.NONE, size: 0, color: "auto" },
-      right: { style: BorderStyle.NONE, size: 0, color: "auto" },
-      insideHorizontal: { style: BorderStyle.NONE, size: 0, color: "auto" },
-      insideVertical: { style: BorderStyle.NONE, size: 0, color: "auto" },
-    },
-    rows: [
+/** A full-width, borderless table: the building block of the cover. */
+function bandTable(rows: TableRow[], columnWidths: number[]): Table {
+  return new Table({ layout: TableLayoutType.FIXED, width: { size: CONTENT_TWIP, type: WidthType.DXA }, columnWidths, borders: NO_BORDERS, rows });
+}
+
+/**
+ * The cover, in the Traffic Radius brand: the logo on white with the report kind and date, a band
+ * in the logo's three colours, then a navy panel with the account name. The logo has dark lettering
+ * on transparent, so it always sits on white.
+ */
+function cover(title: string, subtitle: string, dateLabel: string, logo: Buffer | null): Table[] {
+  const { eyebrow, name } = splitTitle(title);
+  const kind = /audit/i.test(title) ? "META ADS AUDIT" : "META ADS REPORT";
+  const half = Math.floor(CONTENT_TWIP / 2);
+  const logoWidth = 240;
+  const top = bandTable(
+    [
       new TableRow({
         children: [
           new TableCell({
-            width: { size: CONTENT_TWIP, type: WidthType.DXA },
-            shading: { type: ShadingType.CLEAR, color: "auto", fill: hex(T.primary) },
-            margins: { top: 360, bottom: 300, left: 360, right: 360 },
+            width: { size: half, type: WidthType.DXA },
+            verticalAlign: VerticalAlign.BOTTOM,
+            margins: { top: 0, bottom: 160, left: 0, right: 0 },
             children: [
               new Paragraph({
-                spacing: { after: 120 },
-                children: [
-                  new TextRun({ text: "CAMPAIGNFORGE", font: FONT, bold: true, size: 16, color: hex(T.primaryLight), characterSpacing: 40 }),
-                ],
+                children: logo
+                  ? [new ImageRun({ type: "png", data: logo, transformation: { width: logoWidth, height: Math.round(logoWidth / BRAND.logoAspect) }, altText: { name: BRAND.name, title: BRAND.name, description: `${BRAND.name} logo` } })]
+                  : [new TextRun({ text: BRAND.name, font: FONT, bold: true, size: 40, color: hex(T.ink) })],
               }),
-              new Paragraph({
-                spacing: { after: 100 },
-                children: [new TextRun({ text: title, font: FONT, bold: true, size: 40, color: white })],
-              }),
-              new Paragraph({
-                children: [
-                  new TextRun({ text: `${subtitle} · ${dateLabel}`, font: FONT, size: 18, color: hex(T.primaryLight) }),
-                ],
-              }),
+            ],
+          }),
+          new TableCell({
+            width: { size: CONTENT_TWIP - half, type: WidthType.DXA },
+            verticalAlign: VerticalAlign.BOTTOM,
+            margins: { top: 0, bottom: 160, left: 0, right: 0 },
+            children: [
+              new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: kind, font: FONT, bold: true, size: 16, color: hex(T.navy), characterSpacing: 30 })] }),
+              new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: dateLabel, font: FONT, size: 16, color: hex(T.muted) })] }),
             ],
           }),
         ],
       }),
     ],
-  });
+    [half, CONTENT_TWIP - half],
+  );
+  const third = Math.floor(CONTENT_TWIP / 3);
+  const band = bandTable(
+    [
+      new TableRow({
+        height: { value: 90, rule: HeightRule.EXACT },
+        children: BRAND_BARS.map(
+          (c, i) =>
+            new TableCell({
+              width: { size: i === 2 ? CONTENT_TWIP - third * 2 : third, type: WidthType.DXA },
+              shading: { type: ShadingType.CLEAR, color: "auto", fill: hex(c) },
+              children: [new Paragraph({ spacing: { before: 0, after: 0, line: 60 }, children: [] })],
+            }),
+        ),
+      }),
+    ],
+    [third, third, CONTENT_TWIP - third * 2],
+  );
+  const hero = bandTable(
+    [
+      new TableRow({
+        children: [
+          new TableCell({
+            width: { size: CONTENT_TWIP, type: WidthType.DXA },
+            shading: { type: ShadingType.CLEAR, color: "auto", fill: hex(T.navy) },
+            margins: { top: 420, bottom: 380, left: 400, right: 400 },
+            children: [
+              ...(eyebrow
+                ? [new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: eyebrow, font: FONT, bold: true, size: 17, color: hex(T.lime), characterSpacing: 36 })] })]
+                : []),
+              new Paragraph({ spacing: { after: 140 }, children: [new TextRun({ text: name, font: FONT, bold: true, size: 48, color: hex(T.white) })] }),
+              new Paragraph({ children: [new TextRun({ text: subtitle, font: FONT, size: 18, color: "B9C7D3" })] }),
+            ],
+          }),
+        ],
+      }),
+    ],
+    [CONTENT_TWIP],
+  );
+  return [top, band, hero];
 }
 
-function footer(dateLabel: string): Footer {
+function footer(): Footer {
   const muted = hex(T.muted);
   return new Footer({
     children: [
@@ -328,12 +378,26 @@ function footer(dateLabel: string): Footer {
         tabStops: [{ type: TabStopType.RIGHT, position: CONTENT_TWIP }],
         border: { top: { ...HAIRLINE, space: 4 } },
         children: [
-          new TextRun({ text: `Confidential · Generated ${dateLabel}`, size: 15, color: muted }),
-          new TextRun({
-            children: ["\tPage ", PageNumber.CURRENT, " of ", PageNumber.TOTAL_PAGES],
-            size: 15,
-            color: muted,
-          }),
+          new TextRun({ text: `Prepared by ${BRAND.name}`, size: 15, bold: true, color: hex(T.navy) }),
+          new TextRun({ text: ` · ${BRAND.site} · Confidential`, size: 15, color: muted }),
+          new TextRun({ children: ["\tPage ", PageNumber.CURRENT, " of ", PageNumber.TOTAL_PAGES], size: 15, color: muted }),
+        ],
+      }),
+    ],
+  });
+}
+
+/** Pages 2+: the bar mark and the agency's name on the left, the report title on the right, over a green rule. */
+function runningHeader(title: string, mark: Buffer | null): Header {
+  return new Header({
+    children: [
+      new Paragraph({
+        tabStops: [{ type: TabStopType.RIGHT, position: CONTENT_TWIP }],
+        border: { bottom: { style: BorderStyle.SINGLE, size: 12, color: hex(T.lime), space: 4 } },
+        children: [
+          ...(mark ? [new ImageRun({ type: "png", data: mark, transformation: { width: 9, height: 14 }, altText: { name: "mark", title: BRAND.name, description: `${BRAND.name} mark` } }), new TextRun({ text: "  ", size: 15 })] : []),
+          new TextRun({ text: BRAND.name.toUpperCase(), size: 16, bold: true, color: hex(T.navy), characterSpacing: 10 }),
+          new TextRun({ text: `\t${title}`, size: 15, color: hex(T.muted) }),
         ],
       }),
     ],
@@ -362,7 +426,7 @@ export async function renderReportDocx(input: {
   const muted = hex(T.muted);
 
   const doc = new Document({
-    creator: "CampaignForge",
+    creator: BRAND.name,
     title,
     description: input.subtitle,
     styles: {
@@ -387,7 +451,7 @@ export async function renderReportDocx(input: {
           name: "Report heading 1",
           basedOn: "Normal",
           next: "Body",
-          run: { size: 32, bold: true, color: hex(T.primaryDark) },
+          run: { size: 32, bold: true, color: hex(T.navy) },
           paragraph: { spacing: { before: 360, after: 120 } },
         },
         {
@@ -395,11 +459,11 @@ export async function renderReportDocx(input: {
           name: "Report heading 2",
           basedOn: "Normal",
           next: "Body",
-          run: { size: 26, bold: true, color: hex(T.primaryDark) },
+          run: { size: 26, bold: true, color: hex(T.white) },
           paragraph: {
             spacing: { before: 360, after: 140 },
-            shading: { type: ShadingType.CLEAR, color: "auto", fill: hex(T.tableHeader) },
-            border: { left: { style: BorderStyle.SINGLE, size: 24, color: hex(T.primary), space: 6 } },
+            shading: { type: ShadingType.CLEAR, color: "auto", fill: hex(T.navy) },
+            border: { left: { style: BorderStyle.SINGLE, size: 36, color: hex(T.lime), space: 6 } },
             indent: { left: 120 },
           },
         },
@@ -408,7 +472,7 @@ export async function renderReportDocx(input: {
           name: "Report heading 3",
           basedOn: "Normal",
           next: "Body",
-          run: { size: 22, bold: true, color: hex(T.primary) },
+          run: { size: 22, bold: true, color: hex(T.skyInk) },
           paragraph: { spacing: { before: 220, after: 80 } },
         },
       ],
@@ -453,25 +517,14 @@ export async function renderReportDocx(input: {
         },
         headers: {
           first: new Header({ children: [new Paragraph({ children: [] })] }),
-          default: new Header({
-            children: [
-              new Paragraph({
-                tabStops: [{ type: TabStopType.RIGHT, position: CONTENT_TWIP }],
-                border: { bottom: { ...HAIRLINE, space: 4 } },
-                children: [
-                  new TextRun({ text: title, size: 15, color: muted }),
-                  new TextRun({ text: "\tCAMPAIGNFORGE", size: 15, color: muted }),
-                ],
-              }),
-            ],
-          }),
+          default: runningHeader(title, brandMark()),
         },
         footers: {
-          first: footer(dateLabel),
-          default: footer(dateLabel),
+          first: footer(),
+          default: footer(),
         },
         children: [
-          cover(title, input.subtitle ?? "Meta Ads report", dateLabel),
+          ...cover(title, input.subtitle ?? `Meta Ads report · Prepared by ${BRAND.name}`, dateLabel, brandLogo()),
           new Paragraph({ spacing: { after: 200 }, children: [] }),
           ...blockChildren(blocks),
         ],
