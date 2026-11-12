@@ -132,3 +132,13 @@ describe("best quality", () => {
     expect(previewPlan(s, { format: "9:16", priority: "balanced" }, 0).resolution).toBe("720p");
   });
 });
+
+describe("checked before Generate", () => {
+  it("stops a script whose words take longer than a video may run, and one scene longer than any clip", async () => {
+    const { scriptTimingProblem } = await import("@/lib/video/generation");
+    const words = (n: number) => Array.from({ length: n }, () => "word").join(" ");
+    expect(scriptTimingProblem(script([scene(1, words(30)), scene(2, words(30))]))).toBeNull();
+    expect(scriptTimingProblem(script([scene(1, words(60)), scene(2, words(60)), scene(3, words(60))]))).toMatch(/over the 60s maximum/);
+    expect(scriptTimingProblem(script([scene(1, words(90))]))).toMatch(/Scene 1 needs about 34s, longer than the 30s one clip can run/);
+  });
+});

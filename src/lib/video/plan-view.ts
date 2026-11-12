@@ -1,3 +1,4 @@
+import { sceneSeconds } from "@/lib/video/timing";
 import { availableSeedanceModels, chooseSeedanceModel, estimateClipUsd, SEEDANCE_SPECS, type VideoRatio, type VideoResolution } from "@/lib/video/seedance";
 import type { VideoScript } from "@/lib/video/script";
 import type { VideoInputs } from "@/lib/video/projects";
@@ -24,7 +25,8 @@ export type PlanPreview = {
 export function previewPlan(script: VideoScript, inputs: Pick<VideoInputs, "format" | "priority">, uploadedImages: number): PlanPreview {
   // Character sheet, location and each uploaded image can all ride along as references.
   const request = {
-    scenes: script.scenes.map((s) => ({ number: s.number, seconds: s.seconds, onCameraSpeech: s.speaker === "on_camera" })),
+    // Each scene at least as long as its words take to say: the plan will lengthen it, so the model and the clips must allow for that now.
+    scenes: script.scenes.map((s) => ({ number: s.number, seconds: Math.max(s.seconds, sceneSeconds(s)), onCameraSpeech: s.speaker === "on_camera" })),
     imageRefs: uploadedImages + 2,
     priority: inputs.priority,
     // Best quality is made at 1080p on the newest model; the other choices stay at 720p.

@@ -69,6 +69,7 @@ export function planInputFor(project: VideoProject, script: VideoScript, manifes
   const capabilities = providerCapabilities();
   return {
     mode,
+    maxSceneSeconds: project.plan?.model ? SEEDANCE_SPECS[project.plan.model as SeedanceModelKey]?.maxSeconds : undefined,
     direction: videoDirection(project.inputs),
     brandName: manifest.name.value ?? "",
     product: manifest.offer.value ?? script.title,
