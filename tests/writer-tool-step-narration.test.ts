@@ -59,3 +59,39 @@ describe("a report keeps only the step that writes it", () => {
     expect(result.summary).toContain("The whole report.");
   });
 });
+
+describe("a report that hits the output limit", () => {
+  it("asks for the rest and joins it on instead of stopping mid-sentence", async () => {
+    let call = 0;
+    streamText.mockImplementation(() => {
+      call += 1;
+      const first = call === 1;
+      return {
+        fullStream: (async function* () {
+          yield { type: "start-step" };
+          yield { type: "text-delta", text: first ? "# Strategy\n\n- **Evidence:** a 7-day frequency of 20" : ".19 on 2,520 people.\n\n## Next Steps\n\nDone." };
+          yield { type: "finish-step", finishReason: first ? "length" : "stop" };
+        })(),
+      };
+    });
+    const result = await write("Plan to hit 10x ROAS on $500/day");
+    expect(call).toBe(2);
+    expect(result.summary).toContain("frequency of 20.19 on 2,520 people.");
+    expect(result.summary).toContain("## Next Steps");
+    const continuation = streamText.mock.calls[1]![0] as { messages: Array<{ role: string; content: string }> };
+    expect(continuation.messages.at(-2)).toMatchObject({ role: "assistant" });
+    expect(continuation.messages.at(-1)!.content).toMatch(/Continue from exactly where it stopped/);
+  });
+
+  it("gives reports room for a year-long audit", async () => {
+    streamText.mockImplementation(() => ({
+      fullStream: (async function* () {
+        yield { type: "start-step" };
+        yield { type: "text-delta", text: "ok" };
+        yield { type: "finish-step", finishReason: "stop" };
+      })(),
+    }));
+    await write("Plan to hit 10x ROAS on $500/day");
+    expect((streamText.mock.calls.at(-1)![0] as { maxOutputTokens: number }).maxOutputTokens).toBeGreaterThanOrEqual(16_000);
+  });
+});

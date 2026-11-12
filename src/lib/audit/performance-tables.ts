@@ -16,6 +16,10 @@ export const PERFORMANCE_TABLES_MARKER = "[[PERFORMANCE_TABLES]]";
 
 /** A group needs this many add-to-carts (or results) before its cost is compared with another's. */
 export const MIN_VOLUME = 20;
+/** A ROAS built on fewer purchases than this is marked: one or two orders make it swing from 0× to 40×. */
+export const THIN_PURCHASES = 10;
+export const THIN_MARK = "†";
+const isThinPurchases = (g: Pick<Group, "purchases">) => g.purchases > 0 && g.purchases < THIN_PURCHASES;
 /** ...and this share of spend, so a tiny test is not called the winner. */
 const MIN_SHARE = 0.05;
 
@@ -248,7 +252,7 @@ function columns(f: Fmt, opts: { count?: string; share?: boolean; ctr?: boolean;
   if (f.has.revenue) {
     cols.push(
       { head: `Purchase value* (${cur})`, cell: (g) => f.money(g.purchaseValueCents) },
-      { head: "ROAS*", cell: (g) => (g.spendCents > 0 ? (g.purchaseValueCents / g.spendCents).toFixed(2) : "–") },
+      { head: "ROAS*", cell: (g) => (g.spendCents > 0 ? `${(g.purchaseValueCents / g.spendCents).toFixed(2)}${isThinPurchases(g) ? ` ${THIN_MARK}` : ""}` : "–") },
     );
   }
   if (f.has.leads) cols.push({ head: "Leads", cell: (g) => int(g.leads) }, { head: `Cost / lead (${cur})`, cell: cost((g) => g.leads) });
@@ -337,6 +341,10 @@ export function monthlyTable(snap: MetaAuditSnapshot, f: Fmt): string | null {
   const busiest = [...groups].sort((a, b) => b.spendCents - a.spendCents)[0]!;
   parts.push(`most spend in ${busiest.label} (${f.currency} ${f.money(busiest.spendCents)})`);
   out.push("", `*Read: ${parts.join("; ")}.*`);
+  // The table's total is the sales campaigns alone, so it is lower than the account total on purpose: say so.
+  if (anySales && salesSpend < allSpend) {
+    out.push("", `*Sales campaigns only: ${f.currency} ${f.money(salesSpend)} of ${f.currency} ${f.money(allSpend)} spent (${pct(salesSpend, allSpend)}); the rest went to other objectives (traffic, awareness, messaging) and is in the account totals.*`);
+  }
   return out.join("\n");
 }
 
@@ -508,6 +516,9 @@ export function renderPerformanceTables(snap: MetaAuditSnapshot): string {
       `*Reported purchases${f.has.revenue ? ", purchase value and ROAS" : ""}: as Meta reports them${window ? ` (${window} attribution)` : ""}, Meta's own claim and not verified sales.${f.has.atc && f.has.lpv ? " ATC rate = add to carts ÷ landing-page views." : ""}*`,
     );
   }
+  if (parts.some((p) => p.includes(` ${THIN_MARK}`))) {
+    notes.push(`*${THIN_MARK} Fewer than ${THIN_PURCHASES} reported purchases behind this ROAS: too little to judge, so it is not a winner or a loser.*`);
+  }
   const accountSpend = snap.totals?.spendCents ?? 0;
   const adSpend = snap.ads.reduce((a, x) => a + (x.performance?.spendCents ?? 0), 0);
   if (!snap.scope && accountSpend > 0 && accountSpend - adSpend > accountSpend * 0.01) {
@@ -620,7 +631,8 @@ export function renderLandingPageTables(snap: MetaAuditSnapshot, analyses: Landi
   const facts: string[] = [`${withPage.length} landing page${withPage.length === 1 ? "" : "s"} took spend`];
   if (none) facts.push(`${pct(none.spendCents, total.spendCents)} of ad spend went to ads with no website link (messaging, call or lead-form ads, or a link Meta didn't return)`);
   out.push("", `*Read: ${facts.join("; ")}.*`);
-  const line = withPage.length >= 2 ? read(withPage, totalOf(withPage), f, "pages") : "";
+  // Shares and the overall cost are the table's own (all spend, linked or not), so the read never disagrees with the table above it.
+  const line = withPage.length >= 2 ? read(withPage, total, f, "pages") : "";
   if (line) out.push("", line);
 
   const own = analyses.filter((a) => a.role === "own");

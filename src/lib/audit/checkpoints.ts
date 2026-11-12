@@ -300,10 +300,14 @@ export function evaluateCheckpoints(
 
   // T3 — events fire on the site but ads get no credit.
   {
+    // The pixel's counts are for the last 28 days. Over a long audit, an ad set switched off months ago having
+    // no results says nothing about today's tracking, so only ad sets that are live now are held to them.
+    const periodDays = Math.round((Date.parse(`${snap.period.until}T00:00:00Z`) - Date.parse(`${snap.period.since}T00:00:00Z`)) / 86_400_000) + 1;
     const unattributed = conversionAdSets.filter((a) => {
       const pixel = pixelById.get(a.pixelId!);
       const eventName = EVENT_NAME[a.customEventType ?? ""];
       if (!pixel?.stats28d || !eventName) return false;
+      if (periodDays > 35 && !isLive(a.status)) return false;
       return (
         (pixel.stats28d.events[eventName] ?? 0) >= 5 &&
         spendOf(a.performance) > 0 &&

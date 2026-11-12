@@ -118,14 +118,38 @@ function splitFields(item: InlineSpan[]): Array<{ label: string; value: InlineSp
   });
 }
 
+const EMPTY_VALUE = "—";
+
 function fieldsOf(list: List) {
   const fields: Array<{ label: string; value: InlineSpan[] }> = [];
   const notes: InlineSpan[][] = [];
+  // "**Fix:**" with its steps as sub-bullets underneath: the steps are that field's value, not loose notes.
+  let open: { field: { label: string; value: InlineSpan[] }; steps: InlineSpan[][] } | null = null;
+  const close = () => {
+    if (open?.steps.length) {
+      const { field, steps } = open;
+      field.value = steps.length === 1
+        ? steps[0]!
+        : steps.flatMap((step, i) => [{ type: "text" as const, text: `${i ? "  " : ""}${i + 1}) ` }, ...step]);
+    }
+    open = null;
+  };
   for (const item of list.items) {
     const parts = splitFields(item);
-    if (parts) fields.push(...parts);
-    else notes.push(item);
+    if (parts) {
+      close();
+      fields.push(...parts);
+      const last = parts[parts.length - 1]!;
+      const emptyLast = last.value.length === 1 && last.value[0]!.text === EMPTY_VALUE;
+      const field = fields[fields.length - 1]!;
+      if (emptyLast) open = { field, steps: [] };
+    } else if (open) {
+      (open as { steps: InlineSpan[][] }).steps.push(item);
+    } else {
+      notes.push(item);
+    }
   }
+  close();
   return { fields, notes };
 }
 
