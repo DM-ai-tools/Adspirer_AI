@@ -1538,6 +1538,13 @@ function GenerationPanel({ projectId, status, initial, onStatus, logoDownloadUrl
           </div>
         ) : null}
         {gen?.error && status === "failed" ? <p className="text-xs text-destructive">{gen.error}</p> : null}
+        {status === "failed" && !clips.some((c) => c.status !== "waiting" || c.attempts > 0) ? (
+          // Stopped before any clip was made (nothing was spent): start again with a fresh plan.
+          <Button size="sm" disabled={starting} onClick={() => void post({ action: "start", checkpoint: "after_first" }, () => setStarting(true), () => setStarting(false))}>
+            {starting ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1 h-3.5 w-3.5" />}
+            Try again (nothing was spent)
+          </Button>
+        ) : null}
       </div>
       <div className="grid gap-3 md:grid-cols-3">
         {clips.map((c) => (
@@ -2313,7 +2320,7 @@ function VideoInner() {
 
           {view.status === "writing" ? (
             <ProgressCard progress={view.progress} hasImages={view.assets.length > 0} upload={view.inputs.mode === "upload"} />
-          ) : view.chosenScript && (["confirmed", "generating", "paused", "stopped", "clips_ready", "assembling", "done"].includes(view.status) || (view.status === "failed" && (view.generation?.clips.length ?? 0) > 0)) ? (
+          ) : view.chosenScript && (["confirmed", "generating", "paused", "stopped", "clips_ready", "assembling", "done"].includes(view.status) || (view.status === "failed" && Boolean(view.chosenScript))) ? (
             <div className="space-y-4">
               <Card className="border-accent/40">
                 <CardContent className="space-y-3 p-4">
@@ -2352,7 +2359,7 @@ function VideoInner() {
             <NeedsContext brief={view.contextBrief ?? null} error={view.error} busy={revising === "context"} onSave={(v) => void saveContext(v)} />
           ) : view.status === "failed" ? (
             <Card>
-              <CardContent className="p-4 text-sm text-destructive">Could not write the scripts: {view.error ?? "unknown error"}</CardContent>
+              <CardContent className="p-4 text-sm text-destructive">Could not write the scripts: {view.error || "the script step stopped without a reason. Choose \"Read my script again\" (or write again) to retry."}</CardContent>
             </Card>
           ) : (
             <div className="space-y-4">

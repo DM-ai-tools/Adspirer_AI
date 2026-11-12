@@ -41,6 +41,8 @@ export type PlanScriptScene = {
 
 export type PlanInput = {
   brandName: string;
+  /** The longest one clip of the chosen video model can be: no scene may run longer. */
+  maxSceneSeconds?: number;
   /** The kind of video and idea the operator asked for, as one direction block (absent when they left it to the AI). */
   direction?: string | null;
   product: string;
@@ -183,7 +185,7 @@ function listScript(input: PlanInput): string {
       // In a clean video nothing is shown on screen: what the script marked for display is only material for an editing note.
       const marked = [s.stat ? `figure "${s.stat}"` : null, s.assetId ? `evidence file ${s.assetId}` : null, s.keywords.length ? `phrases ${s.keywords.join(", ")}` : null].filter(Boolean).join("; ");
       const bits = [
-        `Scene ${s.number} (${s.seconds}s, speaker ${s.speaker})`,
+        `Scene ${s.number} (${s.seconds}s, speaker ${s.speaker}${secondsNeeded(s.line, s.speaker) ? `; its words need at least ${Math.ceil(secondsNeeded(s.line, s.speaker))}s to say` : ""})`,
         clean ? `  spoken line (heard, never displayed): ${s.line ? `"${s.line}"` : "(none)"}` : `  spoken line: ${s.line ? `"${s.line}"` : "(none)"}`,
         !clean && s.keywords.length ? `  keywords highlighted: ${s.keywords.join(", ")}` : null,
         !clean && s.stat ? `  stat to show: ${s.stat}` : null,
@@ -930,7 +932,17 @@ export async function planCreative(
   let lastIssues: PlanIssue[] = [];
 
   for (let attempt = 0; attempt <= maxRepairs; attempt += 1) {
-    const raw = await generate(planPrompt(input, pending));
+    let raw: unknown;
+    try {
+      raw = await generate(planPrompt(input, pending));
+    } catch (error) {
+      // No model configured at all is a setup problem to report, not something a fallback should hide.
+      if (error instanceof Error && /No language model is configured/.test(error.message)) throw error;
+      // A planning call that fails outright is one used attempt, not the end of the video.
+      pending = [{ scene: null, code: "plan_call_failed", severity: "error", message: `The planning call failed (${error instanceof Error ? error.message : String(error)}). Return the complete plan.` }];
+      lastIssues = pending;
+      continue;
+    }
     const parsed = planModelSchema.safeParse(withEditingNotes(raw));
     if (!parsed.success) {
       const message = parsed.error.issues.slice(0, 5).map((i) => `${i.path.join(".") || "plan"}: ${i.message}`).join("; ");
@@ -938,7 +950,9 @@ export async function planCreative(
       lastIssues = pending;
       continue;
     }
-    const plan = normalisePlan(parsed.data, input, now());
+    // Mechanical problems (a scene too short for its words, ids that disagree, an empty field) are fixed here,
+    // never sent back to the model: only creative problems use up a repair round.
+    const plan = autoRepairPlan(normalisePlan(parsed.data, input, now()), input);
     const issues = validatePlan(plan, ctx);
     latest = { plan, issues };
     lastIssues = issues;
@@ -947,10 +961,162 @@ export async function planCreative(
   }
 
   const checkedAt = now();
+  // The model never produced a usable plan: build one from the script itself, so the video is still made.
   if (!latest) {
-    return { ...emptyPlan(input, checkedAt), validation: { ok: false, issues: lastIssues, checkedAt } };
+    const plan = autoRepairPlan(emptyPlan(input, checkedAt), input);
+    const issues = settleIssues(validatePlan(plan, ctx), maxRepairs + 1);
+    const note: PlanIssue = { scene: null, code: "plan_from_script", severity: "warning", message: `The planner did not return a usable plan (${lastIssues[0]?.message ?? "no reason given"}), so the shots follow the script's own visual directions.` };
+    return { ...plan, validation: { ok: !issues.some((i) => i.severity === "error"), issues: [note, ...issues], checkedAt } };
   }
-  return { ...latest.plan, validation: { ok: !latest.issues.some((i) => i.severity === "error"), issues: latest.issues, checkedAt } };
+  const issues = settleIssues(latest.issues, maxRepairs + 1);
+  return { ...latest.plan, validation: { ok: !issues.some((i) => i.severity === "error"), issues, checkedAt } };
+}
+
+/**
+ * Creative preferences the planner is pushed on while it has repair rounds left. Once they are used up,
+ * these never stop a video: the footage is still safe (text and graphics are kept out by the clip prompt
+ * and caught by the clip inspection), so they are kept as warnings for the operator.
+ */
+const SOFT_PLAN_CODES = new Set([
+  "environment_repeated",
+  "environment_share",
+  "filler_duplicate_information",
+  "filler_typing",
+  "filler_hologram",
+  "filler_stock_office",
+  "filler_glow_screen",
+  "filler_ui_object",
+  "text_in_footage",
+  "graphic_in_footage",
+  "ending_not_natural",
+]);
+
+/** After the last repair round: creative preferences become warnings; only problems that make the video impossible stay errors. */
+export function settleIssues(issues: PlanIssue[], attempts: number): PlanIssue[] {
+  return issues.map((i) =>
+    i.severity === "error" && SOFT_PLAN_CODES.has(i.code) ? { ...i, severity: "warning" as const, message: `Kept after ${attempts} planning attempt${attempts === 1 ? "" : "s"}: ${i.message}` } : i,
+  );
+}
+
+/** Seconds a spoken line needs at a natural pace, plus a short landing pause; 0 for no speech. */
+export function secondsNeeded(line: string, speaker: string): number {
+  const words = wordsIn(line);
+  return words > 0 && speaker !== "none" ? words / WORDS_PER_SECOND + LANDING_PAUSE : 0;
+}
+
+/**
+ * Fix everything in a plan that has one right answer, without asking the model again: every script scene
+ * has exactly one brief, narration is the script's words, each scene is long enough to say its line, ids
+ * point at things that exist, empty fields get a plain filmable default, and nothing a clean video cannot
+ * show is listed. Creative choices are left as the planner made them.
+ */
+export function autoRepairPlan<T extends Omit<CreativePlan, "validation">>(plan: T, input: PlanInput): T {
+  const clean = isClean(input);
+  const assetIds = new Set(input.assets.map((a) => a.id));
+  const claimIds = new Set(input.claims.map((c) => c.id));
+  const characters = plan.characters;
+  let environments = plan.environments.map((e) => ({ ...e }));
+  if (!environments.length) environments = [{ id: "environment_1", description: input.script.setting || "the place the story happens", sceneNumbers: [] }];
+  const envIds = new Set(environments.map((e) => e.id));
+  const charIds = new Set(characters.map((c) => c.id));
+
+  const byNumber = new Map<number, SceneBrief>();
+  for (const b of plan.scenes) if (!byNumber.has(b.number)) byNumber.set(b.number, b);
+
+  const recurring = characters[0]?.id ?? null;
+  let previousEnv = environments[0]!.id;
+  const scenes: SceneBrief[] = input.script.scenes.map((s) => {
+    const found = byNumber.get(s.number);
+    const fill = (value: string | undefined, fallback: string) => (blank(value) ? fallback : value!);
+    const b: SceneBrief = found
+      ? { ...found }
+      : {
+          number: s.number,
+          purpose: `Carries the line of scene ${s.number}.`,
+          informationAdded: s.line || s.visual,
+          narration: s.line,
+          subject: s.visual,
+          setting: input.script.setting,
+          action: s.visual,
+          framing: "Medium shot at eye level",
+          camera: s.camera || "Slow, steady push-in",
+          lighting: "Soft natural light from a window",
+          style: input.script.style,
+          characterId: s.speaker === "on_camera" ? recurring : null,
+          environmentId: previousEnv,
+          requiredAssets: [],
+          overlays: [],
+          screenTreatment: "none",
+          seconds: s.seconds,
+          durationBasis: "From the script",
+          entry: { mode: "cut", condition: "Cut in on the first word" },
+          exit: { condition: "The line lands" },
+          transition: { kind: "cut", rationale: "" },
+          risks: [],
+          acceptance: [],
+          editingNotes: [],
+        };
+    b.narration = s.line;
+    b.subject = fill(b.subject, b.characterId ? "the person" : "the scene");
+    b.setting = fill(b.setting, input.script.setting || "the same place");
+    b.action = fill(b.action, b.characterId ? "the person holds a natural, relaxed posture" : "the scene plays out naturally");
+    b.framing = fill(b.framing, "Medium shot at eye level");
+    b.camera = fill(b.camera, "Slow, steady push-in");
+    b.lighting = fill(b.lighting, "Soft natural light from a window");
+    b.style = fill(b.style, input.script.style);
+    b.purpose = fill(b.purpose, `Carries the line of scene ${s.number}.`);
+    b.informationAdded = fill(b.informationAdded, s.line || s.visual);
+    if (b.characterId && !charIds.has(b.characterId)) b.characterId = null;
+    if (!b.environmentId || !envIds.has(b.environmentId)) b.environmentId = previousEnv;
+    previousEnv = b.environmentId;
+
+    // Long enough to say the line, and never an invalid length.
+    const needed = secondsNeeded(s.line, s.speaker);
+    if (!Number.isFinite(b.seconds) || b.seconds <= 0) b.seconds = Math.max(2, Math.ceil(needed) || s.seconds || 3);
+    if (b.seconds < needed - 0.05) {
+      b.seconds = Math.ceil(needed);
+      b.durationBasis = `${wordsIn(s.line)} spoken words at a natural pace (set by the app)`;
+    }
+    // No scene may outrun one clip of the video model (the check before Generate makes sure the words fit).
+    if (input.maxSceneSeconds && b.seconds > input.maxSceneSeconds) b.seconds = Math.max(Math.ceil(needed), input.maxSceneSeconds);
+    if (b.transition?.kind !== "cut" && blank(b.transition?.rationale)) b.transition = { kind: "cut", rationale: "" };
+
+    if (clean) {
+      b.requiredAssets = [];
+      b.overlays = [];
+      b.editingNotes = (b.editingNotes ?? []).filter((n) => (!n.assetId || assetIds.has(n.assetId)) && (!n.claimId || claimIds.has(n.claimId)) && !(n.kind === "stat" && !n.claimId));
+    } else {
+      b.requiredAssets = (b.requiredAssets ?? []).filter((r) => assetIds.has(r.assetId));
+      b.overlays = (b.overlays ?? []).filter((o) => (!o.assetId || assetIds.has(o.assetId)) && (!o.claimId || claimIds.has(o.claimId)) && !(o.kind === "stat" && !o.claimId));
+      if (b.screenTreatment === "composite_verified_asset" && !b.requiredAssets.length) b.screenTreatment = "footage_without_screen";
+    }
+    return b;
+  });
+
+  // A continuation needs a scene before it in the same place with the same person.
+  for (let i = 0; i < scenes.length; i += 1) {
+    const b = scenes[i]!;
+    if (b.entry?.mode !== "continue_previous") continue;
+    const prev = scenes[i - 1];
+    if (!prev || prev.environmentId !== b.environmentId || (prev.characterId ?? null) !== (b.characterId ?? null)) b.entry = { mode: "cut", condition: b.entry.condition || "Cut in" };
+  }
+
+  // Over the maximum: take back time from scenes held longer than their words need, never below what they need.
+  let total = scenes.reduce((t, b) => t + b.seconds, 0);
+  for (const b of [...scenes].sort((x, y) => y.seconds - x.seconds)) {
+    if (total <= input.maxSeconds) break;
+    const s = input.script.scenes.find((x) => x.number === b.number);
+    const floor = Math.max(2, Math.ceil(secondsNeeded(s?.line ?? "", s?.speaker ?? "none")));
+    const cut = Math.min(b.seconds - floor, total - input.maxSeconds);
+    if (cut > 0) {
+      b.seconds -= cut;
+      total -= cut;
+    }
+  }
+
+  // Each environment lists exactly the scenes that use it.
+  environments = environments.map((e) => ({ ...e, sceneNumbers: scenes.filter((b) => b.environmentId === e.id).map((b) => b.number) }));
+  return { ...plan, environments, scenes };
 }
 
 // ------------------------------------------------------------------ lookups

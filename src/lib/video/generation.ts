@@ -25,6 +25,7 @@ import { claimProjectLease, getProject, releaseProjectLease, updateProject, type
 import { buildPlannedClipPrompt } from "@/lib/video/clip-prompt";
 import { effectiveClaims } from "@/lib/video/claims";
 import { statInserts, type VideoScript } from "@/lib/video/script";
+import { sceneSeconds } from "@/lib/video/timing";
 import {
   applyPlanDurations,
   brandBlockers,
@@ -54,12 +55,32 @@ const MAX_ATTEMPTS = 2;
 
 const fresh = (iso: string | null | undefined, now = Date.now()) => Boolean(iso) && now - Date.parse(iso!) < FRESH_MS;
 
+/** The longest a video can be, as the planner is told. */
+export const MAX_VIDEO_SECONDS = 60;
+
+/**
+ * Length problems no planner can fix, found before Generate: the words take longer to say than a video
+ * may run, or one scene's words take longer than the longest clip any model can make.
+ */
+export function scriptTimingProblem(script: Pick<VideoScript, "scenes">): string | null {
+  const needed = script.scenes.map((s) => ({ number: s.number, seconds: sceneSeconds(s) }));
+  const total = needed.reduce((t, s) => t + s.seconds, 0);
+  if (total > MAX_VIDEO_SECONDS) return `The script takes about ${total}s to say at a natural pace, over the ${MAX_VIDEO_SECONDS}s maximum for one video. Reopen the script and shorten it by about ${total - MAX_VIDEO_SECONDS}s (roughly ${Math.ceil((total - MAX_VIDEO_SECONDS) * 2.7)} words).`;
+  const longest = Math.max(...Object.values(SEEDANCE_SPECS).map((s) => s.maxSeconds));
+  const tooLong = needed.filter((s) => s.seconds > longest);
+  if (tooLong.length) return `${tooLong.map((s) => `Scene ${s.number} needs about ${s.seconds}s`).join("; ")}, longer than the ${longest}s one clip can run. Reopen the script and split ${tooLong.length === 1 ? "that scene" : "those scenes"} at a sentence end.`;
+  return null;
+}
+
 /** Why a video cannot be made right now, or null. */
 export function blockedReason(project: VideoProject): string | null {
   if (!project.chosen_script) return "Confirm a script first.";
   // Nothing is generated from an unverified brand: a wrong name is far costlier than a pause. (A clean video shows no logo, so a missing one does not hold it up.)
   const brand = brandBlockers(project.brand?.manifest, videoMode(project));
   if (brand) return brand;
+  // Checked here, before anything is paid for or planned: a script that cannot fit the video cannot be fixed by the planner.
+  const timing = scriptTimingProblem(project.chosen_script);
+  if (timing) return timing;
   if (!availableSeedanceModels().length) return "Add your BytePlus key to .env.local (ARK_API_KEY, or ARK_SEEDANCE_API_KEY and ARK_SEEDANCE_25_API_KEY) to make video.";
   try {
     const preview = previewPlan(project.chosen_script, project.inputs, project.assets.length);

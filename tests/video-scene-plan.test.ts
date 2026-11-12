@@ -508,13 +508,13 @@ describe("planCreative", () => {
     expect(plan.validation.ok).toBe(true);
   });
 
-  it("stops after maxRepairs and returns the failing plan with its issues", async () => {
+  it("after maxRepairs, keeps a creative preference as a warning instead of stopping the video", async () => {
     const bad = mutate((p) => (scene(p, 1).subject = "Hands typing on a laptop keyboard"));
     const generate = vi.fn(async () => toModel(bad));
     const plan = await planCreative(INPUT, { generate, maxRepairs: 1, now: fixedNow });
     expect(generate).toHaveBeenCalledTimes(2);
-    expect(plan.validation.ok).toBe(false);
-    expect(plan.validation.issues.some((i) => i.severity === "error")).toBe(true);
+    expect(plan.validation.ok).toBe(true);
+    expect(plan.validation.issues).toContainEqual(expect.objectContaining({ code: "filler_typing", severity: "warning", message: expect.stringMatching(/^Kept after 2 planning attempts/) }));
     expect(plan.scenes).toHaveLength(5);
   });
 
@@ -525,12 +525,23 @@ describe("planCreative", () => {
     expect(generate).toHaveBeenCalledTimes(3);
   });
 
-  it("returns an unusable plan as not ok when the model never matches the schema", async () => {
+  it("builds the plan from the script itself when the model never matches the schema, and says so", async () => {
     const generate = vi.fn(async () => ({ nonsense: true }));
     const plan = await planCreative(INPUT, { generate, maxRepairs: 1, now: fixedNow });
     expect(generate).toHaveBeenCalledTimes(2);
-    expect(plan.validation.ok).toBe(false);
-    expect(plan.validation.issues[0]?.code).toBe("schema_invalid");
+    expect(plan.validation.ok).toBe(true);
+    expect(plan.validation.issues[0]?.code).toBe("plan_from_script");
+    expect(plan.scenes.map((s) => s.number)).toEqual(INPUT.script.scenes.map((s) => s.number));
+    expect(plan.scenes.map((s) => s.narration)).toEqual(INPUT.script.scenes.map((s) => s.line));
+  });
+
+  it("survives a planning call that fails outright", async () => {
+    const generate = vi.fn(async () => {
+      throw new Error("overloaded");
+    });
+    const plan = await planCreative(INPUT, { generate, maxRepairs: 1, now: fixedNow });
+    expect(plan.validation.ok).toBe(true);
+    expect(plan.validation.issues[0]?.message).toMatch(/overloaded/);
   });
 
   it("sanitises ids and restores whitespace-different narration to the script's words", async () => {
@@ -622,5 +633,47 @@ describe("redesignScene", () => {
   it("throws for a scene that is not in the plan", async () => {
     const base = await planCreative(INPUT, { generate: async () => toModel(goodPlan()), now: () => "t0" });
     await expect(redesignScene(INPUT, base, 42, [], { generate: async () => ({}) })).rejects.toThrow(/not in the plan/);
+  });
+});
+
+// ------------------------------------------------------------------ problems the app fixes itself (vid_JeiC9ZDeaDG-)
+
+describe("a plan never fails on what the app can fix itself", () => {
+  const fixedNow = () => "2026-02-02T00:00:00.000Z";
+
+  it("lengthens a scene too short for its words and accepts one setting for most scenes, on the first try", async () => {
+    const real = mutate((p) => {
+      const first = p.environments[0]!.id;
+      for (const s of p.scenes) s.environmentId = first;
+      scene(p, 4).seconds = 1;
+    });
+    const generate = vi.fn(async () => toModel(real));
+    const plan = await planCreative(INPUT, { generate, now: fixedNow });
+    const line = INPUT.script.scenes.find((s) => s.number === 4)!.line;
+    expect(sceneForShot(plan, 4)!.seconds).toBeGreaterThanOrEqual(Math.ceil(line.split(/\s+/).length / 2.7));
+    expect(plan.validation.issues.some((i) => i.code === "duration_too_short")).toBe(false);
+    // The setting preference was pushed on the planner, then kept as a warning.
+    expect(plan.validation.ok).toBe(true);
+    expect(plan.validation.issues.filter((i) => i.severity === "error")).toEqual([]);
+    // Environments list exactly their scenes.
+    expect(plan.environments.find((e) => e.id === plan.scenes[0]!.environmentId)!.sceneNumbers).toEqual(plan.scenes.map((s) => s.number));
+  });
+
+  it("puts back the script's words, drops unknown ids and turns an unexplained dissolve into a cut", async () => {
+    const messy = mutate((p) => {
+      scene(p, 2).narration = "Something else entirely.";
+      scene(p, 2).characterId = "nobody";
+      scene(p, 3).environmentId = "nowhere";
+      scene(p, 3).transition = { kind: "dissolve", rationale: "" };
+      scene(p, 1).entry = { mode: "continue_previous", condition: "" };
+    });
+    const generate = vi.fn(async () => toModel(messy));
+    const plan = await planCreative(INPUT, { generate, now: fixedNow });
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(plan.validation.ok).toBe(true);
+    expect(sceneForShot(plan, 2)!.narration).toBe(INPUT.script.scenes.find((s) => s.number === 2)!.line);
+    expect(sceneForShot(plan, 2)!.characterId).toBeNull();
+    expect(sceneForShot(plan, 3)!.transition.kind).toBe("cut");
+    expect(sceneForShot(plan, 1)!.entry.mode).toBe("cut");
   });
 });
