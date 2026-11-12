@@ -12,6 +12,7 @@ import { accentColour, finalSize, layoutFor, type FinalFormat } from "@/lib/vide
 import { captionPiece, logoPiece, type Piece } from "@/lib/video/graphics";
 import { bandsForCue, captionCentres, detectFaceBands } from "@/lib/video/face-bands";
 import { loadManifestLogo } from "@/lib/video/brand-resolve";
+import { LOGO_SIZES, placeLogo, type LogoPlacement } from "@/lib/video/logo-placement";
 import { getProject, updateProject } from "@/lib/video/projects";
 import type { FinalVideo } from "@/lib/video/generation-types";
 
@@ -79,14 +80,19 @@ export async function burnInGraphics(projectId: string, options: { captions: boo
     const manifest = project.brand?.manifest ?? null;
     const accent = accentColour(manifest?.colors.value.length ? manifest.colors.value : project.brand?.colors);
     const overlays: Array<{ piece: Piece; x: number; y: number; start: number; end: number }> = [];
+    let logoPlacement: LogoPlacement | null = null;
 
     if (options.logo) {
       // Only the verified logo, from its stored file; never a stand-in.
       const bytes = manifest ? await loadManifestLogo(manifest, storage) : null;
       if (!bytes) throw new Error("There is no verified logo file to put on the video. Check the brand (or upload the logo) first.");
       const png = (await prepareLogo(bytes, { isSvg: isSvg(bytes) })).png;
-      const piece = await logoPiece(png, W, layout.logo.width);
-      overlays.push({ piece, x: layout.logo.x * W, y: layout.logo.y * H, start: 0, end: seconds });
+      // Look at the video to choose where the logo reads best and covers nothing, and how big it can be.
+      await save({ state: "running", stage: "Looking at the video to place the logo", error: null, key: null, captions: options.captions, logo: options.logo, startedAt, createdAt: null, bytes: null });
+      const probePiece = await logoPiece(png, W, LOGO_SIZES.large);
+      logoPlacement = await placeLogo(input, seconds, path.join(dir, "logo-frames"), layout, H / W, probePiece.height / probePiece.width);
+      const piece = await logoPiece(png, W, logoPlacement.width);
+      overlays.push({ piece, x: Math.round(logoPlacement.x * W), y: Math.round(logoPlacement.y * H), start: 0, end: seconds });
     }
 
     if (options.captions) {
@@ -136,7 +142,7 @@ export async function burnInGraphics(projectId: string, options: { captions: boo
     const latest = await getProject(projectId);
     const previous = latest?.final?.withGraphics?.key;
     if (previous && previous !== key) await storage.delete(previous).catch(() => undefined);
-    await updateProject(projectId, { final: { ...(latest?.final ?? final), withGraphics: { state: "done", stage: null, error: null, key, captions: options.captions, logo: options.logo, startedAt, createdAt: new Date().toISOString(), bytes: bytes.length } } });
+    await updateProject(projectId, { final: { ...(latest?.final ?? final), withGraphics: { state: "done", stage: null, error: null, key, captions: options.captions, logo: options.logo, startedAt, createdAt: new Date().toISOString(), bytes: bytes.length, logoPlacement: logoPlacement ? { spot: logoPlacement.spot, widthShare: logoPlacement.width, reason: logoPlacement.reason, by: logoPlacement.by } : null } } });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn("Adding the logo and subtitles failed", { projectId, error: message });
