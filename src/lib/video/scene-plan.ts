@@ -247,6 +247,14 @@ const CLEAN_SCENE_FIELDS = [
 export const CONCEPT_RULE =
   "Build the ad on ONE fresh central idea that belongs to this business and this audience: a specific situation, contrast or visual metaphor from the customer's real day (name it in narrative.approach). Every scene expresses that idea in a concrete, slightly unexpected but believable way: a particular place, prop, gesture or moment a viewer has not seen in a hundred other ads. Reject the first idea anyone would have (a person smiling at a laptop, a handshake, a thumbs up, pointing at the camera in an office, a team high-five, a city skyline). The opening scene stops the scroll with something visually specific within the first second.";
 
+/** Places and light come from the story, never from a house look. */
+export const SETTING_RULE =
+  "Every environment, its light and its time of day come from THIS script: where the people in it actually are when each line is true, and what that place really looks like. Nothing is a default: never fall back on a plain room lit by a window, a neutral studio, an office or a cafe unless the script puts the scene there. Two ads for different scripts should not look like the same set. Give each environment a specific description (what kind of place, what is in it, the light and the hour) so it can be generated exactly.";
+
+/** How an expert editor builds the sequence. */
+export const EDIT_RULE =
+  "Shoot and cut it like a top paid-social editor: open on the most arresting image within the first second; vary shot sizes from scene to scene (wide, medium, close-up, detail insert) so no two cuts in a row repeat a size; move the camera with a reason; cut on action, on a look or on a matching shape where the story allows (a match_cut needs that link in its rationale); keep the rhythm tight to the voice; and use a dissolve or dip only where time or mood genuinely shifts.";
+
 /** One voice from the first word to the last. */
 export const VOICE_RULE =
   "Choose ONE voice for the whole ad in the voice field (gender, rough age, timbre and pitch, accent, pace, energy). If a recurring person speaks on camera, it is that person's voice, and any voiceover is the same person. Never describe a different voice for a later scene.";
@@ -269,7 +277,7 @@ const HARD_RULES = [
 /** The hard rules that apply: a clean video swaps the two rules about composited graphics for the clean-video rules. */
 export function hardRulesFor(input: Pick<PlanInput, "mode"> & { script?: Pick<PlanInput["script"], "style"> }): string[] {
   // Realism is asked of live action only; a stylised animation keeps its own look.
-  const craft = [CONCEPT_RULE, VOICE_RULE, ...(!input.script || wantsRealism(input.script.style) ? [`Every shot is written to look real: ${REALISM_RULE}`] : [])];
+  const craft = [CONCEPT_RULE, SETTING_RULE, EDIT_RULE, VOICE_RULE, ...(!input.script || wantsRealism(input.script.style) ? [`Every shot is written to look real: ${REALISM_RULE}`] : [])];
   if (!isClean(input)) return [...craft, ...HARD_RULES];
   const kept = HARD_RULES.filter((r) => !r.startsWith("The video model must NEVER draw readable text") && !r.startsWith("Use only the asset ids and claim ids"));
   return [
@@ -1040,7 +1048,7 @@ export function autoRepairPlan<T extends Omit<CreativePlan, "validation">>(plan:
           action: s.visual,
           framing: "Medium shot at eye level",
           camera: s.camera || "Slow, steady push-in",
-          lighting: "Soft natural light from a window",
+          lighting: "The natural light of this place and time of day",
           style: input.script.style,
           characterId: s.speaker === "on_camera" ? recurring : null,
           environmentId: previousEnv,
@@ -1062,7 +1070,7 @@ export function autoRepairPlan<T extends Omit<CreativePlan, "validation">>(plan:
     b.action = fill(b.action, b.characterId ? "the person holds a natural, relaxed posture" : "the scene plays out naturally");
     b.framing = fill(b.framing, "Medium shot at eye level");
     b.camera = fill(b.camera, "Slow, steady push-in");
-    b.lighting = fill(b.lighting, "Soft natural light from a window");
+    b.lighting = fill(b.lighting, "The natural light of this place and time of day");
     b.style = fill(b.style, input.script.style);
     b.purpose = fill(b.purpose, `Carries the line of scene ${s.number}.`);
     b.informationAdded = fill(b.informationAdded, s.line || s.visual);

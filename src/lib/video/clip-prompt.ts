@@ -178,7 +178,7 @@ export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
   const imageLabels: Array<{ label: string; text: string }> = [];
   for (const id of refs.characterIds) {
     const c = input.characters.find((x) => x.id === id);
-    if (c) imageLabels.push({ label: `person:${id}`, text: `is ${clean(c.role || "the person")}: keep this exact person, face, hair and clothes wherever they appear.` });
+    if (c) imageLabels.push({ label: `person:${id}`, text: `is ${clean(c.role || "the person")}: keep this exact person, face, hair and clothes wherever they appear. Use it for who they are only; ignore its plain backdrop and light, and place them in each shot's own setting.` });
   }
   for (const id of refs.environmentIds) {
     const e = input.environments.find((x) => x.id === id);
@@ -219,7 +219,7 @@ export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
     const or = (text: string, fallback: string) => clean(text).replace(/[.\s]+$/, "") || fallback;
     const parts = [
       `${range}: Shot ${s.number}. ${or(s.framing, "Medium shot")} of ${or(s.subject, s.characterId ? "the person" : "the scene")} in ${or(s.setting, "the same place")}. Action: ${or(s.action, s.characterId ? "the person holds a natural, relaxed posture" : "the scene plays out naturally")}.`,
-      `Camera: ${or(s.camera, "steady, eye level")}. Light: ${or(s.lighting, "soft natural light")}.`,
+      `Camera: ${or(s.camera, "steady, eye level")}. Light: ${or(s.lighting, "the natural light of this place and time of day")}.`,
     ];
     const say = input.spoken[s.number];
     if (say && say.text.trim()) {

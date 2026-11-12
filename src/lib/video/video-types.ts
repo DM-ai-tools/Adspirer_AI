@@ -36,10 +36,12 @@ export type VideoType = {
 };
 
 export const VIDEO_TYPES: VideoType[] = [
+  // Each type fixes the FORMAT only: who is on screen, how it is shot and cut, its pacing and look.
+  // No type names a place, a background, a prop or a light source: those come from the script, every time.
   {
     id: "auto",
     label: "Let the AI choose",
-    blurb: "Picks the format that suits the script and the offer.",
+    blurb: "An expert creative director picks the format and designs every scene from your script.",
     style: "",
     speaker: "either",
     direction: "",
@@ -51,16 +53,16 @@ export const VIDEO_TYPES: VideoType[] = [
     style: "UGC creator talking to camera, phone-shot",
     speaker: "on_camera",
     direction:
-      "A UGC creator ad: one relatable person, filmed as if on their own phone held at arm's length, talking straight to the viewer in their real home, car or workplace. Casual, unscripted-feeling delivery, natural pauses and small reactions, jump cuts between beats, a cut-away now and then to them using or showing the thing they talk about. No studio polish.",
+      "Format: a UGC creator ad. One relatable person, filmed as if on their own phone held at arm's length, talking straight to the viewer. Casual, unscripted-feeling delivery with natural pauses and small reactions; jump cuts between beats; cut-aways to what they are talking about. No studio polish.",
   },
   {
     id: "avatar_cinematic",
     label: "Cinematic with presenter",
-    blurb: "A presenter speaks to camera in beautifully lit, changing real locations.",
+    blurb: "A presenter speaks to camera, filmed like a premium commercial.",
     style: "Cinematic presenter to camera",
     speaker: "on_camera",
     direction:
-      "A cinematic presenter ad: one confident, warm presenter speaks to camera, filmed like a premium commercial (35mm look, shallow depth of field, motivated light). The presenter moves through two or three real, characterful locations that fit the story, with cut-aways that show what they describe. The presenter stays the same person in the same clothes throughout.",
+      "Format: a cinematic presenter ad. One confident, warm presenter speaks to camera, filmed like a premium commercial (35mm look, shallow depth of field, motivated light). The presenter moves through the places the story needs, with cut-aways that show what they describe. The presenter stays the same person in the same clothes throughout.",
   },
   {
     id: "cinematic_film",
@@ -69,7 +71,7 @@ export const VIDEO_TYPES: VideoType[] = [
     style: "Cinematic brand film with voiceover",
     speaker: "voiceover",
     direction:
-      "A cinematic brand film: no one speaks to camera. A single voiceover carries the words over a sequence of film-quality shots: real people and places from the customer's world, strong compositions, motivated light, considered camera moves, an emotional build and a resolved final image. Every line is voiceover.",
+      "Format: a cinematic brand film. No one speaks to camera; a single voiceover carries every line over a sequence of film-quality shots with strong compositions, motivated light and considered camera moves, an emotional build and a resolved final image.",
   },
   {
     id: "action_trailer",
@@ -78,7 +80,7 @@ export const VIDEO_TYPES: VideoType[] = [
     style: "Action trailer sequence, high energy",
     speaker: "voiceover",
     direction:
-      "An action-movie trailer ad: high energy and momentum. Short, punchy shots with dynamic but controlled camera (tracking shots, low angles, push-ins, a fast whip only at a cut), dramatic light and contrast, real motion (running, a door swinging open, a car pulling away, sparks of activity), a build to one big impact moment, then a calm final shot. A deep, confident trailer-style voiceover carries the lines. Action stays physically plausible and simple for each shot.",
+      "Format: an action-movie trailer. High energy and momentum: short, punchy shots, dynamic but readable camera, dramatic contrast, real physical motion, a build to one big impact moment, then a calm final shot. A deep, confident trailer-style voiceover carries the lines. Every action stays physically plausible and simple within its shot.",
   },
   {
     id: "storytelling",
@@ -87,7 +89,7 @@ export const VIDEO_TYPES: VideoType[] = [
     style: "Narrative short film",
     speaker: "either",
     direction:
-      "A mini short film: a character the audience recognises meets a specific, relatable problem, reaches a turning point where the product or service changes things, and ends on a satisfying payoff. Shot like a short film: scenes, not montage; the same character throughout; each scene moves the story forward. Lines can be the character speaking in the scene or a narrator.",
+      "Format: a mini short film. A character the audience recognises meets a specific problem, reaches a turning point where the product or service changes things, and ends on a satisfying payoff. Scenes, not montage; the same character throughout; every scene moves the story forward. Lines can be the character speaking in the scene or a narrator.",
   },
   {
     id: "documentary_story",
@@ -96,7 +98,7 @@ export const VIDEO_TYPES: VideoType[] = [
     style: "Documentary interview and observational footage",
     speaker: "either",
     direction:
-      "A documentary customer story: a believable customer or business owner is interviewed in their own place, looking just off camera, intercut with observational footage of their day and the result the service made. Handheld, available light, honest moments.",
+      "Format: a documentary customer story. A believable customer or owner is interviewed looking just off camera, intercut with observational footage of their day and of the difference the service made. Handheld, available light, honest moments.",
   },
   {
     id: "product_hero",
@@ -105,7 +107,7 @@ export const VIDEO_TYPES: VideoType[] = [
     style: "Product hero film, commercial close-ups",
     speaker: "voiceover",
     direction:
-      "A product hero film: premium commercial close-ups of the product or the service in action, real hands using it, textures and details, clean surfaces and controlled light, ending on the product in its best light. A voiceover carries the lines.",
+      "Format: a product hero film. Premium commercial close-ups of the product or the service in action: real hands using it, textures and details, controlled light, ending on the product at its best. A voiceover carries the lines.",
   },
   {
     id: "before_after",
@@ -114,7 +116,7 @@ export const VIDEO_TYPES: VideoType[] = [
     style: "Before and after transformation, live action",
     speaker: "either",
     direction:
-      "A before-and-after ad: the first half shows the frustrating 'before' (muted, cramped, messy, stressed), the second half the same person or place 'after' (brighter, calmer, better), with a clear turning moment between them. Keep the same person, place and framing in matching before and after shots so the change reads instantly.",
+      "Format: before and after. The first half shows the frustrating 'before', the second half the same person or place 'after', with a clear turning moment between. Matching framings in the before and after shots so the change reads instantly; the grade and light shift with the mood.",
   },
   {
     id: "pov_lifestyle",
@@ -123,7 +125,7 @@ export const VIDEO_TYPES: VideoType[] = [
     style: "POV lifestyle, day in the life",
     speaker: "voiceover",
     direction:
-      "A POV / day-in-the-life ad: we see the customer's day through their eyes or just behind their shoulder, real moments in real places, the problem showing up naturally and the product or service fitting into the day. Warm natural light, a follow camera, a voiceover in the customer's own voice.",
+      "Format: POV / day in the life. We see the customer's day through their eyes or from just behind their shoulder: real moments, the problem showing up naturally and the product or service fitting into the day. A follow camera and a voiceover in the customer's own voice.",
   },
   {
     id: "animation_3d",
@@ -132,9 +134,19 @@ export const VIDEO_TYPES: VideoType[] = [
     style: "3D animated, stylised",
     speaker: "voiceover",
     direction:
-      "A stylised 3D animated ad: friendly characters with simple, appealing shapes in a colourful, clean world, soft studio lighting, smooth expressive motion, clear visual metaphors for the problem and the solution. A voiceover carries the lines. No readable text or numbers drawn anywhere.",
+      "Format: stylised 3D animation. Appealing characters with simple shapes, smooth expressive motion, and clear visual metaphors for the problem and the solution, in a world designed for this story. A voiceover carries the lines. No readable text or numbers drawn anywhere.",
   },
 ];
+
+/**
+ * "Let the AI choose": a full creative brief, not an absence of one. The planner picks the format
+ * that will perform best for THIS script and designs every scene like a top creative director.
+ */
+export const AUTO_DIRECTION = [
+  "Video type: let the AI choose. You are the creative director: pick the format that will stop the scroll and sell THIS message best, and say which in narrative.approach.",
+  `Formats to choose from (or combine): ${VIDEO_TYPES.filter((t) => t.id !== "auto").map((t) => `${t.label} (${t.blurb.replace(/[.:].*$/, "").toLowerCase()})`).join("; ")}.`,
+  "Then design it like an award-winning ad: one bold central idea drawn from the script's own world; an opening shot in the first second that a viewer has not seen before; every scene a specific, concrete moment (who, where, what happens, what the light is) that only this ad could have; places, people, props, light and time of day taken from what each line is about, never from a stock look; shot sizes and angles that change with the story; cuts and transitions that carry momentum; and a final image that lands the message.",
+].join("\n");
 
 export const VIDEO_TYPE_IDS = VIDEO_TYPES.map((t) => t.id) as [VideoTypeId, ...VideoTypeId[]];
 
@@ -146,17 +158,21 @@ export function videoTypeOf(id: string | null | undefined): VideoType {
  * The creative direction for a video, from the chosen type and the operator's own idea, as one block
  * of text for the reader, writer and planner. Null when nothing was chosen or written.
  */
-export function videoDirection(inputs: { videoType?: string | null; videoIdea?: string | null }): string | null {
+export function videoDirection(inputs: { videoType?: string | null; videoIdea?: string | null; instructions?: string | null }): string | null {
   const type = videoTypeOf(inputs.videoType);
   const idea = inputs.videoIdea?.replace(/\s+/g, " ").trim();
+  const instructions = inputs.instructions?.replace(/\s+/g, " ").trim();
   const parts: string[] = [];
-  if (type.id !== "auto") {
-    parts.push(`Video type chosen by the operator: ${type.label}. ${type.direction}`);
+  if (type.id === "auto") parts.push(AUTO_DIRECTION);
+  else {
+    parts.push(`Video type chosen by the operator: ${type.label}. ${type.direction} Everything else (the places, people, props, light, time of day, shots and transitions) is designed from the script, scene by scene.`);
     if (type.speaker === "on_camera") parts.push("Who speaks: a person on camera, to the lens.");
     if (type.speaker === "voiceover") parts.push("Who speaks: an unseen voiceover; nobody talks to camera.");
   }
-  if (idea) parts.push(`The operator's own idea for the video (follow it where it is filmable and fits the brand): ${idea}`);
-  return parts.length ? parts.join("\n") : null;
+  // The operator's own words outrank every default here: they are followed wherever they are filmable and fit the brand.
+  if (idea) parts.push(`The operator's own idea for the video (follow it closely; it outranks the format's defaults): ${idea}`);
+  if (instructions) parts.push(`The operator's instructions (follow them where they concern the video): ${instructions}`);
+  return parts.join("\n");
 }
 
 /** The style a chosen type sets, or null to keep whatever the script or the writer chose. */
