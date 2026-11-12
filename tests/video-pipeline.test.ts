@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyPlanDurations, brandBlockers, budgetFor, claimBlockers, continuityFor, nextCorrections, secondsToAdd, spentUsd, windowsInClip, RETRY_BUDGET_FACTOR } from "@/lib/video/pipeline";
+import { applyPlanDurations, brandBlockers, budgetFor, claimNotice, continuityFor, nextCorrections, secondsToAdd, spentUsd, windowsInClip, RETRY_BUDGET_FACTOR } from "@/lib/video/pipeline";
 import { refineWindows } from "@/lib/video/audio-windows";
 import { endCardSecondsFor, speechLinesFor } from "@/lib/video/assemble";
 import { buildPlannedClipPrompt } from "@/lib/video/clip-prompt";
@@ -101,11 +101,11 @@ describe("brand and claim gates", () => {
     const m = manifest({ issues: [{ code: "colors_missing", severity: "warning", field: "colors", message: "No colours", resolution: "" }] });
     expect(brandBlockers(m)).toBeNull();
   });
-  it("blocks a script that states a figure with no approved claim", () => {
+  it("warns about a script that states a figure with no approved claim", () => {
     const ok = script([scene(1, 4, "We generated over 12 million dollars in sales.")]);
     const bad = script([scene(1, 4, "We generated 40 million dollars in sales.")]);
-    expect(claimBlockers(ok, manifest())).toBeNull();
-    expect(claimBlockers(bad, manifest())).toMatch(/no recorded source/);
+    expect(claimNotice(ok, manifest())).toBeNull();
+    expect(claimNotice(bad, manifest())).toMatch(/no recorded source/);
   });
 });
 

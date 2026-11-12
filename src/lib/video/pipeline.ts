@@ -12,7 +12,7 @@ import { compareSpokenToExpected } from "@/lib/video/subtitles";
 import { planCreative, redesignScene, type PlanInput } from "@/lib/video/scene-plan";
 import { correctionLines, createVisionReviewer, decideClip, redesignReasons, reviewClip } from "@/lib/video/clip-qa";
 import { estimateClipUsd, SEEDANCE_SPECS, splitIntoClips, type SeedanceModelKey, type VideoResolution } from "@/lib/video/seedance";
-import { unsourcedFigures, type VideoScript } from "@/lib/video/script";
+import { adaptToMissingSources, unsourcedFigures, type FigureAdjustment, type VideoScript } from "@/lib/video/script";
 import { withTimes } from "@/lib/video/overlays";
 import { resolveFinishing, type VideoMode } from "@/lib/video/clean-mode";
 import { makeNarrationStandalone, type NarrationChange } from "@/lib/video/standalone";
@@ -54,11 +54,14 @@ export function brandBlockers(manifest: BrandManifest | null | undefined, mode: 
   return `The brand check found ${blocking.length === 1 ? "a problem" : `${blocking.length} problems`} to resolve first: ${blocking.map((i) => i.message).join(" ")}`;
 }
 
-/** Figures in the script that no approved claim backs, as one sentence, or null. */
-export function claimBlockers(script: VideoScript, manifest: BrandManifest, claims: ApprovedClaim[] = manifest.claims): string | null {
+/**
+ * A heads-up about figures in the script that no approved claim backs, or null. It never stops a video:
+ * a figure with no source is not drawn on screen, and a scene that depends on one is re-pictured.
+ */
+export function claimNotice(script: VideoScript, manifest: BrandManifest, claims: ApprovedClaim[] = manifest.claims): string | null {
   const open = unsourcedFigures(script, claims);
   if (!open.length) return null;
-  return `Some figures in the script have no recorded source: ${open.slice(0, 6).map((o) => `"${o.figure}" (${o.where})`).join(", ")}. Add the source (a stat, an image, the offer details) or edit the script.`;
+  return `Some figures in the script have no recorded source: ${open.slice(0, 6).map((o) => `"${o.figure}" (${o.where})`).join(", ")}. The video can still be made. A figure with no source is not shown on screen, and a scene that depends on one gets a different visual. Spoken lines stay as you wrote them; add the source (a stat, an image, the offer details) or edit the script if you want them changed.`;
 }
 
 export function planInputFor(project: VideoProject, script: VideoScript, manifest: BrandManifest, mode: VideoMode = project.plan?.creative?.mode ?? videoMode(project)): PlanInput {
@@ -114,7 +117,7 @@ export function clipsFor(script: VideoScript, model: SeedanceModelKey): ClipStat
   }));
 }
 
-export type PreparedCreative = { creative: CreativePlan; speech: NonNullable<GenerationPlan["speech"]>; script: VideoScript; capabilities: ReturnType<typeof providerCapabilities>; narrationChanges: NarrationChange[] };
+export type PreparedCreative = { creative: CreativePlan; speech: NonNullable<GenerationPlan["speech"]>; script: VideoScript; capabilities: ReturnType<typeof providerCapabilities>; narrationChanges: NarrationChange[]; figureAdjustments: FigureAdjustment[] };
 
 /**
  * Everything decided before a single clip is paid for: the brand and the claims are checked, how
@@ -128,8 +131,10 @@ export async function prepareCreative(project: VideoProject): Promise<PreparedCr
   const manifest = project.brand?.manifest ?? null;
   const brand = brandBlockers(manifest, mode);
   if (brand) throw new Error(brand);
-  const claims = claimBlockers(script, manifest!, effectiveClaims(project.brand));
-  if (claims) throw new Error(claims);
+  // A figure with no source does not stop the video: it is left off the screen and its scene is re-pictured.
+  const adapted = adaptToMissingSources(script, effectiveClaims(project.brand));
+  script = adapted.script;
+  const figureAdjustments = adapted.adjustments;
 
   // A clean video shows no screenshot: a line that points at one is reworded so the video stands on its own.
   let narrationChanges: NarrationChange[] = [];
@@ -161,7 +166,7 @@ export async function prepareCreative(project: VideoProject): Promise<PreparedCr
     const errors = creative.validation.issues.filter((i) => i.severity === "error");
     throw new Error(`The creative plan did not pass its checks, so nothing was generated: ${errors.slice(0, 5).map((i) => i.message).join(" ")}`);
   }
-  return { creative, speech: { lexicon, lines }, script: applyPlanDurations(script, creative), capabilities, narrationChanges };
+  return { creative, speech: { lexicon, lines }, script: applyPlanDurations(script, creative), capabilities, narrationChanges, figureAdjustments };
 }
 
 // ------------------------------------------------------------------ continuity

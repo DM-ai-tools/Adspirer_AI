@@ -304,6 +304,50 @@ export function unsourcedFigures(script: Pick<VideoScript, "scenes" | "adCopy">,
     .filter((u) => (seen.has(`${u.where}|${u.figure}`) ? false : (seen.add(`${u.where}|${u.figure}`), true)));
 }
 
+/** A figure shown big on screen that no approved claim backs: it is never drawn. */
+export function dropUnsourcedStats(script: VideoScript, claims: ApprovedClaim[]): VideoScript {
+  const unsourced = (scene: VideoScene) => Boolean(scene.stat) && sourceClaims([{ text: scene.stat!, where: `Scene ${scene.number}` }], claims).unsourced.length > 0;
+  if (!script.scenes.some(unsourced)) return script;
+  return { ...script, scenes: script.scenes.map((s) => (unsourced(s) ? { ...s, stat: null } : s)) };
+}
+
+/** Scenes whose picture is a number, chart, report or screen: they cannot be shown without the figure they carry. */
+const FIGURE_VISUAL = /\b(dashboards?|charts?|graphs?|reports?|screens?|screenshots?|stats?|statistics?|numbers?|figures?|invoices?|revenue|results?|analytics|metrics?)\b/i;
+
+export type FigureAdjustment = { scene: number; figure: string; change: string };
+
+/**
+ * A script with figures nobody has a source for still gets made. Where a scene would have to show
+ * the figure (a number on screen, or a picture of a report or result) the figure is left out and the
+ * scene is told to picture the situation in footage instead. A figure that is only spoken stays as
+ * the operator wrote it: it is reported, not rewritten.
+ */
+export function adaptToMissingSources(script: VideoScript, claims: ApprovedClaim[]): { script: VideoScript; adjustments: FigureAdjustment[] } {
+  const open = unsourcedFigures(script, claims);
+  if (!open.length) return { script, adjustments: [] };
+  const adjustments: FigureAdjustment[] = [];
+  const scenes = script.scenes.map((scene) => {
+    const figures = open.filter((o) => o.where === `Scene ${scene.number}`).map((o) => o.figure);
+    if (!figures.length) return scene;
+    const statUnsourced = Boolean(scene.stat) && sourceClaims([{ text: scene.stat!, where: `Scene ${scene.number}` }], claims).unsourced.length > 0;
+    if (!statUnsourced && !FIGURE_VISUAL.test(scene.visual)) return scene;
+    const shown = figures.map((f) => `"${f}"`).join(", ");
+    adjustments.push({
+      scene: scene.number,
+      figure: figures.join(", "),
+      change: statUnsourced
+        ? "The figure is not shown on screen, and the scene pictures the situation in footage instead."
+        : "The scene no longer shows a report, chart or screen; it pictures the situation in footage instead.",
+    });
+    return {
+      ...scene,
+      stat: statUnsourced ? null : scene.stat,
+      visual: `${scene.visual} CHANGED: ${shown} has no recorded source, so show no number, chart, report or screen in this scene. Picture the situation or the outcome in footage instead.`,
+    };
+  });
+  return { script: { ...script, scenes }, adjustments };
+}
+
 type RawScript = z.infer<typeof scriptSchema>["scripts"][number];
 
 export function buildScripts(

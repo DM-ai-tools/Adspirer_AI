@@ -294,14 +294,14 @@ describe("assembling a video (real ffmpeg)", () => {
     expect(p.final!.key).toBeNull();
   }, 60_000);
 
-  it("refuses to show a figure on screen that has no recorded source", async () => {
+  it("does not draw a figure on screen that has no recorded source, and still makes the video", async () => {
     const { assembleVideo } = await import("@/lib/video/assemble");
     const { getProject } = await import("@/lib/video/projects");
     const id = await project({ claims: [] });
     await assembleVideo(id);
     const p = (await getProject(id))!;
-    expect(p.final!.state).toBe("failed");
-    expect(p.final!.error).toMatch(/no recorded source/);
+    expect(p.final!.error ?? "").not.toMatch(/no recorded source/);
+    expect(p.final!.state).toBe("done");
   }, 60_000);
 
   it("without captions or an end card it is just the joined clips with the logo", async () => {
