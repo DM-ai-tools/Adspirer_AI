@@ -2,6 +2,7 @@ import { z } from "zod";
 import { getCurrentUser } from "@/lib/security/auth";
 import { assertAuthenticated, assertClientAccess } from "@/lib/authz/assert";
 import { getProject } from "@/lib/video/projects";
+import { burnInGraphics } from "@/lib/video/burn-in";
 import { acceptBlockedFinal, advance, blockedReason, continueGeneration, regenerateFrom, resolveDecision, runGeneration, startGeneration, stopGeneration, viewGeneration } from "@/lib/video/generation";
 import { assembleVideo } from "@/lib/video/assemble";
 import { runAfterResponse } from "@/lib/api/background";
@@ -47,6 +48,8 @@ const bodySchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("decide"), clip: z.number().int().min(1), choice: z.enum(["remake", "use", "inspect"]) }),
   /** Deliver an export the inspection blocked, as the operator's decision. */
   z.object({ action: z.literal("accept_final") }),
+  /** Make an extra export of the finished clean video with the subtitles and/or the verified logo drawn in. */
+  z.object({ action: z.literal("add_graphics"), captions: z.boolean(), logo: z.boolean() }),
   z.object({ action: z.literal("regenerate"), fromClip: z.number().int().min(1), /** From clip 1 only: make a new creative plan instead of keeping the approved one. */ replan: z.boolean().optional() }),
 ]);
 
@@ -84,6 +87,15 @@ export async function POST(request: Request, ctx: Ctx) {
 
     if (body.action === "accept_final") {
       return jsonOk(viewGeneration(await acceptBlockedFinal(project.id, userId)));
+    }
+
+    if (body.action === "add_graphics") {
+      if (!project.final || project.final.state !== "done" || !project.final.key) throw new Error("Finish the video before adding a logo or subtitles.");
+      if (!body.captions && !body.logo) throw new Error("Choose subtitles, the logo, or both.");
+      if (project.final.withGraphics?.state === "running") return jsonOk(viewGeneration(project));
+      const running = { ...project, final: { ...project.final, withGraphics: { state: "running" as const, stage: "Starting", error: null, key: null, captions: body.captions, logo: body.logo, startedAt: new Date().toISOString(), createdAt: null, bytes: null } } };
+      runAfterResponse("video-graphics", () => burnInGraphics(project.id, { captions: body.captions, logo: body.logo }));
+      return jsonOk(viewGeneration(running));
     }
 
     if (body.action === "assemble") {

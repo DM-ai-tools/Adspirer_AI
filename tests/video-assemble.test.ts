@@ -247,6 +247,52 @@ describe("assembling a video (real ffmpeg)", () => {
     }
   }, 120_000);
 
+  it("adds the logo and subtitles to a finished clean video as a second MP4, keeping the clean one", async () => {
+    asrWords = null;
+    finalVerdict = "pass";
+    const { assembleVideo } = await import("@/lib/video/assemble");
+    const { burnInGraphics, parseSrt } = await import("@/lib/video/burn-in");
+    const { getProject } = await import("@/lib/video/projects");
+    const id = await project();
+    await assembleVideo(id, { mode: "clean" });
+    const clean = (await getProject(id))!.final!;
+    expect(clean.state).toBe("done");
+    expect(clean.mode).toBe("clean");
+    const cues = parseSrt(stored.get(clean.subtitles!.srtKey)!.toString("utf8"));
+    expect(cues.length).toBeGreaterThan(0);
+
+    await burnInGraphics(id, { captions: true, logo: true });
+    const after = (await getProject(id))!.final!;
+    expect(after.withGraphics).toMatchObject({ state: "done", captions: true, logo: true, error: null });
+    // The clean video is untouched and still the main export.
+    expect(after.key).toBe(clean.key);
+    expect(stored.get(clean.key!)).toBeDefined();
+
+    const plain = path.join(dir, "plain.mp4");
+    const drawn = path.join(dir, "drawn.mp4");
+    await writeFile(plain, stored.get(clean.key!)!);
+    await writeFile(drawn, stored.get(after.withGraphics!.key!)!);
+    const [a, b] = [await probe(plain), await probe(drawn)];
+    expect(Math.abs(a.seconds - b.seconds)).toBeLessThan(0.15);
+    expect(b.hasAudio).toBe(true);
+    // A frame while a subtitle is up differs from the clean frame: the words and the logo were drawn in.
+    const at = String(((cues[0]!.start + cues[0]!.end) / 2).toFixed(2));
+    await runFfmpeg(["-ss", at, "-i", plain, "-frames:v", "1", path.join(dir, "plain.png")]);
+    await runFfmpeg(["-ss", at, "-i", drawn, "-frames:v", "1", path.join(dir, "drawn.png")]);
+    const stats = async (f: string) => (await sharp(await readFile(f)).stats()).channels.map((c) => c.mean);
+    const [pa, pb] = [await stats(path.join(dir, "plain.png")), await stats(path.join(dir, "drawn.png"))];
+    expect(pa.some((m, i) => Math.abs(m - pb[i]!) > 0.5)).toBe(true);
+    if (process.env.VIDEO_DEBUG_DIR) await writeFile(path.join(process.env.VIDEO_DEBUG_DIR, "frame-with-graphics.png"), await readFile(path.join(dir, "drawn.png")));
+  }, 180_000);
+
+  it("parses an SRT back into cues", async () => {
+    const { parseSrt } = await import("@/lib/video/burn-in");
+    expect(parseSrt("1\n00:00:00,500 --> 00:00:02,000\nHello there,\nfriend.\n\n2\n00:00:02,100 --> 00:00:03,000\nBye.\n")).toEqual([
+      { start: 0.5, end: 2, text: "Hello there, friend." },
+      { start: 2.1, end: 3, text: "Bye." },
+    ]);
+  });
+
   it("makes subtitle files from the same cues as the burned-in captions, with the display text intact", async () => {
     asrWords = null;
     finalVerdict = "pass";

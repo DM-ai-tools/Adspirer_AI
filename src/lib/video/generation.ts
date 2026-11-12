@@ -861,7 +861,7 @@ export function viewGeneration(raw: VideoProject): GenerationView {
       return Math.round(left.reduce((t, c) => t + estimateClipUsd(plan.model as SeedanceModelKey, plan.resolution as VideoResolution, plan.ratio as "9:16", c.seconds, plan.chainVideo && c.number > 1 ? (clips[c.number - 2]?.seconds ?? 0) : 0), 0) * 100) / 100;
     })(),
     final: project.final
-      ? (({ key, reviewKey, subtitles, deliverables, ...rest }) => {
+      ? (({ key, reviewKey, subtitles, deliverables, withGraphics, ...rest }) => {
           const v = encodeURIComponent(rest.createdAt ?? "");
           const base = `/api/creatives/video/${project.id}/final`;
           const handedOver = deliverables && rest.state === "done";
@@ -877,6 +877,17 @@ export function viewGeneration(raw: VideoProject): GenerationView {
             srtUrl: subtitles && rest.state === "done" ? `${base}?subtitles=srt&v=${v}` : null,
             vttUrl: subtitles && rest.state === "done" ? `${base}?subtitles=vtt&v=${v}` : null,
             subtitleCues: subtitles?.cues ?? 0,
+            withGraphics: withGraphics
+              ? {
+                  state: withGraphics.state,
+                  stage: withGraphics.stage,
+                  error: withGraphics.error,
+                  captions: withGraphics.captions,
+                  logo: withGraphics.logo,
+                  createdAt: withGraphics.createdAt,
+                  url: withGraphics.state === "done" && withGraphics.key && rest.state === "done" ? `${base}?variant=graphics&v=${encodeURIComponent(withGraphics.createdAt ?? "")}` : null,
+                }
+              : null,
           };
         })(project.final)
       : null,

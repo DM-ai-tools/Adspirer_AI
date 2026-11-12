@@ -51,6 +51,16 @@ export async function GET(request: Request, ctx: Ctx) {
     });
   }
 
+  // The extra export with the logo and/or subtitles drawn in (the clean MP4 is served below, unchanged).
+  if (params.get("variant") === "graphics") {
+    const g = final.withGraphics;
+    if (final.state !== "done" || !g || g.state !== "done" || !g.key) return new Response("Not found", { status: 404 });
+    const bytes = await storage.get(g.key);
+    if (!bytes) return new Response("Not found", { status: 404 });
+    const what = g.captions && g.logo ? "logo-subtitles" : g.captions ? "subtitles" : "logo";
+    return streamVideo(request, bytes, `${slug}-${what}.mp4`);
+  }
+
   if (params.get("review") === "1") {
     if (!final.reviewKey) return new Response("Not found", { status: 404 });
     const bytes = await storage.get(final.reviewKey);
