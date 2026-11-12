@@ -163,6 +163,8 @@ export type FinalVideo = {
     startedAt: string;
     createdAt: string | null;
     bytes: number | null;
+    /** Where the logo was put, chosen by looking at the video, and why. */
+    logoPlacement?: { spot: string; widthShare: number; reason: string; by: "vision" | "pixels" | "default" } | null;
   } | null;
 };
 
@@ -213,7 +215,7 @@ export type GenerationPlan = {
 export type FinalView = Omit<FinalVideo, "key" | "reviewKey" | "subtitles" | "deliverables" | "withGraphics"> & {
   videoUrl: string | null;
   /** The export with the logo and/or subtitles drawn in, when one has been made. */
-  withGraphics: { state: "running" | "done" | "failed"; stage: string | null; error: string | null; captions: boolean; logo: boolean; createdAt: string | null; url: string | null } | null;
+  withGraphics: { state: "running" | "done" | "failed"; stage: string | null; error: string | null; captions: boolean; logo: boolean; createdAt: string | null; url: string | null; logoPlacement: { spot: string; widthShare: number; reason: string; by: "vision" | "pixels" | "default" } | null } | null;
   reviewUrl: string | null;
   srtUrl: string | null;
   vttUrl: string | null;

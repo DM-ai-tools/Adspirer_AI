@@ -141,7 +141,7 @@ type FinalView = {
   vttUrl?: string | null;
   subtitleCues?: number;
   /** The extra export with the logo and/or subtitles drawn in. */
-  withGraphics?: { state: "running" | "done" | "failed"; stage: string | null; error: string | null; captions: boolean; logo: boolean; createdAt: string | null; url: string | null } | null;
+  withGraphics?: { state: "running" | "done" | "failed"; stage: string | null; error: string | null; captions: boolean; logo: boolean; createdAt: string | null; url: string | null; logoPlacement?: { spot: string; widthShare: number; reason: string; by: "vision" | "pixels" | "default" } | null } | null;
   brand?: { name: string | null; logo: boolean; textOnly: boolean } | null;
   speech?: { measuredSeconds: number | null; estimatedSeconds: number | null } | null;
   report?: { findings: Array<{ code: string; severity: "critical" | "major" | "minor"; message: string; atSeconds?: number }>; limitations: string[]; framesInspected: number } | null;
@@ -1217,6 +1217,12 @@ function AddGraphics({ projectId, hasSubtitles, hasLogo, current, onView }: { pr
       </div>
       {running ? <p className="text-[11px] text-muted">{current?.stage ?? "Working"}… about a minute.</p> : null}
       {current?.state === "failed" ? <p className="text-[11px] text-destructive">Could not add them: {current.error}</p> : null}
+      {current?.state === "done" && current.logoPlacement ? (
+        <p className="text-[11px] text-muted">
+          Logo: {current.logoPlacement.spot}, {Math.round(current.logoPlacement.widthShare * 100)}% of the width
+          {current.logoPlacement.by === "vision" ? ` (chosen by looking at the video: ${current.logoPlacement.reason})` : current.logoPlacement.by === "pixels" ? " (the calmest place in the frames)" : ""}.
+        </p>
+      ) : null}
       {current?.state === "done" && current.url ? (
         <Button size="sm" asChild>
           <a href={`${current.url}&download=1`} download>

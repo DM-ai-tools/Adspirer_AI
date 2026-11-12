@@ -885,6 +885,7 @@ export function viewGeneration(raw: VideoProject): GenerationView {
                   captions: withGraphics.captions,
                   logo: withGraphics.logo,
                   createdAt: withGraphics.createdAt,
+                  logoPlacement: withGraphics.logoPlacement ?? null,
                   url: withGraphics.state === "done" && withGraphics.key && rest.state === "done" ? `${base}?variant=graphics&v=${encodeURIComponent(withGraphics.createdAt ?? "")}` : null,
                 }
               : null,
