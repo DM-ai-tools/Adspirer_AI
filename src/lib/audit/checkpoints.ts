@@ -449,7 +449,7 @@ export function evaluateCheckpoints(
         status: "warn",
         severity: "medium",
         evidence: [...windows.entries()].map(([k, v]) => `${k}: ${v.length} ad set${v.length === 1 ? "" : "s"}`).join("; "),
-        fix: "Use one attribution setting (usually 7-day click + 1-day view) for ad sets you compare, or compare them only within the same setting.",
+        fix: "Compare ad sets only within the same setting, and judge them on 7-day click: view-through counts sales the ad may not have caused, so it flatters results. Set new ad sets to 7-day click.",
         impact: "Mixed windows make cost per result look better or worse for reasons unrelated to performance.",
       });
     } else if (windows.size === 1) {

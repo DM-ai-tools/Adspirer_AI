@@ -288,7 +288,7 @@ describe("the performance tables", () => {
   it("is what the writer is told to leave to the application", () => {
     expect(META_AUDIT_FRAMEWORK).toContain(PERFORMANCE_TABLES_MARKER);
     expect(META_AUDIT_FRAMEWORK).toMatch(/Recommended Meta Structure/);
-    expect(META_AUDIT_FRAMEWORK).toMatch(/\| Layer \| Campaign \| Audience \| Budget share \| Creative focus \|/);
+    expect(META_AUDIT_FRAMEWORK).toMatch(/\| Layer \| Campaign \| Audience \| Budget share \| Daily budget \| Creative focus \|/);
   });
 });
 
