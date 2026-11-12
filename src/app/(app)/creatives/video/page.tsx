@@ -140,6 +140,8 @@ type FinalView = {
   srtUrl?: string | null;
   vttUrl?: string | null;
   subtitleCues?: number;
+  /** The extra export with the logo and/or subtitles drawn in. */
+  withGraphics?: { state: "running" | "done" | "failed"; stage: string | null; error: string | null; captions: boolean; logo: boolean; createdAt: string | null; url: string | null } | null;
   brand?: { name: string | null; logo: boolean; textOnly: boolean } | null;
   speech?: { measuredSeconds: number | null; estimatedSeconds: number | null } | null;
   report?: { findings: Array<{ code: string; severity: "critical" | "major" | "minor"; message: string; atSeconds?: number }>; limitations: string[]; framesInspected: number } | null;
@@ -1155,6 +1157,78 @@ function PlanCard({ creative }: { creative: CreativeView }) {
   );
 }
 
+/**
+ * Make a copy of the finished clean video with the subtitles and/or the verified logo drawn in. The clean
+ * MP4 stays as it is; this is an extra download beside it.
+ */
+function AddGraphics({ projectId, hasSubtitles, hasLogo, current, onView }: { projectId: string; hasSubtitles: boolean; hasLogo: boolean; current: NonNullable<FinalView["withGraphics"]> | null; onView: (g: GenerationView) => void }) {
+  const [captions, setCaptions] = useState(hasSubtitles);
+  const [logo, setLogo] = useState(hasLogo);
+  const [busy, setBusy] = useState(false);
+  const running = current?.state === "running";
+
+  // While it is being made, follow it until it is done or has failed.
+  useEffect(() => {
+    if (!running) return;
+    let stopped = false;
+    const timer = window.setInterval(() => {
+      void apiFetch<GenerationView>(`/api/creatives/video/${projectId}/generation`)
+        .then((g) => {
+          if (!stopped) onView(g);
+        })
+        .catch(() => undefined);
+    }, 4_000);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [running, projectId, onView]);
+
+  async function make() {
+    setBusy(true);
+    try {
+      onView(await apiFetch<GenerationView>(`/api/creatives/video/${projectId}/generation`, { method: "POST", body: JSON.stringify({ action: "add_graphics", captions, logo }) }));
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not add them");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!hasSubtitles && !hasLogo) return null;
+  const what = (c: boolean, l: boolean) => (c && l ? "logo and subtitles" : c ? "subtitles" : "logo");
+  return (
+    <div className="space-y-2 rounded-md border border-border p-2">
+      <p className="text-[11px] font-medium">Add the logo and subtitles to the video</p>
+      <p className="text-[11px] text-muted">Makes a second MP4 with them drawn in (subtitles kept clear of faces, timed to the same words as the SRT). The clean MP4 stays as it is.</p>
+      <div className="flex flex-wrap items-center gap-3 text-[11px]">
+        <label className={cn("flex items-center gap-1.5", !hasSubtitles && "text-muted")}>
+          <input type="checkbox" checked={captions} disabled={!hasSubtitles || running} onChange={(e) => setCaptions(e.target.checked)} />
+          Subtitles{hasSubtitles ? "" : " (no subtitle file for this export)"}
+        </label>
+        <label className={cn("flex items-center gap-1.5", !hasLogo && "text-muted")}>
+          <input type="checkbox" checked={logo} disabled={!hasLogo || running} onChange={(e) => setLogo(e.target.checked)} />
+          Logo{hasLogo ? "" : " (no verified logo: check the brand first)"}
+        </label>
+        <Button size="sm" variant="secondary" disabled={busy || running || (!captions && !logo)} onClick={() => void make()}>
+          {busy || running ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Film className="mr-1 h-3.5 w-3.5" />}
+          {current?.state === "done" ? "Make it again" : "Make the video with these"}
+        </Button>
+      </div>
+      {running ? <p className="text-[11px] text-muted">{current?.stage ?? "Working"}… about a minute.</p> : null}
+      {current?.state === "failed" ? <p className="text-[11px] text-destructive">Could not add them: {current.error}</p> : null}
+      {current?.state === "done" && current.url ? (
+        <Button size="sm" asChild>
+          <a href={`${current.url}&download=1`} download>
+            <Download className="mr-1 h-3.5 w-3.5" />
+            Download MP4 with {what(current.captions, current.logo)}
+          </a>
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
 /** Starts the video, follows each clip and keeps the work moving while the page is open. */
 function GenerationPanel({ projectId, status, initial, onStatus, logoDownloadUrl }: { projectId: string; status: ProjectView["status"]; initial: GenerationView | null; onStatus: (s: ProjectView["status"]) => void; logoDownloadUrl?: string | null }) {
   const [gen, setGen] = useState<GenerationView | null>(initial);
@@ -1399,6 +1473,15 @@ function GenerationPanel({ projectId, status, initial, onStatus, logoDownloadUrl
                   </Button>
                 ) : null}
               </div>
+              {isClean ? (
+                <AddGraphics
+                  projectId={projectId}
+                  hasSubtitles={Boolean(final.srtUrl)}
+                  hasLogo={Boolean(logoDownloadUrl)}
+                  current={final.withGraphics ?? null}
+                  onView={setGen}
+                />
+              ) : null}
               {isClean ? (
                 <div className="space-y-1 rounded-md border border-border p-2">
                   <p className="text-[11px] font-medium">Original files, to add by hand</p>

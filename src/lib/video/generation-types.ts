@@ -152,6 +152,18 @@ export type FinalVideo = {
   mode?: VideoMode;
   /** The files handed over beside a clean video: the transcript and the placement plan (subtitles are in `subtitles`). */
   deliverables?: { transcriptKey: string; planJsonKey: string; planTextKey: string; overlays: number } | null;
+  /** An extra export of this clean video with the subtitles and/or the verified logo drawn in (the clean MP4 is kept). */
+  withGraphics?: {
+    state: "running" | "done" | "failed";
+    stage: string | null;
+    error: string | null;
+    key: string | null;
+    captions: boolean;
+    logo: boolean;
+    startedAt: string;
+    createdAt: string | null;
+    bytes: number | null;
+  } | null;
 };
 
 export type ReferenceImage = {
@@ -198,8 +210,10 @@ export type GenerationPlan = {
   createdAt: string;
 };
 
-export type FinalView = Omit<FinalVideo, "key" | "reviewKey" | "subtitles" | "deliverables"> & {
+export type FinalView = Omit<FinalVideo, "key" | "reviewKey" | "subtitles" | "deliverables" | "withGraphics"> & {
   videoUrl: string | null;
+  /** The export with the logo and/or subtitles drawn in, when one has been made. */
+  withGraphics: { state: "running" | "done" | "failed"; stage: string | null; error: string | null; captions: boolean; logo: boolean; createdAt: string | null; url: string | null } | null;
   reviewUrl: string | null;
   srtUrl: string | null;
   vttUrl: string | null;
