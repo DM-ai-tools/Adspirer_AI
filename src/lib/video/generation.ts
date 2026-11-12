@@ -29,7 +29,7 @@ import {
   brandBlockers,
   briefsFor,
   budgetFor,
-  claimBlockers,
+  claimNotice,
   clipsFor,
   continuityFor,
   MAX_REDESIGNS,
@@ -59,8 +59,6 @@ export function blockedReason(project: VideoProject): string | null {
   // Nothing is generated from an unverified brand: a wrong name is far costlier than a pause. (A clean video shows no logo, so a missing one does not hold it up.)
   const brand = brandBlockers(project.brand?.manifest, videoMode(project));
   if (brand) return brand;
-  const claims = claimBlockers(project.chosen_script, project.brand!.manifest!, effectiveClaims(project.brand));
-  if (claims) return claims;
   if (!availableSeedanceModels().length) return "Add your BytePlus key to .env.local (ARK_API_KEY, or ARK_SEEDANCE_API_KEY and ARK_SEEDANCE_25_API_KEY) to make video.";
   try {
     const preview = previewPlan(project.chosen_script, project.inputs, project.assets.length);
@@ -321,6 +319,7 @@ export async function step(projectId: string, now = Date.now()): Promise<StepRes
       plan.speech = prepared.speech;
       plan.capabilities = prepared.capabilities;
       plan.narrationChanges = prepared.narrationChanges;
+      plan.figureAdjustments = prepared.figureAdjustments;
       plan.references = { characters: {}, environments: {} };
       plan.character = null;
       plan.setting = null;
@@ -840,6 +839,11 @@ export function viewGeneration(raw: VideoProject): GenerationView {
       : null,
     spentUsd: spentUsd(clips),
     blocked: ["confirmed", "clips_ready", "done"].includes(project.status) ? blockedReason(project) : null,
+    // Figures with no recorded source: a heads-up, never a stop.
+    notice:
+      ["confirmed", "clips_ready"].includes(project.status) && project.chosen_script && project.brand?.manifest
+        ? claimNotice(project.chosen_script, project.brand.manifest, effectiveClaims(project.brand))
+        : null,
     error: project.error,
   };
 }

@@ -173,7 +173,7 @@ type GenerationView = {
   assets?: JobFile[];
   cautions?: string[];
   storageDurable?: boolean;
-  plan?: { narrationChanges?: Array<{ scene: number; was: string; now: string; reason: string }> } | null;
+  plan?: { narrationChanges?: Array<{ scene: number; was: string; now: string; reason: string }>; figureAdjustments?: Array<{ scene: number; figure: string; change: string }> } | null;
   reviewClip: number | null;
   decision?: ClipDecisionView | null;
   remainingUsd: number;
@@ -181,6 +181,7 @@ type GenerationView = {
   clips: GenClip[];
   spentUsd: number;
   blocked: string | null;
+  notice?: string | null;
   error: string | null;
 };
 
@@ -1156,6 +1157,7 @@ function GenerationPanel({ projectId, status, initial, onStatus, logoDownloadUrl
   const clips = gen?.clips ?? [];
   const finished = clips.filter((c) => c.status === "succeeded").length;
   const blocked = status === "confirmed" || status === "clips_ready" ? gen?.blocked ?? null : null;
+  const notice = status === "confirmed" || status === "clips_ready" ? gen?.notice ?? null : null;
 
   if (!clips.length || (status === "confirmed" && !clips.some((c) => c.status !== "waiting"))) {
     return (
@@ -1185,6 +1187,7 @@ function GenerationPanel({ projectId, status, initial, onStatus, logoDownloadUrl
           <span className="text-[11px] text-muted">You can also stop at any time.</span>
         </div>
         {blocked ? <p className="text-xs text-amber-500">{blocked}</p> : null}
+        {notice ? <p className="text-xs text-amber-500">{notice}</p> : null}
       </div>
     );
   }
@@ -1193,11 +1196,23 @@ function GenerationPanel({ projectId, status, initial, onStatus, logoDownloadUrl
   const allClips = clips.length > 0 && finished === clips.length;
   const isClean = final?.mode === "clean";
   const reworded = gen?.plan?.narrationChanges ?? [];
+  const figureChanges = gen?.plan?.figureAdjustments ?? [];
   const overridden = final?.override?.findings ?? (final?.acceptedAnyway ? (final.report?.findings.filter((f) => f.severity !== "minor") ?? []) : []);
 
   return (
     <div className="space-y-3">
       <JobFiles files={gen?.assets ?? []} cautions={gen?.cautions ?? []} started />
+      {figureChanges.length ? (
+        <div className="space-y-1 rounded-md border border-amber-500/50 bg-amber-500/5 p-3 text-xs">
+          <p className="font-medium">Scenes changed because a figure had no recorded source</p>
+          <p className="text-[11px] text-muted">The video was still made. Add the source (a stat, an image, the offer details) and make it again to show the figure.</p>
+          {figureChanges.map((c) => (
+            <p key={c.scene} className="text-[11px]">
+              Scene {c.scene} ({c.figure}): {c.change}
+            </p>
+          ))}
+        </div>
+      ) : null}
       {reworded.length ? (
         <div className="space-y-1 rounded-md border border-border p-3 text-xs">
           <p className="font-medium">Spoken lines that were reworded</p>

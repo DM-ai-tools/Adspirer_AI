@@ -15,7 +15,8 @@ import { captionPiece, endCardPng, imagePiece, logoPiece, statPiece, type Piece 
 import type { FinalVideo, QaCheck } from "@/lib/video/generation-types";
 import { claimProjectLease, getProject, releaseProjectLease, updateProject, type VideoProject } from "@/lib/video/projects";
 import { loadManifestLogo } from "@/lib/video/brand-resolve";
-import { effectiveClaims, sourceClaims } from "@/lib/video/claims";
+import { effectiveClaims } from "@/lib/video/claims";
+import { dropUnsourcedStats } from "@/lib/video/script";
 import { brandBlockers } from "@/lib/video/pipeline";
 import { hasCritical, type BrandManifest, type QaFinding, type QaReport, type SpeechLine } from "@/lib/video/pipeline-types";
 import { finalBlocks, reviewFinal } from "@/lib/video/final-qa";
@@ -129,7 +130,9 @@ export async function assembleVideo(projectId: string, options: FinishingInput =
     const verified = manifest as BrandManifest;
     await updateProject(projectId, { status: "assembling", final: current, error: null });
 
-    const script = project.chosen_script;
+    const allClaims = effectiveClaims(project.brand);
+    // A figure shown big on screen needs a recorded source. One without is not drawn (the video is still made).
+    const script = dropUnsourcedStats(project.chosen_script, allClaims);
     const format = project.inputs.format as FinalFormat;
     const { width: W, height: H } = finalSize(format);
     const layout = layoutFor(format);
@@ -137,15 +140,8 @@ export async function assembleVideo(projectId: string, options: FinishingInput =
     const storage = getObjectStorage();
     const brandName = verified.name.value ?? "";
     const ctaLabel = verified.cta.value?.label ?? script.adCopy.cta ?? null;
-    const allClaims = effectiveClaims(project.brand);
     // The files this video was started with, not whatever the project holds now.
     const snapshots = jobAssets(project);
-
-    // Every figure shown big on screen must have a recorded source. (A clean video shows none.)
-    if (!clean) {
-      const unsourcedStats = sourceClaims(script.scenes.filter((s) => s.stat).map((s) => ({ text: s.stat!, where: `Scene ${s.number}` })), allClaims).unsourced;
-      if (unsourcedStats.length) throw new Error(`A figure shown on screen has no recorded source: ${unsourcedStats.map((u) => `"${u.figure}" (${u.use.where})`).join(", ")}.`);
-    }
 
     // 1. Every clip to the same size, rate and audio format.
     await setStage(projectId, current, "Preparing the clips");

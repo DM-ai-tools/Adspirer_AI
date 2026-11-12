@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { claimsFromFacts, effectiveClaims, mergeClaims } from "@/lib/video/claims";
 import { blockedReason } from "@/lib/video/generation";
-import { claimBlockers } from "@/lib/video/pipeline";
+import { claimNotice } from "@/lib/video/pipeline";
 import type { BrandManifest } from "@/lib/video/pipeline-types";
 import type { VideoScene, VideoScript } from "@/lib/video/script";
 import type { BriefFact } from "@/lib/video/script-types";
@@ -43,21 +43,23 @@ describe("figures in the brief's verified facts count as sourced", () => {
     expect(effectiveClaims(null)).toEqual([]);
   });
 
-  it("no longer blocks a script whose figure the page states, and still blocks one that no source states", () => {
+  it("no longer warns about a script whose figure the page states, and still warns about one that no source states", () => {
     const m = manifest();
     const ok = script("A prioritised 30 to 90 day action plan, and trusted by over 1,500 businesses.");
     // the old check, with the manifest's claims alone, refuses it
-    expect(claimBlockers(ok, m)).toMatch(/"90"/);
+    expect(claimNotice(ok, m)).toMatch(/"90"/);
     // with the verified facts counted it passes
-    expect(claimBlockers(ok, m, effectiveClaims({ manifest: m, brief: { facts } }))).toBeNull();
+    expect(claimNotice(ok, m, effectiveClaims({ manifest: m, brief: { facts } }))).toBeNull();
     const invented = script("We have helped 4,000 clients and delivered a 95 day plan.");
-    expect(claimBlockers(invented, m, effectiveClaims({ manifest: m, brief: { facts } }))).toMatch(/no recorded source/);
+    expect(claimNotice(invented, m, effectiveClaims({ manifest: m, brief: { facts } }))).toMatch(/no recorded source/);
   });
 
-  it("the Generate video gate counts the verified facts", () => {
+  it("the Generate video gate counts the verified facts, and a figure with no source never blocks it", () => {
     const project = { chosen_script: script("A prioritised 30 to 90 day action plan."), brand: { name: "Acme", colors: null, logoUrl: null, summary: null, manifest: manifest(), brief: { facts } }, assets: [], inputs: { format: "9:16", priority: "balanced" } } as unknown as VideoProject;
     expect(blockedReason(project) ?? "").not.toMatch(/no recorded source/);
     const without = { ...project, brand: { ...project.brand!, brief: { facts: [] } } } as unknown as VideoProject;
-    expect(blockedReason(without)).toMatch(/no recorded source/);
+    // Nothing is checked at the gate any more: the missing source is a notice, and the video is still made.
+    expect(blockedReason(without) ?? "").not.toMatch(/no recorded source/);
+    expect(claimNotice(without.chosen_script!, without.brand!.manifest!, effectiveClaims(without.brand))).toMatch(/video can still be made/);
   });
 });

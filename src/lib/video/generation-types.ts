@@ -193,6 +193,8 @@ export type GenerationPlan = {
   logo?: LogoSnapshot | null;
   /** Spoken lines reworded because they pointed at an image a clean video does not show. */
   narrationChanges?: Array<{ scene: number; was: string; now: string; reason: string }>;
+  /** Scenes changed because a figure in them had no recorded source. */
+  figureAdjustments?: Array<{ scene: number; figure: string; change: string }>;
   createdAt: string;
 };
 
@@ -231,5 +233,7 @@ export type GenerationView = {
   spentUsd: number;
   /** Why generation cannot start, e.g. no key for the model. */
   blocked: string | null;
+  /** A heads-up that does not stop the video (figures with no recorded source). */
+  notice: string | null;
   error: string | null;
 };
