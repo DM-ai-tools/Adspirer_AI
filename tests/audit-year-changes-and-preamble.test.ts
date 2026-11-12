@@ -135,3 +135,28 @@ describe("the audit method", () => {
     expect(META_AUDIT_FRAMEWORK).toMatch(/never describe the window as a single day/);
   });
 });
+
+describe("a risk whose fix is a list of steps", () => {
+  it("shows the steps as the Fix, not a dash with loose bullets", async () => {
+    const { parseMarkdownToBlocks } = await import("@/lib/reports/parse-markdown");
+    const { presentBlocks } = await import("@/lib/reports/present");
+    const md = [
+      "### R2 · Critical — $678 wasted on an ad set with no country targeting",
+      "- **Evidence:** It spent $678.29 at ROAS 0.23×.",
+      "- **Fix:**",
+      "- Do not reactivate this ad set without setting countries = AU",
+      "- Audit all other active ad sets to confirm geo-targeting is set",
+      "- **Spend at stake:** $678",
+    ].join("\n");
+    const card = presentBlocks(parseMarkdownToBlocks(md)).find((b) => b.type === "card");
+    expect(card && card.type === "card").toBe(true);
+    if (card?.type !== "card") return;
+    const fix = card.fields.find((f) => f.label === "Fix")!;
+    const text = fix.value.map((v) => v.text).join("");
+    expect(text).toContain("Do not reactivate this ad set");
+    expect(text).toContain("Audit all other active ad sets");
+    expect(text).not.toBe("—");
+    expect(card.fields.map((f) => f.label)).toEqual(["Evidence", "Fix", "Spend at stake"]);
+    expect(card.notes).toEqual([]);
+  });
+});

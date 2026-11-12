@@ -729,9 +729,13 @@ function writingLabel(input: WriterInput): string {
   return REPORT_INTENTS.has(intent) ? "Writing report…" : "Writing reply…";
 }
 
+/** How many times a report that hit the output limit is asked to carry on. */
+const MAX_REPORT_CONTINUATIONS = 2;
+
 /** Output budget: short for Q&A, long for audits / reports. */
 function maxOutputTokensFor(intent: RequestIntent): number {
-  if (REPORT_INTENTS.has(intent) || intent === "custom") return 8000;
+  // A year-long audit runs past 8000 tokens: the report was cut off mid-sentence, partway through its risks.
+  if (REPORT_INTENTS.has(intent) || intent === "custom") return 16_000;
   if (CONVERSATIONAL_INTENTS.has(intent)) return 3000;
   return 4000;
 }
@@ -1173,6 +1177,7 @@ async function streamWriterText(args: {
   const dropToolStepText = REPORT_INTENTS.has(intent);
   let stepStartsAt = 0;
   let stepCalledTool = false;
+  let lastFinishReason: string | undefined;
   for await (const part of result.fullStream) {
     let delta: string;
     if (part.type === "tool-call") {
@@ -1180,6 +1185,7 @@ async function streamWriterText(args: {
       continue;
     }
     if (part.type === "finish-step") {
+      lastFinishReason = part.finishReason;
       if (dropToolStepText && stepCalledTool && text.length > stepStartsAt) {
         text = text.slice(0, stepStartsAt);
         // The live preview showed that text; the next flush replaces it with what is kept.
@@ -1212,6 +1218,42 @@ async function streamWriterText(args: {
     }
   }
   await flushPreview();
+
+  // A report that ran into the output limit stops mid-sentence. Ask for the rest — up to twice —
+  // and join it on, so the saved report (and its downloads) is never a cut-off one.
+  for (let attempt = 0; attempt < MAX_REPORT_CONTINUATIONS && !streamError; attempt += 1) {
+    if (!REPORT_INTENTS.has(intent) || input.reportDraft || lastFinishReason !== "length" || !text.trim()) break;
+    logger.warn("agent.report_hit_output_limit", { intent, attempt: attempt + 1, chars: text.length });
+    const more = streamText({
+      model,
+      instructions,
+      messages: [
+        ...modelMessages,
+        { role: "assistant", content: text.trimEnd() },
+        {
+          role: "user",
+          content:
+            "Your report stopped at the output limit. Continue from exactly where it stopped, in the same format: begin with the very next words (finish the sentence you were in), do not repeat anything already written, and add no preamble. Finish every remaining section in order, down to Next Steps.",
+        },
+      ] as ModelMessage[],
+      maxOutputTokens: maxOutputTokensFor(intent),
+      temperature: 0.4,
+      onError: ({ error }) => {
+        streamError = error;
+      },
+    });
+    lastFinishReason = undefined;
+    for await (const part of more.fullStream) {
+      if (part.type === "finish-step") lastFinishReason = part.finishReason;
+      if (part.type !== "text-delta") continue;
+      // Keep the break the model's first words need after the text that was cut.
+      const piece = text.length && !/\s$/.test(text) && /^[A-Za-z]/.test(part.text) && /[.:!?)\]]$/.test(text) ? ` ${part.text}` : part.text;
+      text += piece;
+      pendingDelta += piece;
+      if (Date.now() - lastPreviewAt >= PREVIEW_INTERVAL_MS) await flushPreview();
+    }
+    await flushPreview();
+  }
 
   if (streamError) throw streamError;
   if (!text.trim() && !input.reportDraft) {

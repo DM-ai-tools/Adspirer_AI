@@ -208,3 +208,19 @@ describe("monitoring tracking check", () => {
     expect(f.title).toBe("No Lead events recorded this week");
   });
 });
+
+describe("T3 over a long audit", () => {
+  const yearLong = (snap: MetaAuditSnapshot): MetaAuditSnapshot => ({ ...snap, period: { since: "2025-11-13", until: "2026-11-12", days: 365 } as MetaAuditSnapshot["period"] });
+
+  it("does not hold ad sets that were switched off to the pixel's last 28 days", () => {
+    const cps = evaluateCheckpoints(yearLong(trAccount()), { now: NOW }).checkpoints;
+    expect(get(cps, "T3")?.status).not.toBe("fail");
+  });
+
+  it("still flags an ad set that is live now and gets no results", () => {
+    const snap = trAccount();
+    const live = { ...snap, adSets: snap.adSets.map((a, i) => (i === 0 ? { ...a, status: "ACTIVE" } : a)) };
+    const cps = evaluateCheckpoints(yearLong(live), { now: NOW }).checkpoints;
+    expect(get(cps, "T3")).toMatchObject({ status: "fail" });
+  });
+});
