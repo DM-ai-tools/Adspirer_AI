@@ -40,11 +40,25 @@ export function stripChatOnlySections(markdown: string): string {
   return out.join("\n").trimEnd() + "\n";
 }
 
+/** The audit's own title line: "# Meta Ads Account Audit — <account>" (any heading level, bold or not). */
+const AUDIT_TITLE_LINE = /^[ \t]*#{1,3}[ \t]*\**[ \t]*Meta Ads Account Audit\b/im;
+
+/**
+ * An audit starts at its title. Anything the writer said before it ("Let me pull the 12-month data…",
+ * "Here is the full audit.") is narration from its tool steps, not part of the report. Text with no
+ * audit title is returned as it is.
+ */
+export function stripAuditPreamble(markdown: string): string {
+  const match = AUDIT_TITLE_LINE.exec(markdown);
+  if (!match || match.index === 0) return markdown;
+  return markdown.slice(match.index);
+}
+
 /**
  * Turn operator chat audit text into neat markdown while keeping every detail.
  */
 export function prepareExportMarkdown(raw: string, fallbackTitle?: string): string {
-  const text = sanitizeReportText(stripChatOnlySections(raw)).replace(/\r\n/g, "\n").trim();
+  const text = sanitizeReportText(stripChatOnlySections(stripAuditPreamble(raw))).replace(/\r\n/g, "\n").trim();
   if (!text) return fallbackTitle ? `# ${fallbackTitle}\n` : "";
 
   const lines = text.split("\n");

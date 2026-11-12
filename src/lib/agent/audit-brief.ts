@@ -87,11 +87,22 @@ function relativeRange(lower: string, today: Date): { dateStart: string; dateSto
     start.setUTCDate(start.getUTCDate() - 13);
     return { dateStart: isoDate(start), dateStop: isoDate(today), dateLabel: "last 14 days" };
   }
-  const m = /\b(?:the\s+)?(?:last|past|previous|prior|recent)\s+(\d{1,3}|[a-z]+)\s+(days?|weeks?|months?)\b/.exec(lower);
-  if (!m) return null;
-  const n = /^\d+$/.test(m[1]!) ? Number(m[1]) : NUMBER_WORDS[m[1]!];
+  const m = /\b(?:the\s+)?(?:last|past|previous|prior|recent)\s+(\d{1,3}|[a-z]+)\s+(days?|weeks?|months?|years?)\b/.exec(lower);
+  // "last year", "past year", "for one year", "over a whole year": a year back from today.
+  const wholeYear = /\b(?:(?:last|past|previous)\s+year|(?:for|over|across)\s+(?:the\s+)?(?:(?:a|one|1|full|whole)\s+)+year)\b/.test(lower);
+  // "for 12 months", "over 2 years" (no "last"): months and years only, so "for 3 days" in a campaign name is left alone.
+  const bare = /\b(?:for|over|across)\s+(?:the\s+)?(\d{1,2}|[a-z]+)\s+(months?|years?)\b/.exec(lower);
+  const found: [string, string] | null = m ? [m[1]!, m[2]!] : wholeYear ? ["1", "year"] : bare ? [bare[1]!, bare[2]!] : null;
+  if (!found) return null;
+  const n = /^\d+$/.test(found[0]) ? Number(found[0]) : NUMBER_WORDS[found[0]];
   if (!n || n < 1) return null;
-  const unit = m[2]!.replace(/s$/, "");
+  let unit = found[1].replace(/s$/, "");
+  let count = n;
+  // A year is twelve calendar months back, so it is read like any months range.
+  if (unit === "year") {
+    unit = "month";
+    count = n * 12;
+  }
   const start = new Date(today);
   if (unit === "day") {
     start.setUTCDate(start.getUTCDate() - (Math.min(n, 730) - 1));
@@ -101,7 +112,7 @@ function relativeRange(lower: string, today: Date): { dateStart: string; dateSto
     start.setUTCDate(start.getUTCDate() - (Math.min(n, 104) * 7 - 1));
     return { dateStart: isoDate(start), dateStop: isoDate(today), dateLabel: `last ${n} week${n === 1 ? "" : "s"}` };
   }
-  const months = Math.min(n, 24);
+  const months = Math.min(count, 24);
   const back = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - months, today.getUTCDate()));
   // Day 31 in a 30-day month rolls forward into the next month: keep it in the intended month.
   if (back.getUTCMonth() !== (((today.getUTCMonth() - months) % 12) + 12) % 12) back.setUTCDate(0);

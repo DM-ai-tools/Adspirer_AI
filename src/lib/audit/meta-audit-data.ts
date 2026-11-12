@@ -644,6 +644,86 @@ export function entitiesToWatch(
   };
 }
 
+const DAY_SECONDS = 86_400;
+/** Edits are read in windows of this many days. */
+const CHANGE_WINDOW_DAYS = 31;
+/** At most this many windows (about two years); a longer audit reads its newest windows. */
+const MAX_CHANGE_WINDOWS = 25;
+/** How many windows are read at once, well inside Meta's per-account rate limits. */
+const CHANGE_WINDOW_CONCURRENCY = 4;
+
+/** The audited days (YYYY-MM-DD, inclusive) cut into consecutive windows of at most CHANGE_WINDOW_DAYS days, oldest first. */
+export function changeWindows(since: string, until: string): Array<{ since: string; until: string }> {
+  const out: Array<{ since: string; until: string }> = [];
+  const last = Date.parse(`${until}T00:00:00Z`);
+  for (let start = Date.parse(`${since}T00:00:00Z`); start <= last; start += CHANGE_WINDOW_DAYS * DAY_MS) {
+    const end = Math.min(last, start + (CHANGE_WINDOW_DAYS - 1) * DAY_MS);
+    out.push({ since: dayString(new Date(start)), until: dayString(new Date(end)) });
+  }
+  return out.slice(-MAX_CHANGE_WINDOWS);
+}
+
+/**
+ * Meta's account activity history for the audited days. A window of a month or less is one request
+ * (up to CHANGE_PAGES pages); a longer audit is read window by window, so a busy account's year is not
+ * cut down to its newest few hundred edits. The first and last windows are padded a day each side — the
+ * account's own timezone decides the audited days afterwards — and an edit seen twice at a seam is kept
+ * once. `truncated` is set when any window hit its page cap or could not be read; null rows mean none could.
+ */
+export async function fetchActivityHistory(
+  graph: Graph,
+  accountId: string,
+  since: string,
+  until: string,
+  warnings: string[],
+): Promise<{ rows: Row[]; truncated: boolean } | null> {
+  const windows = changeWindows(since, until);
+  const first = windows[0]!.since;
+  const lastDay = windows[windows.length - 1]!.until;
+  const failures: string[] = [];
+  const results: Array<Row[] | null> = [];
+  for (let i = 0; i < windows.length; i += CHANGE_WINDOW_CONCURRENCY) {
+    const batch = windows.slice(i, i + CHANGE_WINDOW_CONCURRENCY);
+    results.push(
+      ...(await Promise.all(
+        batch.map(async (w) => {
+          try {
+            return await paged(graph, `${accountId}/activities`, {
+              fields: "event_type,event_time,actor_name,application_name,object_id,object_name,object_type,translated_event_type,extra_data",
+              since: Math.floor(Date.parse(`${w.since}T00:00:00Z`) / 1000) - (w.since === first ? DAY_SECONDS : 0),
+              until: Math.floor(Date.parse(`${w.until}T00:00:00Z`) / 1000) + (w.until === lastDay ? 2 : 1) * DAY_SECONDS,
+              limit: CHANGE_PAGE_SIZE,
+            }, CHANGE_PAGES);
+          } catch (error) {
+            failures.push(error instanceof Error ? error.message : String(error));
+            return null;
+          }
+        }),
+      )),
+    );
+  }
+  const read = results.filter((r): r is Row[] => r !== null);
+  if (!read.length) {
+    warnings.push(`Change history: ${failures[0] ?? "no window could be read"}`);
+    return null;
+  }
+  if (failures.length) {
+    warnings.push(`Change history: ${failures.length} of ${windows.length} windows could not be read (${failures[0]})`);
+  }
+  const seen = new Set<string>();
+  const rows: Row[] = [];
+  for (const row of read.flat()) {
+    const key = [row.event_time, row.event_type, row.object_id, row.actor_name, row.extra_data].map((v) => String(v ?? "")).join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push(row);
+  }
+  return {
+    rows,
+    truncated: failures.length > 0 || read.some((r) => r.length >= CHANGE_PAGE_SIZE * CHANGE_PAGES),
+  };
+}
+
 export async function fetchMetaAuditSnapshot(
   graph: Graph,
   accountId: string,
@@ -673,7 +753,7 @@ export async function fetchMetaAuditSnapshot(
 
   const [
     pixels, customConversions, audiences, campaigns, adSets, ads, totals, campaignIns, adSetIns, adIns, placements, adSetWeek,
-    previousTotals, previousCampaignIns, previousAdSetIns, adWeek, productIns, activityRows, demographicIns, positionIns, monthlyIns,
+    previousTotals, previousCampaignIns, previousAdSetIns, adWeek, productIns, activity, demographicIns, positionIns, monthlyIns,
   ] =
     await Promise.all([
       settle("Pixels", warnings, paged(graph, `${id}/adspixels`, {
@@ -746,14 +826,9 @@ export async function fetchMetaAuditSnapshot(
       settle("Catalog product spend", warnings, paged(graph, `${id}/insights`, {
         level: "ad", time_range: timeRange, breakdowns: "product_id", fields: "ad_id,spend,actions,action_values", limit: 500,
       }, PRODUCT_PAGES)),
-      // Everything anyone edited in the window. Meta's window is padded a day each side (the
-      // account's own timezone decides the audited days afterwards).
-      settle("Change history", warnings, paged(graph, `${id}/activities`, {
-        fields: "event_type,event_time,actor_name,application_name,object_id,object_name,object_type,translated_event_type,extra_data",
-        since: Math.floor(Date.parse(`${since}T00:00:00Z`) / 1000) - 86_400,
-        until: Math.floor(Date.parse(`${until}T00:00:00Z`) / 1000) + 2 * 86_400,
-        limit: CHANGE_PAGE_SIZE,
-      }, CHANGE_PAGES)),
+      // Everything anyone edited in the window, read a month at a time so a long audit isn't limited
+      // to its newest few hundred edits.
+      fetchActivityHistory(graph, id, since, until, warnings),
       settle("Age and gender breakdown", warnings, paged(graph, `${id}/insights`, {
         level: "account", time_range: timeRange, breakdowns: "age,gender", fields: insightFields, limit: 200,
       }, 2)),
@@ -874,8 +949,8 @@ export async function fetchMetaAuditSnapshot(
   const adRows = (ads ?? []).map((a) => ({ id: String(a.id), adSetId: String(a.adset_id ?? ""), campaignId: String(a.campaign_id ?? "") }));
   const adSetOfAd = new Map(adRows.map((a) => [a.id, a.adSetId]));
   const campaignOfAd = new Map(adRows.map((a) => [a.id, a.campaignId]));
-  const changes = activityRows
-    ? normalizeChanges(activityRows, {
+  const changes = activity
+    ? normalizeChanges(activity.rows, {
         timezone,
         since,
         until,
@@ -889,7 +964,7 @@ export async function fetchMetaAuditSnapshot(
         },
       })
     : undefined;
-  const changesTruncated = Boolean(activityRows && activityRows.length >= CHANGE_PAGE_SIZE * CHANGE_PAGES);
+  const changesTruncated = Boolean(activity?.truncated);
   let changeContext: AuditChangeContext[] | undefined;
   if (changes?.length) {
     const watch = entitiesToWatch(changes, (adId) => adSetOfAd.get(adId) || null, options.campaignIds);
@@ -908,7 +983,8 @@ export async function fetchMetaAuditSnapshot(
           fields: `${idKey},${insightFields}`,
           filtering: JSON.stringify([{ field: level === "campaign" ? "campaign.id" : "adset.id", operator: "IN", value: ids }]),
           limit: 500,
-        }, 3),
+          // One row per object per day: a long audit needs more pages than a month does.
+        }, Math.min(12, Math.max(3, Math.ceil((days * ids.length) / 500) + 1))),
       );
       return rows ?? [];
     };

@@ -583,7 +583,14 @@ function windowLine(days: AuditChangeContext["days"], from: string, to: string, 
     .join(", ");
 }
 
-const MAX_CHANGE_LINES = 120;
+const MAX_CHANGE_LINES = 150;
+
+/** Edits that could move delivery, spend, audience, creative, the optimisation goal, tracking or status — everything but renames and notes. */
+const ROUTINE_EDIT = /(?:rename|name|note|label|tag)/i;
+function isSignificantEdit(c: AuditChange): boolean {
+  const text = `${c.eventType} ${c.label ?? ""}`.replace(/_/g, " ");
+  return !ROUTINE_EDIT.test(text) || /(?:budget|bid|status|target|audience|creative|pixel|schedule)/i.test(text);
+}
 
 /**
  * What was edited in the audited window, as plain facts for the writer: the
@@ -615,17 +622,38 @@ export function renderChangesEvidence(snap: MetaAuditSnapshot): string {
       .filter(Boolean)
       .join("\n");
   }
-  const shown = snap.changes.slice(0, MAX_CHANGE_LINES);
   const kind = (t: string | null) => (t ? t.toLowerCase().replace(/_/g, " ") : "object");
+  const wording = (c: AuditChange) => c.label ?? c.eventType.replace(/_/g, " ");
+  // A long audit has far more edits than can be listed: the ones that could move delivery come first
+  // (newest first within each group), and the tallies below count all of them.
+  const significant = snap.changes.filter(isSignificantEdit);
+  const routine = snap.changes.filter((c) => !isSignificantEdit(c));
+  const ordered = [...significant, ...routine];
+  const shown = ordered.slice(0, MAX_CHANGE_LINES);
+  const tally = (key: (c: AuditChange) => string, top: number) => {
+    const counts = new Map<string, number>();
+    for (const c of snap.changes ?? []) counts.set(key(c), (counts.get(key(c)) ?? 0) + 1);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, top);
+  };
+  const byKind = tally(wording, 12);
+  const months = new Map<string, number>();
+  for (const c of snap.changes) months.set(c.localDate.slice(0, 7), (months.get(c.localDate.slice(0, 7)) ?? 0) + 1);
   const lines: string[] = [
     header,
     scope ? `Scope: ${scope} — edits to these campaigns and their ad sets/ads, plus account-wide tracking edits.` : "",
-    `${snap.changes.length} edit${snap.changes.length === 1 ? "" : "s"} recorded, newest first:`,
+    `${snap.changes.length} edit${snap.changes.length === 1 ? "" : "s"} recorded across the whole audited period (${snap.period.since} → ${snap.period.until}) — ${significant.length} that could move delivery, ${routine.length} routine (renames, notes and similar).`,
+    `Count by kind: ${byKind.map(([k, n]) => `${k} ${n}`).join(" · ")}${new Set(snap.changes.map(wording)).size > byKind.length ? " · other kinds not listed" : ""}`,
+    months.size > 1
+      ? `Edits by month: ${[...months.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([m, n]) => `${m} ${n}`).join(" · ")}`
+      : "",
+    shown.length < snap.changes.length
+      ? `Listed below: the ${shown.length} most recent edits that could move delivery${shown.length > significant.length ? ", then routine ones" : ""}.`
+      : "Every edit is listed below, newest first:",
     ...shown.map((c) => {
       const who = c.actor ? `${c.actor}${c.application ? ` via ${c.application}` : ""}` : c.application ? `via ${c.application}` : "actor not reported";
       return `- ${c.localDate} ${c.time.slice(11, 16)} UTC · ${kind(c.objectType)} "${c.objectName ?? c.objectId ?? "unknown"}"${c.objectId ? ` (${c.objectId})` : ""} · ${c.label ?? c.eventType.replace(/_/g, " ")} [${c.eventType}] · ${who}${c.detail ? ` · detail: ${c.detail}` : ""}`;
     }),
-    snap.changes.length > shown.length ? `- ${snap.changes.length - shown.length} older edits not listed.` : "",
+    snap.changes.length > shown.length ? `- ${snap.changes.length - shown.length} further edits are counted above but not listed one by one.` : "",
     snap.changesTruncated ? "- Meta's history was cut at its page cap, so older edits in this window may be missing — say the list may be incomplete." : "",
     snap.changesUnresolved ? `- ${snap.changesUnresolved} further edit${snap.changesUnresolved === 1 ? "" : "s"} to ads or ad sets Meta no longer lists could not be tied to these campaigns, so they aren't shown.` : "",
   ];

@@ -6,6 +6,7 @@ import {
 } from "@/lib/agent/delivery-structure";
 import { formatCtaForDisplay } from "@/lib/meta/extract-creative-destination";
 import { evaluateCheckpoints } from "@/lib/audit/checkpoints";
+import { stripAuditPreamble } from "@/lib/reports/prepare-export";
 import { applyChatSettings, settingsNoticeLines, type ChatSettingsTurn } from "@/lib/clients/chat-settings";
 import { resolveGoals, type GoalsProfile, type ResolvedGoals } from "@/lib/clients/goals";
 
@@ -906,7 +907,7 @@ export function buildWriterMessages(input: WriterInput): {
           "- Ground every claim in the live metrics / scraped page evidence; say Unknown when evidence is missing.",
           "- Do NOT queue execute/optimize tools and do NOT change Meta yet.",
           "- If competitor LPs were not provided, finish the own-LP audit and mention in one sentence that they can paste competitor URLs for a comparison.",
-          "- Close with at most ONE next step — the single highest-impact fix — not a menu of options.",
+          "- Close with the Next Steps section from the report format: 3–5 ordered steps, the first being the single highest-impact fix.",
         ]
       : intent === "audit"
         ? [
@@ -1028,7 +1029,7 @@ export function buildWriterMessages(input: WriterInput): {
           : "- Answer exactly what was asked, directly, in the first sentence. Keep it short — a few sentences, or a compact list/table only when listing several campaigns or numbers. No report structure, no headings unless the answer genuinely needs sections.",
         "- Quote real numbers from the evidence with their currency, and keep campaign / ad set / ad names exactly as Meta returns them.",
         "- If a number or answer is not in the evidence, read it with the data tools (meta_insights, ga4_report, search_console_query, google_ads_report, list_client_categories, …) before saying it isn't available — never estimate or invent it. Name the source of each number (Meta, GA4, Search Console, Google Ads).",
-        "- Offer at most ONE next step, and only when there is an obvious one. Never end with a menu of options or \"Anything else?\".",
+        "- Offer at most ONE next step, and only when there is an obvious one. Never end with a menu of options or \"Anything else?\". (A full audit is the exception: it ends with its own Next Steps section.)",
         "- No emojis.",
         "- NEVER make the entire reply a JSON object/array or a wrapper like {\"message\":...}. JSON is only an optional appendix at the very end for tool proposals or pickers.",
         "- Never say \"fetching data\", \"stand by\", or \"results incoming\".",
@@ -1166,11 +1167,40 @@ async function streamWriterText(args: {
   };
   // fullStream, not textStream: text from separate model steps (before and after tool calls)
   // would otherwise run together with no gap ("…now.Here are…").
+  // A report is the text of the step that calls no tool. What the model says before a tool call
+  // ("I need to pull the 12-month data… let me fetch that now") is narration: it is shown live,
+  // then dropped when its step turns out to be a tool step, so it never reaches the saved report.
+  const dropToolStepText = REPORT_INTENTS.has(intent);
+  let stepStartsAt = 0;
+  let stepCalledTool = false;
   for await (const part of result.fullStream) {
     let delta: string;
+    if (part.type === "tool-call") {
+      stepCalledTool = true;
+      continue;
+    }
+    if (part.type === "finish-step") {
+      if (dropToolStepText && stepCalledTool && text.length > stepStartsAt) {
+        text = text.slice(0, stepStartsAt);
+        // The live preview showed that text; the next flush replaces it with what is kept.
+        pendingDelta = "";
+        await input.onProgress?.({
+          phase: "write_report",
+          label,
+          stepId: "write_report",
+          summary: liveReplyPreview(text),
+        });
+      }
+      continue;
+    }
     if (part.type === "start-step") {
-      if (!text || /\s$/.test(text)) continue;
+      stepCalledTool = false;
+      if (!text || /\s$/.test(text)) {
+        stepStartsAt = text.length;
+        continue;
+      }
       delta = "\n\n";
+      stepStartsAt = text.length;
     } else if (part.type === "text-delta") {
       delta = part.text;
     } else continue;
@@ -1205,7 +1235,8 @@ async function finalizeWriterResult(args: {
 
   // For report mode, prefer the OpenAI draft if the writer returns empty/JSON-only thin text
   const humanized = humanizeAgentReply(text);
-  let display = humanized.display;
+  // An audit starts at its title: narration the writer spoke before it is not part of the report.
+  let display = stripAuditPreamble(humanized.display);
   if (input.reportDraft) {
     const draftLooksBetter =
       display.length < 80 ||
@@ -2720,7 +2751,8 @@ export async function gatherDiagnoseEvidence(input: {
               "- If a destination URL is missing from Meta, say so and recommend fixing the CTA / Website URL in Ads Manager.",
               "- Include prioritized recommendations covering both ads/budgets AND landing pages.",
               "- Do NOT queue execute/optimize tools and do NOT claim you changed Meta.",
-              "- Close with at most ONE next step (the single highest-impact fix) — no menu of options.",
+              "- **Next Steps (section 10):** 3–5 numbered step cards (action, Who, When, How, Done when) in the order to work, the first being the single highest-impact fix, then the Hold off on / Review on lines (paragraphs, not bullets). Point to R numbers and recommendation numbers; don't restate their evidence.",
+              "- Start the reply with the report title line (\"# Meta Ads Account Audit — <account name>\"). Nothing before it: no \"let me fetch…\", no \"here is the audit\". Everything you need is in the evidence above, so write the report without calling tools; use one only if a figure you must quote is missing from the evidence.",
             ].join("\n"),
           );
 
