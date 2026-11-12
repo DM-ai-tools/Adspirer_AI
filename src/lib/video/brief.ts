@@ -20,6 +20,7 @@ import { ensureMainStats, trimToFit, writeScriptForAngle, writeScriptSet, type W
 import type { AnglePlan, CreativeBrief } from "@/lib/video/script-types";
 import type { VideoScript } from "@/lib/video/script";
 import { pickModel } from "@/lib/creatives/concept-writer";
+import { styleForType, videoDirection } from "@/lib/video/video-types";
 import { adCopyForUploaded, applyChangeRequest, assembleUploaded, structureUploadedScript } from "@/lib/video/uploaded-script";
 import { analyzeAssets, assetCautions } from "@/lib/video/assets";
 import { splitLabel } from "@/lib/video/evidence";
@@ -155,7 +156,8 @@ export async function buildBrief(project: VideoProject): Promise<{ brief: VideoB
       return { id: a.id, name: a.name, summary: `${a.analysis?.summary ?? a.caption}${period}${cautions.length ? ` BEFORE USING ITS FIGURES: ${cautions.join(" ")}` : ""}`, stats: (a.analysis?.stats ?? []).map((s) => ({ value: s.value, label: splitLabel(s).label })), mainStat: a.analysis?.mainStat ? { value: a.analysis.mainStat.value, label: splitLabel(a.analysis.mainStat).label } : null };
     }),
     targetSeconds: project.inputs.targetSeconds,
-    style: project.inputs.style,
+    style: styleForType(project.inputs.videoType) ?? project.inputs.style,
+    direction: videoDirection(project.inputs),
     locale: project.inputs.locale,
     claims: manifest.claims,
   };
@@ -319,11 +321,14 @@ async function writeFromUploadedScript(input: { project: VideoProject; brief: Vi
   if (!model) throw new Error("No language model is configured to read your script (set ANTHROPIC_API_KEY or OPENAI_API_KEY).");
   const scriptText = project.inputs.scriptText!;
   const facts = briefFacts(brief);
-  const ctx = { facts, assetIds: brief.images.map((i) => i.id), locale: brief.locale, model };
+  const ctx = { facts, assetIds: brief.images.map((i) => i.id), locale: brief.locale, model, direction: brief.direction ?? null };
 
   await stage("understanding");
   const split = await structureUploadedScript(scriptText, ctx);
   let script = assembleUploaded({ structured: split.structured, lines: split.lines, restoredScenes: split.restoredScenes, removedScenes: split.removedScenes, addedScenes: split.addedScenes, unused: split.unused, assetIds: ctx.assetIds });
+  // The type the operator chose decides the look, whatever the reader inferred from the script.
+  const chosenStyle = styleForType(project.inputs.videoType);
+  if (chosenStyle) script = { ...script, style: chosenStyle };
 
   await stage("writing");
   script = { ...script, adCopy: await adCopyForUploaded({ script, provided: project.inputs.adCopyText?.trim() || null, ctx }) };

@@ -34,6 +34,10 @@ export type VideoInputs = {
   stats: string[];
   targetSeconds: number;
   style: string;
+  /** The kind of video the operator asked for before the script was read or written (see video-types.ts). */
+  videoType?: string | null;
+  /** The operator's own idea for the video, in their words. */
+  videoIdea?: string | null;
   locale: string;
   format: "9:16" | "1:1" | "4:5";
   priority: "quality" | "balanced" | "cost";

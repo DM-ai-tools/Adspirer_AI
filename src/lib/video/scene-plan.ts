@@ -41,6 +41,8 @@ export type PlanScriptScene = {
 
 export type PlanInput = {
   brandName: string;
+  /** The kind of video and idea the operator asked for, as one direction block (absent when they left it to the AI). */
+  direction?: string | null;
   product: string;
   audience: string;
   offer: string;
@@ -292,7 +294,10 @@ export function planPrompt(input: PlanInput, repair?: PlanIssue[]): string {
       `Objective: ${input.objective}`,
       `Target length: about ${input.targetSeconds} seconds. Hard maximum: ${input.maxSeconds} seconds.`,
       `Language and locale: ${input.locale}`,
-    ].join("\n"),
+      input.direction ? `THE KIND OF VIDEO THE OPERATOR ASKED FOR (the treatment you choose must deliver this; it overrides the default calm camera where it asks for energy):\n${input.direction}` : null,
+    ]
+      .filter(Boolean)
+      .join("\n"),
     clean
       ? `UPLOADED EVIDENCE (never shown in this video and never recreated or imitated by it; listed only so you know what the claims rest on and can refer to a file in an editing note)\n${listAssets(input)}`
       : `UPLOADED ASSETS (the renderer can composite these; each may be shown only as described)\n${listAssets(input)}`,

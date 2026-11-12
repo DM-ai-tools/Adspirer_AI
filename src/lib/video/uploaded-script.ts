@@ -73,7 +73,7 @@ const changeSchema = z.object({
     .describe("Only if the request is about the ad copy"),
 });
 
-export type UploadedContext = { facts: string; assetIds: string[]; locale: string; model: NonNullable<ReturnType<typeof pickModel>> };
+export type UploadedContext = { facts: string; assetIds: string[]; locale: string; model: NonNullable<ReturnType<typeof pickModel>>; direction?: string | null };
 
 function sceneFrom(raw: Structured["scenes"][number], number: number, line: string, assetIds: string[]): Omit<VideoScene, "start" | "end"> {
   return {
@@ -122,6 +122,9 @@ export async function structureUploadedScript(
         `Where the script names an uploaded image or asset ("Uploaded Asset Placeholder", "[PLACEHOLDER: name]"), give that scene the id of the uploaded image with that name from the facts (match by name). A logo is not an image to show in a scene: leave asset_id null for it.`,
         `Speaker: on_camera when a person is shown speaking to camera, voiceover when the words are an unseen voice, none for a beat with no speech.`,
         `Language: ${ctx.locale}. Where you write a visual, camera or sound, make it concrete and filmable.`,
+        ctx.direction
+          ? `THE KIND OF VIDEO THE OPERATOR ASKED FOR (design every visual, camera, speaker and the style to fit it; the spoken words still never change, and the script's own visual directions still win where it gives them):\n${ctx.direction}`
+          : null,
         `Where the script gives its own visual direction, keep it as written. Where you propose a visual yourself:\n${VISUAL_DIRECTION_RULES}`,
         feedback ? `\nYour previous attempt changed the operator's words in these places: ${feedback}. Copy those lines exactly as they are in the script.` : null,
       ]

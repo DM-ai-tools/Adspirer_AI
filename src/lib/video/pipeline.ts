@@ -14,6 +14,7 @@ import { correctionLines, createVisionReviewer, decideClip, redesignReasons, rev
 import { estimateClipUsd, SEEDANCE_SPECS, splitIntoClips, type SeedanceModelKey, type VideoResolution } from "@/lib/video/seedance";
 import { adaptToMissingSources, unsourcedFigures, type FigureAdjustment, type VideoScript } from "@/lib/video/script";
 import { withTimes } from "@/lib/video/overlays";
+import { videoDirection } from "@/lib/video/video-types";
 import { resolveFinishing, type VideoMode } from "@/lib/video/clean-mode";
 import { makeNarrationStandalone, type NarrationChange } from "@/lib/video/standalone";
 import { type ApprovedClaim, type BrandManifest, type ClipAttemptRecord, type CreativePlan, type QaFinding, type QaReport, type SceneBrief, type SpeechLine } from "@/lib/video/pipeline-types";
@@ -68,6 +69,7 @@ export function planInputFor(project: VideoProject, script: VideoScript, manifes
   const capabilities = providerCapabilities();
   return {
     mode,
+    direction: videoDirection(project.inputs),
     brandName: manifest.name.value ?? "",
     product: manifest.offer.value ?? script.title,
     audience: manifest.audience.value ?? "",

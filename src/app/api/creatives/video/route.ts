@@ -1,5 +1,6 @@
 import { nanoid } from "nanoid";
 import { z } from "zod";
+import { styleForType, VIDEO_TYPE_IDS } from "@/lib/video/video-types";
 import { getCurrentUser } from "@/lib/security/auth";
 import { assertAuthenticated, assertClientAccess } from "@/lib/authz/assert";
 import { getObjectStorage } from "@/lib/storage/r2";
@@ -28,6 +29,10 @@ const payloadSchema = z.object({
   stats: z.array(z.string().max(200)).max(12).default([]),
   targetSeconds: z.number().int().min(15).max(MAX_SECONDS).default(DEFAULT_SECONDS),
   style: z.string().max(60).default("auto"),
+  /** The kind of video the operator wants (UGC, cinematic with presenter, action trailer, story, animation...). */
+  videoType: z.enum(VIDEO_TYPE_IDS).default("auto"),
+  /** The operator's own idea for the video. */
+  videoIdea: z.string().max(1500).optional(),
   locale: z.string().max(20).default("en-AU"),
   format: z.enum(["9:16", "1:1", "4:5"]).default("9:16"),
   priority: z.enum(["quality", "balanced", "cost"]).default("balanced"),
@@ -110,7 +115,10 @@ export async function POST(request: Request) {
         offerDetails: body.offerDetails ?? null,
         stats: body.stats.map((s) => s.trim()).filter(Boolean),
         targetSeconds: body.targetSeconds,
-        style: body.style,
+        // A chosen video type sets the look; otherwise the style picked (or auto).
+        style: styleForType(body.videoType) ?? body.style,
+        videoType: body.videoType,
+        videoIdea: body.videoIdea?.trim() || null,
         locale: body.locale,
         format: body.format,
         priority: body.priority,

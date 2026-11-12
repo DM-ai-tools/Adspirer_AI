@@ -1,5 +1,5 @@
 import { mmss } from "@/lib/video/overlays";
-import { classifyStyle, clipVisual, REALISM_RULE, SIMPLE_ACTION_RULE, STYLE_LOOKS, TEXT_FREE_RULE, wantsRealism } from "@/lib/video/visual-rules";
+import { actionRuleFor, classifyStyle, clipVisual, REALISM_RULE, STYLE_LOOKS, TEXT_FREE_RULE, wantsRealism } from "@/lib/video/visual-rules";
 import { CLEAN_ENDING_RULE, CLEAN_FOOTAGE_RULE, footageOnly, graphicReference, stripGraphicPhrases } from "@/lib/video/clean-mode";
 import type { VideoScene, VideoScript } from "@/lib/video/script";
 import type { PlanCharacter, PlanEnvironment, SceneBrief } from "@/lib/video/pipeline-types";
@@ -101,7 +101,7 @@ export function buildClipPrompt(input: ClipPromptInput): string {
   const rules = [
     "Do not draw any subtitles, captions, on-screen text, numbers, charts, logos, brand names or watermarks anywhere in the frame; they are added afterwards.",
     TEXT_FREE_RULE,
-    SIMPLE_ACTION_RULE,
+    actionRuleFor(script.style),
     "No background music; natural room sound and the speaker's voice only.",
     "Cut cleanly between shots. Keep the same person, clothes, room and colour grade throughout. Speech and mouth movement stay in sync.",
   ];
@@ -242,7 +242,7 @@ export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
   const rules = [
     isClean ? CLEAN_FOOTAGE_RULE : "Do not draw any subtitles, captions, on-screen text, numbers, charts, logos, brand names, buttons or watermarks anywhere in the frame; the real ones are added afterwards.",
     TEXT_FREE_RULE,
-    SIMPLE_ACTION_RULE,
+    actionRuleFor(input.style),
     "No background music; natural room sound and the speaker's voice only.",
     "Cut cleanly between shots. Keep the same person, clothes and colour grade for the shots they share; a new place may have its own light.",
     ...(isClean && isLastClip ? [CLEAN_ENDING_RULE] : []),

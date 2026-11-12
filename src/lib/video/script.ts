@@ -134,6 +134,8 @@ export type VideoBrief = {
   targetSeconds: number;
   /** "auto" lets the writer pick a different style per script. */
   style: string;
+  /** The video type and idea the operator gave before the script was written, as one direction block. */
+  direction?: string | null;
   locale: string;
   /** The claims that have a recorded source: the only figures and results the script may state. */
   claims?: ApprovedClaim[];
