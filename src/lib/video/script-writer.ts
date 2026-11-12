@@ -114,6 +114,7 @@ export function scriptPrompt(ctx: WriteContext, angle: AnglePlan, opts: WriteOpt
     ctx.goal ? `Campaign goal (from the operator): ${ctx.goal}` : null,
     ctx.platform ? `Platform (from the operator): ${ctx.platform}` : null,
     `Locale and spelling: ${ctx.brief.locale}. Preferred look: ${ctx.brief.style && ctx.brief.style !== "auto" ? ctx.brief.style : "choose what suits this idea"}.`,
+    ctx.brief.direction ? `THE KIND OF VIDEO THE OPERATOR ASKED FOR (every script follows it; the angles and wording are still yours):\n${ctx.brief.direction}` : null,
     `Scene detail: each scene has its visual, camera, who speaks (on_camera = the presenter speaks to camera, voiceover = an unseen voice over the visuals, none), the exact line, up to 3 keywords from the line, a stat only if it is an approved claim or an operator stat, an uploaded image id only where it makes the point, and sound. The keywords, the stat and the image id are notes for whoever finishes the video by hand: the video itself shows no text, figure or screenshot, so the spoken line must make complete sense with nothing on screen and must never point at an image ("shown here", "as you can see", "on screen"). Use the uploaded images listed in the brief where they carry proof: set the stat exactly as printed and asset_id to the image it came from.`,
     requiredStatsPrompt(requiredStatsFrom(ctx.brief.images), Object.fromEntries(ctx.brief.images.map((i) => [i.id, i.summary]))),
     HUMAN_VOICE,

@@ -8,7 +8,7 @@
  * moves; believable light and texture. Pure: strings and a few checks.
  */
 
-export type StyleKind = "ugc" | "product" | "cinematic" | "documentary" | "lifestyle" | "motion" | "animated";
+export type StyleKind = "ugc" | "product" | "cinematic" | "action" | "documentary" | "lifestyle" | "motion" | "animated";
 
 /** Which kind of footage a script's style describes. */
 export function classifyStyle(style: string): StyleKind {
@@ -17,6 +17,7 @@ export function classifyStyle(style: string): StyleKind {
   if (/product|demo|unbox|packshot|hero shot|showcase|catalog/.test(s)) return "product";
   if (/motion graphic|kinetic|typograph|explainer/.test(s)) return "motion";
   if (/3d|animat|cartoon|illustrat|claymation/.test(s)) return "animated";
+  if (/action|trailer|high[- ]energy|blockbuster/.test(s)) return "action";
   if (/document|interview|observational|news/.test(s)) return "documentary";
   if (/lifestyle|candid|day in the life|pov/.test(s)) return "lifestyle";
   return "cinematic";
@@ -27,6 +28,7 @@ export const STYLE_LOOKS: Record<StyleKind, string> = {
   ugc: "Looks like a real person filmed it on their phone: held in one hand at about chest height, vertical, the person close to the lens, small natural handheld drift, slightly imperfect framing, ordinary daylight from a window or a lamp, soft phone-camera sharpness and fine grain. Real skin with visible pores and a little shine, ordinary clothes, a lived-in room with everyday clutter slightly out of focus. Natural blinking, small gestures, pauses and glances. Not studio lit, not symmetrical, not polished.",
   product: "A clean commercial product shot: one hero object, soft diffused key light with a gentle rim light, shallow depth of field, believable reflections and contact shadows on a real surface, tidy background. Slow, controlled camera movement (a gentle push-in or a slow orbit). Hands enter only to do one simple action with the product, with the fingers relaxed and apart.",
   cinematic: "Cinematic live-action: a 35mm lens look with shallow depth of field, motivated practical light (a window, a lamp, a screen glow) with soft contrast, subtle film grain, a restrained natural colour grade, layered foreground, subject and background. Slow dolly or slow handheld push, never a whip pan or a sudden zoom.",
+  action: "Action-movie trailer look: anamorphic widescreen feel reframed for vertical, strong contrast and directional light (low sun, practical lamps, light through haze or dust), deep shadows with clean highlights, a cool-and-warm colour grade, fine film grain, real motion with weight and momentum (wind in clothes, dust, splashes, a door slamming), shots from low angles and close, energetic but readable camera moves (a tracking shot, a fast push-in, a crane-up), each shot built around one impact moment.",
   documentary: "Observational documentary: handheld at eye level with a slight natural sway, available light, a medium close interview framing, the subject looking just off the lens or to it, honest imperfect moments, natural pauses.",
   lifestyle: "Candid lifestyle footage: warm natural light, a handheld camera that follows the moment, real settings and everyday objects, relaxed natural movement, shallow depth of field.",
   motion: "Atmospheric background footage only: soft moving light, gentle gradients and drifting particles or out-of-focus shapes in the brand colours, slow movement, completely free of text, numbers or interface. All words and graphics are added afterwards.",
@@ -58,6 +60,15 @@ export const TEXT_FREE_RULE =
 /** Hands, faces and motion are where AI footage breaks first, so the shots are kept simple. */
 export const SIMPLE_ACTION_RULE =
   "One clear action per shot. Keep hand actions simple: one hand holding, pointing or gesturing, fingers relaxed and apart, nothing intricate. Keep the face steady and unobstructed while speaking. Camera movement is slow and has a reason; no whip pans, no sudden zooms, no fast cuts inside a shot.";
+
+/** The action-trailer version: energy from the camera and the subject, still one clear action and simple hands. */
+export const DYNAMIC_ACTION_RULE =
+  "One clear, physically plausible action per shot, performed with energy and momentum. Keep hand actions simple, fingers relaxed and apart, nothing intricate. Keep a speaking face steady and unobstructed. Camera moves are energetic but readable: tracking, fast push-ins, low angles, a crane-up; a whip pan only at the very end of a shot as a transition. No shaky chaos, no morphing during fast motion.";
+
+/** The action and camera rule for a style: dynamic for an action trailer, calm for everything else. */
+export function actionRuleFor(style: string): string {
+  return classifyStyle(style) === "action" ? DYNAMIC_ACTION_RULE : SIMPLE_ACTION_RULE;
+}
 
 /**
  * Guidance for whoever writes a scene's visual (the script writer, the scene rewriter, the uploaded

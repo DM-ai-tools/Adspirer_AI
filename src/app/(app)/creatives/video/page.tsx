@@ -1,5 +1,6 @@
 "use client";
 
+import { VIDEO_TYPES, type VideoTypeId } from "@/lib/video/video-types";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -357,6 +358,37 @@ function FixBar({
 }
 
 /** What a clean video is, where the old "add to the video" switches used to be. Nothing here can turn a graphic on. */
+/** The kind of video and the operator's own idea, asked before the script is read or written. */
+function VideoTypePicker({ value, onChange, idea, onIdea }: { value: VideoTypeId; onChange: (v: VideoTypeId) => void; idea: string; onIdea: (v: string) => void }) {
+  return (
+    <div className="space-y-2">
+      <p className="text-[11px] font-medium">What kind of video do you want?</p>
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {VIDEO_TYPES.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            aria-pressed={value === t.id}
+            onClick={() => onChange(t.id)}
+            className={cn("rounded-md border p-2.5 text-left transition-colors", value === t.id ? "border-accent bg-accent/10" : "border-border hover:border-accent/50")}
+          >
+            <p className="text-xs font-medium">{t.label}</p>
+            <p className="text-[11px] text-muted">{t.blurb}</p>
+          </button>
+        ))}
+      </div>
+      <Field label="Your idea for the video (optional)">
+        <Textarea
+          value={idea}
+          onChange={(e) => onIdea(e.target.value)}
+          placeholder="e.g. Open on a tradie stuck in traffic while his phone keeps ringing, then cut to him calm at a job site. Moody evening light, feels like a movie trailer."
+          className="min-h-[70px]"
+        />
+      </Field>
+    </div>
+  );
+}
+
 type StatInsertView = { scene: number; figure: string; spoken: boolean; sourced: boolean; line: string };
 
 /** The figures in the script, to put on screen by hand: the footage itself never draws a number. */
@@ -1621,6 +1653,9 @@ function VideoInner() {
   const [goalIn, setGoalIn] = useState("");
   const [platformIn, setPlatformIn] = useState("");
   const [style, setStyle] = useState("auto");
+  // Asked before the script is read or written: the kind of video, and the operator's own idea.
+  const [videoType, setVideoType] = useState<VideoTypeId>("auto");
+  const [videoIdea, setVideoIdea] = useState("");
   const [format, setFormat] = useState("9:16");
   const [priority, setPriority] = useState<"balanced" | "quality" | "cost">("quality");
   const [starting, setStarting] = useState(false);
@@ -1720,6 +1755,8 @@ function VideoInner() {
         stats: stats.map((s) => s.trim()).filter(Boolean),
         targetSeconds: seconds,
         style,
+        videoType,
+        videoIdea: videoIdea.trim() || undefined,
         format,
         priority,
         mode,
@@ -2190,7 +2227,7 @@ function VideoInner() {
                     <input type="range" min={15} max={60} step={1} value={seconds} onChange={(e) => setSeconds(Number(e.target.value))} className="w-full" />
                   </div>
                   ) : null}
-                  {mode === "write" ? (
+                  {mode === "write" && videoType === "auto" ? (
                   <Field label="Style">
                     <Select value={style} onValueChange={setStyle}>
                       <SelectTrigger>
@@ -2235,6 +2272,8 @@ function VideoInner() {
                     </Select>
                   </Field>
                 </div>
+
+                <VideoTypePicker value={videoType} onChange={setVideoType} idea={videoIdea} onIdea={setVideoIdea} />
 
                 <div className="flex flex-wrap items-center gap-3">
                   <Button onClick={() => void start()} disabled={!canStart || starting}>
