@@ -132,7 +132,7 @@ export async function prepareCreative(project: VideoProject): Promise<PreparedCr
   const brand = brandBlockers(manifest, mode);
   if (brand) throw new Error(brand);
   // A figure with no source does not stop the video: it is left off the screen and its scene is re-pictured.
-  const adapted = adaptToMissingSources(script, effectiveClaims(project.brand));
+  const adapted = adaptToMissingSources(script, effectiveClaims(project.brand), { keepStats: mode === "clean" });
   script = adapted.script;
   const figureAdjustments = adapted.adjustments;
 

@@ -34,6 +34,20 @@ export const STYLE_LOOKS: Record<StyleKind, string> = {
 };
 
 /**
+ * What stops live-action footage looking generated: a real camera and lens, real light with a
+ * source, and the small imperfections real footage has. Written positively, with the tell-tale AI
+ * looks named once as things to avoid.
+ */
+export const REALISM_RULE =
+  "Photographic realism, as if filmed by a real crew on a real camera (full-frame sensor, 35mm or 50mm lens, natural depth of field, true-to-life colour, fine film grain). Light comes from a real source in the scene (a window, a lamp, the sun) and falls off naturally. Skin has pores, fine lines and natural variation; hair has flyaways; clothes crease; surfaces show wear, dust and fingerprints; rooms have everyday clutter. People move with natural weight and timing, blink and breathe. It must not look like a 3D render, CGI, an illustration or a stock photo: no plastic or airbrushed skin, no waxy faces, no glossy over-sharpened HDR, no oversaturated colour, no perfectly symmetrical posed framing, no glowing rim light on everything.";
+
+/** Realism applies to live action; stylised animation and motion backgrounds keep their own look. */
+export function wantsRealism(style: string): boolean {
+  const kind = classifyStyle(style);
+  return kind !== "animated" && kind !== "motion";
+}
+
+/**
  * The rule that matters most. AI video models cannot spell: any screen, document, sign or label in
  * the frame comes out as convincing nonsense. So nothing readable is ever requested; every stat,
  * caption and screenshot is added afterwards with the real words.

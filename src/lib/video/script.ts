@@ -304,6 +304,46 @@ export function unsourcedFigures(script: Pick<VideoScript, "scenes" | "adCopy">,
     .filter((u) => (seen.has(`${u.where}|${u.figure}`) ? false : (seen.add(`${u.where}|${u.figure}`), true)));
 }
 
+export type StatInsert = {
+  scene: number;
+  figure: string;
+  /** True when the scene's spoken line says the figure, so it is heard in the video. */
+  spoken: boolean;
+  /** True when an approved claim backs the figure; otherwise it should be confirmed before it goes on screen. */
+  sourced: boolean;
+  /** The words it is said in, for finding the moment in the edit. */
+  line: string;
+};
+
+/**
+ * The figures in the script, scene by scene, for someone to put on screen afterwards. The footage
+ * never draws a number (the video model cannot spell), so each stat is said in the voice and listed
+ * here; the exported placement plan gives the exact time it is said.
+ */
+export function statInserts(script: Pick<VideoScript, "scenes">, claims: ApprovedClaim[]): StatInsert[] {
+  const out: StatInsert[] = [];
+  for (const scene of script.scenes) {
+    const inLine = sourceClaims([{ text: scene.line, where: `Scene ${scene.number}` }], claims);
+    const spokenFigures = [...inLine.sourced.map((f) => ({ figure: f.figure, sourced: true })), ...inLine.unsourced.map((f) => ({ figure: f.figure, sourced: false }))];
+    for (const f of spokenFigures) {
+      if (!out.some((o) => o.scene === scene.number && o.figure === f.figure)) out.push({ scene: scene.number, figure: f.figure, spoken: true, sourced: f.sourced, line: scene.line });
+    }
+    if (scene.stat) {
+      const stat = sourceClaims([{ text: scene.stat, where: `Scene ${scene.number}` }], claims);
+      const sourced = stat.unsourced.length === 0;
+      // A stat whose figure the line already says is the same insert; one the line never says is shown only.
+      const statFigures = [...stat.sourced, ...stat.unsourced].map((f) => f.figure);
+      const said = statFigures.length > 0 && statFigures.every((fig) => spokenFigures.some((s) => s.figure === fig));
+      if (said) {
+        for (const o of out) if (o.scene === scene.number && statFigures.includes(o.figure)) o.figure = scene.stat;
+      } else if (!out.some((o) => o.scene === scene.number && o.figure === scene.stat)) {
+        out.push({ scene: scene.number, figure: scene.stat, spoken: false, sourced, line: scene.line });
+      }
+    }
+  }
+  return out;
+}
+
 /** A figure shown big on screen that no approved claim backs: it is never drawn. */
 export function dropUnsourcedStats(script: VideoScript, claims: ApprovedClaim[]): VideoScript {
   const unsourced = (scene: VideoScene) => Boolean(scene.stat) && sourceClaims([{ text: scene.stat!, where: `Scene ${scene.number}` }], claims).unsourced.length > 0;
@@ -322,7 +362,7 @@ export type FigureAdjustment = { scene: number; figure: string; change: string }
  * scene is told to picture the situation in footage instead. A figure that is only spoken stays as
  * the operator wrote it: it is reported, not rewritten.
  */
-export function adaptToMissingSources(script: VideoScript, claims: ApprovedClaim[]): { script: VideoScript; adjustments: FigureAdjustment[] } {
+export function adaptToMissingSources(script: VideoScript, claims: ApprovedClaim[], options: { keepStats?: boolean } = {}): { script: VideoScript; adjustments: FigureAdjustment[] } {
   const open = unsourcedFigures(script, claims);
   if (!open.length) return { script, adjustments: [] };
   const adjustments: FigureAdjustment[] = [];
@@ -336,12 +376,15 @@ export function adaptToMissingSources(script: VideoScript, claims: ApprovedClaim
       scene: scene.number,
       figure: figures.join(", "),
       change: statUnsourced
-        ? "The figure is not shown on screen, and the scene pictures the situation in footage instead."
+        ? options.keepStats
+          ? "The scene pictures the situation in footage instead of the figure; the figure stays on the list of stats to insert in editing (confirm it first)."
+          : "The figure is not shown on screen, and the scene pictures the situation in footage instead."
         : "The scene no longer shows a report, chart or screen; it pictures the situation in footage instead.",
     });
     return {
       ...scene,
-      stat: statUnsourced ? null : scene.stat,
+      // A clean video never draws the stat, so it is kept as the note for the editor; a branded one drops it from the screen.
+      stat: statUnsourced && !options.keepStats ? null : scene.stat,
       visual: `${scene.visual} CHANGED: ${shown} has no recorded source, so show no number, chart, report or screen in this scene. Picture the situation or the outcome in footage instead.`,
     };
   });

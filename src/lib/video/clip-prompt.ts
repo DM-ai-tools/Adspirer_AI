@@ -1,5 +1,5 @@
 import { mmss } from "@/lib/video/overlays";
-import { classifyStyle, clipVisual, SIMPLE_ACTION_RULE, STYLE_LOOKS, TEXT_FREE_RULE } from "@/lib/video/visual-rules";
+import { classifyStyle, clipVisual, REALISM_RULE, SIMPLE_ACTION_RULE, STYLE_LOOKS, TEXT_FREE_RULE, wantsRealism } from "@/lib/video/visual-rules";
 import { CLEAN_ENDING_RULE, CLEAN_FOOTAGE_RULE, footageOnly, graphicReference, stripGraphicPhrases } from "@/lib/video/clean-mode";
 import type { VideoScene, VideoScript } from "@/lib/video/script";
 import type { PlanCharacter, PlanEnvironment, SceneBrief } from "@/lib/video/pipeline-types";
@@ -132,8 +132,14 @@ export type PlannedClipPromptInput = {
   clipNumber: number;
   clipCount: number;
   locale: string;
-  /** The reference images this request carries, in the order they are attached: people, then places, then the previous frame. */
-  refs: { characterIds: string[]; environmentIds: string[]; previousFrame: boolean; previousVideo: boolean };
+  /**
+   * The references this request carries, images in the order they are attached: people, then places, then the previous frame.
+   * previousFrameRole: "continue" opens this clip on that frame; "look" gives it for continuity of light, grade and wardrobe only.
+   * previousVideo: an earlier clip of this ad, attached as the voice reference for every clip that has speech.
+   */
+  refs: { characterIds: string[]; environmentIds: string[]; previousFrame: boolean; previousFrameRole?: "continue" | "look"; previousVideo: boolean };
+  /** The one voice for the whole ad (from the plan), repeated word for word in every clip. */
+  voice?: string;
   /** Targeted corrections from the review of the previous attempt of this clip. */
   corrections: string[];
   /** True when the clip that follows opens from where this one ends. */
@@ -178,18 +184,30 @@ export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
     const e = input.environments.find((x) => x.id === id);
     if (e) imageLabels.push({ label: `place:${id}`, text: `is the place "${clean(e.description).slice(0, 120)}": keep this place and its light for the shots set there.` });
   }
-  if (refs.previousFrame) imageLabels.push({ label: "previous", text: "is where the previous shot ended: this clip opens on the same framing, the same person and the same light." });
+  if (refs.previousFrame) {
+    imageLabels.push(
+      refs.previousFrameRole === "look"
+        ? { label: "previous", text: "is the last frame of the previous clip of this same ad, given for continuity only: match its colour grade, light quality, film look, and any shared person's face, hair and clothes. This clip starts on its own new shot, not on that framing." }
+        : { label: "previous", text: "is where the previous shot ended: this clip opens on the same framing, the same person and the same light." },
+    );
+  }
   const assetLines = imageLabels.map((l, i) => `Image ${i + 1} ${l.text}`);
-  if (refs.previousVideo) assetLines.push("Video 1 is the previous shot: the person who speaks in this clip has the same face, voice, pace and accent as the person in Video 1.");
+  if (refs.previousVideo) {
+    assetLines.push(
+      "Video 1 is an earlier clip of this same ad and is the VOICE REFERENCE: every word spoken in this clip, on camera or off, is in exactly the voice heard in Video 1, with the same timbre, pitch, accent, pace, loudness and microphone sound, as if recorded in the same session. Where the same person appears, they also keep the face from Video 1. Do not copy Video 1's shots, framing or action.",
+    );
+  }
 
   const used = new Set(scenes.map((s) => s.characterId).filter((id): id is string => Boolean(id)));
   const people = input.characters.filter((c) => used.has(c.id));
-  const speaks = scenes.some((s) => input.spoken[s.number]?.speaker === "on_camera");
+  // Any speech, on camera or off, gets the same fixed voice description: the voice is what the viewer notices changing first.
+  const talks = scenes.some((s) => input.spoken[s.number]?.text.trim());
+  const voice = input.voice?.trim() || `a natural, conversational adult voice with ${accentFor(input.locale)}, mid pitch, an easy steady pace`;
   const constant = [
     ...people.map((c) => `Person (${c.id}): ${clean(c.description)}.`),
     !people.length ? "No person appears on camera in this clip; keep the look of every shot consistent." : null,
-    speaks ? `Voice: the speaker's voice is the same in every shot, natural and conversational, with ${accentFor(input.locale)}, speaking at an easy pace, saying every word clearly and completely.` : null,
-    `Look: ${style}. Real skin texture, natural light, believable materials.`,
+    talks ? `Voice (identical in every clip of this ad): ${voice.replace(/[.\s]+$/, "")}. The same single voice speaks every line, saying every word clearly and completely, with the same close, clean microphone sound and no change in tone, pitch or accent between shots.` : null,
+    `Look: ${style}. ${wantsRealism(input.style) ? REALISM_RULE : "Real skin texture, natural light, believable materials."}`,
     "Hands, faces and objects are anatomically correct and undistorted; faces stay stable with no morphing, glowing marks or flicker.",
   ].filter((l): l is string => Boolean(l));
 

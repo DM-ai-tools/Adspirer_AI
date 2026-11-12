@@ -132,7 +132,8 @@ export async function assembleVideo(projectId: string, options: FinishingInput =
 
     const allClaims = effectiveClaims(project.brand);
     // A figure shown big on screen needs a recorded source. One without is not drawn (the video is still made).
-    const script = dropUnsourcedStats(project.chosen_script, allClaims);
+    // A clean video draws no figure at all: its stats stay as notes in the placement plan (an unsourced one is marked to confirm first).
+    const script = clean ? project.chosen_script : dropUnsourcedStats(project.chosen_script, allClaims);
     const format = project.inputs.format as FinalFormat;
     const { width: W, height: H } = finalSize(format);
     const layout = layoutFor(format);
