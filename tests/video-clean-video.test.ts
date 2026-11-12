@@ -508,6 +508,7 @@ const rawScene = (n: 1 | 2, over: Partial<RawScene> = {}): RawScene => ({
   ...over,
 });
 const rawPlan = (scenes: RawScene[]): PlanModelOutput => ({
+  voice: "A calm man in his late 30s with an Australian accent, mid pitch, easy pace.",
   narrative: { approach: "One person, two rooms", whyItFits: "Direct proof", arc: ["mechanism", "proof"] },
   characters: [{ id: "char_presenter", description: "A man in his late 30s in a blue shirt", role: "Presenter" }],
   environments: [

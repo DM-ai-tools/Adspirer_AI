@@ -182,6 +182,7 @@ type GenerationView = {
   spentUsd: number;
   blocked: string | null;
   notice?: string | null;
+  statInserts?: StatInsertView[];
   error: string | null;
 };
 
@@ -356,6 +357,29 @@ function FixBar({
 }
 
 /** What a clean video is, where the old "add to the video" switches used to be. Nothing here can turn a graphic on. */
+type StatInsertView = { scene: number; figure: string; spoken: boolean; sourced: boolean; line: string };
+
+/** The figures in the script, to put on screen by hand: the footage itself never draws a number. */
+function StatInserts({ items, exported }: { items: StatInsertView[]; exported: boolean }) {
+  if (!items.length) return null;
+  return (
+    <div className="space-y-1 rounded-md border border-border p-3 text-xs">
+      <p className="font-medium">Stats to insert in editing</p>
+      <p className="text-[11px] text-muted">
+        The video says these figures; the footage shows no numbers (the video model cannot draw them cleanly). Add each one on screen while it is said.
+        {exported ? " The placement plan in the download gives the exact time for each." : " After export, the placement plan gives the exact time for each."}
+      </p>
+      {items.map((s) => (
+        <p key={`${s.scene}-${s.figure}`} className="text-[11px]">
+          <span className="font-medium">Scene {s.scene}: {s.figure}</span>
+          {s.spoken ? <> — said in &ldquo;{s.line}&rdquo;</> : <> — on screen only in the script; the line does not say it, so add it to the line if it should be heard</>}
+          {s.sourced ? null : <span className="text-amber-500"> · no recorded source, confirm before showing it</span>}
+        </p>
+      ))}
+    </div>
+  );
+}
+
 function CleanVideoNote() {
   return (
     <div className="rounded-md border border-border bg-secondary/40 p-2 text-[11px]">
@@ -1170,6 +1194,7 @@ function GenerationPanel({ projectId, status, initial, onStatus, logoDownloadUrl
           <p className="text-[11px] text-muted">Makes the clips one after another so the person and voice carry through, then joins them. It takes several minutes and keeps going if you leave.</p>
         </div>
         <CleanVideoNote />
+        <StatInserts items={gen?.statInserts ?? []} exported={false} />
         {gen?.storageDurable === false ? <p className="text-xs text-amber-500">Files are being kept on this server&apos;s own disk and would be lost on a restart or redeploy. Set up the storage bucket before relying on a video made now.</p> : null}
         <JobFiles files={gen?.assets ?? []} cautions={gen?.cautions ?? []} started={false} />
         <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -1202,6 +1227,7 @@ function GenerationPanel({ projectId, status, initial, onStatus, logoDownloadUrl
   return (
     <div className="space-y-3">
       <JobFiles files={gen?.assets ?? []} cautions={gen?.cautions ?? []} started />
+      <StatInserts items={gen?.statInserts ?? []} exported={gen?.final?.state === "done"} />
       {figureChanges.length ? (
         <div className="space-y-1 rounded-md border border-amber-500/50 bg-amber-500/5 p-3 text-xs">
           <p className="font-medium">Scenes changed because a figure had no recorded source</p>
@@ -1596,7 +1622,7 @@ function VideoInner() {
   const [platformIn, setPlatformIn] = useState("");
   const [style, setStyle] = useState("auto");
   const [format, setFormat] = useState("9:16");
-  const [priority, setPriority] = useState<"balanced" | "quality" | "cost">("balanced");
+  const [priority, setPriority] = useState<"balanced" | "quality" | "cost">("quality");
   const [starting, setStarting] = useState(false);
   const [history, setHistory] = useState<HistoryItem[] | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
@@ -2203,7 +2229,7 @@ function VideoInner() {
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="balanced">Balanced (the system chooses)</SelectItem>
-                        <SelectItem value="quality">Best quality</SelectItem>
+                        <SelectItem value="quality">Best quality (1080p, recommended)</SelectItem>
                         <SelectItem value="cost">Lowest cost</SelectItem>
                       </SelectContent>
                     </Select>

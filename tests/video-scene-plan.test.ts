@@ -194,6 +194,7 @@ function toModel(p: Omit<CreativePlan, "validation">) {
     narrative: p.narrative,
     characters: p.characters,
     environments: p.environments,
+    voice: p.voice ?? "A warm adult voice with an Australian accent, mid pitch, easy pace.",
     scenes: p.scenes.map((s) => ({
       ...s,
       overlays: s.overlays.map((o) => ({ kind: o.kind, text: o.text ?? null, claimId: o.claimId ?? null, assetId: o.assetId ?? null })),

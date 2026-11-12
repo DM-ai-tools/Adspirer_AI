@@ -27,7 +27,8 @@ export function previewPlan(script: VideoScript, inputs: Pick<VideoInputs, "form
     scenes: script.scenes.map((s) => ({ number: s.number, seconds: s.seconds, onCameraSpeech: s.speaker === "on_camera" })),
     imageRefs: uploadedImages + 2,
     priority: inputs.priority,
-    resolution: "720p" as const,
+    // Best quality is made at 1080p on the newest model; the other choices stay at 720p.
+    resolution: (inputs.priority === "quality" ? "1080p" : "720p") as VideoResolution,
   };
   // Prefer a model that has a key. With none that can do the job, still show the plan the script
   // needs (the screen then says a key is missing); starting the video is what refuses.
@@ -39,8 +40,8 @@ export function previewPlan(script: VideoScript, inputs: Pick<VideoInputs, "form
     choice = chooseSeedanceModel(request);
   }
   const ratio = generationRatio(inputs.format);
-  // When a person speaks on camera, each later clip also carries the one before it as a reference, which counts toward the cost.
-  const chain = script.scenes.some((s) => s.speaker === "on_camera");
+  // When anyone speaks (on camera or voiceover), each later clip carries an earlier clip as the voice reference, which counts toward the cost.
+  const chain = script.scenes.some((s) => s.line.trim());
   const cost = (res: VideoResolution) => choice.clips.reduce((t, c, i) => t + estimateClipUsd(choice.model, res, ratio, c.seconds, chain && i > 0 ? choice.clips[i - 1]!.seconds : 0), 0);
   const spec = SEEDANCE_SPECS[choice.model];
   return {

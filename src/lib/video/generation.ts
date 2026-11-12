@@ -24,6 +24,7 @@ import { narrationCautions } from "@/lib/video/evidence";
 import { claimProjectLease, getProject, releaseProjectLease, updateProject, type VideoProject } from "@/lib/video/projects";
 import { buildPlannedClipPrompt } from "@/lib/video/clip-prompt";
 import { effectiveClaims } from "@/lib/video/claims";
+import { statInserts, type VideoScript } from "@/lib/video/script";
 import {
   applyPlanDurations,
   brandBlockers,
@@ -76,7 +77,8 @@ export function buildPlan(project: VideoProject, finishing: FinishingInput = {},
   const preview = previewPlan(script, project.inputs, project.assets.length);
   const model = preview.model as SeedanceModelKey;
   arkCredentials(model);
-  const chainVideo = script.scenes.some((s) => s.speaker === "on_camera");
+  // Any speech, on camera or voiceover, carries the voice reference from the first speaking clip (priced as video input).
+  const chainVideo = script.scenes.some((s) => s.line.trim());
   const plan: GenerationPlan = {
     model,
     modelLabel: preview.modelLabel,
@@ -154,8 +156,14 @@ function buildPlannedClipRequest(project: VideoProject, plan: GenerationPlan, cl
   const cont = continuityFor(creative, script, clip, previous);
   const model = plan.model as SeedanceModelKey;
   const fits = previous && previous.status === "succeeded" && fresh(previous.finishedAt, now);
-  const previousFrame = cont.continues && fits && previous!.lastFrameUrl ? previous!.lastFrameUrl : null;
-  const previousVideo = plan.chainVideo && cont.sameSpeaker && fits && previous!.sourceVideoUrl ? previous!.sourceVideoUrl : null;
+  // The previous clip's last frame goes with every clip: as the opening frame when the plan continues the shot, and
+  // otherwise as the reference for light, grade and the people's look, so a cut never jumps to a different-looking film.
+  const previousFrame = fits && previous!.lastFrameUrl ? previous!.lastFrameUrl : null;
+  const previousFrameRole: "continue" | "look" = cont.continues ? "continue" : "look";
+  // One voice for the whole ad: every clip with speech hears the same earlier clip (the first one that spoke), on camera or
+  // voiceover alike. Chaining each clip to the one before lets the voice drift a little at every join.
+  const anchor = voiceAnchor(script, clips, clip, now);
+  const previousVideo = anchor && clipSpeaks(script, clip) ? anchor.sourceVideoUrl : null;
 
   // References, in the order the prompt names them: people, then places, then the previous frame; within the model's limit.
   const room = SEEDANCE_SPECS[model].maxImageRefs - (previousFrame ? 1 : 0);
@@ -180,7 +188,8 @@ function buildPlannedClipRequest(project: VideoProject, plan: GenerationPlan, cl
     clipNumber: clip.number,
     clipCount: clips.length,
     locale: project.inputs.locale,
-    refs: { characterIds: chosenPeople.map((r) => r.id), environmentIds: chosenPlaces.map((r) => r.id), previousFrame: Boolean(previousFrame), previousVideo: Boolean(previousVideo) },
+    refs: { characterIds: chosenPeople.map((r) => r.id), environmentIds: chosenPlaces.map((r) => r.id), previousFrame: Boolean(previousFrame), previousFrameRole, previousVideo: Boolean(previousVideo) },
+    voice: creative.voice,
     corrections: clip.corrections ?? [],
     nextContinues,
     // A clean video's footage is the finished picture: the prompt then says nothing about graphics, even for a plan made before clean video existed.
@@ -192,6 +201,19 @@ function buildPlannedClipRequest(project: VideoProject, plan: GenerationPlan, cl
   }
   if (previousVideo) content.push({ type: "video_url", video_url: { url: previousVideo }, role: "reference_video" });
   return { prompt, content };
+}
+
+/** True when any scene in the clip has words to say. */
+export function clipSpeaks(script: Pick<VideoScript, "scenes">, clip: Pick<ClipState, "sceneNumbers">): boolean {
+  return clip.sceneNumbers.some((n) => Boolean(script.scenes.find((s) => s.number === n)?.line.trim()));
+}
+
+/**
+ * The clip whose voice every later clip copies: the first finished clip with speech whose file the video
+ * model can still fetch. Null for the first speaking clip itself, which sets the voice.
+ */
+export function voiceAnchor(script: Pick<VideoScript, "scenes">, clips: ClipState[], clip: Pick<ClipState, "number">, now = Date.now()): ClipState | null {
+  return clips.find((c) => c.number < clip.number && c.status === "succeeded" && Boolean(c.sourceVideoUrl) && fresh(c.finishedAt, now) && clipSpeaks(script, c)) ?? null;
 }
 
 /** Everything needed to ask for one clip. */
@@ -839,6 +861,8 @@ export function viewGeneration(raw: VideoProject): GenerationView {
       : null,
     spentUsd: spentUsd(clips),
     blocked: ["confirmed", "clips_ready", "done"].includes(project.status) ? blockedReason(project) : null,
+    // Every figure the script states: said in the voice, listed for inserting on screen in editing.
+    statInserts: project.chosen_script ? statInserts(project.chosen_script, effectiveClaims(project.brand)) : [],
     // Figures with no recorded source: a heads-up, never a stop.
     notice:
       ["confirmed", "clips_ready"].includes(project.status) && project.chosen_script && project.brand?.manifest

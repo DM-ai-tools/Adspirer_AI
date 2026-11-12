@@ -34,7 +34,12 @@ A video model draws whatever its prompt mentions. The earlier plan put overlay w
 4. **Start**. The uploaded files and the logo are snapshotted into the job by id, version, role and SHA-256 (`plan.assets`, `plan.logo`). The job uses the snapshot from then on.
 5. **Creative plan**, validated before any clip is paid for.
 6. **Speech** (`pronunciation.ts`). Display text and speech text are separate; the clip prompt gets the speech text.
-7. **Clips** (`generation.ts`).
+7. **Clips** (`generation.ts`). Continuity and voice across clips:
+   - **One voice.** The plan picks one voice (`plan.voice`), repeated word for word in every clip with speech. The first clip that speaks sets the voice; every later clip with speech, on camera or voiceover, gets that clip as `Video 1`, the voice reference (`voiceAnchor`). Each clip is not chained to the one before it, which let the voice drift at every join.
+   - **Previous frame.** Every clip gets the previous clip's last frame: as its opening frame when the plan continues the shot, otherwise as the reference for light, grade and the people's look on a cut.
+   - **Realism.** Live-action prompts and the Seedream reference images ask for a real camera, real light and real skin (`REALISM_RULE`); the plan is built on one central idea (`CONCEPT_RULE`).
+   - **Stats.** Figures are said in the voice and never drawn. The video page lists them under "Stats to insert in editing"; the placement plan gives each one's time.
+   - **Best quality** (the default) is made at 1080p on Seedance 2.5.
 8. **Clip inspection** (`clip-qa.ts`, `pipeline.ts`). Technical checks, frames read by a vision model, the transcript against the speech text. Text or a graphic drawn into the footage is critical. A small background detail of the filmed place (not a graphic, not an interface) is noted as minor and does not cause a retry.
 9. **Assembly** (`assemble.ts`). Clips are normalised and joined, the sound is levelled and eased out at the very end, the voice is located in the final audio, and the subtitle files, transcript and placement plan are written.
 10. **Final inspection** (`final-qa.ts`, `clean: true`). A missing logo, captions or end card is correct. A caption, graphic, logo or card in the picture is critical; so is prominent lettering in the footage. The ending is checked from the last frames and from the audio (cut off mid-word, frozen, or a card).

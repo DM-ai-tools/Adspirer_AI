@@ -13,10 +13,11 @@ export type ReferenceKind = "presenter" | "location";
 
 export function referencePrompt(kind: ReferenceKind, description: string): string {
   const d = description.replace(/\s+/g, " ").trim();
+  // Candid, camera-made images: a reference that looks generated makes every clip built on it look generated too.
   if (kind === "presenter") {
-    return `Photorealistic portrait photograph of ${d}. Shoulders-up, facing the camera with a relaxed, natural expression, soft even daylight, a plain softly blurred background, natural skin texture and fine detail, sharp focus. Vertical composition. No text, no logos, no watermark.`;
+    return `Candid photograph of ${d}, taken on a full-frame camera with a 50mm lens at eye level. Shoulders-up, facing the camera with a relaxed, natural expression, soft window daylight from one side, a real lived-in background softly out of focus. Real skin with pores, fine lines and slight unevenness, natural hair with flyaways, everyday clothes with natural creases, true-to-life colour, fine grain. Not a 3D render, not an illustration, not a stock photo, not airbrushed or retouched, no plastic or waxy skin, no glossy HDR. Vertical composition. No text, no logos, no watermark.`;
   }
-  return `Photorealistic photograph of an empty ${d}. No people. Natural believable lighting, real materials and depth, sharp focus. Vertical composition. No text, no logos, no watermark.`;
+  return `Photograph of an empty ${d}, taken on a full-frame camera with a 35mm lens at eye level. No people. Light from a real source (a window, a lamp or the sun) falling off naturally, real materials showing ordinary wear, everyday objects and a little clutter, natural depth, true-to-life colour, fine grain. Not a 3D render, not an architectural visualisation, not a stock photo, no glossy HDR, no oversaturated colour. Vertical composition. No text, no logos, no watermark.`;
 }
 
 /**

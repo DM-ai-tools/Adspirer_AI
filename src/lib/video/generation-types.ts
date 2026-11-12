@@ -235,5 +235,7 @@ export type GenerationView = {
   blocked: string | null;
   /** A heads-up that does not stop the video (figures with no recorded source). */
   notice: string | null;
+  /** The figures in the script, scene by scene, to put on screen in editing (the footage draws none). */
+  statInserts: Array<{ scene: number; figure: string; spoken: boolean; sourced: boolean; line: string }>;
   error: string | null;
 };

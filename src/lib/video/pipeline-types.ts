@@ -283,6 +283,8 @@ export type CreativePlan = {
   narrative: { approach: string; whyItFits: string; arc: string[] };
   characters: PlanCharacter[];
   environments: PlanEnvironment[];
+  /** The one voice for every spoken line, repeated word for word in every clip. Absent on plans made before it existed. */
+  voice?: string;
   scenes: SceneBrief[];
   validation: { ok: boolean; issues: PlanIssue[]; checkedAt: string };
 };

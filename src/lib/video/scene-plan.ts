@@ -12,6 +12,7 @@ import { z } from "zod";
 import { modelCandidates, withModelFallback } from "@/lib/video/model-fallback";
 import { LANDING_PAUSE, WORDS_PER_SECOND, wordsIn } from "@/lib/video/timing";
 import { CLEAN_PLAN_RULES, footageOnly, graphicReference, stripGraphicPhrases } from "@/lib/video/clean-mode";
+import { REALISM_RULE, wantsRealism } from "@/lib/video/visual-rules";
 import type {
   ApprovedClaim,
   CreativePlan,
@@ -125,8 +126,10 @@ export const sceneBriefModelSchema = z.object({
 function withEditingNotes(raw: unknown): unknown {
   if (!raw || typeof raw !== "object") return raw;
   const fill = (scene: unknown) => (scene && typeof scene === "object" && !Array.isArray((scene as { editingNotes?: unknown }).editingNotes) ? { ...(scene as object), editingNotes: [] } : scene);
-  const r = raw as { scenes?: unknown; scene?: unknown };
-  return { ...r, ...(Array.isArray(r.scenes) ? { scenes: r.scenes.map(fill) } : {}), ...(r.scene ? { scene: fill(r.scene) } : {}) };
+  const r = raw as { scenes?: unknown; scene?: unknown; voice?: unknown };
+  // A plan without a voice (an older plan, or a model that left it out) gets one chosen for it when normalised.
+  const voice = Array.isArray(r.scenes) && typeof r.voice !== "string" ? { voice: "" } : {};
+  return { ...r, ...voice, ...(Array.isArray(r.scenes) ? { scenes: r.scenes.map(fill) } : {}), ...(r.scene ? { scene: fill(r.scene) } : {}) };
 }
 
 export const planModelSchema = z.object({
@@ -137,6 +140,9 @@ export const planModelSchema = z.object({
   }),
   characters: z.array(z.object({ id: z.string(), description: z.string(), role: z.string() })),
   environments: z.array(z.object({ id: z.string(), description: z.string(), sceneNumbers: z.array(z.number().int()) })),
+  voice: z
+    .string()
+    .describe("The ONE voice for every spoken line in the ad, on camera or off: gender, rough age, timbre and pitch, accent, pace and energy, in one sentence. It is repeated word for word in every clip so the voice never changes."),
   scenes: z.array(sceneBriefModelSchema),
 });
 
@@ -233,6 +239,14 @@ const CLEAN_SCENE_FIELDS = [
   EDITING_NOTES_FIELD,
 ];
 
+/** The creative bar: one specific idea carried through the ad, not a sequence of stock shots. */
+export const CONCEPT_RULE =
+  "Build the ad on ONE fresh central idea that belongs to this business and this audience: a specific situation, contrast or visual metaphor from the customer's real day (name it in narrative.approach). Every scene expresses that idea in a concrete, slightly unexpected but believable way: a particular place, prop, gesture or moment a viewer has not seen in a hundred other ads. Reject the first idea anyone would have (a person smiling at a laptop, a handshake, a thumbs up, pointing at the camera in an office, a team high-five, a city skyline). The opening scene stops the scroll with something visually specific within the first second.";
+
+/** One voice from the first word to the last. */
+export const VOICE_RULE =
+  "Choose ONE voice for the whole ad in the voice field (gender, rough age, timbre and pitch, accent, pace, energy). If a recurring person speaks on camera, it is that person's voice, and any voiceover is the same person. Never describe a different voice for a later scene.";
+
 const HARD_RULES = [
   "The video model must NEVER draw readable text, logos, user interfaces, dashboards, charts or numbers: it renders them as convincing nonsense. Those are composited by the renderer from verified assets and approved claims. A scene that is about a screen, a dashboard, a report or a result must say how it is handled: composite_verified_asset (the verified asset is laid over footage you choose to fit it, and it must be listed in requiredAssets) or footage_without_screen (the footage never shows the screen; the idea is carried another way).",
   "Reject interchangeable filler. Every scene earns its place with something new to say or feel; if two scenes could swap without the viewer noticing, redesign one.",
@@ -249,10 +263,13 @@ const HARD_RULES = [
 ];
 
 /** The hard rules that apply: a clean video swaps the two rules about composited graphics for the clean-video rules. */
-export function hardRulesFor(input: Pick<PlanInput, "mode">): string[] {
-  if (!isClean(input)) return HARD_RULES;
+export function hardRulesFor(input: Pick<PlanInput, "mode"> & { script?: Pick<PlanInput["script"], "style"> }): string[] {
+  // Realism is asked of live action only; a stylised animation keeps its own look.
+  const craft = [CONCEPT_RULE, VOICE_RULE, ...(!input.script || wantsRealism(input.script.style) ? [`Every shot is written to look real: ${REALISM_RULE}`] : [])];
+  if (!isClean(input)) return [...craft, ...HARD_RULES];
   const kept = HARD_RULES.filter((r) => !r.startsWith("The video model must NEVER draw readable text") && !r.startsWith("Use only the asset ids and claim ids"));
   return [
+    ...craft,
     ...CLEAN_PLAN_RULES,
     "The video model cannot spell: any readable text, logo, interface, dashboard, chart or number it is asked for comes out as convincing nonsense. A scene whose line is about a screen, a report or a result carries the idea through a person, a place or an object, and never shows a screen with content.",
     "An editing note that carries a figure must cite the approved claim it comes from by its claim id, and an editing note that refers to an uploaded file must use its asset id. Do not invent figures, proof or credentials.",
@@ -294,7 +311,8 @@ export function planPrompt(input: PlanInput, repair?: PlanIssue[]): string {
       "YOUR TASK",
       "1. Choose the narrative approach and visual treatment that fits THIS message, audience, offer and platform. It must not default to a problem-and-solution office montage; pick what suits the inputs and say why it fits.",
       "2. Define the recurring characters (if any) and the environments the story uses. Give every environment the scene numbers that happen in it.",
-      "3. Write one brief for every scene listed in the script, using the same scene numbers. Each brief has exactly these fields:",
+      "3. Choose the one voice for the whole ad (the voice field).",
+      "4. Write one brief for every scene listed in the script, using the same scene numbers. Each brief has exactly these fields:",
       ...(clean ? CLEAN_SCENE_FIELDS : SCENE_FIELDS).map((f) => `   - ${f}`),
     ].join("\n"),
     `HARD RULES\n${hardRulesFor(input)
@@ -816,7 +834,7 @@ function basisOf(input: PlanInput): CreativePlan["basis"] {
 }
 
 /** Turn the model's output into a plan: basis from the input, ids made safe and consistent, narration kept verbatim. */
-export function normalisePlan(raw: PlanModelOutput, input: PlanInput, now: string): Omit<CreativePlan, "validation"> {
+export function normalisePlan(raw: Omit<PlanModelOutput, "voice"> & { voice?: string }, input: PlanInput, now: string): Omit<CreativePlan, "validation"> {
   const lineOf = new Map(input.script.scenes.map((s) => [s.number, s.line]));
   const characters: PlanCharacter[] = raw.characters.map((c, i) => ({ id: slug(c.id, `character_${i + 1}`), description: c.description.trim(), role: c.role.trim() }));
   const environments: PlanEnvironment[] = raw.environments.map((e, i) => ({
@@ -833,8 +851,25 @@ export function normalisePlan(raw: PlanModelOutput, input: PlanInput, now: strin
     narrative: { approach: raw.narrative.approach.trim(), whyItFits: raw.narrative.whyItFits.trim(), arc: raw.narrative.arc.map((a) => a.trim()).filter(Boolean) },
     characters,
     environments,
+    voice: raw.voice?.trim() || defaultVoice(input, characters, scenes),
     scenes,
   };
+}
+
+const ACCENTS: Record<string, string> = {
+  "en-au": "an Australian English accent",
+  "en-us": "an American English accent",
+  "en-gb": "a British English accent",
+  "en-nz": "a New Zealand English accent",
+};
+
+/** A voice for a plan that came without one: the speaking person's, described plainly, with the locale's accent. */
+export function defaultVoice(input: Pick<PlanInput, "locale" | "script">, characters: PlanCharacter[], scenes: Array<Pick<SceneBrief, "number" | "characterId">>): string {
+  const speaking = input.script.scenes.find((s) => s.speaker === "on_camera" && s.line.trim());
+  const speakerId = speaking ? scenes.find((b) => b.number === speaking.number)?.characterId : null;
+  const person = speakerId ? characters.find((c) => c.id === speakerId) : null;
+  const accent = ACCENTS[input.locale.toLowerCase()] ?? "a natural accent";
+  return `${person ? `The voice of ${person.description.split(/[.;]/)[0]!.trim()}: ` : ""}a warm, natural, conversational adult voice with ${accent}, mid pitch, an easy steady pace and even loudness.`;
 }
 
 function ctxFor(input: PlanInput): ValidateCtx {
@@ -868,7 +903,7 @@ function defaultGenerate(schema: z.ZodType, temperature = 0.7, clean = false): G
 }
 
 function emptyPlan(input: PlanInput, now: string): Omit<CreativePlan, "validation"> {
-  return { version: 1, createdAt: now, ...(input.mode ? { mode: input.mode } : {}), basis: basisOf(input), narrative: { approach: "", whyItFits: "", arc: [] }, characters: [], environments: [], scenes: [] };
+  return { version: 1, createdAt: now, ...(input.mode ? { mode: input.mode } : {}), basis: basisOf(input), narrative: { approach: "", whyItFits: "", arc: [] }, characters: [], environments: [], voice: defaultVoice(input, [], []), scenes: [] };
 }
 
 /**
