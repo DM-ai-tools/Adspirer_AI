@@ -150,7 +150,8 @@ function fieldsOf(list: List) {
     }
   }
   close();
-  return { fields, notes };
+  // A field with nothing in it ("**How:** —") is left off the card rather than printed as a dash.
+  return { fields: fields.filter((f) => !(f.value.length === 1 && f.value[0]!.text === EMPTY_VALUE)), notes };
 }
 
 const toneOfSeverity = (s: string | undefined): CardTone => {

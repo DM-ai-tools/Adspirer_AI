@@ -70,3 +70,38 @@ describe("the audit method on honest numbers", () => {
     expect(META_AUDIT_FRAMEWORK).toMatch(/date of the edit itself/);
   });
 });
+
+describe("the second review's findings", () => {
+  it("judges on the cleaner signal and never recommends aligning to a view-through window", () => {
+    expect(META_AUDIT_FRAMEWORK).toMatch(/Verdicts use the cleaner signal/);
+    expect(META_AUDIT_FRAMEWORK).toMatch(/Never recommend aligning everything to a window that includes view-through/);
+  });
+
+  it("holds an edit verdict to the figures, and the tally to the cards", () => {
+    expect(META_AUDIT_FRAMEWORK).toMatch(/A verdict needs the numbers/);
+    expect(META_AUDIT_FRAMEWORK).toMatch(/count them/);
+  });
+
+  it("names one cause per problem, checks its pointers and gives already-paused ad sets a fitting verdict", () => {
+    expect(META_AUDIT_FRAMEWORK).toMatch(/One cause per problem/);
+    expect(META_AUDIT_FRAMEWORK).toMatch(/Every "see R#" must point to a risk/);
+    expect(META_AUDIT_FRAMEWORK).toMatch(/Reactivate \(if …\) \/ Keep paused/);
+  });
+
+  it("asks for the used / never-used matrix, dollar budgets and test design", () => {
+    expect(META_AUDIT_FRAMEWORK).toMatch(/Used \/ Not used in the audited period/);
+    expect(META_AUDIT_FRAMEWORK).toMatch(/\| Layer \| Campaign \| Audience \| Budget share \| Daily budget \|/);
+    expect(META_AUDIT_FRAMEWORK).toMatch(/the budget it needs, how long it runs/);
+  });
+});
+
+describe("a card with an empty field", () => {
+  it("leaves the field off instead of printing a dash", async () => {
+    const { parseMarkdownToBlocks } = await import("@/lib/reports/parse-markdown");
+    const { presentBlocks } = await import("@/lib/reports/present");
+    const md = ["### 2. Confirm the Purchase event fires", "- **Who:** Developer", "- **How:** —", "- **Done when:** match rate is 70% or more"].join("\n");
+    const card = presentBlocks(parseMarkdownToBlocks(md)).find((b) => b.type === "card");
+    if (card?.type !== "card") throw new Error("expected a card");
+    expect(card.fields.map((f) => f.label)).toEqual(["Who", "Done when"]);
+  });
+});
