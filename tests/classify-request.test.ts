@@ -90,6 +90,30 @@ describe("classifyRequest", () => {
 });
 
 describe("normalizeBrief", () => {
+  // Bethel, 14 Nov 2026: a fresh chat's "give me the audit … last 90 days" came back as a
+  // free-form answer because the model said chat/followup with no report in the chat.
+  it("runs the audit when the model says chat or followup but there's no report to follow up on", () => {
+    const ask = "give me the audit of the account for the last 90 days";
+    for (const wrong of ["chat", "followup"] as const) {
+      const out = normalizeBrief({ ...rulesBrief(ask, []), intent: wrong }, ask, []);
+      expect(out.intent).toBe("audit");
+      expect(out.period).not.toBeNull();
+    }
+    const strategy = "give me an optimisation strategy";
+    expect(normalizeBrief({ ...rulesBrief(strategy, []), intent: "chat" }, strategy, []).intent).toBe("strategy");
+  });
+
+  it("still follows up when an earlier report is in the chat", () => {
+    const ask = "now give me the audit summary in 3 bullets";
+    const brief = { ...rulesBrief(ask, report("TR Lead")), intent: "followup" as const };
+    expect(normalizeBrief(brief, ask, report("TR Lead")).intent).toBe("followup");
+  });
+
+  it("leaves a real chat question alone", () => {
+    const ask = "what does an audit usually check?";
+    expect(normalizeBrief({ ...rulesBrief(ask, []), intent: "chat" }, ask, []).intent).toBe("chat");
+  });
+
   it("leaves a follow-up without an optimisation ask unchanged", () => {
     const brief = { ...rulesBrief("which of these can you do?", report("TR Lead")), intent: "followup" as const };
     expect(normalizeBrief(brief, "which of these can you do?", report("TR Lead"))).toEqual(brief);
