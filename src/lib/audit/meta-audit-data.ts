@@ -362,11 +362,34 @@ function performanceFrom(row: Row | undefined): PeriodPerformance | null {
     const total = types.reduce((sum, t) => sum + num(actions.find((a) => a.action_type === t)?.value), 0);
     return total > 0 ? total : null;
   };
-  const leads = actionCount("lead", "onsite_conversion.lead_grouped");
-  const addToCart = actionCount("omni_add_to_cart", "add_to_cart");
-  const initiateCheckout = actionCount("omni_initiated_checkout", "initiate_checkout");
+  // The first Meta reports, never a sum: "lead" is already the total of every lead, and
+  // "onsite_conversion.lead_grouped" is the same instant-form leads again — adding them counted each lead twice.
+  const firstCount = (...types: string[]) => {
+    for (const t of types) {
+      const found = actions.find((a) => a.action_type === t);
+      if (found) return num(found.value) > 0 ? num(found.value) : null;
+    }
+    return null;
+  };
+  const leads = firstCount("lead", "onsite_conversion.lead_grouped", "offsite_conversion.fb_pixel_lead");
+  // "omni_" is Meta's total across channels, which already includes the plain action: never add them.
+  const addToCart = firstCount("omni_add_to_cart", "add_to_cart");
+  const initiateCheckout = firstCount("omni_initiated_checkout", "initiate_checkout");
   // The 7-day action is Meta's own "Messaging conversations started"; the older name is a fallback, never added to it.
   const messagingConversations = actionCount("onsite_conversion.messaging_conversation_started_7d") ?? actionCount("onsite_conversion.total_messaging_connection");
+  // No result type from Meta (it reports "Unknown Optimization Goal" for some lead-form setups): when the
+  // row has only one kind of conversion, that is the result. With both, or neither, nothing is guessed.
+  let resultCount = count;
+  let resultLabel = indicator === "mixed" ? "Mixed goals" : indicator ? resultLabelFor(indicator) : "Results";
+  if (!indicator) {
+    if (leads != null && purchases <= 0) {
+      resultCount = leads;
+      resultLabel = "Leads";
+    } else if (purchases > 0 && leads == null) {
+      resultCount = purchases;
+      resultLabel = "Purchases";
+    }
+  }
   return {
     spendCents,
     impressions: num(row.impressions),
@@ -374,9 +397,9 @@ function performanceFrom(row: Row | undefined): PeriodPerformance | null {
     frequency: num(row.frequency),
     linkCtr: num(row.inline_link_click_ctr),
     cpmCents: row.cpm != null ? major(row.cpm) : null,
-    results: count,
-    resultLabel: indicator === "mixed" ? "Mixed goals" : indicator ? resultLabelFor(indicator) : "Results",
-    costPerResultCents: count && count > 0 ? Math.round(spendCents / count) : null,
+    results: resultCount,
+    resultLabel,
+    costPerResultCents: resultCount && resultCount > 0 ? Math.round(spendCents / resultCount) : null,
     roas,
     ...(row.clicks != null ? { clicks: num(row.clicks) } : {}),
     ...(purchases > 0 ? { purchases } : {}),
