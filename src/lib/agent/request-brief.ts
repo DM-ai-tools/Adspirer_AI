@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { logger } from "@/lib/observability/logger";
 import type { AgentHistoryMessage } from "@/lib/agent/history";
 import { completedDaysRange, parseDateRangeFromText, resolveAuditBrief } from "@/lib/agent/audit-brief";
 import { FOCUS_AREAS, type ChangeKind, type Focus } from "@/lib/agent/optimization-capabilities";
@@ -433,12 +434,34 @@ export function inheritedScope(request: string, history: AgentHistoryMessage[]):
  * for optimisation steps is a live optimisation (the old report is not evidence),
  * and an analysis stays on the campaigns the chat was already about.
  */
+/** An earlier report or long answer the operator could be building on (past replies are kept to ~1,500 characters). */
+function hasEarlierReport(history: AgentHistoryMessage[]): boolean {
+  return history.some((m) => m.role === "assistant" && m.content.trim().length >= 800);
+}
+
+/** "what does an audit check?" asks about the work; "give me the audit" asks for it. Only the second is overridden. */
+function asksAQuestion(request: string): boolean {
+  const t = request.trim();
+  return /\?\s*$/.test(t) || /^(what|how|why|when|which|who|does|do|is|are|should|explain|tell\s+me\s+(about|what|how))\b/i.test(t);
+}
+
 export function normalizeBrief(
   brief: RequestBrief,
   request: string,
   history: AgentHistoryMessage[],
 ): RequestBrief {
   let next = brief;
+  // A conversational route needs a reason: chat answers from expertise, followup builds on a
+  // report already in the chat. When the model picks one with no report to build on, and the
+  // keyword rules read a plain audit or strategy ask, run that workflow: a fresh chat's "audit the
+  // last 90 days" once came back as a free-form answer instead of the audit report.
+  if ((next.intent === "chat" || next.intent === "followup") && !hasEarlierReport(history) && !asksAQuestion(request)) {
+    const rules = detectRequestIntentWithHistory(request, history);
+    if (rules === "audit" || rules === "strategy") {
+      logger.warn("request.intent_overridden", { modelIntent: next.intent, intent: rules, reason: "no earlier report in the chat" });
+      next = { ...next, intent: rules };
+    }
+  }
   if (next.intent === "followup" && next.optimizationAsk) {
     next = { ...next, intent: "optimize", mode: "analyse", queue: { ...EMPTY_QUEUE } };
   }

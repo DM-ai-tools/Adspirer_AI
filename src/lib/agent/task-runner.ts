@@ -428,6 +428,8 @@ export async function runTask(
       : null;
     if (storedOffer) brief = adoptOfferContext(brief, storedOffer);
     const intent = brief.intent;
+    // Which route the turn took, so a mis-route (e.g. an audit answered as chat) shows in the logs.
+    log.info("request.routed", { intent, mode: brief.mode, keywordIntent: bareIntent, historyTurns: history.length });
     const research = researchEvidence
       ? await buildContextResearch({
           clientId: task.client_id,
