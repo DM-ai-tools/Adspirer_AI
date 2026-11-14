@@ -5,6 +5,7 @@ import {
   entitiesToWatch,
   fetchMetaAuditSnapshot,
   normalizeChanges,
+  editedObjectType,
   scopeAuditSnapshot,
   type AuditChange,
   type MetaAuditSnapshot,
@@ -55,6 +56,26 @@ describe("normalizeChanges", () => {
     );
     expect(c).toMatchObject({ actor: null, application: null, objectName: null, campaignId: null, label: null });
     expect(c!.detail).toBe('{"old_value":2000,"new_value":3000}');
+  });
+
+  it("reads Meta's old names: an ad set labelled CAMPAIGN is an ad set, billing and access are account admin", () => {
+    // Rows as Meta returned them for a live account (Bethel, Nov 2026).
+    const rows = [
+      { event_time: "2026-10-29T03:00:00+0000", event_type: "update_ad_set_run_status", object_type: "CAMPAIGN", object_id: "a1", object_name: "Shopping Basket and Trolley" },
+      { event_time: "2026-10-29T03:00:00+0000", event_type: "update_audience", object_type: "CAMPAIGN", object_id: "aud9", object_name: "asa_auto_custom_audience", actor_name: "Meta" },
+      { event_time: "2026-10-29T03:00:00+0000", event_type: "ad_account_billing_charge", object_type: "ACCOUNT", object_id: "341" },
+      { event_time: "2026-10-29T03:00:00+0000", event_type: "ad_account_add_user_to_role", object_type: "USER", object_id: "u1" },
+      { event_time: "2026-10-29T03:00:00+0000", event_type: "update_campaign_budget", object_type: "CAMPAIGN_GROUP", object_id: "c1" },
+    ];
+    const types = normalizeChanges(rows, context).map((c) => c.objectType);
+    expect(types).toEqual(["AD_SET", "AUDIENCE", "ACCOUNT", "ACCOUNT", "CAMPAIGN"]);
+    // Tied to its campaign through the ad set, so its own figures get loaded.
+    expect(normalizeChanges(rows.slice(0, 1), context)[0]!.campaignId).toBe("c1");
+  });
+
+  it("a known id decides the type over the event name", () => {
+    expect(editedObjectType("update_status", "CAMPAIGN", "a1", (id) => (id === "a1" ? "AD_SET" : null))).toBe("AD_SET");
+    expect(editedObjectType("update_ad_run_status", null, "x")).toBe("AD");
   });
 
   it("drops rows with no usable time", () => {
@@ -191,8 +212,34 @@ describe("renderChangesEvidence", () => {
     expect(renderChangesEvidence({ ...base, changes: [] })).toContain("Meta recorded no edits");
   });
 
+  it("counts billing, access and Meta's automatic audiences as routine and gives them no figures", () => {
+    const text = renderChangesEvidence({
+      ...base,
+      changes: [
+        change({ eventType: "ad_account_billing_charge", label: "Account billed", objectType: "ACCOUNT", campaignId: null, actor: "Meta" }),
+        change({ eventType: "ad_account_add_user_to_role", label: "Person added to account", objectType: "ACCOUNT", campaignId: null }),
+        change({ eventType: "update_audience", label: "Custom audience updated", objectType: "AUDIENCE", campaignId: null, actor: "Meta" }),
+      ],
+      changeContext: [{ entityType: "account", id: "act_1", name: "Demo", days: [{ date: "2026-10-28", spendCents: 1000, impressions: 100, results: 2, costPerResultCents: 500, linkCtr: 1 }] }],
+    });
+    expect(text).toContain("0 that could move delivery, 3 routine");
+    expect(text).not.toContain("Edit on ");
+    expect(text).not.toContain("- whole ad account");
+  });
+
   it("flags a history cut at its page cap", () => {
     expect(renderChangesEvidence({ ...base, changes: [change()], changesTruncated: true })).toContain("may be incomplete");
+  });
+});
+
+describe("a part Meta didn't return", () => {
+  it("is not checked, never a false 'every ad set is off'", () => {
+    const snap = demoMetaAuditSnapshot("act_1", "Demo", 30);
+    const failed = { ...snap, adSets: [], ads: [], warnings: ["Ad sets: Ad Account Has Too Many API Calls (code 17)"] };
+    const s1 = evaluateCheckpoints(failed).checkpoints.find((c) => c.id === "S1")!;
+    expect(s1.status).toBe("not_checked");
+    expect(s1.evidence).toContain("ad sets failed to load");
+    expect(evaluateCheckpoints(failed).checkpoints.filter((c) => c.status === "fail" && !c.id.startsWith("T"))).toEqual([]);
   });
 });
 

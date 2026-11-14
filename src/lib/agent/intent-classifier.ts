@@ -19,7 +19,7 @@ const INTENT_GUIDE: Record<RequestIntent, string> = {
   optimize:
     "Wants changes made or queued in Meta: optimize the ads / budget / placements, apply or queue recommendations to Approvals, pause or resume things.",
   strategy:
-    "Wants a plan to reach a goal (leads, ROAS, budget) or answers the strategy brief's own question (goal, budget).",
+    "Wants a strategy or plan for the account: an optimisation strategy, a strategy document, a plan to reach a goal (leads, cost per lead or purchase, ROAS, budget), with or without an audit already in the chat. Also answers the strategy's own question: picks a proposed target (safe / recommended / bold, \"go with your pick\") or gives a target, budget or timeframe.",
   budget: "Asks about or wants to change budgets or bids.",
   list_campaigns: "Asks to list or show campaigns.",
   export: "Wants the conversation itself, or a report already in it, as a downloadable PDF / Word document. Not for new data: if they name metrics, a period or a breakdown to compile, that is custom.",
@@ -54,7 +54,7 @@ const SYSTEM = [
   "Never force a request into the nearest intent. If it asks for something specific (particular metrics, a period, a breakdown, a file format), that is custom, even when it says \"report\". audit and export are only for a plain request to run an audit or to download the conversation.",
   "Key rule: mentioning an earlier report (\"based on the audit\", \"from those findings\") means they want to USE it (followup), not run it again. Choose audit only when they want a new audit run or are answering the audit's own question.",
   "If the assistant's last message asked the operator a question (scope, dates, goal, budget, an image link), a short reply is most likely the answer to it and stays on that flow.",
-  "The workflows (audit, strategy, optimize, export, create_campaign, ad_copy, generate_creatives, scrape_services) run a fixed, heavy process: pick one only when the operator clearly wants that workflow. A question about performance, a \"why\", an opinion, a quick check, or a mix of things is general (needs this client's data) or chat (answered from expertise); those are answered conversationally and can still read any data. Asking what to optimise or fix across the account (or a named campaign) is still optimize, because that flow builds the numbered list of changes they can queue.",
+  "The workflows (audit, strategy, optimize, export, create_campaign, ad_copy, generate_creatives, scrape_services) run a fixed, heavy process: pick one only when the operator clearly wants that workflow. A question about performance, a \"why\", an opinion, a quick check, or a mix of things is general (needs this client's data) or chat (answered from expertise); those are answered conversationally and can still read any data. Asking what to optimise or fix across the account (or a named campaign) is still optimize, because that flow builds the numbered list of changes they can queue. Asking for a strategy or plan (\"optimisation strategy\", \"strategy to hit 4x\", \"strategy document based on the audit\") is strategy, never followup or optimize.",
   "Intents:",
   ...INTENTS.map((i) => `- ${i}: ${INTENT_GUIDE[i]}`),
   "Also read what the operator wants done, and reply with JSON only, exactly this shape:",

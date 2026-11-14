@@ -22,7 +22,7 @@ vi.mock("@/lib/strategy/requested-category", async (importOriginal) => {
 });
 
 import { gatherDiagnoseEvidence, runAdspirerAgent, writerNoticeRules } from "@/lib/agent/adspirer-agent";
-import { STRATEGY_BRIEF_MARKER } from "@/lib/agent/strategy-brief";
+import { STRATEGY_TARGET_MARKER } from "@/lib/agent/account-strategy-brief";
 import { createTask, runTask } from "@/lib/agent/task-runner";
 import { detectRequestIntent, detectRequestIntentWithHistory } from "@/lib/agent/task-plan";
 import {
@@ -790,30 +790,30 @@ describe("final review: whole-account targets, notices and audit (DEMO_MODE)", (
     const request = "Our margin is 40%. Build me a strategy";
     const task = await createTask({ clientId: TR, createdBy: ADMIN, title: request, goal: request });
     const gathered = await gatherDiagnoseEvidence({ clientId: TR, userId: ADMIN, request, intent: "strategy" });
-    expect(gathered.strategyBriefIncomplete).toBe(true);
+    expect(gathered.strategyAppendix?.toLowerCase()).toContain(STRATEGY_TARGET_MARKER);
     const result = await runAdspirerAgent({ task, clientContext: "", toolEvidence: gathered.evidence, intent: "strategy" });
     const saved = "Saved to TrafficRadius' settings: margin 40% (was not set).";
     expect(result.summary.startsWith(saved)).toBe(true);
     expect(result.summary.split(saved)).toHaveLength(2);
-    expect(result.summary.toLowerCase()).toContain(STRATEGY_BRIEF_MARKER);
 
+    // The task runner adds the proposal's closing line; the pick that answers it builds the plan.
     const history = [
       { role: "user" as const, content: request },
-      { role: "assistant" as const, content: result.summary },
+      { role: "assistant" as const, content: `${result.summary}
+
+${gathered.strategyAppendix}` },
     ];
-    expect(detectRequestIntentWithHistory("10x on $500/day", history)).toBe("strategy");
+    expect(detectRequestIntentWithHistory("recommended", history)).toBe("strategy");
     llm.reply = settings();
     const next = await gatherDiagnoseEvidence({
       clientId: TR,
       userId: ADMIN,
-      request: "10x on $500/day",
+      request: "recommended",
       history,
       intent: "strategy",
     });
-    expect(next.toolCalls.find((c) => c.name === "strategy_plan")?.args).toMatchObject({
-      daily_budget_cents: 50_000,
-      target_roas: 10,
-    });
+    expect(next.toolCalls.find((c) => c.name === "strategy_plan")?.args).toMatchObject({ stage: "plan", goal: "leads" });
+    expect(next.evidence).toContain('the "recommended" target the operator picked');
   });
 
   it("opens the demo strategy and general replies with the settings lines, once", async () => {

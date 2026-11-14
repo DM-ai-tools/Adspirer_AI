@@ -359,13 +359,14 @@ describe("strategy turn for a lead-gen client (DEMO_MODE)", () => {
     expect(gathered.offered ?? []).toEqual([]);
   });
 
-  it("asks for the lead goal, not a target ROAS, when the ask has none", async () => {
-    const { gathered, result } = await strategyTurn("client_modern_dental", "Build me a strategy");
-    expect(gathered.strategyBriefIncomplete).toBe(true);
-    expect(result.summary.toLowerCase()).toContain("strategy brief");
-    expect(result.summary).toContain("Lead goal");
-    expect(result.summary).not.toMatch(/ROAS/i);
-    expect(gathered.toolCalls.map((c) => c.name)).not.toContain("strategy_plan");
+  it("proposes lead targets, never a ROAS, when the ask has none", async () => {
+    const { gathered } = await strategyTurn("client_modern_dental", "Build me a strategy");
+    expect(gathered.strategyBriefIncomplete).toBeFalsy();
+    expect(gathered.evidence).toContain("Cost per lead");
+    expect(gathered.evidence).toContain("never mention ROAS");
+    expect(gathered.evidence).not.toMatch(/\| ROAS \|/);
+    expect(gathered.strategyAppendix).not.toMatch(/ROAS/);
+    expect(gathered.toolCalls.find((c) => c.name === "strategy_plan")?.args).toMatchObject({ goal: "leads", stage: "target_proposal" });
   });
 
   it("still plans on ROAS for an ecommerce client", async () => {

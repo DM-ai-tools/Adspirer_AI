@@ -42,13 +42,23 @@ async function writeStrategy(clientId: string, request: string, history: Array<{
 }
 
 describe("strategy writer with an LLM configured", () => {
-  it("replies with exactly the clarifying question, without calling the model, when the brief is incomplete", async () => {
-    const { gathered, result } = await writeStrategy("client_trafficradius", "Build me a strategy");
+  it("replies with exactly the clarifying question, without calling the model, when the budget plan's brief is incomplete", async () => {
+    // A stated budget is the budget plan; a sales client with no target ROAS saved is asked only for the target.
+    const tr = getDemoStore().clients.find((c) => c.id === "client_trafficradius")!;
+    tr.goals_profile = { ...tr.goals_profile, business_model: "ecommerce" };
+    const { gathered, result } = await writeStrategy("client_trafficradius", "Build me a strategy for $500/day");
     expect(gathered.strategyBriefIncomplete).toBe(true);
     expect(streamText).not.toHaveBeenCalled();
-    // The demo account's current spend fills the budget, so only the target is asked for.
     expect(result.summary).toBe(buildStrategyClarifyingQuestion(["target_roas"]));
     expect(result.toolCalls).toEqual([]);
+  });
+
+  it("writes the target proposal with the model when no target is given", async () => {
+    const { gathered } = await writeStrategy("client_trafficradius", "Build me a strategy");
+    expect(gathered.strategyBriefIncomplete).toBeFalsy();
+    expect(streamText).toHaveBeenCalled();
+    expect(userTurn()).toContain("# Strategy target proposal");
+    expect(userTurn()).toContain("Write exactly what the framework in the evidence asks for");
   });
 
   it("asks for exactly the fields the evidence lists as missing", async () => {

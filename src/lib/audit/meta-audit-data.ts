@@ -585,6 +585,33 @@ function compactDetail(extra: unknown): string | null {
  * the ad account's timezone. `campaignOf` resolves an edited ad set or ad to
  * its campaign.
  */
+/**
+ * What an activity-history row edited. Meta's history still uses Facebook's old names (an ad set is
+ * "CAMPAIGN", a campaign "CAMPAIGN_GROUP", an ad "ADGROUP") and labels some unrelated rows (audiences)
+ * "CAMPAIGN" too, so object_type alone can't be trusted. In order: the id, when it is a known
+ * campaign / ad set / ad; the event type ("update_ad_set_run_status" is an ad set whatever its label);
+ * Meta's old names translated; otherwise object_type as Meta sent it.
+ */
+export function editedObjectType(
+  eventType: string,
+  objectType: string | null,
+  objectId: string | null,
+  kindOf?: (id: string) => "CAMPAIGN" | "AD_SET" | "AD" | null,
+): string | null {
+  const byId = objectId && kindOf ? kindOf(objectId) : null;
+  if (byId) return byId;
+  const e = eventType.toLowerCase();
+  if (/ad_?set/.test(e)) return "AD_SET";
+  if (/campaign/.test(e)) return "CAMPAIGN";
+  if (/audience/.test(e)) return "AUDIENCE";
+  if (/billing|payment|funding|spend_?cap|spending_limit|user|role|account/.test(e)) return "ACCOUNT";
+  if (/(?:^|_)ad(?:_|$)|creative/.test(e)) return "AD";
+  const t = (objectType ?? "").toUpperCase();
+  if (t === "CAMPAIGN_GROUP") return "CAMPAIGN";
+  if (t === "ADGROUP") return "AD";
+  return objectType;
+}
+
 export function normalizeChanges(
   rows: Row[],
   context: {
@@ -592,6 +619,8 @@ export function normalizeChanges(
     since: string;
     until: string;
     campaignOf: (objectType: string | null, objectId: string | null) => string | null;
+    /** What a known id is in this account; makes the edited object's type reliable. */
+    kindOf?: (id: string) => "CAMPAIGN" | "AD_SET" | "AD" | null;
   },
 ): AuditChange[] {
   const out: AuditChange[] = [];
@@ -600,12 +629,13 @@ export function normalizeChanges(
     if (!time || Number.isNaN(Date.parse(time))) continue;
     const localDate = localDay(time, context.timezone);
     if (localDate < context.since || localDate > context.until) continue;
-    const objectType = str(row.object_type);
     const objectId = str(row.object_id);
+    const eventType = str(row.event_type) ?? "unknown";
+    const objectType = editedObjectType(eventType, str(row.object_type), objectId, context.kindOf);
     out.push({
       time,
       localDate,
-      eventType: str(row.event_type) ?? "unknown",
+      eventType,
       label: str(row.translated_event_type),
       actor: str(row.actor_name),
       application: str(row.application_name),
@@ -955,6 +985,7 @@ export async function fetchMetaAuditSnapshot(
   const adRows = (ads ?? []).map((a) => ({ id: String(a.id), adSetId: String(a.adset_id ?? ""), campaignId: String(a.campaign_id ?? "") }));
   const adSetOfAd = new Map(adRows.map((a) => [a.id, a.adSetId]));
   const campaignOfAd = new Map(adRows.map((a) => [a.id, a.campaignId]));
+  const campaignIdSet = new Set((campaigns ?? []).map((c) => String(c.id)));
   const changes = activity
     ? normalizeChanges(activity.rows, {
         timezone,
@@ -968,6 +999,8 @@ export async function fetchMetaAuditSnapshot(
           if (t === "AD") return campaignOfAd.get(objectId) || null;
           return null;
         },
+        kindOf: (objectId) =>
+          campaignIdSet.has(objectId) ? "CAMPAIGN" : campaignOfAdSet.has(objectId) ? "AD_SET" : campaignOfAd.has(objectId) ? "AD" : null,
       })
     : undefined;
   const changesTruncated = Boolean(activity?.truncated);

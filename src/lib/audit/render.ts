@@ -657,9 +657,14 @@ function windowLine(days: AuditChangeContext["days"], from: string, to: string, 
 
 const MAX_CHANGE_LINES = 150;
 
-/** Edits that could move delivery, spend, audience, creative, the optimisation goal, tracking or status — everything but renames and notes. */
+/** Edits that could move delivery, spend, audience, creative, the optimisation goal, tracking or status — everything but renames, notes and account admin. */
 const ROUTINE_EDIT = /(?:rename|name|note|label|tag)/i;
+/** Account admin that can't move delivery: billing charges, payment methods, people's access. */
+const ADMIN_EDIT = /(?:billing|payment|funding|invoice|user|role)/i;
 function isSignificantEdit(c: AuditChange): boolean {
+  if (ADMIN_EDIT.test(c.eventType)) return false;
+  // Meta's own upkeep of its automatic audiences: no person made it, and it changes no ad set.
+  if (/audience/i.test(c.eventType) && (!c.actor || c.actor === "Meta")) return false;
   const text = `${c.eventType} ${c.label ?? ""}`.replace(/_/g, " ");
   return !ROUTINE_EDIT.test(text) || /(?:budget|bid|status|target|audience|creative|pixel|schedule)/i.test(text);
 }
@@ -713,7 +718,7 @@ export function renderChangesEvidence(snap: MetaAuditSnapshot): string {
   const lines: string[] = [
     header,
     scope ? `Scope: ${scope} — edits to these campaigns and their ad sets/ads, plus account-wide tracking edits.` : "",
-    `${snap.changes.length} edit${snap.changes.length === 1 ? "" : "s"} recorded across the whole audited period (${snap.period.since} → ${snap.period.until}) — ${significant.length} that could move delivery, ${routine.length} routine (renames, notes and similar).`,
+    `${snap.changes.length} edit${snap.changes.length === 1 ? "" : "s"} recorded across the whole audited period (${snap.period.since} → ${snap.period.until}) — ${significant.length} that could move delivery, ${routine.length} routine (renames, notes, billing charges, people's access and Meta's automatic audience upkeep — these never get a card or a verdict).`,
     `Count by kind: ${byKind.map(([k, n]) => `${k} ${n}`).join(" · ")}${new Set(snap.changes.map(wording)).size > byKind.length ? " · other kinds not listed" : ""}`,
     months.size > 1
       ? `Edits by month: ${[...months.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([m, n]) => `${m} ${n}`).join(" · ")}`
@@ -743,9 +748,10 @@ export function renderChangesEvidence(snap: MetaAuditSnapshot): string {
     const accountDays = snap.changeContext.find((e) => e.entityType === "account")?.days ?? [];
     const inPeriod = (d: ChangeDay) => d.date >= snap.period.since && d.date <= snap.period.until;
     for (const e of snap.changeContext) {
-      const edits = editsFor(e, snap.changes ?? [], adSetOfAd);
-      // The account's own days are always loaded as the baseline; it only gets its own block when it has edits.
-      if (e.entityType === "account" && !edits.length) continue;
+      // Only edits that could move delivery are judged; routine ones (billing, access, renames) get no figures.
+      const edits = editsFor(e, snap.changes ?? [], adSetOfAd).filter(isSignificantEdit);
+      // The account's own days are always loaded as the baseline; an object only gets a block when it has an edit to judge.
+      if (!edits.length) continue;
       const kindLabel = e.entityType === "account" ? "whole ad account (edits not tied to one campaign, e.g. tracking)" : `${e.entityType} "${e.name}" (${e.id})`;
       const schedule =
         e.entityType === "account"

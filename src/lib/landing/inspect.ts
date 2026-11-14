@@ -121,20 +121,53 @@ export function pageSpeedFromResponse(json: unknown): PageSpeed | null {
   };
 }
 
-/** Google PageSpeed Insights, mobile. Best effort: null when unavailable. */
+/**
+ * At most this many PageSpeed runs at once. Google runs a full Lighthouse test per call (15–30 s);
+ * firing 5–8 at once made most of them run past their time limit, so audits with several landing
+ * pages came back with no speed figures at all.
+ */
+export const PAGESPEED_CONCURRENCY = 3;
+/** One PageSpeed attempt's time limit. */
+export const PAGESPEED_ATTEMPT_MS = 45_000;
+/** How long a caller should wait for fetchPageSpeed: queueing, one attempt and one retry. */
+export const PAGESPEED_DEADLINE_MS = 100_000;
+
+let pageSpeedRunning = 0;
+const pageSpeedQueue: Array<() => void> = [];
+async function withPageSpeedSlot<T>(run: () => Promise<T>): Promise<T> {
+  if (pageSpeedRunning >= PAGESPEED_CONCURRENCY) await new Promise<void>((resolve) => pageSpeedQueue.push(resolve));
+  pageSpeedRunning += 1;
+  try {
+    return await run();
+  } finally {
+    pageSpeedRunning -= 1;
+    pageSpeedQueue.shift()?.();
+  }
+}
+
+/** Google PageSpeed Insights, mobile. Best effort: null when unavailable. Queued (see PAGESPEED_CONCURRENCY) and retried once. */
 export async function fetchPageSpeed(url: string, fetchImpl: typeof fetch = fetch): Promise<PageSpeed | null> {
   const api = new URL("https://www.googleapis.com/pagespeedonline/v5/runPagespeed");
   api.searchParams.set("url", url);
   api.searchParams.set("strategy", "mobile");
   api.searchParams.set("category", "performance");
   if (process.env.PAGESPEED_API_KEY) api.searchParams.set("key", process.env.PAGESPEED_API_KEY);
-  try {
-    const res = await fetchImpl(api.toString(), { signal: AbortSignal.timeout(25_000) });
-    if (!res.ok) return null;
-    return pageSpeedFromResponse(await res.json());
-  } catch {
-    return null;
-  }
+  const attempt = async (): Promise<PageSpeed | null | "retry"> => {
+    try {
+      const res = await fetchImpl(api.toString(), { signal: AbortSignal.timeout(PAGESPEED_ATTEMPT_MS) });
+      // Rate limits and Google's own failures are worth one more try; a 4xx about the page is not.
+      if (!res.ok) return res.status === 429 || res.status >= 500 ? "retry" : null;
+      return pageSpeedFromResponse(await res.json());
+    } catch {
+      return "retry";
+    }
+  };
+  return withPageSpeedSlot(async () => {
+    const first = await attempt();
+    if (first !== "retry") return first;
+    const second = await attempt();
+    return second === "retry" ? null : second;
+  });
 }
 
 /** 0–100 for speed from Core Web Vitals (good / needs improvement / poor). */

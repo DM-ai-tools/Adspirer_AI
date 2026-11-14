@@ -697,6 +697,12 @@ export async function runTask(
     if (gathered.auditAppendix && agentResult.summary.trim()) {
       agentResult.summary = `${agentResult.summary.trimEnd()}\n\n${gathered.auditAppendix}`;
     }
+    // The target proposal's closing line is fixed text, so the next turn always recognises the reply.
+    if (gathered.strategyAppendix && agentResult.summary.trim()) {
+      agentResult.summary = `${agentResult.summary.trimEnd()}
+
+${gathered.strategyAppendix}`;
+    }
     if (gathered.optimizeAppendix && agentResult.summary.trim()) {
       agentResult.summary = `${agentResult.summary.trimEnd()}\n\n${gathered.optimizeAppendix}`;
     }
@@ -767,7 +773,7 @@ export async function runTask(
     );
 
     // The strategy brief question parks on clarify_brief: no plan was built.
-    steps = gathered.strategyBriefIncomplete
+    steps = gathered.strategyBriefIncomplete || gathered.strategyAppendix
       ? activateStep(setStepState(steps, "write_report", "pending"), "clarify_brief")
       : completeStepsThrough(steps, "write_report");
     if (intent === "ad_copy") {
@@ -1299,7 +1305,7 @@ export async function runTask(
 
     const waiting =
       !agentResult.report &&
-      (awaitsOperator(agentResult) || Boolean(gathered.strategyBriefIncomplete) || Boolean(gathered.auditBriefingIncomplete));
+      (awaitsOperator(agentResult) || Boolean(gathered.strategyBriefIncomplete) || Boolean(gathered.strategyAppendix) || Boolean(gathered.auditBriefingIncomplete));
     // Only a stage still in progress gets parked; a finished audit that ends on
     // "want me to pause it?" has genuinely completed its checklist.
     const holdPlan = waiting && steps.some((s) => s.state === "active");

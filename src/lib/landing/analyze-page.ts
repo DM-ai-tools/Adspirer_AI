@@ -9,6 +9,7 @@ import { getConfig } from "@/lib/config";
 import {
   fetchPageChecks,
   fetchPageSpeed,
+  PAGESPEED_DEADLINE_MS,
   formScore,
   landingScore,
   pageHtmlSignals,
@@ -152,6 +153,8 @@ export type LandingDeps = {
   judgeMatch: typeof judgeMessageMatch;
   /** Per-page budget so slow sites can't stall the audit (default 25 s). */
   deadlineMs?: number;
+  /** PageSpeed's own budget: it queues behind other pages and retries once (default PAGESPEED_DEADLINE_MS, or deadlineMs when only that is set). */
+  pageSpeedDeadlineMs?: number;
 };
 
 /** The promise's value, or null once the deadline passes. */
@@ -189,7 +192,10 @@ export async function analyzeLandingPage(
       withDeadline(deps.scrape(url), deadline),
       withDeadline(deps.checks(url), deadline),
       // PageSpeed is slow and rate-limited: our own destinations only.
-      input.role === "own" ? withDeadline(deps.pageSpeed(url), deadline) : Promise.resolve(null),
+      // It gets longer than the other checks: Lighthouse takes 15–30 s a page and runs a few at a time.
+      input.role === "own"
+        ? withDeadline(deps.pageSpeed(url), deps.pageSpeedDeadlineMs ?? deps.deadlineMs ?? PAGESPEED_DEADLINE_MS)
+        : Promise.resolve(null),
     ]);
     const scraped: WebsiteScrapeResult = scrapedOrNull ?? { url, markdown: "", services: [], source: "heuristic" };
     const body = (scraped.markdown ?? "").trim();
