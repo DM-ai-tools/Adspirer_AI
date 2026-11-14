@@ -92,4 +92,62 @@ describe("change evidence", () => {
     expect(edit).toContain("day of: 1 day, spend $90.00/day, 2 results ($45.00/result)");
     expect(edit).toContain("after: 1 day, spend $90.00/day, 1 results");
   });
+
+  // 14 days either side of a budget edit on 2026-10-14: the ad set doubles spend at the same cost per result,
+  // while the rest of the account's cost per result rises 50%.
+  const span = (from: string, n: number, f: (i: number) => { spend: number; results: number }) =>
+    Array.from({ length: n }, (_, i) => {
+      const date = new Date(Date.parse(`${from}T00:00:00Z`) + i * 86_400_000).toISOString().slice(0, 10);
+      const { spend, results } = f(i);
+      return day(date, spend, results);
+    });
+  const adSetDays = [
+    ...span("2026-10-07", 7, () => ({ spend: 10_000, results: 10 })),
+    ...span("2026-10-14", 8, () => ({ spend: 20_000, results: 20 })),
+  ];
+  const accountDays = [
+    ...span("2026-10-07", 7, () => ({ spend: 30_000, results: 30 })),
+    ...span("2026-10-14", 8, () => ({ spend: 30_000, results: 20 })),
+  ];
+  const withContext = (since: string, until: string, ctx = adSetDays) => ({
+    ...demoMetaAuditSnapshot("act_1", "Shop", 30),
+    period: { days: 30, since, until },
+    changes: [change({})],
+    changeContext: [
+      { entityType: "ad set" as const, id: "as_1", name: "Dining", status: "ACTIVE", startDate: null, endDate: null, days: ctx },
+      { entityType: "account" as const, id: "act_1", name: "Shop", days: accountDays },
+    ],
+  });
+
+  it("compares 7 days either side per day, past learning, and against the rest of the account", () => {
+    const lines = renderChangesEvidence(withContext("2026-10-01", "2026-10-31")).split("\n");
+    const at = lines.findIndex((l) => l.includes("Edit on 2026-10-14"));
+    expect(lines[at]).toContain("before: 7 days, spend $100.00/day, 70 results ($10.00/result)");
+    expect(lines[at]).toContain("after: 7 days, spend $200.00/day, 140 results ($10.00/result)");
+    expect(lines[at + 1]).toBe("    - Change: spend/day +100%, results/day +100%, cost per result 0%, CTR 0%");
+    expect(lines[at + 2]).toContain("After, days 4–7: 4 days");
+    // Rest of account: $200/day for 20 results before → $100/day for 0 results after.
+    expect(lines[at + 3]).toContain("Rest of account, same days: spend/day −50%, results/day −100%");
+    // The account has no edits of its own, so it is only a baseline, not its own block.
+    expect(lines.some((l) => l.startsWith("- whole ad account"))).toBe(false);
+  });
+
+  it("uses days outside the audited period for an edit near its start, but day-by-day shows only the period", () => {
+    const text = renderChangesEvidence(withContext("2026-10-14", "2026-10-20"));
+    expect(text).toContain("before: 7 days, spend $100.00/day");
+    expect(text).toContain("may reach up to 7 days outside the audited period");
+    const dayByDay = text.split("\n").find((l) => l.includes("Day by day (audited period)"))!;
+    expect(dayByDay).not.toContain("10-13");
+    expect(dayByDay).toContain("10-14");
+  });
+
+  it("cautions on thin results, short windows and nearby edits", () => {
+    const thin = [day("2026-10-12", 1_000, 1), day("2026-10-13", 1_000, 1), day("2026-10-14", 1_000, 1), day("2026-10-15", 1_000, 1)];
+    const snap = withContext("2026-10-01", "2026-10-31", thin);
+    snap.changes = [change({}), change({ localDate: "2026-10-15", time: "2026-10-15T05:00:00Z" })];
+    const caution = renderChangesEvidence(snap).split("\n").find((l) => l.includes("Caution") && l.includes("2026-10-15"))!;
+    expect(caution).toContain("other edits on this ad set or its ads on 2026-10-15");
+    expect(caution).toContain("only 2 of 7 days before");
+    expect(caution).toContain("under 20 results in a window");
+  });
 });

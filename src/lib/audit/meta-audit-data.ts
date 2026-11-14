@@ -195,7 +195,11 @@ export type AuditChange = {
   detail: string | null;
 };
 
-/** Day-by-day delivery for one edited campaign or ad set, so movement around an edit can be read. */
+/**
+ * Day-by-day delivery for one edited campaign or ad set, so movement around an edit can be read.
+ * `days` runs from CHANGE_AROUND_DAYS before the audited period to CHANGE_AROUND_DAYS after it
+ * (never past yesterday), so edits near either end still get full before/after windows.
+ */
 export type AuditChangeContext = {
   /** "account" is the whole ad account — for edits that aren't tied to one campaign (tracking, account settings). */
   entityType: "campaign" | "ad set" | "account";
@@ -283,7 +287,7 @@ export type MetaAuditSnapshot = {
   changesTruncated?: boolean;
   /** Scoped audits: edits to objects Meta no longer lists, which can't be tied to a campaign. */
   changesUnresolved?: number;
-  /** Day-by-day delivery for the campaigns / ad sets that were edited. */
+  /** Day-by-day delivery for the campaigns / ad sets that were edited, and for the whole account (the baseline). */
   changeContext?: AuditChangeContext[];
   /** Parts that failed to load — checkpoints that need them report "not checked". */
   warnings: string[];
@@ -645,6 +649,8 @@ export function entitiesToWatch(
 }
 
 const DAY_SECONDS = 86_400;
+/** Each edit is judged on this many days before it against this many days after it. */
+export const CHANGE_AROUND_DAYS = 7;
 /** Edits are read in windows of this many days. */
 const CHANGE_WINDOW_DAYS = 31;
 /** At most this many windows (about two years); a longer audit reads its newest windows. */
@@ -970,6 +976,14 @@ export async function fetchMetaAuditSnapshot(
     const watch = entitiesToWatch(changes, (adId) => adSetOfAd.get(adId) || null, options.campaignIds);
     const campaignName = new Map((campaigns ?? []).map((c) => [String(c.id), String(c.name ?? c.id)]));
     const adSetName = new Map(auditAdSets.map((a) => [a.id, a.name]));
+    // Edits near either end of the period still get full windows: read CHANGE_AROUND_DAYS beyond each end,
+    // never past yesterday (today is a partial day and would drag the "after" figures down).
+    const aroundSince = dayString(new Date(Date.parse(`${since}T00:00:00Z`) - CHANGE_AROUND_DAYS * DAY_MS));
+    const lastFullDay = dayString(new Date(Date.now() - DAY_MS));
+    const plusAfter = dayString(new Date(Date.parse(`${until}T00:00:00Z`) + CHANGE_AROUND_DAYS * DAY_MS));
+    const aroundUntil = until >= lastFullDay ? until : plusAfter < lastFullDay ? plusAfter : lastFullDay;
+    const aroundRange = JSON.stringify({ since: aroundSince, until: aroundUntil });
+    const aroundDays = Math.round((Date.parse(`${aroundUntil}T00:00:00Z`) - Date.parse(`${aroundSince}T00:00:00Z`)) / DAY_MS) + 1;
     const daily = async (level: "campaign" | "adset", ids: string[]) => {
       if (!ids.length) return [] as Row[];
       const idKey = level === "campaign" ? "campaign_id" : "adset_id";
@@ -978,23 +992,21 @@ export async function fetchMetaAuditSnapshot(
         warnings,
         paged(graph, `${id}/insights`, {
           level,
-          time_range: timeRange,
+          time_range: aroundRange,
           time_increment: 1,
           fields: `${idKey},${insightFields}`,
           filtering: JSON.stringify([{ field: level === "campaign" ? "campaign.id" : "adset.id", operator: "IN", value: ids }]),
           limit: 500,
           // One row per object per day: a long audit needs more pages than a month does.
-        }, Math.min(12, Math.max(3, Math.ceil((days * ids.length) / 500) + 1))),
+        }, Math.min(12, Math.max(3, Math.ceil((aroundDays * ids.length) / 500) + 1))),
       );
       return rows ?? [];
     };
-    // The whole account's day-by-day, for edits not tied to one campaign (tracking, account settings).
-    const needsAccountDays = changes.some((c) => c.campaignId == null);
-    const accountDaily = needsAccountDays
-      ? settle("Day-by-day delivery of the account", warnings, paged(graph, `${id}/insights`, {
-          level: "account", time_range: timeRange, time_increment: 1, fields: insightFields, limit: 500,
-        }, 2))
-      : Promise.resolve(null);
+    // The whole account's day-by-day: the figures for edits not tied to one campaign (tracking, account
+    // settings), and the baseline every other edit is judged against ("did the rest of the account move too?").
+    const accountDaily = settle("Day-by-day delivery of the account", warnings, paged(graph, `${id}/insights`, {
+      level: "account", time_range: aroundRange, time_increment: 1, fields: insightFields, limit: 500,
+    }, Math.max(2, Math.ceil(aroundDays / 500) + 1)));
     const [campaignDays, adSetDays, accountDays] = await Promise.all([
       daily("campaign", watch.campaigns),
       daily("adset", watch.adSets),
