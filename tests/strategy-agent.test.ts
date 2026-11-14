@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { gatherDiagnoseEvidence, runAdspirerAgent } from "@/lib/agent/adspirer-agent";
 import { createTask, runTask } from "@/lib/agent/task-runner";
 import { detectRequestIntent } from "@/lib/agent/task-plan";
-import { STRATEGY_BRIEF_MARKER } from "@/lib/agent/strategy-brief";
+import { STRATEGY_TARGET_MARKER } from "@/lib/agent/account-strategy-brief";
 import { getDemoStore, resetDemoStore } from "@/lib/demo/store";
 import { classify, listClassifiedTools } from "@/lib/tools/policy";
 
@@ -81,15 +81,16 @@ describe("strategy turn in DEMO_MODE", () => {
     });
   });
 
-  it("asks for the missing brief values and builds no plan", async () => {
+  it("with no target, reads the account and proposes targets instead of asking a bare question", async () => {
     // TrafficRadius has no target ROAS and no daily cap set.
-    const { gathered, result, toolNames } = await strategyTurn("client_trafficradius", "Build me a strategy");
-    expect(gathered.strategyBriefIncomplete).toBe(true);
-    expect(result.summary.toLowerCase()).toContain(STRATEGY_BRIEF_MARKER);
-    expect(result.summary).toMatch(/Target ROAS/);
-    expect(result.summary).not.toContain("Level 1");
-    expect(toolNames).not.toContain("strategy_plan");
-    expect(toolNames).not.toContain("audit_checkpoints");
+    const { gathered, toolNames } = await strategyTurn("client_trafficradius", "Build me a strategy");
+    expect(gathered.strategyBriefIncomplete).toBeFalsy();
+    expect(gathered.evidence).toContain("### Account strategy —");
+    expect(gathered.evidence).toContain("# Strategy target proposal");
+    expect(gathered.evidence).not.toContain("Level 1");
+    expect(gathered.strategyAppendix?.toLowerCase()).toContain(STRATEGY_TARGET_MARKER);
+    expect(toolNames).toContain("audit_checkpoints");
+    expect(gathered.toolCalls.find((c) => c.name === "strategy_plan")?.args).toMatchObject({ stage: "target_proposal" });
   });
 
   it("keeps values from the earlier ask when the operator answers the brief question", async () => {
@@ -116,6 +117,14 @@ describe("strategy turn in DEMO_MODE", () => {
     expect(toolNames).toContain("strategy_plan");
   });
 
+  it("never asks a lead account with no business type set for a target ROAS", async () => {
+    // TrafficRadius runs only Leads campaigns and its business type was never set.
+    const gathered = await gatherDiagnoseEvidence({ clientId: "client_trafficradius", request: "Build me a strategy for $500/day", intent: "strategy" });
+    expect(gathered.strategyBriefIncomplete).toBeFalsy();
+    expect(gathered.evidence).not.toMatch(/Target ROAS/);
+    expect(gathered.toolCalls.find((c) => c.name === "strategy_plan")?.args).toMatchObject({ goal: "leads" });
+  });
+
   it("parks the task on the brief question with clarify_brief waiting", async () => {
     const task = await createTask({
       clientId: "client_trafficradius",
@@ -126,8 +135,9 @@ describe("strategy turn in DEMO_MODE", () => {
     const done = await runTask(task.id);
     const steps = (done.agent_state?.steps ?? []) as Array<{ id: string; state: string }>;
     expect(steps.find((s) => s.id === "clarify_brief")?.state).toBe("waiting");
-    expect(steps.find((s) => s.id === "build_plan")?.state).toBe("pending");
+    // The targets were worked out; the plan waits for the operator's pick.
     expect(done.agent_state?.awaitingOperator).toBe(true);
+    expect(String(done.agent_state?.summary ?? "").toLowerCase()).toContain(STRATEGY_TARGET_MARKER);
     expect(getDemoStore().approvals.filter((a) => a.task_id === task.id)).toEqual([]);
   });
 
@@ -193,12 +203,16 @@ describe("strategy with missing or partial evidence", () => {
       intent: "strategy",
     });
     expect(gathered.strategyPlanBuilt).toBe(true);
+    // A sales client's stated budget with no target ROAS is still the budget plan's brief question.
+    const tr = getDemoStore().clients.find((c) => c.id === "client_trafficradius")!;
+    tr.goals_profile = { ...tr.goals_profile, business_model: "ecommerce" };
     const incomplete = await gatherDiagnoseEvidence({
       clientId: "client_trafficradius",
-      request: "Build me a strategy",
+      request: "Build me a strategy for $500/day",
       intent: "strategy",
     });
     expect(incomplete.strategyPlanBuilt).toBeFalsy();
+    expect(incomplete.strategyBriefIncomplete).toBe(true);
   });
 });
 

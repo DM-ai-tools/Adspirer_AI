@@ -4,6 +4,7 @@ import type {
   PeriodPerformance,
 } from "@/lib/audit/meta-audit-data";
 import { resolveGoals, type ResolvedGoals } from "@/lib/clients/goals";
+import { accountGoal } from "@/lib/strategy/account-strategy";
 import { assessFatigue, hookRate, holdRate } from "@/lib/creative/fatigue";
 
 /**
@@ -957,7 +958,7 @@ export function evaluateCheckpoints(
         ),
       );
     } else {
-      cp.push(notChecked("B7", "Bidding & budget", "Cost per result at or under target", "Set a target cost per result or ROAS in the client's goals to check this."));
+      cp.push(notChecked("B7", "Bidding & budget", "Cost per result at or under target", `Set a target ${accountGoal(snap, goals.business_model).kind === "sales" ? "cost per result or ROAS" : "cost per result"} in the client's goals to check this.`));
     }
   }
 
@@ -1031,6 +1032,20 @@ export function evaluateCheckpoints(
       evidence: `${funnel.views.toLocaleString("en")} landing page views from ${funnel.clicks.toLocaleString("en")} link clicks (${Math.round(ratio * 100)}%).`,
       fix: ratio < 0.6 ? "Speed up the landing page (and check the pixel loads on it); many people leave before it finishes loading." : undefined,
     });
+  }
+
+  // A part Meta didn't return (a rate limit, a permission) is missing data, not an empty account:
+  // "every ad set is off" from a failed ad-set read was a false Critical. Every checkpoint that reads
+  // campaigns, ad sets or ads becomes "not checked" when one of them failed; tracking (T) and the
+  // account's own status (S5) don't depend on them.
+  const failedParts = ["Campaigns", "Ad sets", "Ads"].filter((part) => snap.warnings.some((w) => w.startsWith(`${part}:`)));
+  if (failedParts.length) {
+    const why = `Not checked: ${failedParts.join(" and ").toLowerCase()} failed to load from Meta, so this can't be judged.`;
+    for (let i = 0; i < cp.length; i += 1) {
+      const c = cp[i]!;
+      if (c.id.startsWith("T") || c.id === "S5" || c.status === "not_checked") continue;
+      cp[i] = notChecked(c.id, c.category, c.title, why);
+    }
   }
 
   // ------------------------------------------------------------ Scoring

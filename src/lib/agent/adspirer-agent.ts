@@ -209,6 +209,17 @@ import {
   stripDestinationMarkers,
 } from "@/lib/landing/verified-destinations";
 import { logger } from "@/lib/observability/logger";
+import { ACCOUNT_STRATEGY_FRAMEWORK, STRATEGY_TARGET_PROPOSAL_FRAMEWORK } from "@/lib/agent/account-strategy-framework";
+import {
+  answersTargetProposal,
+  hasTarget,
+  resolveStrategyTarget,
+  strategyPeriod,
+  strategyTargetClosing,
+  wantsBudgetPlan,
+} from "@/lib/agent/account-strategy-brief";
+import { accountGoal, baselineOf, leversOf, proposeTargets, type StatedTarget } from "@/lib/strategy/account-strategy";
+import { adSetLoadFailure, renderStrategyPlanEvidence, renderTargetProposalEvidence } from "@/lib/strategy/account-strategy-render";
 import { rulesBrief, type RequestBrief } from "@/lib/agent/request-brief";
 import { resolvePrimaryAccountId } from "@/lib/adspirer/resolve-meta-account";
 import type { ClientService, ConnectedMetaAccount, WorkspaceDocument } from "@/types";
@@ -924,6 +935,7 @@ export function buildWriterMessages(input: WriterInput): {
   const strategyBriefIncomplete = evidence.includes("### Strategy brief incomplete");
   const strategyUnavailable = evidence.includes("### Strategy unavailable");
   const strategyReady = evidence.includes("### Strategy inputs");
+  const accountStrategy = evidence.includes("### Account strategy —");
   const strategyRules =
     intent === "strategy"
       ? [
@@ -937,6 +949,11 @@ export function buildWriterMessages(input: WriterInput): {
                 "- Strategy brief is incomplete: ask ONLY for the missing values, using the question in the evidence.",
                 "- Do NOT build a plan, allocation or projection yet, and do NOT invent spend or ROAS.",
               ]
+            : accountStrategy
+              ? [
+                  "- Write exactly what the framework in the evidence asks for (“Strategy target proposal” or “Account strategy”), with its headings in order, and nothing else.",
+                  "- Every figure comes from the “Account strategy” evidence and the audit evidence below it; never estimate one.",
+                ]
             : strategyReady
               ? [
                   "- Write the strategy report using the headings in “Strategy framework”, in order.",
@@ -1425,8 +1442,24 @@ async function runMockAgent(input: {
   // reaches here; runAdspirerAgent answers it deterministically.)
   if (intent === "strategy" && !input.reportDraft) {
     const inputsAt = evidence?.indexOf("### Strategy inputs") ?? -1;
+    const accountAt = evidence?.indexOf("### Account strategy —") ?? -1;
     let summary: string;
-    if (evidence && inputsAt >= 0) {
+    if (evidence && accountAt >= 0) {
+      // The account strategy's worked figures (targets or the plan's gap), notices first.
+      const frameworkAt = evidence.indexOf("### Strategy framework", accountAt);
+      const body = evidence.slice(accountAt, frameworkAt < 0 ? undefined : frameworkAt).trim();
+      const notice = categoryNoticeLine(evidence);
+      const settingsLines = settingsNoticeLines(evidence);
+      summary = [
+        ...(notice ? [notice, ""] : []),
+        ...(settingsLines.length ? [...settingsLines, ""] : []),
+        "## Strategy (demo)",
+        "",
+        body,
+        "",
+        "This is a recommendation only — nothing in Meta has changed.",
+      ].join("\n");
+    } else if (evidence && inputsAt >= 0) {
       const frameworkAt = evidence.indexOf("### Strategy framework", inputsAt);
       const body = evidence.slice(inputsAt, frameworkAt < 0 ? undefined : frameworkAt).trim();
       const notice = categoryNoticeLine(evidence);
@@ -1954,6 +1987,8 @@ export async function gatherDiagnoseEvidence(input: {
   auditBriefingIncomplete?: boolean;
   /** Deterministic checklist appended to the audit reply in chat. Downloads leave it out. */
   auditAppendix?: string;
+  /** The target proposal's fixed closing line (the next turn keys on its marker). */
+  strategyAppendix?: string;
   /** Deterministic performance tables, inserted into the audit at the writer's marker. */
   auditTables?: string;
   /** Deterministic landing page tables (every page that took spend, and the page checks), inserted at their marker. */
@@ -1995,6 +2030,7 @@ export async function gatherDiagnoseEvidence(input: {
   let targetingPicker: TargetingPickerUi | undefined;
   let auditBriefingIncomplete = false;
   let auditAppendix: string | undefined;
+  let strategyAppendix: string | undefined;
   let auditTables: string | undefined;
   let auditLandingTables: string | undefined;
   let strategyBriefIncomplete = false;
@@ -2850,13 +2886,16 @@ export async function gatherDiagnoseEvidence(input: {
       if (!provider.getAuditSnapshot) {
         throw new Error("this Meta connection can't load an account snapshot");
       }
-      const range = parseDateRangeFromText("last 30 days")!;
+      // The audit's period when the chat has one ("based on this audit"), not always the last 30 days.
+      const range = strategyPeriod(input.request, input.history ?? []);
+      const rangeDays =
+        Math.round((Date.parse(`${range.dateStop}T00:00:00Z`) - Date.parse(`${range.dateStart}T00:00:00Z`)) / 86_400_000) + 1;
       const snapshot = await withCatalogCategories(
         input.clientId,
         await provider.getAuditSnapshot(accountId, {
           since: range.dateStart,
           until: range.dateStop,
-          days: 30,
+          days: rangeDays,
         }),
       );
       const goals = await turnGoals();
@@ -2868,11 +2907,86 @@ export async function gatherDiagnoseEvidence(input: {
         currentDailySpendCents,
       });
 
-      // Lead-gen clients plan on leads and cost per lead; ROAS never applies to them.
-      const leadAsk = isLeadStrategy(goals.business_model, strategyAskTexts(input.request, input.history));
-      const leadParsed = leadAsk ? resolveLeadBrief(input.request, input.history) : null;
+      // What the account is run for: the client's business type, else what its own spend says. A lead-gen
+      // account whose business type was never set used to be asked for a target ROAS.
+      const goal = accountGoal(snapshot, goals.business_model);
+      const askTexts = strategyAskTexts(input.request, input.history);
+      const accountPath = answersTargetProposal(input.history ?? []) || !wantsBudgetPlan(askTexts, goal.kind);
 
-      if (leadParsed) {
+      // Lead-gen clients plan on leads and cost per lead; ROAS never applies to them.
+      const leadAsk = isLeadStrategy(goals.business_model ?? (goal.kind === "leads" ? "lead_gen" : undefined), askTexts);
+      const leadParsed = !accountPath && leadAsk ? resolveLeadBrief(input.request, input.history) : null;
+
+      if (accountPath) {
+        await input.onProgress?.({ phase: "pull_insights", label: "Reading where the money works and where it doesn't…", stepId: "pull_insights" });
+        const scorecard = evaluateCheckpoints(snapshot, { goals });
+        toolCalls.push({
+          name: "audit_checkpoints",
+          args: { account_id: accountId, date_start: range.dateStart, date_stop: range.dateStop },
+          rationale: `Audit checkpoints: ${scorecard.score}/100`,
+        });
+        const baseline = baselineOf(snapshot, goal.kind);
+        const levers = baseline ? leversOf(snapshot, goal.kind, baseline) : null;
+        const profit = {
+          breakEvenRoas: goals.break_even_roas,
+          breakEvenCostCents: goals.break_even_cpa_cents,
+          targetRoas: goals.target_roas ?? null,
+          targetCostCents: goals.target_cpa_cents ?? null,
+        };
+        // Targets need the ad sets: with them missing, waste and winners are unknown, so none is proposed.
+        const options = baseline && levers && !adSetLoadFailure(snapshot) ? proposeTargets(goal.kind, baseline, levers, profit) : [];
+        const resolved = resolveStrategyTarget(input.request, input.history ?? [], goal.kind);
+        let target: StatedTarget | null = hasTarget(resolved.stated) ? resolved.stated : null;
+        let targetSource = "stated by the operator";
+        if (!target && resolved.pick) {
+          const picked = options.find((o) => o.key === resolved.pick);
+          if (picked) {
+            const windowDays = resolved.stated.windowDays ?? picked.windowDays;
+            target = {
+              ...(picked.costPerCents != null ? { costPerCents: picked.costPerCents } : {}),
+              ...(goal.kind === "sales" && picked.roas != null ? { roas: picked.roas } : {}),
+              windowDays,
+              // A scale pick: more results on a bigger budget, with the cost and ROAS as limits.
+              ...(picked.mode === "scale" && picked.conversionsPerDay != null && picked.dailyBudgetCents != null
+                ? { volume: Math.round(picked.conversionsPerDay * windowDays), scale: { dailyBudgetCents: picked.dailyBudgetCents } }
+                : {}),
+            };
+            targetSource = `the "${picked.key}" target the operator picked (${picked.basis})`;
+          }
+        }
+        const evidenceInput = {
+          snapshot,
+          goal,
+          baseline,
+          levers,
+          periodSource: range.source,
+          savedTarget: { roas: goals.target_roas ?? null, costPerCents: goals.target_cpa_cents ?? null },
+          today: new Date().toISOString().slice(0, 10),
+          marginPct: goals.gross_margin_pct ?? null,
+        };
+        await input.onProgress?.({ phase: "build_plan", label: target ? "Building the plan…" : "Working out the targets your numbers support…", stepId: "build_plan" });
+        if (target) {
+          sections.push(renderStrategyPlanEvidence({ ...evidenceInput, target, targetSource, defaultWindowDays: 30 }));
+          sections.push(["### Strategy framework (write the plan with these headings)", ACCOUNT_STRATEGY_FRAMEWORK].join("\n"));
+        } else {
+          sections.push(renderTargetProposalEvidence({ ...evidenceInput, options, windowDays: resolved.stated.windowDays }));
+          sections.push(["### Strategy framework (write the proposal with these headings)", STRATEGY_TARGET_PROPOSAL_FRAMEWORK].join("\n"));
+          strategyAppendix = strategyTargetClosing(goal.kind, options.length > 0);
+        }
+        // The audit evidence behind the moves: checkpoints, ad sets, breakdowns, and (for a plan) the edits made.
+        sections.push(renderScorecardEvidence(scorecard, snapshot));
+        sections.push(renderAdSetEvidence(snapshot));
+        sections.push(renderBreakdownEvidence(snapshot));
+        if (target) sections.push(renderChangesEvidence(snapshot));
+        strategyPlanBuilt = true;
+        toolCalls.push({
+          name: "strategy_plan",
+          args: { account_id: accountId, goal: goal.kind, ...(target ?? {}), stage: target ? "plan" : "target_proposal" },
+          rationale: target
+            ? `Account strategy (${goal.kind}): target ${JSON.stringify(target)}`
+            : `Target proposal (${goal.kind}): ${options.map((o) => `${o.key} ${o.costPerCents ?? "n/a"}`).join(", ") || "no targets (no conversions)"}`,
+        });
+      } else if (leadParsed) {
         if (!leadParsed.brief) {
           strategyBriefIncomplete = true;
           sections.push(
@@ -3862,6 +3976,7 @@ export async function gatherDiagnoseEvidence(input: {
     targetingPicker,
     auditBriefingIncomplete,
     auditAppendix,
+    strategyAppendix,
     auditTables,
     auditLandingTables,
     strategyBriefIncomplete,

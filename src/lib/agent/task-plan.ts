@@ -3,6 +3,7 @@ import type { AgentHistoryMessage } from "@/lib/agent/history";
 import { looksLikeAuditBriefReply, parseDateRangeFromText } from "@/lib/agent/audit-brief";
 import { looksLikeLeadBriefReply } from "@/lib/agent/lead-brief";
 import { looksLikeStrategyBriefReply, STRATEGY_BRIEF_MARKER } from "@/lib/agent/strategy-brief";
+import { pickedOption, STRATEGY_TARGET_MARKER } from "@/lib/agent/account-strategy-brief";
 
 export type TaskStepState =
   | "pending"
@@ -374,6 +375,18 @@ export function detectRequestIntentWithHistory(
   // campaign; it is not an optimize ask.
   if (primary === "optimize" && buildOpen && !EXPLICIT_OPTIMIZE_ASK.test(request)) {
     return "create_campaign";
+  }
+  // A reply to the strategy's target proposal: "recommended", "go with your pick", "$40 per lead in 45 days".
+  const lastAssistantReply = [...recent].reverse().find((m) => m.role === "assistant");
+  if (
+    lastAssistantReply?.content.toLowerCase().includes(STRATEGY_TARGET_MARKER) &&
+    request.trim().length <= 300 &&
+    (pickedOption(request) != null ||
+      looksLikeStrategyBriefReply(request) ||
+      looksLikeLeadBriefReply(request) ||
+      /\b\d+\s*(?:days?|weeks?|months?)\b/i.test(request))
+  ) {
+    return "strategy";
   }
   // A short answer ("$1,200/day, 10x") to the strategy brief's own question.
   // Checked before the early return: "my budget is $900 a day" reads as "budget".
