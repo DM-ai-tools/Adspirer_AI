@@ -42,6 +42,16 @@ const ZERO_WIDTH = /[\u200B-\u200D\u2060]/g;
  * `above**Meta**benchmark` → `above **Meta** benchmark`
  */
 export function ensureMarkdownEmphasisSpacing(text: string): string {
+  // One line at a time, never across a line break, and never inside a table row: a "*" there is a
+  // footnote mark ("Reported purchases*"). Pairing it with the "*Read: …*" line under the table, then
+  // trimming, deleted the line breaks and glued that line onto the row, shifting every column.
+  return text
+    .split("\n")
+    .map((line) => (line.trimStart().startsWith("|") ? line : emphasisSpacingInLine(line)))
+    .join("\n");
+}
+
+function emphasisSpacingInLine(text: string): string {
   const withBold = text.replace(
     /([A-Za-z0-9)])?\*\*([^*]+)\*\*([A-Za-z0-9(])?/g,
     (_m, before: string | undefined, inner: string, after: string | undefined) => {
