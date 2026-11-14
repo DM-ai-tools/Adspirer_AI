@@ -117,10 +117,15 @@ describe("fetching the change history", () => {
     const snap = await fetchMetaAuditSnapshot(graph, "act_1", range);
     expect(snap.changes).toHaveLength(1);
     expect(snap.changes![0]).toMatchObject({ campaignId: "c1", actor: "Priya", localDate: "2026-10-29" });
-    expect(snap.changeContext).toHaveLength(1);
+    // The edited ad set, plus the whole account as the baseline every edit is judged against.
+    expect(snap.changeContext!.map((e) => e.entityType)).toEqual(["ad set", "account"]);
     expect(snap.changeContext![0]).toMatchObject({ entityType: "ad set", id: "a1", name: "Broad" });
     expect(snap.changeContext![0]!.days.map((d) => d.date)).toEqual(["2026-10-28", "2026-10-29"]);
     expect(snap.changeContext![0]!.days[0]).toMatchObject({ spendCents: 1000, results: 2 });
+    // Daily figures are read 7 days beyond each end of the period (never past yesterday).
+    const dailyCall = calls.find((c) => c.path === "act_1/insights" && c.params.level === "adset" && c.params.time_increment === 1)!;
+    expect(JSON.parse(String(dailyCall.params.time_range)).since).toBe("2026-10-21");
+    expect(JSON.parse(String(dailyCall.params.time_range)).until).toBe("2026-11-06");
     const activityCall = calls.find((c) => c.path === "act_1/activities")!;
     expect(String(activityCall.params.fields)).toContain("actor_name");
   });

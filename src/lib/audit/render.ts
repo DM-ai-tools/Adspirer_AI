@@ -12,6 +12,7 @@ import { hookRate, holdRate } from "@/lib/creative/fatigue";
 import type { CatalogFinding, LearningLink } from "@/lib/meta/catalog/findings";
 import type { CatalogSnapshot } from "@/lib/meta/catalog/types";
 import type { AuditAd, AuditAdSet, AuditChange, AuditChangeContext, MetaAuditSnapshot, PeriodPerformance } from "@/lib/audit/meta-audit-data";
+import { CHANGE_AROUND_DAYS } from "@/lib/audit/meta-audit-data";
 
 const STATUS_LABEL: Record<CheckpointStatus, string> = {
   pass: "Pass",
@@ -540,8 +541,79 @@ export function renderAdSetEvidence(snap: MetaAuditSnapshot, maxAdSets = 40): st
   return lines.join("\n");
 }
 
-const AROUND_DAYS = 3;
+const AROUND_DAYS = CHANGE_AROUND_DAYS;
 const MAX_EDIT_DATES_PER_ENTITY = 12;
+/** Meta's learning phase usually settles within about this many days of a significant edit. */
+const LEARNING_DAYS = 3;
+/** Fewer results than this in a window is too few to judge an edit on results. */
+const MIN_RESULTS_TO_JUDGE = 20;
+
+type ChangeDay = AuditChangeContext["days"][number];
+
+/** Totals for a window of days, as per-day figures so windows of different lengths compare like for like. */
+function windowStats(days: ChangeDay[], from: string, to: string) {
+  const inside = days.filter((d) => d.date >= from && d.date <= to);
+  const n = inside.length;
+  if (!n) return null;
+  const spend = inside.reduce((s, d) => s + d.spendCents, 0);
+  const impressions = inside.reduce((s, d) => s + d.impressions, 0);
+  const counted = inside.filter((d) => d.results != null);
+  const results = counted.length ? counted.reduce((s, d) => s + d.results!, 0) : null;
+  const withRevenue = inside.filter((d) => d.purchaseValueCents != null);
+  const revenue = withRevenue.length ? withRevenue.reduce((s, d) => s + d.purchaseValueCents!, 0) : null;
+  return {
+    n,
+    spendPerDay: spend / n,
+    resultsPerDay: results != null ? results / n : null,
+    results,
+    costPerResult: results ? spend / results : null,
+    ctr: impressions > 0 ? inside.reduce((s, d) => s + d.linkCtr * d.impressions, 0) / impressions : null,
+    roas: revenue != null && spend > 0 ? revenue / spend : null,
+  };
+}
+
+/** "+25%", "−12%", "0%"; null when there's nothing to compare against. */
+function pctMove(before: number | null, after: number | null): string | null {
+  if (before == null || after == null) return null;
+  if (before === 0) return after === 0 ? "0%" : null;
+  const p = Math.round(((after - before) / before) * 100);
+  return `${p > 0 ? "+" : p < 0 ? "−" : ""}${Math.abs(p)}%`;
+}
+
+/** "spend/day +80%, results/day −25%, cost per result +140%, CTR −5%, ROAS −30%". */
+function moveLine(before: ReturnType<typeof windowStats>, after: ReturnType<typeof windowStats>): string | null {
+  if (!before || !after) return null;
+  const parts = [
+    ["spend/day", pctMove(before.spendPerDay, after.spendPerDay)],
+    ["results/day", pctMove(before.resultsPerDay, after.resultsPerDay)],
+    ["cost per result", pctMove(before.costPerResult, after.costPerResult)],
+    ["CTR", pctMove(before.ctr, after.ctr)],
+    ["ROAS", pctMove(before.roas, after.roas)],
+  ].filter((p): p is [string, string] => p[1] != null);
+  return parts.length ? parts.map(([k, v]) => `${k} ${v}`).join(", ") : null;
+}
+
+/** The account's days minus one object's days: everything else that ran, as a baseline for that object's edits. */
+function restOfAccount(account: ChangeDay[], entity: ChangeDay[]): ChangeDay[] {
+  const own = new Map(entity.map((d) => [d.date, d]));
+  return account.map((a) => {
+    const e = own.get(a.date);
+    if (!e) return a;
+    const impressions = Math.max(0, a.impressions - e.impressions);
+    const clicks = Math.max(0, a.linkCtr * a.impressions - e.linkCtr * e.impressions);
+    const results = a.results != null ? Math.max(0, a.results - (e.results ?? 0)) : null;
+    const spendCents = Math.max(0, a.spendCents - e.spendCents);
+    return {
+      date: a.date,
+      spendCents,
+      impressions,
+      results,
+      costPerResultCents: results ? Math.round(spendCents / results) : null,
+      linkCtr: impressions > 0 ? clicks / impressions : 0,
+      ...(a.purchaseValueCents != null ? { purchaseValueCents: Math.max(0, a.purchaseValueCents - (e.purchaseValueCents ?? 0)) } : {}),
+    };
+  });
+}
 
 /** YYYY-MM-DD shifted by whole days. */
 function shiftDay(date: string, delta: number): string {
@@ -660,34 +732,74 @@ export function renderChangesEvidence(snap: MetaAuditSnapshot): string {
   if (snap.changeContext?.length) {
     lines.push(
       "",
-      `Numbers around each edit (same period, account timezone, ${snap.account.currency}). "results" are the object's own optimisation result. Each edit is shown with the object's schedule and its figures for the ${AROUND_DAYS} days before, the day of, and the ${AROUND_DAYS} days after (only days inside the audited period exist). Use these — not guesses — to judge each edit:`,
+      `Numbers around each edit (account timezone, ${snap.account.currency}). "results" are the object's own optimisation result. Each edit is shown with the object's schedule and its figures for the ${AROUND_DAYS} days before, the day of, and the ${AROUND_DAYS} days after — these windows may reach up to ${AROUND_DAYS} days outside the audited period so edits near its ends can still be judged (they never include today, a partial day). Under each edit:`,
+      `  · "Change" is after vs before per day (like for like even when a window is short).`,
+      `  · "After, days ${LEARNING_DAYS + 1}–${AROUND_DAYS}" leaves out the first ${LEARNING_DAYS} days after the edit, when a learning reset makes results unstable.`,
+      `  · "Rest of account, same days" is the whole account minus this object over the same before/after windows: if it moved the same way, the movement is account-wide (season, demand, tracking) and not this edit's doing.`,
+      `  · "Caution" lists what makes a verdict unsafe (too few results, another edit in the window, a short window).`,
+      "Use these — not guesses — to judge each edit:",
     );
     const adSetOfAd = new Map(snap.ads.map((a) => [a.id, a.adSetId]));
+    const accountDays = snap.changeContext.find((e) => e.entityType === "account")?.days ?? [];
+    const inPeriod = (d: ChangeDay) => d.date >= snap.period.since && d.date <= snap.period.until;
     for (const e of snap.changeContext) {
       const edits = editsFor(e, snap.changes ?? [], adSetOfAd);
+      // The account's own days are always loaded as the baseline; it only gets its own block when it has edits.
+      if (e.entityType === "account" && !edits.length) continue;
       const kindLabel = e.entityType === "account" ? "whole ad account (edits not tied to one campaign, e.g. tracking)" : `${e.entityType} "${e.name}" (${e.id})`;
       const schedule =
         e.entityType === "account"
           ? null
           : `status ${e.status ?? "unknown"} · scheduled ${e.startDate ?? "start not set"} → ${e.endDate ?? "no end date set"}`;
       lines.push(`- ${kindLabel}${schedule ? ` · ${schedule}` : ""}`);
-      if (e.days.length <= 31) {
+      const periodDays = e.days.filter(inPeriod);
+      if (periodDays.length && periodDays.length <= 31) {
         lines.push(
-          `  - Day by day: ${e.days
+          `  - Day by day (audited period): ${periodDays
             .map((d) => `${d.date.slice(5)} spend ${money(d.spendCents)}, ${d.results ?? "n/a"} results${d.costPerResultCents != null ? `, ${money(d.costPerResultCents)}/result` : ""}, CTR ${d.linkCtr.toFixed(2)}%${d.purchaseValueCents != null ? `, revenue ${money(d.purchaseValueCents)}` : ""}`)
             .join(" | ")}`,
         );
       }
+      const baseline = e.entityType === "account" ? null : restOfAccount(accountDays, e.days);
       const byDate = new Map<string, AuditChange[]>();
       for (const c of edits) byDate.set(c.localDate, [...(byDate.get(c.localDate) ?? []), c]);
-      const dates = [...byDate.keys()].sort().slice(0, MAX_EDIT_DATES_PER_ENTITY);
+      const allDates = [...byDate.keys()].sort();
+      const dates = allDates.slice(0, MAX_EDIT_DATES_PER_ENTITY);
+      const lastDay = e.days.length ? e.days[e.days.length - 1]!.date : null;
       for (const date of dates) {
         const group = byDate.get(date)!;
         const what = [...new Set(group.map((c) => c.label ?? c.eventType.replace(/_/g, " ")))].join("; ");
         const who = [...new Set(group.map((c) => c.actor ?? (c.application ? `via ${c.application}` : null)).filter(Boolean))].join(", ") || "actor not reported";
+        const bFrom = shiftDay(date, -AROUND_DAYS);
+        const bTo = shiftDay(date, -1);
+        const aFrom = shiftDay(date, 1);
+        const aTo = shiftDay(date, AROUND_DAYS);
         lines.push(
-          `  - Edit on ${date} (${what}; ${who}) — before: ${windowLine(e.days, shiftDay(date, -AROUND_DAYS), shiftDay(date, -1), money)} · day of: ${windowLine(e.days, date, date, money)} · after: ${windowLine(e.days, shiftDay(date, 1), shiftDay(date, AROUND_DAYS), money)}`,
+          `  - Edit on ${date} (${what}; ${who}) — before: ${windowLine(e.days, bFrom, bTo, money)} · day of: ${windowLine(e.days, date, date, money)} · after: ${windowLine(e.days, aFrom, aTo, money)}`,
         );
+        const before = windowStats(e.days, bFrom, bTo);
+        const after = windowStats(e.days, aFrom, aTo);
+        const move = moveLine(before, after);
+        if (move) lines.push(`    - Change: ${move}`);
+        const settled = windowStats(e.days, shiftDay(date, LEARNING_DAYS + 1), aTo);
+        if (settled && after && after.n > LEARNING_DAYS) {
+          lines.push(`    - After, days ${LEARNING_DAYS + 1}–${AROUND_DAYS}: ${windowLine(e.days, shiftDay(date, LEARNING_DAYS + 1), aTo, money)}${moveLine(before, settled) ? ` (vs before: ${moveLine(before, settled)})` : ""}`);
+        }
+        if (baseline) {
+          const rest = moveLine(windowStats(baseline, bFrom, bTo), windowStats(baseline, aFrom, aTo));
+          const restSpend = windowStats(baseline, bFrom, aTo)?.spendPerDay ?? 0;
+          if (rest && restSpend > 0) lines.push(`    - Rest of account, same days: ${rest}`);
+        }
+        const cautions: string[] = [];
+        const nearby = allDates.filter((d) => d !== date && d >= bFrom && d <= aTo);
+        if (nearby.length) cautions.push(`other edits on this ${e.entityType === "ad set" ? "ad set or its ads" : e.entityType} on ${nearby.join(", ")}, inside the window`);
+        if (!before) cautions.push("no figures before the edit (the object wasn't running)");
+        else if (before.n < AROUND_DAYS) cautions.push(`only ${before.n} of ${AROUND_DAYS} days before`);
+        if (!after) cautions.push(lastDay && lastDay < aFrom ? "no figures after the edit yet" : "no figures after the edit (the object stopped running)");
+        else if (after.n < AROUND_DAYS) cautions.push(`only ${after.n} of ${AROUND_DAYS} days after${lastDay && lastDay < aTo ? ` (figures end ${lastDay})` : ""}`);
+        const thin = [before, after].some((w) => w && w.results != null && w.results < MIN_RESULTS_TO_JUDGE);
+        if (thin) cautions.push(`under ${MIN_RESULTS_TO_JUDGE} results in a window (${before?.results ?? "n/a"} before, ${after?.results ?? "n/a"} after), too few to judge on results alone`);
+        if (cautions.length) lines.push(`    - Caution: ${cautions.join("; ")}`);
       }
       if (byDate.size > dates.length) lines.push(`  - ${byDate.size - dates.length} more edit days on this object not shown.`);
     }
