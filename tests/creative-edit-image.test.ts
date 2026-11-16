@@ -13,6 +13,14 @@ vi.mock("@/lib/storage/r2", () => ({
   }),
 }));
 
+let realign: (i: { copy: { headline: string; primary_text: string; description: string | null } }) => Promise<unknown> = async () => {
+  throw new Error("no model in tests");
+};
+vi.mock("@/lib/creatives/realign-copy", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/creatives/realign-copy")>()),
+  realignCopy: (i: never) => realign(i),
+}));
+
 const solid = (w: number, h: number, c: { r: number; g: number; b: number }) => sharp({ create: { width: w, height: h, channels: 3, background: c } }).png().toBuffer();
 const pixel = async (png: Buffer, x: number, y: number) => {
   const { data, info } = await sharp(png).removeAlpha().raw().toBuffer({ resolveWithObject: true });
@@ -38,6 +46,19 @@ describe("where the logo went is remembered", () => {
     // writing it again replaces the old one
     expect(readLogoMarker(withLogoMarker(d, { left: 1, top: 2, width: 3, height: 4 }))).toEqual({ left: 1, top: 2, width: 3, height: 4 });
     expect(readLogoMarker("STYLE: no logo")).toBeNull();
+  });
+});
+
+describe("recording the words printed on an edited image", () => {
+  it("replaces only an existing ON-IMAGE TEXT line and keeps everything else in place", async () => {
+    const { replaceOnImageText } = await import("@/lib/creatives/realign-copy");
+    const text = { headline: "New", highlights: ["A", "B"], cta_label: "Go" };
+    const d = 'STYLE: x.\nON-IMAGE TEXT (typeset exactly as written, spelled correctly): headline "Old"; call-to-action button "Shop".\n[[run:r1]]';
+    expect(replaceOnImageText(d, text)).toBe(
+      'STYLE: x.\nON-IMAGE TEXT (typeset exactly as written, spelled correctly): headline "New"; highlighted keywords "A", "B"; call-to-action button "Go".\n[[run:r1]]',
+    );
+    expect(replaceOnImageText("STYLE: x.", text)).toBe("STYLE: x.");
+    expect(replaceOnImageText(d, null)).toBe(d);
   });
 });
 
@@ -165,6 +186,55 @@ describe("editing an image of a bulk run", () => {
     expect(item.edit_error).toMatch(/safety/);
     expect(item.versions ?? []).toEqual([]);
     expect(stored.size).toBe(0);
+  });
+
+  it("rewrites the ad copy to match the edited image, and undo puts the old copy back", async () => {
+    let seenCopy: unknown = null;
+    realign = async (i) => {
+      seenCopy = i.copy;
+      return {
+        headline: "1,500+ businesses trust us", primary_text: "New copy that leads with the stat on the image.", description: "Book a call",
+        onImage: { headline: "1,500+ businesses trust us", highlights: ["Free audit"], cta_label: "Book now" }, changed: true, note: "Headline now leads with the stat.",
+      };
+    };
+    const { editImage, undoLastEdit } = await import("@/lib/creatives/edit-image");
+    const { getRun } = await import("@/lib/creatives/bulk/runs");
+    const { upsertCreativeDraftAsync } = await import("@/lib/creatives/drafts");
+    const { parseOnImageText } = await import("@/lib/creatives/bulk/export");
+    const { run, draft: made, getCreativeDraftAsync } = await setup();
+    const oldDirection = `${made.creative_direction}\nON-IMAGE TEXT (typeset exactly as written, spelled correctly): headline "Stop wasting spend"; call-to-action button "Learn more".`;
+    const draft = await upsertCreativeDraftAsync({ ...made, creative_direction: oldDirection });
+    expect((await editImage({ draftId: draft.id, instruction: "make the headline say 1,500+ businesses trust us", mode: "edit" })).ok).toBe(true);
+    expect(seenCopy).toEqual({ headline: "Stop wasting spend", primary_text: "copy", description: null });
+    const after = (await getCreativeDraftAsync(draft.id))!;
+    expect([after.headline, after.primary_text, after.description]).toEqual(["1,500+ businesses trust us", "New copy that leads with the stat on the image.", "Book a call"]);
+    const v = (await getRun(run.id))!.items[0]!.versions![0]!;
+    expect(v.copy).toEqual({ headline: "Stop wasting spend", primary_text: "copy", description: null });
+    expect(v.understood).toContain("Headline now leads with the stat.");
+    // the words now printed on the image are recorded, for the export and later edits; markers stay
+    expect(parseOnImageText(after.creative_direction)).toEqual({ headline: "1,500+ businesses trust us", labels: ["Free audit"], button: "Book now" });
+    expect(readLogoMarker(after.creative_direction)).toEqual({ left: 40, top: 40, width: 200, height: 80 });
+    expect(v.direction).toBe(oldDirection);
+
+    await undoLastEdit(draft.id);
+    const back = (await getCreativeDraftAsync(draft.id))!;
+    expect([back.headline, back.primary_text, back.description]).toEqual(["Stop wasting spend", "copy", null]);
+    expect(back.creative_direction).toBe(oldDirection);
+  });
+
+  it("keeps the image edit and the old copy when the copy cannot be checked", async () => {
+    realign = async () => {
+      throw new Error("model down");
+    };
+    const { editImage } = await import("@/lib/creatives/edit-image");
+    const { getRun } = await import("@/lib/creatives/bulk/runs");
+    const { run, draft, getCreativeDraftAsync } = await setup();
+    expect((await editImage({ draftId: draft.id, instruction: "make the background blue", mode: "edit" })).ok).toBe(true);
+    const after = (await getCreativeDraftAsync(draft.id))!;
+    expect(after.primary_text).toBe("copy");
+    const v = (await getRun(run.id))!.items[0]!.versions![0]!;
+    expect(v.copy).toBeUndefined();
+    expect(v.understood).toMatch(/copy was left as it was/);
   });
 
   it("retries without the fidelity option when the model does not take it", async () => {

@@ -6,6 +6,7 @@ import { generateImageForDraft, storeDraftImage } from "@/lib/creatives/generate
 import { generationSize, readAspectMarker, readLogoMarker, readRunMarker, type ImageFormat } from "@/lib/creatives/formats";
 import { getRun, updateRun, type ImageVersion, type RunItem } from "@/lib/creatives/bulk/runs";
 import { resolveEditInstruction } from "@/lib/creatives/resolve-instruction";
+import { realignCopy, replaceOnImageText, type AdCopy } from "@/lib/creatives/realign-copy";
 
 /**
  * Changing one thing in an image without redrawing it.
@@ -121,6 +122,47 @@ async function recordVersion(draft: CreativeDraft, version: ImageVersion | null,
 export type EditMode = "edit" | "full";
 
 /**
+ * After the image changed, rewrite the post's headline, primary text and description where they no
+ * longer fit what the image now says, and record the words now printed on it in the art direction.
+ * Never fails the edit: if the copy cannot be checked, the image edit still stands and the operator
+ * is told the copy was left as it was. Returns what was there before, for undo.
+ */
+async function matchCopyToImage(
+  existing: CreativeDraft,
+  newImage: Buffer | null,
+  instruction: string,
+  resolved: { summary: string; facts: string[] },
+): Promise<{ note: string; before: AdCopy | null; direction: string | null }> {
+  const before: AdCopy = { headline: existing.headline, primary_text: existing.primary_text, description: existing.description };
+  try {
+    const image = newImage ?? (await imageBytes(existing));
+    const out = await realignCopy({
+      image,
+      instruction,
+      understood: resolved.summary,
+      copy: before,
+      brandName: existing.concept.split("—")[0]?.trim() || null,
+      facts: resolved.facts,
+    });
+    const current = await getCreativeDraftAsync(existing.id);
+    if (!current) return { note: "", before: null, direction: null };
+    const direction = replaceOnImageText(current.creative_direction, out.onImage);
+    const directionChanged = direction !== current.creative_direction;
+    if (!out.changed && !directionChanged) return { note: "", before: null, direction: null };
+    await upsertCreativeDraftAsync({
+      ...current,
+      id: current.id,
+      ...(out.changed ? { headline: out.headline, primary_text: out.primary_text, description: out.description } : {}),
+      creative_direction: direction,
+    });
+    return { note: out.note, before: out.changed ? before : null, direction: directionChanged ? current.creative_direction : null };
+  } catch (error) {
+    logger.warn("Could not match the ad copy to the edited image", { draftId: existing.id, error: error instanceof Error ? error.message : String(error) });
+    return { note: "The ad copy was left as it was (it could not be checked against the new image).", before: null, direction: null };
+  }
+}
+
+/**
  * Edit or regenerate one image of a bulk run. The draft shows as rendering while this runs; on
  * failure the original image stays exactly as it was and the reason is recorded.
  */
@@ -151,6 +193,7 @@ export async function editImage(input: { draftId: string; instruction: string; m
       creativeDirection: existing.creative_direction,
     });
     const change = resolved.instruction;
+    let newImage: Buffer | null = null;
     if (input.mode === "full") {
       const result = await generateImageForDraft(existing.id, undefined, change, format);
       if (result.imageStatus !== "succeeded") throw new Error(result.imageError ?? "The image could not be regenerated.");
@@ -168,8 +211,19 @@ export async function editImage(input: { draftId: string; instruction: string; m
         revisionNotes: instruction,
         direction: existing.creative_direction,
       });
+      newImage = finished;
     }
-    await recordVersion(existing, { ...version, understood: resolved.summary }, null);
+    const copy = await matchCopyToImage(existing, newImage, instruction, resolved);
+    await recordVersion(
+      existing,
+      {
+        ...version,
+        understood: copy.note ? `${resolved.summary} ${copy.note}` : resolved.summary,
+        ...(copy.before ? { copy: copy.before } : {}),
+        ...(copy.direction ? { direction: copy.direction } : {}),
+      },
+      null,
+    );
     return { ok: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -192,7 +246,8 @@ export async function undoLastEdit(draftId: string): Promise<void> {
   if (!found || !last) throw new Error("There is no earlier version to go back to.");
   const bytes = await getObjectStorage().get(last.key);
   if (!bytes) throw new Error("The earlier version is no longer stored.");
-  await storeDraftImage(draft, { b64: bytes.toString("base64"), imageUrl: null, mime: "image/png", model: null, prompt: null, status: "succeeded", error: null, revisionNotes: null, direction: null });
+  const restored = last.copy ? { ...draft, headline: last.copy.headline, primary_text: last.copy.primary_text, description: last.copy.description } : draft;
+  await storeDraftImage(restored, { b64: bytes.toString("base64"), imageUrl: null, mime: "image/png", model: null, prompt: null, status: "succeeded", error: null, revisionNotes: null, direction: last.direction ?? null });
   const items = found.items.map((it, i) => (i === found.index ? { ...it, versions: versions.slice(0, -1), edit_error: null } : it));
   await updateRun(found.runId, { items });
   await getObjectStorage().delete(last.key).catch(() => undefined);
