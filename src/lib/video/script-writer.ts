@@ -425,6 +425,32 @@ export function syncSceneLines<T extends Pick<VideoScene, "line" | "speaker" | "
   if (!scene.lines || joinLines(scene.lines) === scene.line.trim()) return scene;
   const text = scene.line.trim();
   if (!text) return { ...scene, lines: [] };
+  // Several speakers: when the other speakers' words are still there unchanged, only one speaker's words changed,
+  // so the parts are found again around them and every line keeps its voice.
+  if (scene.lines.length > 1) {
+    const parts = scene.lines;
+    const cuts: number[] = [];
+    let from = 0;
+    let found = true;
+    for (let i = 1; i < parts.length; i++) {
+      const at = text.indexOf(parts[i]!.text.trim(), from);
+      if (at < 0) {
+        found = false;
+        break;
+      }
+      cuts.push(at);
+      from = at + parts[i]!.text.trim().length;
+    }
+    if (found && cuts[0]! > 0) {
+      const bounds = [0, ...cuts, text.length];
+      const remapped = parts.map((p, i) => ({ ...p, text: text.slice(bounds[i], i === parts.length - 1 ? text.length : bounds[i + 1]).trim() }));
+      if (remapped.every((p) => p.text)) return { ...scene, lines: remapped };
+    }
+    const head = parts[0]!.text.trim();
+    if (parts.length === 2 && text.startsWith(head) && text.length > head.length) {
+      return { ...scene, lines: [parts[0]!, { ...parts[1]!, text: text.slice(head.length).trim() }] };
+    }
+  }
   const voiceId = scene.lines[0]?.voiceId ?? "narrator";
   const onCamera = scene.lines.length ? scene.lines[0]!.onCamera : scene.speaker === "on_camera";
   return { ...scene, lines: [{ voiceId, text, onCamera }] };

@@ -175,6 +175,21 @@ describe("concepts first, then the script", () => {
   });
 });
 
+describe("starting again from the brief", () => {
+  it("avoids the ideas already shown on this project and keeps them on record", async () => {
+    const { createProject, getProject } = await import("@/lib/video/projects");
+    const { writeProjectScripts } = await import("@/lib/video/brief");
+    const project = await createProject({ clientId: "client-flow-8", inputs });
+    await writeProjectScripts(project.id);
+    const first = (await getProject(project.id))!.brand!.shownConcepts!;
+    await writeProjectScripts(project.id);
+    for (const idea of first) expect(conceptCalls.at(-1)!.avoid).toContain(idea);
+    const shown = (await getProject(project.id))!.brand!.shownConcepts!;
+    expect(shown.slice(0, first.length)).toEqual(first);
+    expect(shown.length).toBe(first.length + 3);
+  });
+});
+
 describe("changing the idea of a written script", () => {
   it("rewrites it from its concept and keeps the old one for undo", async () => {
     const { createProject, getProject } = await import("@/lib/video/projects");

@@ -16,6 +16,8 @@ const bodySchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("more"), feedback: z.string().max(1000).optional() }),
   /** Back to the concepts on show, keeping every script already written. */
   z.object({ action: z.literal("back") }),
+  /** Open a script already written (from the concepts screen): it can then be changed and confirmed. */
+  z.object({ action: z.literal("open"), scriptId: z.string().min(1) }),
 ]);
 
 /** While a concept can still be chosen: before a script is confirmed. */
@@ -33,6 +35,11 @@ export async function POST(request: Request, ctx: Ctx) {
     if (!project.brand?.concepts?.length) throw new Error("This video has no concepts. Write the script again to get some.");
     if (!OPEN.has(project.status)) throw new Error(project.status === "writing" ? "Still working on the last request. Wait for it to finish." : "A script is already confirmed for this video. Edit the script to change it.");
 
+    if (body.action === "open") {
+      if (!project.scripts?.some((s) => s.id === body.scriptId)) throw new Error("That script is not part of this video.");
+      await updateProject(id, { status: "scripts_ready", error: null });
+      return jsonOk({ ok: true });
+    }
     if (body.action === "back") {
       await updateProject(id, { status: "concepts_ready", error: null });
       return jsonOk({ ok: true });

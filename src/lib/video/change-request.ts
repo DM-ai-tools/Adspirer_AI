@@ -95,6 +95,10 @@ function defaultGenerate(): (prompt: string) => Promise<unknown> {
 export async function planChange(script: VideoScript, request: string, ctx: { facts: string }, deps: ChangeDeps = {}): Promise<ChangePlan> {
   const text = request.trim();
   if (text.length < 3) return { scope: "scenes", scenes: [], summary: "", edits: [], adCopy: null, problem: "Say what you want changed." };
+  // A scene the request names by number must exist: checked here, so it never depends on the model noticing.
+  const named = [...text.matchAll(/\bscenes?\s+((?:\d+\s*(?:,|and|&|-|to)?\s*)+)/gi)].flatMap((m) => [...m[1]!.matchAll(/\d+/g)].map((d) => Number(d[0])));
+  const absent = [...new Set(named.filter((n) => n < 1 || n > script.scenes.length))];
+  if (absent.length) return { scope: "scenes", scenes: [], summary: "", edits: [], adCopy: null, problem: `There is no scene ${absent.join(", ")}: this script has ${script.scenes.length} scenes.` };
   const generate = deps.generate ?? defaultGenerate();
   const raw = modelSchema.parse(await generate(changePrompt(script, text, ctx)));
   const base: ChangePlan = { scope: raw.scope, scenes: raw.scenes, summary: raw.summary.trim(), edits: [], adCopy: null, problem: raw.problem.trim() || null };

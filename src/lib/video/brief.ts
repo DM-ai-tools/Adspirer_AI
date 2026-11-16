@@ -280,10 +280,12 @@ export async function writeProjectScripts(projectId: string): Promise<void> {
     // Three concepts are shown first; the full script is written only for the one the operator picks.
     await stage("writing");
     const ctx = writeContextFor(project, creative, brief);
-    const avoid = await conceptHistory(project.client_id, projectId);
+    // Starting again on the same project: the ideas it already showed are avoided too, and stay on record.
+    const shownBefore = project.brand?.shownConcepts ?? [];
+    const avoid = [...shownBefore, ...(await conceptHistory(project.client_id, projectId))];
     const planned = await planConcepts(creative, { targetSeconds: ctx.targetSeconds, direction: brief.direction ?? null, avoid });
     await updateProject(projectId, {
-      brand: { ...brand, facts, corpus: ctx.corpus, brief: creative, concepts: planned.concepts, shownConcepts: planned.concepts.map((c) => c.logline), conceptLimitation: planned.limitation },
+      brand: { ...brand, facts, corpus: ctx.corpus, brief: creative, concepts: planned.concepts, shownConcepts: [...shownBefore, ...planned.concepts.map((c) => c.logline)], conceptLimitation: planned.limitation },
       scripts: null,
       status: "concepts_ready",
       error: null,

@@ -1492,6 +1492,10 @@ function VideoInner() {
   const [confirming, setConfirming] = useState(false);
   // Bumped to start following the project again after "write 3 new scripts".
   const [pollKey, setPollKey] = useState(0);
+  // The script to open again once a background rewrite of it finishes.
+  const [reopenId, setReopenId] = useState<string | null>(null);
+  // True while a change request is running: confirming then would confirm the script without the change.
+  const [changing, setChanging] = useState(false);
   const setProjectStatus = useCallback((status: ProjectView["status"]) => setView((v) => (v && v.status !== status ? { ...v, status } : v)), []);
 
   useEffect(() => {
@@ -1643,6 +1647,19 @@ function VideoInner() {
     setPollKey((k) => k + 1);
   }
 
+  /** Open a script already written (from the concepts screen): the server moves the project back onto it. */
+  async function openScript(scriptId: string) {
+    if (!projectId) return;
+    try {
+      await apiFetch(`/api/creatives/video/${projectId}/concepts`, { method: "POST", body: JSON.stringify({ action: "open", scriptId }) });
+      const script = view?.scripts?.find((s) => s.id === scriptId);
+      setView((v) => (v ? { ...v, status: "scripts_ready", error: null } : v));
+      if (script) pick(script);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not open the script");
+    }
+  }
+
   async function backToConcepts() {
     if (!projectId) return;
     try {
@@ -1659,6 +1676,7 @@ function VideoInner() {
   async function afterChange(scriptId: string, result: { started?: boolean }) {
     if (!projectId) return;
     if (result.started) {
+      setReopenId(scriptId);
       followAgain();
       return;
     }
@@ -1714,9 +1732,12 @@ function VideoInner() {
     );
   }
 
-  // The script just written (the last one) opens straight away.
+  // The script just written (the last one) opens straight away; after a change to a script's idea, that same script does.
   useEffect(() => {
-    if (view?.status === "scripts_ready" && view.scripts?.length && !draft) pick(view.scripts[view.scripts.length - 1]!);
+    if (view?.status !== "scripts_ready" || !view.scripts?.length || draft) return;
+    const again = reopenId ? view.scripts.find((s) => s.id === reopenId) : undefined;
+    pick(again ?? view.scripts[view.scripts.length - 1]!);
+    if (reopenId) setReopenId(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view?.status, view?.scripts]);
 
@@ -2086,14 +2107,9 @@ function VideoInner() {
                 concepts={view.concepts ?? []}
                 limitation={view.conceptLimitation ?? null}
                 error={view.error}
-                writtenFor={(view.scripts ?? []).map((s) => s.concept?.id).filter((id): id is string => Boolean(id))}
+                scripts={(view.scripts ?? []).map((s) => ({ id: s.id, title: s.concept?.title ?? s.title, conceptId: s.concept?.id ?? null }))}
                 onStarted={followAgain}
-                onOpen={(conceptId) => {
-                  const script = view.scripts?.find((s) => s.concept?.id === conceptId);
-                  if (!script) return;
-                  setView((v) => (v ? { ...v, status: "scripts_ready" } : v));
-                  pick(script);
-                }}
+                onOpen={(scriptId) => void openScript(scriptId)}
               />
               {view.contextBrief ? <BriefCard brief={view.contextBrief} angleLimitation={null} busy={revising === "context"} onSave={(v) => void saveContext(v)} /> : null}
             </div>
@@ -2312,9 +2328,9 @@ function VideoInner() {
                       </div>
                     </div>
 
-                    <ChangeBox projectId={view.id} scriptId={draft.id} canUndo={Boolean(draft.previousVersion)} changeNote={draft.changeNote ?? null} onChanged={(r) => void afterChange(draft.id, r)} />
+                    <ChangeBox onBusy={setChanging} projectId={view.id} scriptId={draft.id} canUndo={Boolean(draft.previousVersion)} changeNote={draft.changeNote ?? null} onChanged={(r) => void afterChange(draft.id, r)} />
 
-                    <Button onClick={() => void confirm()} disabled={confirming || draftTotal > 60 || draftTotal < 15}>
+                    <Button onClick={() => void confirm()} disabled={confirming || changing || draftTotal > 60 || draftTotal < 15}>
                       {confirming ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
                       {view?.chosenScript?.id === draft.id ? "Confirm the changes" : "Confirm this script"}
                     </Button>

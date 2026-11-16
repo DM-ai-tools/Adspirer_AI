@@ -39,7 +39,7 @@ export function ConceptCards({
   concepts,
   limitation,
   error,
-  writtenFor,
+  scripts,
   onStarted,
   onOpen,
 }: {
@@ -47,10 +47,11 @@ export function ConceptCards({
   concepts: ConceptView[];
   limitation: string | null;
   error: string | null;
-  /** Concept ids that already have a script: those open it instead of writing again. */
-  writtenFor: string[];
+  /** Every script already written on this video: a concept that has one opens it instead of writing again, and each stays reachable after new concepts replace its concept. */
+  scripts: Array<{ id: string; title: string; conceptId: string | null }>;
   onStarted: () => void;
-  onOpen: (conceptId: string) => void;
+  /** Open a script already written, by its id. */
+  onOpen: (scriptId: string) => void;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [feedback, setFeedback] = useState("");
@@ -76,10 +77,20 @@ export function ConceptCards({
         <p className="text-xs text-muted">Three different ideas for this video. Pick one and its full voiceover and scenes are written. You can come back here and pick another at any time before you confirm.</p>
       </div>
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
+      {scripts.length ? (
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-muted">Scripts already written:</span>
+          {scripts.map((s) => (
+            <button key={s.id} type="button" onClick={() => onOpen(s.id)} className="rounded-md border border-border px-2 py-1 text-muted transition-colors hover:bg-secondary/40">
+              {s.title}
+            </button>
+          ))}
+        </div>
+      ) : null}
       {limitation ? <p className="text-xs text-amber-500">{limitation}</p> : null}
       <div className="grid gap-3 lg:grid-cols-3">
         {concepts.map((c) => {
-          const written = writtenFor.includes(c.id);
+          const written = scripts.find((s) => s.conceptId === c.id);
           return (
             <Card key={c.id} className="flex flex-col">
               <CardContent className="flex flex-1 flex-col gap-2 p-4 text-xs">
@@ -117,7 +128,7 @@ export function ConceptCards({
                 <p className="italic text-muted">{c.whyItWorks}</p>
                 <div className="mt-auto pt-2">
                   {written ? (
-                    <Button size="sm" variant="secondary" onClick={() => onOpen(c.id)}>
+                    <Button size="sm" variant="secondary" onClick={() => onOpen(written.id)}>
                       Open its script
                     </Button>
                   ) : (
@@ -170,18 +181,22 @@ export function ChangeBox({
   canUndo,
   changeNote,
   onChanged,
+  onBusy,
 }: {
   projectId: string;
   scriptId: string;
   canUndo: boolean;
   changeNote: string | null;
   onChanged: (result: { started?: boolean }) => void;
+  /** Told when a change starts and ends, so the page can hold back confirming meanwhile. */
+  onBusy?: (busy: boolean) => void;
 }) {
   const [request, setRequest] = useState("");
   const [busy, setBusy] = useState<"change" | "undo" | null>(null);
 
   async function send(body: Record<string, unknown>, kind: "change" | "undo") {
     setBusy(kind);
+    onBusy?.(true);
     try {
       const res = await apiFetch<{ changed?: boolean; started?: boolean; problem?: string; summary?: string; undone?: boolean }>(`/api/creatives/video/${projectId}/change`, { method: "POST", body: JSON.stringify(body) });
       if (res.problem) {
@@ -195,6 +210,7 @@ export function ChangeBox({
       toast.error(err instanceof Error ? err.message : "Could not make the change");
     } finally {
       setBusy(null);
+      onBusy?.(false);
     }
   }
 

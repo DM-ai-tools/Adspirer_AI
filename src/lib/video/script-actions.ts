@@ -7,7 +7,7 @@ import type { VideoProject } from "@/lib/video/projects";
 import { checkScript, MAX_SECONDS, type VideoBrief, type VideoScene, type VideoScript } from "@/lib/video/script";
 import { requiredStatsFrom } from "@/lib/video/required-stats";
 import { repairScript } from "@/lib/video/script-repairs";
-import { syncSceneLines, trimToFit, writeScriptForAngle, type WriteContext } from "@/lib/video/script-writer";
+import { splitLongScenes, syncSceneLines, trimToFit, writeScriptForAngle, type WriteContext } from "@/lib/video/script-writer";
 import type { AnglePlan } from "@/lib/video/script-types";
 import { MAX_SCENE_SECONDS, retime } from "@/lib/video/timing";
 import { videoDirection } from "@/lib/video/video-types";
@@ -103,13 +103,18 @@ export type ConfirmInput = { scriptId: string; edits: { title: string; scenes: D
  * else blocks: the script is not inspected again here, only the video is.
  */
 export function confirmScript(project: VideoProject, body: ConfirmInput): { chosen: VideoScript; brand: VideoProject["brand"] } {
+  // Only a script that is ready can be confirmed: never while a concept, a script or a change is still being written.
+  if (project.status !== "scripts_ready") throw new Error(project.status === "writing" ? "Still working on the last request. Wait for it to finish, then confirm." : "This script can't be confirmed now.");
   const original = project.scripts?.find((s) => s.id === body.scriptId);
   if (!original) throw new Error("That script is not part of this project.");
-  const scenes = retime(markEdited(original, body.edits.scenes).map((s, i) => ({ ...s, number: i + 1 })));
+  const marked = retime(markEdited(original, body.edits.scenes).map((s, i) => ({ ...s, number: i + 1 })));
+  const longScenes = marked.filter((s) => s.seconds > MAX_SCENE_SECONDS).map((s) => s.number);
+  // A scene longer than one clip (an older script, or words the operator added) is split at sentences, every word kept.
+  const split = splitLongScenes({ ...original, scenes: marked });
+  const scenes = split.scenes;
   const cursor = scenes.length ? scenes[scenes.length - 1]!.end : 0;
   if (cursor > MAX_SECONDS) throw new Error(`The script runs ${cursor}s; the limit is ${MAX_SECONDS}s.`);
-  const tooLong = scenes.filter((s) => s.seconds > MAX_SCENE_SECONDS);
-  if (tooLong.length) throw new Error(`Scene ${tooLong.map((s) => s.number).join(", ")} runs longer than ${MAX_SCENE_SECONDS} seconds, the longest one scene can be. Split it in two or shorten its words.`);
+  const splitNote = longScenes.length ? [`Scene ${longScenes.join(", ")} ran longer than ${MAX_SCENE_SECONDS} seconds, the longest one clip can be, so it was split at its sentences. Every word is kept.`] : [];
   const edited: VideoScript = { ...original, title: body.edits.title, durationSeconds: cursor, scenes, adCopy: body.edits.adCopy, warnings: [], verification: null };
   const corpus = [JSON.stringify(project.inputs), project.brand?.summary ?? "", JSON.stringify(original), body.edits.scenes.map((s) => `${s.line} ${s.stat ?? ""}`).join(" ")].join("\n");
   // A figure the operator typed in the editor (not in the version written for them) is theirs, with that recorded as its source.
@@ -127,7 +132,7 @@ export function confirmScript(project: VideoProject, body: ConfirmInput): { chos
       brand = { ...project.brand!, manifest: { ...manifest, claims } };
     }
   }
-  edited.warnings = checkScript(edited, { corpus, assetIds: project.assets.map((a) => a.id), target: cursor, claims });
+  edited.warnings = [...splitNote, ...checkScript(edited, { corpus, assetIds: project.assets.map((a) => a.id), target: cursor, claims })];
   const chosen = { ...withSpeech(edited, project.inputs.speechRate, original.speech?.requestedSeconds ?? project.inputs.targetSeconds), warnings: edited.warnings };
   return { chosen, brand };
 }

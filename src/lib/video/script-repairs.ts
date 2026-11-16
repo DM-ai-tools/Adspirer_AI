@@ -103,9 +103,24 @@ export function repairScript(script: VideoScript, sourceText: string): VideoScri
   const notes: string[] = [];
   const scenes: VideoScene[] = script.scenes.map((s) => {
     if (s.edited || !s.line.trim()) return s;
+    // With several voices each voice's words are repaired on their own, so a repair never moves words between speakers.
+    if (s.lines && s.lines.length > 1) {
+      const changes: string[] = [];
+      const lines = s.lines
+        .map((l) => {
+          const r = repairText(l.text, sourceText);
+          changes.push(...r.changes);
+          return { ...l, text: r.text };
+        })
+        .filter((l) => l.text.trim());
+      if (!changes.length) return s;
+      notes.push(`Scene ${s.number}: ${[...new Set(changes)].join(", ")}.`);
+      return { ...s, lines, line: lines.map((l) => l.text).join(" ") };
+    }
     const r = repairText(s.line, sourceText);
     if (r.changes.length) notes.push(`Scene ${s.number}: ${[...new Set(r.changes)].join(", ")}.`);
-    return r.changes.length ? { ...s, line: r.text } : s;
+    if (!r.changes.length) return s;
+    return { ...s, line: r.text, ...(s.lines?.length === 1 ? { lines: r.text.trim() ? [{ ...s.lines[0]!, text: r.text }] : [] } : {}) };
   });
   const copy = (value: string, label: string) => {
     const r = repairText(value, sourceText);

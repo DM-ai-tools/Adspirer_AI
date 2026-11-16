@@ -83,7 +83,10 @@ export async function fitToModel(script: VideoScript, opts: { maxSeconds: number
   while (length(scenes) > opts.maxSeconds && scenes.length > 2) {
     const candidates = scenes.map((s, i) => ({ s, i })).filter(({ s, i }) => i !== 0 && i !== scenes.length - 1 && !s.edited);
     if (!candidates.length) break;
-    const pick = candidates.sort((a, b) => sceneSeconds(b.s) - sceneSeconds(a.s))[0]!;
+    // The smallest scene whose removal is enough; only when no single scene is enough, the longest (and go round again).
+    const over = length(scenes) - opts.maxSeconds;
+    const enough = candidates.filter(({ s }) => sceneSeconds(s) >= over).sort((a, b) => sceneSeconds(a.s) - sceneSeconds(b.s));
+    const pick = enough[0] ?? candidates.sort((a, b) => sceneSeconds(b.s) - sceneSeconds(a.s))[0]!;
     dropped.push(orig(pick.s));
     scenes = scenes.filter((_, i) => i !== pick.i);
   }
