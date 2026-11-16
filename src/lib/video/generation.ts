@@ -24,7 +24,7 @@ import { narrationCautions } from "@/lib/video/evidence";
 import { claimProjectLease, getProject, releaseProjectLease, updateProject, type VideoProject } from "@/lib/video/projects";
 import { buildPlannedClipPrompt, type PlannedClipPromptInput, type PlannedVoice } from "@/lib/video/clip-prompt";
 import { effectiveClaims } from "@/lib/video/claims";
-import { statInserts, type VideoScript } from "@/lib/video/script";
+import type { VideoScript } from "@/lib/video/script";
 import { sceneSeconds } from "@/lib/video/timing";
 import { normaliseVoices } from "@/lib/video/script-writer";
 import { applyLexicon } from "@/lib/video/pronunciation";
@@ -955,8 +955,6 @@ export function viewGeneration(raw: VideoProject): GenerationView {
       : null,
     spentUsd: spentUsd(clips),
     blocked: ["confirmed", "clips_ready", "done"].includes(project.status) ? blockedReason(project) : null,
-    // Every figure the script states: said in the voice, listed for inserting on screen in editing.
-    statInserts: project.chosen_script ? statInserts(project.chosen_script, effectiveClaims(project.brand)) : [],
     // Figures with no recorded source: a heads-up, never a stop.
     notice:
       ["confirmed", "clips_ready"].includes(project.status) && project.chosen_script && project.brand?.manifest

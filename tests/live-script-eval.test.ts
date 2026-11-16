@@ -101,8 +101,6 @@ describe.skipIf(!live)("live comparison of the old and new script generators", (
     const { writeScriptSet } = await import("@/lib/video/script-writer");
     const { overlapFindings, openingFindings, voiceFindings } = await import("@/lib/video/script-quality");
     const { resolveWordsPerSecond } = await import("@/lib/video/duration");
-    const { writeVideoScripts, briefFacts, factsCorpus } = await import("@/lib/video/script");
-    const { verifyAndFixAll } = await import("@/lib/video/verify");
     const { unsourcedFigures } = await import("@/lib/video/script");
 
     const out: Array<Record<string, unknown>> = [];
@@ -154,14 +152,8 @@ describe.skipIf(!live)("live comparison of the old and new script generators", (
       // The same editing step the app runs (editorial pass with whole-script rewrites, then the length cut).
       const newScripts = await editScripts(written.scripts, ctx, planned.angles);
 
-      // ---- OLD
-      let oldScripts: Awaited<ReturnType<typeof writeVideoScripts>>["scripts"] = [];
-      try {
-        const old = await writeVideoScripts(brief as never);
-        oldScripts = await verifyAndFixAll(old.scripts, { brief: brief as never, facts: briefFacts(brief as never), corpus: factsCorpus(brief as never), assetIds: [], target: f.seconds });
-      } catch (error) {
-        out.push({ page: f.key, oldError: error instanceof Error ? error.message : String(error) });
-      }
+      // ---- OLD: the old all-in-one writer was removed (2026-11-16); nothing to compare against any more.
+      const oldScripts: typeof newScripts = [];
 
       const metrics = (scripts: typeof newScripts, label: string) => {
         const openings = scripts.map((s) => s.scenes.find((x) => x.line.trim())?.line ?? "");

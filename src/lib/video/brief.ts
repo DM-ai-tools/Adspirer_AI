@@ -16,7 +16,7 @@ import { editorialPass, refreshEditorial } from "@/lib/video/editorial";
 import { resolveWordsPerSecond } from "@/lib/video/duration";
 import { contactTokens, repairScript } from "@/lib/video/script-repairs";
 import { requiredStatsFrom, spokenForms } from "@/lib/video/required-stats";
-import { conceptAngle, ensureMainStats, normaliseVoices, splitLongScenes, syncSceneLines, trimToFit, writeScriptForAngle, writeScriptForConcept, type WriteContext } from "@/lib/video/script-writer";
+import { conceptAngle, normaliseVoices, splitLongScenes, syncSceneLines, trimToFit, writeScriptForAngle, writeScriptForConcept, type WriteContext } from "@/lib/video/script-writer";
 import { storedBrief } from "@/lib/video/script-actions";
 import type { AnglePlan, CreativeBrief, VideoConcept } from "@/lib/video/script-types";
 import type { VideoScript } from "@/lib/video/script";
@@ -215,7 +215,7 @@ export function writeContextFor(project: VideoProject, creative: CreativeBrief, 
 export async function editScripts(scripts: VideoScript[], ctx: WriteContext, angles: AnglePlan[]): Promise<VideoScript[]> {
   const { scripts: edited } = await editorialPass(
     scripts,
-    { brief: ctx.creative, angles, facts: ctx.facts, claims: ctx.claims, sourceText: ctx.sourceText, wordsPerSecond: ctx.wordsPerSecond, targetSeconds: ctx.targetSeconds, assetIds: ctx.assetIds, locale: ctx.brief.locale, maxPasses: 2, requiredStats: requiredStatsFrom(ctx.brief.images) },
+    { brief: ctx.creative, angles, facts: ctx.facts, claims: ctx.claims, sourceText: ctx.sourceText, wordsPerSecond: ctx.wordsPerSecond, targetSeconds: ctx.targetSeconds, assetIds: ctx.assetIds, locale: ctx.brief.locale, maxPasses: 2 },
     {
       rewriteScript: async (script, issues, others) => {
         const angle = script.angleDetail ?? angles.find((a) => a.id === script.angle.key);
@@ -230,19 +230,11 @@ export async function editScripts(scripts: VideoScript[], ctx: WriteContext, ang
   );
   // The editor's scene rewrites can lengthen a script again: whatever is still well over its length is cut, never shipped.
   // The report must describe the text as it now stands, so it is checked again after the corrections and the cut.
-  const required = requiredStatsFrom(ctx.brief.images);
-  const editorialCtx = { brief: ctx.creative, angles, facts: ctx.facts, claims: ctx.claims, sourceText: ctx.sourceText, wordsPerSecond: ctx.wordsPerSecond, targetSeconds: ctx.targetSeconds, assetIds: ctx.assetIds, locale: ctx.brief.locale, requiredStats: required };
-  return Promise.all(
-    edited.map(async (s) => {
-      const cut = trimToFit(repairScript(s, ctx.sourceText), ctx);
-      // The main stat of each image is mandatory: if the passes still have not got it said, one scene is rewritten to say it. The image then stays only where it is said.
-      const withStats = await ensureMainStats(cut, required, ctx);
-      return refreshEditorial(withStats, editorialCtx);
-    }),
-  );
+  const editorialCtx = { brief: ctx.creative, angles, facts: ctx.facts, claims: ctx.claims, sourceText: ctx.sourceText, wordsPerSecond: ctx.wordsPerSecond, targetSeconds: ctx.targetSeconds, assetIds: ctx.assetIds, locale: ctx.brief.locale };
+  return edited.map((s) => refreshEditorial(trimToFit(repairScript(s, ctx.sourceText), ctx), editorialCtx));
 }
 
-/** Background job: read the brand and the uploaded images, build the creative brief, plan three different angles, write each, edit them, save them. */
+/** Background job: read the brand, build the creative brief and show three concepts (or read the operator's own script or concept). */
 export async function writeProjectScripts(projectId: string): Promise<void> {
   let project = await getProject(projectId);
   if (!project) return;

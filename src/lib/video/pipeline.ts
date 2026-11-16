@@ -1,6 +1,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { syncSceneLines } from "@/lib/video/script-writer";
 import { logger } from "@/lib/observability/logger";
 import { getObjectStorage } from "@/lib/storage/r2";
 import { providerCapabilities } from "@/lib/video/capabilities";
@@ -166,6 +167,8 @@ export async function prepareCreative(project: VideoProject): Promise<PreparedCr
     script = standalone.script;
     narrationChanges = standalone.changes;
   }
+  // A reworded line keeps the voice that said it.
+  script = { ...script, scenes: script.scenes.map(syncSceneLines) };
 
   const capabilities = providerCapabilities();
   const lexicon = await buildLexicon({

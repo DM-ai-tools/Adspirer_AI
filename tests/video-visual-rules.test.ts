@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyStyle, clipVisual, isScreenShot, STYLE_LOOKS, substituteForScreenShot, textRisk } from "@/lib/video/visual-rules";
+import { classifyStyle, clipVisual, isScreenShot, STYLE_LOOKS, textRisk } from "@/lib/video/visual-rules";
 import { buildClipPrompt } from "@/lib/video/clip-prompt";
 import { checkScript } from "@/lib/video/script";
 import type { VideoScene, VideoScript } from "@/lib/video/script";
@@ -20,10 +20,9 @@ describe("what the video model would have to spell", () => {
     expect(isScreenShot("Presenter at a desk looking at a laptop")).toBe(false);
     const swapped = clipVisual("Full-screen capture of a Google Ads dashboard", true, true);
     expect(swapped.changed).toBe(true);
-    expect(swapped.text).toBe(substituteForScreenShot(true));
+    expect(swapped.text).toMatch(/turned away from the camera/);
     expect(swapped.text).not.toMatch(/dashboard/i);
     expect(clipVisual("A hand turns a coffee cup", true, false)).toEqual({ text: "A hand turns a coffee cup", changed: false });
-    expect(substituteForScreenShot(false)).toMatch(/angled away/);
   });
 });
 
@@ -84,7 +83,7 @@ describe("the prompt sent for a clip", () => {
     const p = buildClipPrompt({ ...base, script: s, sceneNumbers: [1, 2] });
     const shots = p.split("\n").filter((l) => l.includes("Shot ")).join("\n");
     expect(shots).not.toMatch(/dashboard/i);
-    expect(shots).toMatch(/laptop angled away/);
+    expect(shots).toMatch(/turned away from the camera/);
     expect(p).toContain("No readable text anywhere in the frame");
     expect(p).toContain("One clear action per shot");
   });

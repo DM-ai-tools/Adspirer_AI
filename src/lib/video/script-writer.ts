@@ -9,8 +9,7 @@ import { checkScript, sceneSchema, type SceneLine, type ScriptVoice, type VideoB
 import { MAX_SCENE_SECONDS, retime, sceneSeconds, splitLongLine, wordsFor } from "@/lib/video/timing";
 import { HUMAN_VOICE, SYSTEM } from "@/lib/video/voice";
 import { VISUAL_DIRECTION_RULES } from "@/lib/video/visual-rules";
-import { attachImageStats, linkImageStats, requiredStatsFrom, requiredStatsPrompt, spokenForms, statFixNote, statGaps, type RequiredStat } from "@/lib/video/required-stats";
-import { regenerateScene } from "@/lib/video/rewrite";
+import { attachImageStats, linkImageStats, requiredStatsFrom } from "@/lib/video/required-stats";
 import type { ApprovedClaim } from "@/lib/video/pipeline-types";
 import type { AnglePlan, CreativeBrief, HookCandidate, ScriptSource, VideoConcept } from "@/lib/video/script-types";
 
@@ -116,10 +115,8 @@ export function scriptPrompt(ctx: WriteContext, angle: AnglePlan, opts: WriteOpt
     `Locale and spelling: ${ctx.brief.locale}. Preferred look: ${ctx.brief.style && ctx.brief.style !== "auto" ? ctx.brief.style : "choose what suits this idea"}.`,
     ctx.brief.direction ? `THE KIND OF VIDEO THE OPERATOR ASKED FOR (every script follows it; the angles and wording are still yours):\n${ctx.brief.direction}` : null,
     `Scene detail: each scene has its visual, camera, who speaks (on_camera = the presenter speaks to camera, voiceover = an unseen voice over the visuals, none), the exact line, up to 3 keywords from the line, a stat only if it is an approved claim or an operator stat, an uploaded image id only where it makes the point, and sound. The keywords, the stat and the image id are notes for whoever finishes the video by hand: the video itself shows no text, figure or screenshot, so the spoken line must make complete sense with nothing on screen and must never point at an image ("shown here", "as you can see", "on screen"). Use the uploaded images listed in the brief where they carry proof: set the stat exactly as printed and asset_id to the image it came from.`,
-    requiredStatsPrompt(requiredStatsFrom(ctx.brief.images), Object.fromEntries(ctx.brief.images.map((i) => [i.id, i.summary]))),
     HUMAN_VOICE,
     VISUAL_DIRECTION_RULES,
-    ctx.brief.stats.length ? `Operator stats (real, usable where the angle needs them): ${ctx.brief.stats.join("; ")}.` : null,
     ctx.brief.instructions ? `Operator's instructions (follow them within the facts): ${ctx.brief.instructions.slice(0, 1500)}` : null,
     opts.avoidOpenings?.length ? `Other versions open with these ideas; do not echo them: ${opts.avoidOpenings.map((o) => `"${o}"`).join(" | ")}` : null,
     opts.delivery ? `DELIVERY REWRITE: keep the angle, the facts and the argument. Change how it is said and shown: ${opts.delivery}` : null,
@@ -257,8 +254,7 @@ export async function writeScriptForAngle(ctx: WriteContext, angle: AnglePlan, o
   for (let attempt = 0; attempt <= MAX_FIT_ATTEMPTS; attempt += 1) {
     const raw = writtenSchema.parse(await generate(scriptPrompt(ctx, angle, { ...opts, fitNote: note, previous })));
     script = buildWrittenScript(raw, angle, ctx, opts.previous);
-    // Length and the mandatory image stats are both fixed by editing, in the same bounded loop.
-    const next = [fitNote(script), statFixNote(script.imageStats ?? [])].filter(Boolean).join(" ") || null;
+    const next = fitNote(script);
     if (!next) break;
     note = next;
     previous = script;
@@ -299,57 +295,6 @@ export function trimToFit(script: VideoScript, ctx: Pick<WriteContext, "targetSe
   }
   if (!cut.length) return script;
   return { ...current, warnings: [...current.warnings, `The draft ran past the length asked for, so ${cut.length === 1 ? `scene ${cut[0]} was` : `scenes ${cut.join(", ")} were`} cut to fit.`] };
-}
-
-/**
- * The main stat of an image is mandatory. If the editing passes have still not got it into a script,
- * one scene is rewritten to say it (the scene that already shows that image, else a middle scene),
- * at most twice per stat. Scenes the operator edited are never touched; if nothing can be done the
- * stat stays reported as missing. The coverage is recorded on the result.
- */
-export async function ensureMainStats(
-  script: VideoScript,
-  required: RequiredStat[],
-  ctx: Pick<WriteContext, "facts" | "assetIds" | "targetSeconds" | "wordsPerSecond"> & { brief: Pick<VideoBrief, "locale"> },
-  deps: { rewriteScene?: (input: { script: VideoScript; sceneNumber: number; feedback: string }) => Promise<VideoScene> } = {},
-): Promise<VideoScript> {
-  if (!required.length || script.source === "uploaded") return attachImageStats(script, required);
-  const rewrite =
-    deps.rewriteScene ??
-    (async ({ script: s, sceneNumber, feedback }) => regenerateScene({ script: s, sceneNumber, feedback, ctx: { facts: ctx.facts, assetIds: ctx.assetIds, locale: ctx.brief.locale } }));
-  // The scenes the writer put each image on, before the image is taken off the scenes that do not say its stat: the rewrite goes where the image already was.
-  const carriers = new Map(required.map((r) => [r.assetId, script.scenes.filter((s) => s.assetId === r.assetId && !s.edited).map((s) => s.number)]));
-  let current = attachImageStats({ ...script, scenes: linkImageStats(script.scenes, required) }, required);
-  for (const gap of statGaps(current.imageStats ?? []).unsaid) {
-    const need = required.find((r) => r.assetId === gap.assetId && r.value === gap.value);
-    if (!need) continue;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const spoken = current.scenes.filter((s) => s.line.trim());
-      const candidates = spoken.filter((s) => !s.edited && s.number !== spoken[0]?.number && s.number !== spoken[spoken.length - 1]?.number);
-      const carried = candidates.find((s) => (carriers.get(need.assetId) ?? []).includes(s.number));
-      const target = carried ?? candidates[Math.floor(candidates.length / 2)];
-      if (!target) break;
-      try {
-        const forms = spokenForms(need.value);
-        const next = await rewrite({
-          script: current,
-          sceneNumber: target.number,
-          feedback: `This scene must say the main figure from the operator's image: ${need.value}${need.label ? ` (${need.label})` : ""}. Say it naturally as part of the point this scene is making${forms[0] ? `, for example as ${forms[0]}` : ""}, as digits. Describe it only as what the source shows (for example "in one account's results"), in words that make sense with no image on screen: never "shown here" or "as you can see"; do not add a period, whose it is, or any comparison. Keep the scene short.`,
-        });
-        const scenes = current.scenes.map((s) => (s.number === target.number ? { ...next, number: s.number, start: s.start, assetId: need.assetId, stat: need.value } : s));
-        const timed = retime(scenes);
-        current = attachImageStats(
-          { ...current, scenes: timed, durationSeconds: timed.length ? timed[timed.length - 1]!.end : 0, speech: buildScriptSpeech(timed.map((s) => s.line).filter(Boolean), current.speech?.requestedSeconds ?? ctx.targetSeconds, ctx.wordsPerSecond, { ctaWords: wordsIn(current.cta?.spoken ?? "") }) },
-          required,
-        );
-      } catch (error) {
-        logger.warn("Could not rewrite a scene to say the main stat", { error: error instanceof Error ? error.message : String(error) });
-        break;
-      }
-      if (!statGaps(current.imageStats ?? []).unsaid.some((g) => g.assetId === need.assetId)) break;
-    }
-  }
-  return current;
 }
 
 /** Write a version for each angle, in parallel and independently, so one failing does not lose the others. */

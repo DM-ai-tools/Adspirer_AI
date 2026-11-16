@@ -198,8 +198,8 @@ function listScript(input: PlanInput): string {
         clean && marked ? `  material for an optional editing note only (never part of the footage): ${marked}` : null,
         clean && graphicReference(s.visual)
           ? "  the script writer's visual idea referred to a graphic or a screenshot, which does not exist in a clean video: design this shot from the spoken line"
-          : `  the script writer's rough visual idea (a starting point you may replace): ${s.visual}`,
-        `  rough camera idea: ${s.camera}`,
+          : `  the approved picture for this scene (keep what happens in it; you add framing, lens, motion, light and continuity): ${s.visual}`,
+        `  camera, as approved: ${s.camera}`,
         s.sound ? `  sound: ${s.sound}` : null,
       ];
       return bits.filter((b): b is string => b !== null).join("\n");
@@ -250,7 +250,7 @@ const CLEAN_SCENE_FIELDS = [
 
 /** The creative bar: one specific idea carried through the ad, not a sequence of stock shots. */
 export const CONCEPT_RULE =
-  "Build the ad on ONE fresh central idea that belongs to this business and this audience: a specific situation, contrast or visual metaphor from the customer's real day (name it in narrative.approach). Every scene expresses that idea in a concrete, slightly unexpected but believable way: a particular place, prop, gesture or moment a viewer has not seen in a hundred other ads. Reject the first idea anyone would have (a person smiling at a laptop, a handshake, a thumbs up, pointing at the camera in an office, a team high-five, a city skyline). The opening scene stops the scroll with something visually specific within the first second.";
+  "The ad's idea is the one the script was written from, and the operator approved it: carry THAT idea through every scene (name it in narrative.approach) and never swap it for another. Every scene expresses that idea in a concrete, slightly unexpected but believable way: a particular place, prop, gesture or moment a viewer has not seen in a hundred other ads. Reject the first idea anyone would have (a person smiling at a laptop, a handshake, a thumbs up, pointing at the camera in an office, a team high-five, a city skyline). The opening scene stops the scroll with something visually specific within the first second.";
 
 /** Places and light come from the story, never from a house look. */
 export const SETTING_RULE =

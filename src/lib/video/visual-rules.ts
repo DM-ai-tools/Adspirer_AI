@@ -104,23 +104,12 @@ export function isScreenShot(visual: string): boolean {
   return /^(a |an |the )?(full[- ]screen|screen ?(recording|capture)|screenshot|close[- ]up of (a |the )?(screen|dashboard|laptop screen|monitor)|dashboard|analytics|chart|graph|report|spreadsheet|website)/i.test(visual.trim()) || /\b(screen ?recording|screen ?capture|full[- ]screen)\b/i.test(visual);
 }
 
-/**
- * LEGACY fallback, used only for a project that has no creative plan. A video made through the
- * planned pipeline never uses it: the planner chooses, per scene and per campaign, what is filmed
- * under a composited screenshot or figure (a fixed "person at a desk" shot repeated for every screen
- * scene is what made one ad show the same office for twenty seconds).
- */
-export function substituteForScreenShot(hasPresenter: boolean): string {
-  return hasPresenter
-    ? "Medium close-up of the presenter at their desk, their face lit by a soft glow from a laptop angled away from the camera, glancing at it, then nodding slowly with a thoughtful expression"
-    : "Slow close-up of hands resting on a desk beside a laptop angled away from the camera so the screen is not visible, soft screen glow on the desk, shallow depth of field";
-}
-
 /** The visual that is actually sent to the video model for a scene. */
 export function clipVisual(visual: string, hasPresenter: boolean, hasGraphic: boolean): { text: string; changed: boolean } {
   const clean = visual.replace(/\s+/g, " ").trim();
   if (isScreenShot(clean) || (hasGraphic && textRisk(clean).length > 0 && /screen|dashboard|chart|report/i.test(clean))) {
-    return { text: substituteForScreenShot(hasPresenter), changed: true };
+    // Only a project made before creative plans reaches this: the screen is kept out of view rather than swapped for a stock shot.
+    return { text: `${hasPresenter ? "The presenter" : "A person"} reacts to what they are looking at, filmed from behind a screen that is turned away from the camera so nothing on it can be seen; their face carries the moment`, changed: true };
   }
   return { text: clean, changed: false };
 }
