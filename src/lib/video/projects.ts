@@ -6,7 +6,7 @@ import type { AssetAnalysis } from "@/lib/video/assets";
 import type { ScriptProgress } from "@/lib/video/progress";
 import type { ClipState, FinalVideo, GenerationPlan } from "@/lib/video/generation-types";
 import type { AssetPurpose, BrandManifest } from "@/lib/video/pipeline-types";
-import type { AnglePlan, CreativeBrief } from "@/lib/video/script-types";
+import type { AnglePlan, CreativeBrief, VideoConcept } from "@/lib/video/script-types";
 
 export type VideoAsset = {
   id: string;
@@ -44,6 +44,8 @@ export type VideoInputs = {
   /** "upload": the operator brought their own script. */
   mode?: "write" | "upload";
   scriptText?: string | null;
+  /** The operator's own concept for the video, in their words (with or without a script). */
+  conceptText?: string | null;
   scriptFileName?: string | null;
   adCopyText?: string | null;
   /** Changes the operator wants made to their uploaded script. Empty means none: it is kept word for word. */
@@ -93,9 +95,15 @@ export type VideoBrand = {
   angles?: AnglePlan[];
   /** Why fewer than three angles were made, when the source could not support more. */
   angleLimitation?: string | null;
+  /** The concepts on show now: the operator picks one and its full script is written. */
+  concepts?: VideoConcept[];
+  /** Every concept logline shown on this project, oldest first: new concepts never repeat one. */
+  shownConcepts?: string[];
+  /** Why fewer than three concepts are on show, when the source could not support more. */
+  conceptLimitation?: string | null;
 };
 
-export type VideoProjectStatus = "writing" | "needs_context" | "scripts_ready" | "confirmed" | "generating" | "paused" | "stopped" | "clips_ready" | "assembling" | "done" | "failed";
+export type VideoProjectStatus = "writing" | "needs_context" | "concepts_ready" | "scripts_ready" | "confirmed" | "generating" | "paused" | "stopped" | "clips_ready" | "assembling" | "done" | "failed";
 
 export type VideoProject = {
   id: string;

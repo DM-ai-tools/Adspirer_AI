@@ -71,7 +71,7 @@ vi.mock("ai", () => ({
   generateObject: async ({ prompt }: { prompt: string }) => {
     prompts.push(prompt);
     if (prompt.includes("THE OPERATOR'S SCRIPT")) {
-      return { object: { title: "The Audit", angle_key: "hidden_cost", pain: "wasted spend", framework_key: "custom", style: "UGC", character: "A man in his 30s", setting: "Home office", hook_alternatives: ["a", "b", "c"], scenes: scenesFromModel } };
+      return { object: { title: "The Audit", angle_name: "hidden cost", pain: "wasted spend", structure: "custom", style: "UGC", character: "A man in his 30s", setting: "Home office", hook_alternatives: ["a", "b", "c"], scenes: scenesFromModel } };
     }
     if (prompt.includes("THE OPERATOR'S REQUEST")) return { object: changeFromModel };
     if (prompt.includes("Current ad copy")) return { object: { primary_text: "MODEL WROTE THIS", headline: "Find the leak", description: "Free audit", cta: "Learn More" } };
@@ -195,7 +195,7 @@ describe("a project made from an uploaded script", () => {
     // the model had reworded scene 1: the operator's words were put back
     expect(script.scenes[0]!.line).toBe("I thought my Google Ads were working fine.");
     expect(script.handling!.restoredScenes).toContain(1);
-    expect(script.verification).toBeTruthy();
+    expect(script.adaptations).toEqual([]);
     // nothing was rewritten by the verifier
     expect(prompts.some((p) => p.includes("Rewrite ONLY scene"))).toBe(false);
     expect(done.progress?.stage).toBe("done");

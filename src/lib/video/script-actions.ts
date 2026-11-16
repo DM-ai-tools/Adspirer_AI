@@ -1,15 +1,16 @@
 import { effectiveClaims } from "@/lib/video/claims";
 import { planAngles } from "@/lib/video/angles";
-import { writeContextFor } from "@/lib/video/brief";
+import { operatorClaims, writeContextFor } from "@/lib/video/brief";
 import { buildScriptSpeech, resolveWordsPerSecond } from "@/lib/video/duration";
 import { editorialPass, refreshEditorial } from "@/lib/video/editorial";
 import type { VideoProject } from "@/lib/video/projects";
-import { checkScript, type VideoBrief, type VideoScene, type VideoScript } from "@/lib/video/script";
+import { checkScript, MAX_SECONDS, type VideoBrief, type VideoScene, type VideoScript } from "@/lib/video/script";
 import { requiredStatsFrom } from "@/lib/video/required-stats";
 import { repairScript } from "@/lib/video/script-repairs";
-import { ensureMainStats, trimToFit, writeScriptForAngle, type WriteContext } from "@/lib/video/script-writer";
+import { splitLongScenes, syncSceneLines, trimToFit, writeScriptForAngle, type WriteContext } from "@/lib/video/script-writer";
 import type { AnglePlan } from "@/lib/video/script-types";
-import { retime } from "@/lib/video/timing";
+import { MAX_SCENE_SECONDS, retime } from "@/lib/video/timing";
+import { videoDirection } from "@/lib/video/video-types";
 
 /**
  * What the operator can do to ONE version without touching the others:
@@ -21,7 +22,7 @@ import { retime } from "@/lib/video/timing";
  */
 export type VersionAction = "regenerate" | "rewrite_delivery" | "change_angle" | "retime";
 
-export type DraftScene = Pick<VideoScene, "number" | "seconds" | "visual" | "camera" | "speaker" | "line" | "keywords" | "stat" | "assetId" | "sound"> & { originalLine?: string | null };
+export type DraftScene = Pick<VideoScene, "number" | "seconds" | "visual" | "camera" | "speaker" | "line" | "keywords" | "stat" | "assetId" | "sound"> & { originalLine?: string | null; lines?: VideoScene["lines"] };
 export type Draft = { title?: string; scenes: DraftScene[]; adCopy?: VideoScript["adCopy"] };
 
 const same = (a: string, b: string) => a.replace(/\s+/g, " ").trim() === b.replace(/\s+/g, " ").trim();
@@ -30,9 +31,17 @@ const same = (a: string, b: string) => a.replace(/\s+/g, " ").trim() === b.repla
 export function markEdited(original: VideoScript, scenes: DraftScene[]): VideoScene[] {
   return scenes.map((s) => {
     const before = original.scenes.find((o) => o.number === s.number);
-    const changed = !before || !same(before.line, s.line) || !same(before.visual, s.visual) || !same(before.camera, s.camera) || before.speaker !== s.speaker || (before.stat ?? "") !== (s.stat ?? "");
+    const changed =
+      !before ||
+      !same(before.line, s.line) ||
+      !same(before.visual, s.visual) ||
+      !same(before.camera, s.camera) ||
+      before.speaker !== s.speaker ||
+      (before.stat ?? "") !== (s.stat ?? "") ||
+      (s.lines !== undefined && JSON.stringify(s.lines) !== JSON.stringify(before.lines ?? []));
     const base = before ?? ({ start: 0, end: 0 } as VideoScene);
-    return { ...base, ...s, edited: Boolean(before?.edited) || changed, start: base.start, end: base.end };
+    // Who says what follows the words as they now stand: an edit of the words keeps the voice that said them.
+    return syncSceneLines({ ...base, ...s, lines: s.lines ?? base.lines, edited: Boolean(before?.edited) || changed, start: base.start, end: base.end });
   });
 }
 
@@ -80,9 +89,52 @@ export function storedBrief(project: VideoProject): VideoBrief {
     images: project.assets.map((a) => ({ id: a.id, name: a.name, summary: a.analysis?.summary ?? a.caption, stats: a.analysis?.stats ?? [], mainStat: a.analysis?.mainStat ?? null })),
     targetSeconds: inputs.targetSeconds,
     style: inputs.style,
+    direction: videoDirection(inputs),
     locale: inputs.locale,
     claims: effectiveClaims(project.brand),
   };
+}
+
+export type ConfirmInput = { scriptId: string; edits: { title: string; scenes: DraftScene[]; adCopy: VideoScript["adCopy"] } };
+
+/**
+ * Confirm a script with the operator's edits applied. Lengths follow the words; a scene the
+ * operator changed is approved wording from then on; a figure they typed counts as theirs. Nothing
+ * else blocks: the script is not inspected again here, only the video is.
+ */
+export function confirmScript(project: VideoProject, body: ConfirmInput): { chosen: VideoScript; brand: VideoProject["brand"] } {
+  // Only a script that is ready can be confirmed: never while a concept, a script or a change is still being written.
+  if (project.status !== "scripts_ready") throw new Error(project.status === "writing" ? "Still working on the last request. Wait for it to finish, then confirm." : "This script can't be confirmed now.");
+  const original = project.scripts?.find((s) => s.id === body.scriptId);
+  if (!original) throw new Error("That script is not part of this project.");
+  const marked = retime(markEdited(original, body.edits.scenes).map((s, i) => ({ ...s, number: i + 1 })));
+  const longScenes = marked.filter((s) => s.seconds > MAX_SCENE_SECONDS).map((s) => s.number);
+  // A scene longer than one clip (an older script, or words the operator added) is split at sentences, every word kept.
+  const split = splitLongScenes({ ...original, scenes: marked });
+  const scenes = split.scenes;
+  const cursor = scenes.length ? scenes[scenes.length - 1]!.end : 0;
+  if (cursor > MAX_SECONDS) throw new Error(`The script runs ${cursor}s; the limit is ${MAX_SECONDS}s.`);
+  const splitNote = longScenes.length ? [`Scene ${longScenes.join(", ")} ran longer than ${MAX_SCENE_SECONDS} seconds, the longest one clip can be, so it was split at its sentences. Every word is kept.`] : [];
+  const edited: VideoScript = { ...original, title: body.edits.title, durationSeconds: cursor, scenes, adCopy: body.edits.adCopy, warnings: [], verification: null };
+  const corpus = [JSON.stringify(project.inputs), project.brand?.summary ?? "", JSON.stringify(original), body.edits.scenes.map((s) => `${s.line} ${s.stat ?? ""}`).join(" ")].join("\n");
+  // A figure the operator typed in the editor (not in the version written for them) is theirs, with that recorded as its source.
+  const manifest = project.brand?.manifest ?? null;
+  let claims = manifest ? effectiveClaims(project.brand) : undefined;
+  let brand = project.brand;
+  if (manifest && claims) {
+    const originalText = [...original.scenes.map((s) => `${s.line} ${s.stat ?? ""}`), original.adCopy.primaryText, original.adCopy.headline].join("\n");
+    const editedTexts = [...body.edits.scenes.map((s) => `${s.line} ${s.stat ?? ""}`), body.edits.adCopy.primaryText, body.edits.adCopy.headline];
+    const typed = operatorClaims(editedTexts, "typed by you in the script editor", claims.length + 1).filter((c) => !originalText.includes(c.figure ?? "\u0000"));
+    const known = new Set(claims.map((c) => (c.figure ?? c.text).toLowerCase()));
+    const added = typed.filter((c) => !known.has((c.figure ?? c.text).toLowerCase()));
+    if (added.length) {
+      claims = [...claims, ...added];
+      brand = { ...project.brand!, manifest: { ...manifest, claims } };
+    }
+  }
+  edited.warnings = [...splitNote, ...checkScript(edited, { corpus, assetIds: project.assets.map((a) => a.id), target: cursor, claims })];
+  const chosen = { ...withSpeech(edited, project.inputs.speechRate, original.speech?.requestedSeconds ?? project.inputs.targetSeconds), warnings: edited.warnings };
+  return { chosen, brand };
 }
 
 /**
@@ -129,7 +181,6 @@ export async function reviseVersion(project: VideoProject, input: ReviseInput, d
   const ctx: WriteContext = writeContextFor(project, creative, brief);
   // The operator's unsaved edits count: their scenes are approved and survive.
   const current = input.draft ? applyDraft(found, input.draft, { wordsPerSecond: project.inputs.speechRate, requestedSeconds: ctx.targetSeconds, corpus: ctx.corpus, assetIds: ctx.assetIds, claims: ctx.claims }) : found;
-  const required = requiredStatsFrom(brief.images);
   const avoidOpenings = others.map((o) => o.hook?.line).filter((l): l is string => Boolean(l));
 
   let angle: AnglePlan | undefined = current.angleDetail ?? project.brand?.angles?.find((a) => a.id === current.angle.key);
@@ -161,14 +212,13 @@ export async function reviseVersion(project: VideoProject, input: ReviseInput, d
   // The new version is edited against the facts, its voice, its length and the untouched versions, which are compared with but never changed.
   const { scripts: edited } = await editorialPass(
     [written],
-    { brief: creative, angles: [angle!], facts: ctx.facts, claims: ctx.claims, sourceText: ctx.sourceText, wordsPerSecond: ctx.wordsPerSecond, targetSeconds: ctx.targetSeconds, assetIds: ctx.assetIds, locale: brief.locale, maxPasses: 2, compareWith: others, requiredStats: required },
+    { brief: creative, angles: [angle!], facts: ctx.facts, claims: ctx.claims, sourceText: ctx.sourceText, wordsPerSecond: ctx.wordsPerSecond, targetSeconds: ctx.targetSeconds, assetIds: ctx.assetIds, locale: brief.locale, maxPasses: 2, compareWith: others },
     {
       rewriteScript: async (script, issues) =>
         write(ctx, angle!, { previous: script, avoidOpenings, direction: `Fix these problems and keep what already works: ${issues.map((i) => `${i.problem} (${i.fix})`).join(" ")}` }),
     },
   );
   const cut = trimToFit(repairScript(edited[0] ?? written, ctx.sourceText), ctx);
-  const withStats = await ensureMainStats(cut, required, ctx);
-  const result = refreshEditorial(withStats, { brief: creative, angles: [angle!], facts: ctx.facts, claims: ctx.claims, sourceText: ctx.sourceText, wordsPerSecond: ctx.wordsPerSecond, targetSeconds: ctx.targetSeconds, assetIds: ctx.assetIds, locale: brief.locale, requiredStats: required });
+  const result = refreshEditorial(cut, { brief: creative, angles: [angle!], facts: ctx.facts, claims: ctx.claims, sourceText: ctx.sourceText, wordsPerSecond: ctx.wordsPerSecond, targetSeconds: ctx.targetSeconds, assetIds: ctx.assetIds, locale: brief.locale });
   return scripts.map((s) => (s.id === found.id ? { ...result, id: found.id } : s));
 }

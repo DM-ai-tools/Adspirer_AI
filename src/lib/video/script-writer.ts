@@ -5,14 +5,13 @@ import { logger } from "@/lib/observability/logger";
 import { modelCandidates, withModelFallback } from "@/lib/video/model-fallback";
 import { briefForPrompt } from "@/lib/video/creative-brief";
 import { buildScriptSpeech, speechBudget } from "@/lib/video/duration";
-import { checkScript, sceneSchema, type VideoBrief, type VideoScene, type VideoScript } from "@/lib/video/script";
-import { retime } from "@/lib/video/timing";
+import { checkScript, sceneSchema, type SceneLine, type ScriptVoice, type VideoBrief, type VideoScene, type VideoScript } from "@/lib/video/script";
+import { MAX_SCENE_SECONDS, retime, sceneSeconds, splitLongLine, wordsFor } from "@/lib/video/timing";
 import { HUMAN_VOICE, SYSTEM } from "@/lib/video/voice";
 import { VISUAL_DIRECTION_RULES } from "@/lib/video/visual-rules";
-import { attachImageStats, linkImageStats, requiredStatsFrom, requiredStatsPrompt, spokenForms, statFixNote, statGaps, type RequiredStat } from "@/lib/video/required-stats";
-import { regenerateScene } from "@/lib/video/rewrite";
+import { attachImageStats, linkImageStats, requiredStatsFrom } from "@/lib/video/required-stats";
 import type { ApprovedClaim } from "@/lib/video/pipeline-types";
-import type { AnglePlan, CreativeBrief, HookCandidate, ScriptSource } from "@/lib/video/script-types";
+import type { AnglePlan, CreativeBrief, HookCandidate, ScriptSource, VideoConcept } from "@/lib/video/script-types";
 
 const CTA_VALUES = ADSPIRER_META_CTAS as unknown as [string, ...string[]];
 
@@ -116,10 +115,8 @@ export function scriptPrompt(ctx: WriteContext, angle: AnglePlan, opts: WriteOpt
     `Locale and spelling: ${ctx.brief.locale}. Preferred look: ${ctx.brief.style && ctx.brief.style !== "auto" ? ctx.brief.style : "choose what suits this idea"}.`,
     ctx.brief.direction ? `THE KIND OF VIDEO THE OPERATOR ASKED FOR (every script follows it; the angles and wording are still yours):\n${ctx.brief.direction}` : null,
     `Scene detail: each scene has its visual, camera, who speaks (on_camera = the presenter speaks to camera, voiceover = an unseen voice over the visuals, none), the exact line, up to 3 keywords from the line, a stat only if it is an approved claim or an operator stat, an uploaded image id only where it makes the point, and sound. The keywords, the stat and the image id are notes for whoever finishes the video by hand: the video itself shows no text, figure or screenshot, so the spoken line must make complete sense with nothing on screen and must never point at an image ("shown here", "as you can see", "on screen"). Use the uploaded images listed in the brief where they carry proof: set the stat exactly as printed and asset_id to the image it came from.`,
-    requiredStatsPrompt(requiredStatsFrom(ctx.brief.images), Object.fromEntries(ctx.brief.images.map((i) => [i.id, i.summary]))),
     HUMAN_VOICE,
     VISUAL_DIRECTION_RULES,
-    ctx.brief.stats.length ? `Operator stats (real, usable where the angle needs them): ${ctx.brief.stats.join("; ")}.` : null,
     ctx.brief.instructions ? `Operator's instructions (follow them within the facts): ${ctx.brief.instructions.slice(0, 1500)}` : null,
     opts.avoidOpenings?.length ? `Other versions open with these ideas; do not echo them: ${opts.avoidOpenings.map((o) => `"${o}"`).join(" | ")}` : null,
     opts.delivery ? `DELIVERY REWRITE: keep the angle, the facts and the argument. Change how it is said and shown: ${opts.delivery}` : null,
@@ -135,11 +132,11 @@ export function scriptPrompt(ctx: WriteContext, angle: AnglePlan, opts: WriteOpt
     .join("\n");
 }
 
-function defaultGenerate(): (prompt: string) => Promise<unknown> {
+function defaultGenerate(schema: z.ZodTypeAny = writtenSchema): (prompt: string) => Promise<unknown> {
   return async (prompt) => {
     const candidates = modelCandidates();
     if (!candidates.length) throw new Error("No language model is configured to write scripts (set ANTHROPIC_API_KEY or OPENAI_API_KEY).");
-    return withModelFallback(async (model) => (await generateObject({ model, schema: writtenSchema, temperature: 0.85, system: SYSTEM, prompt })).object, candidates);
+    return withModelFallback(async (model) => (await generateObject({ model, schema, temperature: 0.85, system: SYSTEM, prompt })).object, candidates);
   };
 }
 
@@ -257,8 +254,7 @@ export async function writeScriptForAngle(ctx: WriteContext, angle: AnglePlan, o
   for (let attempt = 0; attempt <= MAX_FIT_ATTEMPTS; attempt += 1) {
     const raw = writtenSchema.parse(await generate(scriptPrompt(ctx, angle, { ...opts, fitNote: note, previous })));
     script = buildWrittenScript(raw, angle, ctx, opts.previous);
-    // Length and the mandatory image stats are both fixed by editing, in the same bounded loop.
-    const next = [fitNote(script), statFixNote(script.imageStats ?? [])].filter(Boolean).join(" ") || null;
+    const next = fitNote(script);
     if (!next) break;
     note = next;
     previous = script;
@@ -301,57 +297,6 @@ export function trimToFit(script: VideoScript, ctx: Pick<WriteContext, "targetSe
   return { ...current, warnings: [...current.warnings, `The draft ran past the length asked for, so ${cut.length === 1 ? `scene ${cut[0]} was` : `scenes ${cut.join(", ")} were`} cut to fit.`] };
 }
 
-/**
- * The main stat of an image is mandatory. If the editing passes have still not got it into a script,
- * one scene is rewritten to say it (the scene that already shows that image, else a middle scene),
- * at most twice per stat. Scenes the operator edited are never touched; if nothing can be done the
- * stat stays reported as missing. The coverage is recorded on the result.
- */
-export async function ensureMainStats(
-  script: VideoScript,
-  required: RequiredStat[],
-  ctx: Pick<WriteContext, "facts" | "assetIds" | "targetSeconds" | "wordsPerSecond"> & { brief: Pick<VideoBrief, "locale"> },
-  deps: { rewriteScene?: (input: { script: VideoScript; sceneNumber: number; feedback: string }) => Promise<VideoScene> } = {},
-): Promise<VideoScript> {
-  if (!required.length || script.source === "uploaded") return attachImageStats(script, required);
-  const rewrite =
-    deps.rewriteScene ??
-    (async ({ script: s, sceneNumber, feedback }) => regenerateScene({ script: s, sceneNumber, feedback, ctx: { facts: ctx.facts, assetIds: ctx.assetIds, locale: ctx.brief.locale } }));
-  // The scenes the writer put each image on, before the image is taken off the scenes that do not say its stat: the rewrite goes where the image already was.
-  const carriers = new Map(required.map((r) => [r.assetId, script.scenes.filter((s) => s.assetId === r.assetId && !s.edited).map((s) => s.number)]));
-  let current = attachImageStats({ ...script, scenes: linkImageStats(script.scenes, required) }, required);
-  for (const gap of statGaps(current.imageStats ?? []).unsaid) {
-    const need = required.find((r) => r.assetId === gap.assetId && r.value === gap.value);
-    if (!need) continue;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const spoken = current.scenes.filter((s) => s.line.trim());
-      const candidates = spoken.filter((s) => !s.edited && s.number !== spoken[0]?.number && s.number !== spoken[spoken.length - 1]?.number);
-      const carried = candidates.find((s) => (carriers.get(need.assetId) ?? []).includes(s.number));
-      const target = carried ?? candidates[Math.floor(candidates.length / 2)];
-      if (!target) break;
-      try {
-        const forms = spokenForms(need.value);
-        const next = await rewrite({
-          script: current,
-          sceneNumber: target.number,
-          feedback: `This scene must say the main figure from the operator's image: ${need.value}${need.label ? ` (${need.label})` : ""}. Say it naturally as part of the point this scene is making${forms[0] ? `, for example as ${forms[0]}` : ""}, as digits. Describe it only as what the source shows (for example "in one account's results"), in words that make sense with no image on screen: never "shown here" or "as you can see"; do not add a period, whose it is, or any comparison. Keep the scene short.`,
-        });
-        const scenes = current.scenes.map((s) => (s.number === target.number ? { ...next, number: s.number, start: s.start, assetId: need.assetId, stat: need.value } : s));
-        const timed = retime(scenes);
-        current = attachImageStats(
-          { ...current, scenes: timed, durationSeconds: timed.length ? timed[timed.length - 1]!.end : 0, speech: buildScriptSpeech(timed.map((s) => s.line).filter(Boolean), current.speech?.requestedSeconds ?? ctx.targetSeconds, ctx.wordsPerSecond, { ctaWords: wordsIn(current.cta?.spoken ?? "") }) },
-          required,
-        );
-      } catch (error) {
-        logger.warn("Could not rewrite a scene to say the main stat", { error: error instanceof Error ? error.message : String(error) });
-        break;
-      }
-      if (!statGaps(current.imageStats ?? []).unsaid.some((g) => g.assetId === need.assetId)) break;
-    }
-  }
-  return current;
-}
-
 /** Write a version for each angle, in parallel and independently, so one failing does not lose the others. */
 export async function writeScriptSet(ctx: WriteContext, angles: AnglePlan[], opts: { generate?: WriteOptions["generate"] } = {}): Promise<{ scripts: VideoScript[]; failures: Array<{ angle: string; error: string }> }> {
   const results = await Promise.all(
@@ -366,4 +311,238 @@ export async function writeScriptSet(ctx: WriteContext, angles: AnglePlan[], opt
     }),
   );
   return { scripts: results.flatMap((r) => (r.script ? [r.script] : [])), failures: results.flatMap((r) => (r.failure ? [r.failure] : [])) };
+}
+
+// ------------------------------------------------------------------ writing from a concept
+
+const voiceSchema = z.object({
+  id: z.string().describe("Short id, e.g. 'narrator' or 'maya'"),
+  who: z.string().describe("'narrator' or the character's name or role"),
+  description: z.string().describe("The voice: gender, rough age, timbre, accent, pace, energy, in one sentence"),
+});
+
+export const conceptSceneSchema = z.object({
+  seconds: z.number().min(2).max(12).describe("Only for a scene with no speech: how long the visual holds (2-5). A scene with speech lasts as long as its words."),
+  visual: z.string().describe("What is seen: subject, setting, action. Concrete, filmable, no readable text."),
+  camera: z.string().describe("Shot size, angle and movement."),
+  sound: z.string().describe("Sound effects and atmosphere for this scene"),
+  lines: z
+    .array(
+      z.object({
+        voice_id: z.string().describe("The id of the voice that says this, from voices"),
+        text: z.string().describe("The exact words spoken. No stage directions."),
+        on_camera: z.boolean().describe("True when the speaker is seen saying it; false for a voice over the picture"),
+      }),
+    )
+    .max(2)
+    .describe("What is said in this scene, in order: none, one, or two lines by different voices"),
+});
+
+/** What the model returns when writing from a concept: the version schema with voices and scenes made of spoken lines. */
+export const conceptWrittenSchema = writtenSchema.omit({ scenes: true }).extend({
+  voices: z.array(voiceSchema).min(1).max(3).describe("Every voice that speaks: one to three"),
+  scenes: z.array(conceptSceneSchema).min(3).max(16),
+});
+
+export type ConceptWritten = z.infer<typeof conceptWrittenSchema>;
+
+/** The concept in the shape the writer's checks and the editor work with. Pure. */
+export function conceptAngle(c: VideoConcept): AnglePlan {
+  return {
+    id: c.id,
+    name: c.title,
+    situation: c.logline,
+    tension: c.hook,
+    centralMessage: c.brandLink,
+    hookPremise: c.hook,
+    support: { text: c.brandLink, factIds: [] },
+    tone: c.look,
+    reasonToAct: c.brandLink,
+    whyDifferent: c.whyItWorks,
+  };
+}
+
+const MAX_SCENE_WORDS = wordsFor(MAX_SCENE_SECONDS);
+
+export function conceptScriptPrompt(ctx: WriteContext, concept: VideoConcept, opts: WriteOptions = {}): string {
+  const budget = speechBudget({ seconds: ctx.targetSeconds, wordsPerSecond: ctx.wordsPerSecond, ctaWords: 10 });
+  const locked = lockedScenes(opts.previous);
+  return [
+    briefForPrompt(ctx.creative),
+    "",
+    "THE CONCEPT THE OPERATOR CHOSE (write THIS idea, faithfully, and make it as good as it can be):",
+    `- Title: ${concept.title}`,
+    `- Format: ${concept.format}`,
+    `- The idea: ${concept.logline}`,
+    `- The opening (first 2 seconds): ${concept.hook}`,
+    `- The story, beat by beat:\n${concept.beats.map((b, i) => `  ${i + 1}. ${b.text} (about ${Math.round(b.seconds)}s)`).join("\n")}`,
+    `- How it lands on the brand: ${concept.brandLink}`,
+    `- Look: ${concept.look}`,
+    concept.cast.length ? `- Cast: ${concept.cast.join("; ")}` : "- Cast: nobody recurring",
+    `- Places: ${concept.settings.join("; ") || "your choice"}`,
+    `- Voices:\n${concept.voices.map((v) => `  ${v.id}: ${v.who}: ${v.description}`).join("\n")}`,
+    `- Why it works: ${concept.whyItWorks}`,
+    "",
+    `LENGTH: the video runs ${ctx.targetSeconds} seconds: ${budget.min} to ${budget.max} spoken words in total (aim for about ${budget.target}), fewer when the pictures tell the story. Never pad and never rely on fast speech.`,
+    "",
+    "HOW TO WRITE IT:",
+    "1. Scenes follow the concept's beats, in order. A beat may take more than one scene. Every scene is a shot someone could film: what is seen, the camera, the sound, and who says what.",
+    `2. No scene may run longer than ${MAX_SCENE_SECONDS} seconds: at most ${MAX_SCENE_WORDS} spoken words in one scene. Split anything longer into two scenes.`,
+    "3. Voices: use the concept's voices (one to three). Each line names the voice that says it. A voice is first heard in a scene where it speaks alone. At most two voices in one scene. on_camera is true only when the speaker is seen saying the words.",
+    "4. The words must earn their place: the picture carries the idea and the voice adds what the picture cannot. Lines sound like people, not like a brochure. The opening line (if there is one) is the hook in words, and it is paid off later.",
+    "5. Truth: the story is fiction, but everything said about the business comes from the facts above, with their conditions. No invented results, prices, offers, guarantees, urgency or customers. Record in `sources` which fact supports each factual statement.",
+    "6. The LAST spoken line is the closing line (`cta.spoken`), word for word: one call to action that matches the page's real next step.",
+    "7. Nothing to read on screen: no signs, captions, screens, numbers or logos in any visual. The video shows no text, so every line must make sense with nothing on screen.",
+    "8. Set `dramatisation` true when someone acts out a situation; then nobody may say or imply they are a real customer or got real results.",
+    ctx.goal ? `Campaign goal (from the operator): ${ctx.goal}` : null,
+    ctx.platform ? `Platform (from the operator): ${ctx.platform}` : null,
+    `Locale and spelling: ${ctx.brief.locale}.`,
+    ctx.brief.direction ? `THE KIND OF VIDEO THE OPERATOR ASKED FOR:\n${ctx.brief.direction}` : null,
+    HUMAN_VOICE,
+    VISUAL_DIRECTION_RULES,
+    ctx.brief.instructions ? `Operator's instructions (follow them within the facts): ${ctx.brief.instructions.slice(0, 1500)}` : null,
+    opts.direction ? `The operator asks: ${opts.direction}` : null,
+    opts.previous && (opts.fitNote || locked.length || opts.direction)
+      ? `THE PREVIOUS DRAFT, for reference:\n${opts.previous.scenes.map((sc) => `${sc.number}. [${sc.visual}] "${sc.line}"${sc.edited ? " [approved by the operator: keep exactly]" : ""}`).join("\n")}`
+      : null,
+    locked.length ? `The operator edited scenes ${locked.map((sc) => sc.number).join(", ")}. Keep the same number of scenes and the same order, and leave those scenes' words and picture exactly as they are; write the rest around them.` : null,
+    opts.fitNote ?? null,
+    "Ad copy: a short post from a person, not a brochure: 70 to 130 words, a standalone first line under 125 characters that teases the story, the next step in plain words, facts only. Headline under 40 characters, description under 30.",
+  ]
+    .filter((l): l is string => Boolean(l))
+    .join("\n");
+}
+
+const joinLines = (lines: SceneLine[]) => lines.map((l) => l.text.trim()).filter(Boolean).join(" ");
+const speakerOf = (lines: SceneLine[]): VideoScene["speaker"] => (!lines.some((l) => l.text.trim()) ? "none" : lines.some((l) => l.onCamera && l.text.trim()) ? "on_camera" : "voiceover");
+
+/**
+ * A scene whose words were changed somewhere that only knows `line` (an edit, a repair, a rewrite)
+ * gets its parts brought back in step: the words as they now stand, said by the voice that said
+ * them before. A scene whose parts already match is returned as it is. Pure.
+ */
+export function syncSceneLines<T extends Pick<VideoScene, "line" | "speaker" | "lines">>(scene: T): T {
+  if (!scene.lines || joinLines(scene.lines) === scene.line.trim()) return scene;
+  const text = scene.line.trim();
+  if (!text) return { ...scene, lines: [] };
+  // Several speakers: when the other speakers' words are still there unchanged, only one speaker's words changed,
+  // so the parts are found again around them and every line keeps its voice.
+  if (scene.lines.length > 1) {
+    const parts = scene.lines;
+    const cuts: number[] = [];
+    let from = 0;
+    let found = true;
+    for (let i = 1; i < parts.length; i++) {
+      const at = text.indexOf(parts[i]!.text.trim(), from);
+      if (at < 0) {
+        found = false;
+        break;
+      }
+      cuts.push(at);
+      from = at + parts[i]!.text.trim().length;
+    }
+    if (found && cuts[0]! > 0) {
+      const bounds = [0, ...cuts, text.length];
+      const remapped = parts.map((p, i) => ({ ...p, text: text.slice(bounds[i], i === parts.length - 1 ? text.length : bounds[i + 1]).trim() }));
+      if (remapped.every((p) => p.text)) return { ...scene, lines: remapped };
+    }
+    const head = parts[0]!.text.trim();
+    if (parts.length === 2 && text.startsWith(head) && text.length > head.length) {
+      return { ...scene, lines: [parts[0]!, { ...parts[1]!, text: text.slice(head.length).trim() }] };
+    }
+  }
+  const voiceId = scene.lines[0]?.voiceId ?? "narrator";
+  const onCamera = scene.lines.length ? scene.lines[0]!.onCamera : scene.speaker === "on_camera";
+  return { ...scene, lines: [{ voiceId, text, onCamera }] };
+}
+
+/** Older scripts have one voice and a single line per scene: give them the voices shape. Pure. */
+export function normaliseVoices<T extends Pick<VideoScript, "scenes"> & { voices?: ScriptVoice[]; character?: string | null }>(script: T): T {
+  const voices = script.voices?.length ? script.voices : [{ id: "narrator", who: script.character ? "the presenter" : "narrator", description: "" }];
+  const first = voices[0]!.id;
+  return {
+    ...script,
+    voices,
+    scenes: script.scenes.map((sc) => (sc.lines ? sc : { ...sc, lines: sc.line.trim() ? [{ voiceId: first, text: sc.line.trim(), onCamera: sc.speaker === "on_camera" }] : [] })),
+  };
+}
+
+/** Turn a concept draft into a script: the shared version checks, plus who says what in each scene. Pure. */
+export function buildConceptScript(raw: ConceptWritten, concept: VideoConcept, ctx: WriteContext, previous?: VideoScript | null): VideoScript {
+  const voices: ScriptVoice[] = raw.voices.slice(0, 3).map((v) => ({ id: v.id.trim() || "narrator", who: v.who.trim(), description: v.description.trim() }));
+  const known = new Set(voices.map((v) => v.id));
+  const first = voices[0]!.id;
+  const sceneLines: SceneLine[][] = raw.scenes.map((sc) =>
+    sc.lines.filter((l) => l.text.trim()).map((l) => ({ voiceId: known.has(l.voice_id) ? l.voice_id : first, text: l.text.trim(), onCamera: l.on_camera })),
+  );
+  const asWritten: WrittenScript = {
+    ...raw,
+    scenes: raw.scenes.map((sc, i) => ({ seconds: sc.seconds, visual: sc.visual, camera: sc.camera, speaker: speakerOf(sceneLines[i]!), line: joinLines(sceneLines[i]!), keywords: [], stat: null, asset_id: null, sound: sc.sound })),
+  };
+  const built = buildWrittenScript(asWritten, conceptAngle(concept), ctx, previous);
+  const locked = new Set(lockedScenes(previous).map((sc) => sc.number));
+  const scenes = built.scenes.map((sc, i) => {
+    if (locked.has(sc.number)) return normaliseVoices({ scenes: [sc], voices }).scenes[0]!;
+    let lines = sceneLines[i] ?? [];
+    // The shared builder may have put the closing line into the last scene: the parts then follow what is actually said.
+    if (joinLines(lines) !== sc.line.trim()) lines = sc.line.trim() ? [{ voiceId: lines[lines.length - 1]?.voiceId ?? first, text: sc.line.trim(), onCamera: sc.speaker === "on_camera" }] : [];
+    return { ...sc, lines, keywords: [], stat: null, assetId: null };
+  });
+  const script: VideoScript = { ...built, id: `script_${concept.id}`, scenes, voices, concept };
+  delete script.imageStats;
+  return script;
+}
+
+/**
+ * No scene may be longer than one clip. A scene that is: split between its speakers first, then at
+ * sentences and clauses. Every word is kept in order; the picture carries over to the new scenes.
+ */
+export function splitLongScenes(script: VideoScript): VideoScript {
+  // The length follows the words, whatever a stored figure says (an edit may have changed the words since).
+  const tooLong = (sc: VideoScene) => sceneSeconds(sc) > MAX_SCENE_SECONDS;
+  if (!script.scenes.some(tooLong)) return script;
+  const out: VideoScene[] = [];
+  for (const sc of script.scenes) {
+    if (!tooLong(sc)) {
+      out.push(sc);
+      continue;
+    }
+    const parts: SceneLine[] = sc.lines?.length ? sc.lines : [{ voiceId: script.voices?.[0]?.id ?? "narrator", text: sc.line, onCamera: sc.speaker === "on_camera" }];
+    for (const part of parts) {
+      for (const piece of splitLongLine(part.text)) {
+        const lines = [{ ...part, text: piece }];
+        out.push({ ...sc, line: piece, speaker: speakerOf(lines), ...(sc.lines ? { lines } : {}) });
+      }
+    }
+  }
+  const timed = retime(out.map((sc, i) => ({ ...sc, number: i + 1 })));
+  const speech = script.speech ? buildScriptSpeech(timed.map((sc) => sc.line).filter(Boolean), script.speech.requestedSeconds, script.speech.wordsPerSecond, { ctaWords: wordsIn(script.cta?.spoken ?? "") }) : undefined;
+  return { ...script, scenes: timed, durationSeconds: timed.length ? timed[timed.length - 1]!.end : 0, ...(speech ? { speech } : {}) };
+}
+
+function sceneCapNote(script: VideoScript): string | null {
+  const long = script.scenes.filter((sc) => sc.seconds > MAX_SCENE_SECONDS);
+  if (!long.length) return null;
+  return `SCENES ${long.map((sc) => `${sc.number} (${sc.seconds}s)`).join(", ")} ARE TOO LONG: scenes run longer than ${MAX_SCENE_SECONDS} seconds when they carry more than ${MAX_SCENE_WORDS} words, and one scene cannot be longer than one clip. Split each into two scenes or cut words.`;
+}
+
+/**
+ * Write the full script for the concept the operator chose. Length and scene length are fixed by
+ * editing, in a bounded loop; whatever is still too long is cut (whole middle scenes) and any scene
+ * still longer than one clip is split. Scenes the operator edited are kept exactly.
+ */
+export async function writeScriptForConcept(ctx: WriteContext, concept: VideoConcept, opts: WriteOptions = {}): Promise<VideoScript> {
+  const generate = opts.generate ?? defaultGenerate(conceptWrittenSchema);
+  let script: VideoScript | null = null;
+  let note = opts.fitNote ?? null;
+  let previous = opts.previous ?? null;
+  for (let attempt = 0; attempt <= MAX_FIT_ATTEMPTS; attempt += 1) {
+    const raw = conceptWrittenSchema.parse(await generate(conceptScriptPrompt(ctx, concept, { ...opts, fitNote: note, previous })));
+    script = buildConceptScript(raw, concept, ctx, opts.previous);
+    const next = [fitNote(script), sceneCapNote(script)].filter(Boolean).join(" ") || null;
+    if (!next) break;
+    note = next;
+    previous = script;
+  }
+  return splitLongScenes(trimToFit(script!, ctx));
 }

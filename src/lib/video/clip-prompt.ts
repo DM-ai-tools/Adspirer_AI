@@ -121,11 +121,17 @@ export function buildClipPrompt(input: ClipPromptInput): string {
 // The planned prompt: built from the creative plan's scene briefs instead of one global setting.
 // ---------------------------------------------------------------------------------------------
 
+/** A speaking voice in a clip with several voices; videoRef is its reference video's number, or null when it has none yet. */
+export type PlannedVoice = { id: string; who: string; description: string; videoRef: number | null };
+
+/** One spoken part of a scene when the script has several voices. */
+export type SpokenPart = { voiceId: string; who: string; text: string; onCamera: boolean };
+
 export type PlannedClipPromptInput = {
   /** The scene briefs in this clip, in order. */
   scenes: SceneBrief[];
   /** For each scene, what is said (the speech text, never the display text) or null when nobody speaks. */
-  spoken: Record<number, { text: string; speaker: "on_camera" | "voiceover" | "none" } | undefined>;
+  spoken: Record<number, { text: string; speaker: "on_camera" | "voiceover" | "none"; parts?: SpokenPart[] } | undefined>;
   characters: PlanCharacter[];
   environments: PlanEnvironment[];
   style: string;
@@ -140,6 +146,8 @@ export type PlannedClipPromptInput = {
   refs: { characterIds: string[]; environmentIds: string[]; previousFrame: boolean; previousFrameRole?: "continue" | "look"; previousVideo: boolean };
   /** The one voice for the whole ad (from the plan), repeated word for word in every clip. */
   voice?: string;
+  /** Several speaking voices: each with its own fixed description and, when it has one, its own reference video. Replaces `voice`. */
+  voices?: PlannedVoice[];
   /** Targeted corrections from the review of the previous attempt of this clip. */
   corrections: string[];
   /** True when the clip that follows opens from where this one ends. */
@@ -198,6 +206,14 @@ export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
     );
   }
 
+  const several = Boolean(input.voices?.length);
+  for (const v of input.voices ?? []) {
+    if (v.videoRef === null) continue;
+    assetLines.push(
+      `Video ${v.videoRef} is the VOICE REFERENCE for ${v.who}: every line ${v.who} says in this clip is in exactly the voice heard in Video ${v.videoRef}, with the same timbre, pitch, accent, pace and microphone sound. Use it only for the voice: do not copy its shots, framing or action.`,
+    );
+  }
+
   const used = new Set(scenes.map((s) => s.characterId).filter((id): id is string => Boolean(id)));
   const people = input.characters.filter((c) => used.has(c.id));
   // Any speech, on camera or off, gets the same fixed voice description: the voice is what the viewer notices changing first.
@@ -206,7 +222,10 @@ export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
   const constant = [
     ...people.map((c) => `Person (${c.id}): ${clean(c.description)}.`),
     !people.length ? "No person appears on camera in this clip; keep the look of every shot consistent." : null,
-    talks ? `Voice (identical in every clip of this ad): ${voice.replace(/[.\s]+$/, "")}. The same single voice speaks every line, saying every word clearly and completely, with the same close, clean microphone sound and no change in tone, pitch or accent between shots.` : null,
+    talks && several
+      ? `Voices (each one identical in every clip of this ad, and never swapped between speakers): ${input.voices!.map((v) => `${v.who}: ${v.description.replace(/[.\s]+$/, "") || `a natural adult voice with ${accentFor(input.locale)}`}`).join("; ")}. Every word is said clearly and completely, by the speaker named for it.`
+      : null,
+    talks && !several ? `Voice (identical in every clip of this ad): ${voice.replace(/[.\s]+$/, "")}. The same single voice speaks every line, saying every word clearly and completely, with the same close, clean microphone sound and no change in tone, pitch or accent between shots.` : null,
     `Look: ${style}. ${wantsRealism(input.style) ? REALISM_RULE : "Real skin texture, natural light, believable materials."}`,
     "Hands, faces and objects are anatomically correct and undistorted; faces stay stable with no morphing, glowing marks or flicker.",
   ].filter((l): l is string => Boolean(l));
@@ -222,7 +241,11 @@ export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
       `Camera: ${or(s.camera, "steady, eye level")}. Light: ${or(s.lighting, "the natural light of this place and time of day")}.`,
     ];
     const say = input.spoken[s.number];
-    if (say && say.text.trim()) {
+    if (say?.parts?.length) {
+      // Several voices: who says each line, in order, and only the person speaking on camera moves their lips.
+      for (const part of say.parts) parts.push(`${part.who}, ${part.onCamera ? "on camera" : "off camera"}, says: "${part.text.split(/\s+/).join(" ").trim()}"`);
+      if (s.characterId) parts.push(say.parts.some((p) => p.onCamera) ? "Only the person speaking on camera moves their lips, and only while they speak." : "The person's mouth stays closed and still while the voices speak.");
+    } else if (say && say.text.trim()) {
       const who = say.speaker === "on_camera" ? "The person on camera says, in real time" : "A voice off camera says";
       // The spoken words are passed on exactly: they are speech, and are never filtered as if they described the picture.
       parts.push(`${who}: "${say.text.split(/\s+/).join(" ").trim()}"`);

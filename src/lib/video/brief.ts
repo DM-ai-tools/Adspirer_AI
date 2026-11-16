@@ -7,17 +7,18 @@ import { resolveBrandManifest } from "@/lib/video/brand-resolve";
 import { claimsFromFacts, findClaimsInText, mergeClaims } from "@/lib/video/claims";
 import { defaultFetchAsset } from "@/lib/video/logo-verify";
 import type { ApprovedClaim, BrandManifest } from "@/lib/video/pipeline-types";
-import { getProject, setProgress, updateProject, type VideoProject } from "@/lib/video/projects";
-import { briefFacts, factsCorpus, type VideoBrief } from "@/lib/video/script";
-import { checkOnly } from "@/lib/video/verify";
+import { getProject, listProjects, setProgress, updateProject, type VideoProject } from "@/lib/video/projects";
+import { briefFacts, factsCorpus, MAX_SECONDS, type VideoBrief } from "@/lib/video/script";
+import { fitToModel, conceptFromText } from "@/lib/video/fit-to-model";
 import { buildCreativeBrief, buildSourceDocs, type BriefInput } from "@/lib/video/creative-brief";
-import { planAngles } from "@/lib/video/angles";
+import { planConcepts } from "@/lib/video/concepts";
 import { editorialPass, refreshEditorial } from "@/lib/video/editorial";
 import { resolveWordsPerSecond } from "@/lib/video/duration";
 import { contactTokens, repairScript } from "@/lib/video/script-repairs";
 import { requiredStatsFrom, spokenForms } from "@/lib/video/required-stats";
-import { ensureMainStats, trimToFit, writeScriptForAngle, writeScriptSet, type WriteContext } from "@/lib/video/script-writer";
-import type { AnglePlan, CreativeBrief } from "@/lib/video/script-types";
+import { conceptAngle, normaliseVoices, splitLongScenes, syncSceneLines, trimToFit, writeScriptForAngle, writeScriptForConcept, type WriteContext } from "@/lib/video/script-writer";
+import { storedBrief } from "@/lib/video/script-actions";
+import type { AnglePlan, CreativeBrief, VideoConcept } from "@/lib/video/script-types";
 import type { VideoScript } from "@/lib/video/script";
 import { pickModel } from "@/lib/creatives/concept-writer";
 import { styleForType, videoDirection } from "@/lib/video/video-types";
@@ -206,8 +207,6 @@ export function writeContextFor(project: VideoProject, creative: CreativeBrief, 
   };
 }
 
-const SCRIPT_VERSIONS = 3;
-
 /**
  * The editorial pass for a set of versions: the checks and the model review, targeted rewrites of
  * weak lines (bounded), and a comparison of the versions against one another. A version that is
@@ -216,7 +215,7 @@ const SCRIPT_VERSIONS = 3;
 export async function editScripts(scripts: VideoScript[], ctx: WriteContext, angles: AnglePlan[]): Promise<VideoScript[]> {
   const { scripts: edited } = await editorialPass(
     scripts,
-    { brief: ctx.creative, angles, facts: ctx.facts, claims: ctx.claims, sourceText: ctx.sourceText, wordsPerSecond: ctx.wordsPerSecond, targetSeconds: ctx.targetSeconds, assetIds: ctx.assetIds, locale: ctx.brief.locale, maxPasses: 2, requiredStats: requiredStatsFrom(ctx.brief.images) },
+    { brief: ctx.creative, angles, facts: ctx.facts, claims: ctx.claims, sourceText: ctx.sourceText, wordsPerSecond: ctx.wordsPerSecond, targetSeconds: ctx.targetSeconds, assetIds: ctx.assetIds, locale: ctx.brief.locale, maxPasses: 2 },
     {
       rewriteScript: async (script, issues, others) => {
         const angle = script.angleDetail ?? angles.find((a) => a.id === script.angle.key);
@@ -231,19 +230,11 @@ export async function editScripts(scripts: VideoScript[], ctx: WriteContext, ang
   );
   // The editor's scene rewrites can lengthen a script again: whatever is still well over its length is cut, never shipped.
   // The report must describe the text as it now stands, so it is checked again after the corrections and the cut.
-  const required = requiredStatsFrom(ctx.brief.images);
-  const editorialCtx = { brief: ctx.creative, angles, facts: ctx.facts, claims: ctx.claims, sourceText: ctx.sourceText, wordsPerSecond: ctx.wordsPerSecond, targetSeconds: ctx.targetSeconds, assetIds: ctx.assetIds, locale: ctx.brief.locale, requiredStats: required };
-  return Promise.all(
-    edited.map(async (s) => {
-      const cut = trimToFit(repairScript(s, ctx.sourceText), ctx);
-      // The main stat of each image is mandatory: if the passes still have not got it said, one scene is rewritten to say it. The image then stays only where it is said.
-      const withStats = await ensureMainStats(cut, required, ctx);
-      return refreshEditorial(withStats, editorialCtx);
-    }),
-  );
+  const editorialCtx = { brief: ctx.creative, angles, facts: ctx.facts, claims: ctx.claims, sourceText: ctx.sourceText, wordsPerSecond: ctx.wordsPerSecond, targetSeconds: ctx.targetSeconds, assetIds: ctx.assetIds, locale: ctx.brief.locale };
+  return edited.map((s) => refreshEditorial(trimToFit(repairScript(s, ctx.sourceText), ctx), editorialCtx));
 }
 
-/** Background job: read the brand and the uploaded images, build the creative brief, plan three different angles, write each, edit them, save them. */
+/** Background job: read the brand, build the creative brief and show three concepts (or read the operator's own script or concept). */
 export async function writeProjectScripts(projectId: string): Promise<void> {
   let project = await getProject(projectId);
   if (!project) return;
@@ -260,7 +251,7 @@ export async function writeProjectScripts(projectId: string): Promise<void> {
     }
     const { brief, brand } = await buildBrief(project);
 
-    if (project.inputs.mode === "upload" && project.inputs.scriptText) {
+    if (project.inputs.mode === "upload" && (project.inputs.scriptText?.trim() || project.inputs.conceptText?.trim())) {
       await writeFromUploadedScript({ project, brief, brand, stage });
       await stage("done");
       return;
@@ -286,20 +277,17 @@ export async function writeProjectScripts(projectId: string): Promise<void> {
       return;
     }
 
+    // Three concepts are shown first; the full script is written only for the one the operator picks.
     await stage("writing");
     const ctx = writeContextFor(project, creative, brief);
-    const planned = await planAngles(creative, { count: SCRIPT_VERSIONS });
-    if (!planned.angles.length) throw new Error(planned.limitation ?? "No angle could be built from this page. Add details about the offer and try again.");
-    const written = await writeScriptSet(ctx, planned.angles);
-    if (!written.scripts.length) throw new Error(`The scripts could not be written: ${written.failures.map((f) => f.error).join("; ") || "no model answered"}`);
-
-    // Nothing is shown until each version has been edited against the facts, its voice, its length and the other versions.
-    await stage("verifying");
-    const scripts = await editScripts(written.scripts, ctx, planned.angles);
+    // Starting again on the same project: the ideas it already showed are avoided too, and stay on record.
+    const shownBefore = project.brand?.shownConcepts ?? [];
+    const avoid = [...shownBefore, ...(await conceptHistory(project.client_id, projectId))];
+    const planned = await planConcepts(creative, { targetSeconds: ctx.targetSeconds, direction: brief.direction ?? null, avoid });
     await updateProject(projectId, {
-      brand: { ...brand, facts, corpus: ctx.corpus, brief: creative, angles: planned.angles, angleLimitation: planned.limitation },
-      scripts,
-      status: "scripts_ready",
+      brand: { ...brand, facts, corpus: ctx.corpus, brief: creative, concepts: planned.concepts, shownConcepts: [...shownBefore, ...planned.concepts.map((c) => c.logline)], conceptLimitation: planned.limitation },
+      scripts: null,
+      status: "concepts_ready",
       error: null,
     });
     await stage("done");
@@ -310,18 +298,144 @@ export async function writeProjectScripts(projectId: string): Promise<void> {
   }
 }
 
+/** How many ideas made for the same client are passed on to be avoided. */
+const HISTORY_LIMIT = 30;
+
+/** The loglines of concepts shown on the client's other video projects, newest projects first. */
+export async function conceptHistory(clientId: string, excludeProjectId: string): Promise<string[]> {
+  try {
+    const projects = await listProjects(clientId, 40);
+    return projects
+      .filter((p) => p.id !== excludeProjectId)
+      .flatMap((p) => [...(p.brand?.shownConcepts ?? [])].reverse())
+      .slice(0, HISTORY_LIMIT);
+  } catch (error) {
+    logger.warn("Video concepts: earlier ideas for the client could not be read", { error: error instanceof Error ? error.message : String(error) });
+    return [];
+  }
+}
+
 /**
- * The operator brought their own script. It is split into scenes with its words untouched, given
- * visuals and ad copy, any change they asked for is applied (and only that), and it is reviewed but
- * never rewritten on its own: fixing is left to the operator.
+ * The finishing pass for a script written from a concept: a silent editorial review (one bounded
+ * pass; nothing it finds is shown or blocks), brand-truth repairs, the length cut, and the scene
+ * cap. Who says what is brought back in step wherever the words changed.
+ */
+export async function polishConceptScript(script: VideoScript, ctx: WriteContext, concept: VideoConcept): Promise<VideoScript> {
+  const angle = conceptAngle(concept);
+  let edited = script;
+  try {
+    const out = await editorialPass(
+      [script],
+      { brief: ctx.creative, angles: [angle], facts: ctx.facts, claims: ctx.claims, sourceText: ctx.sourceText, wordsPerSecond: ctx.wordsPerSecond, targetSeconds: ctx.targetSeconds, assetIds: ctx.assetIds, locale: ctx.brief.locale, maxPasses: 1 },
+      {
+        rewriteScript: async (current, issues) =>
+          writeScriptForConcept(ctx, concept, { previous: current, direction: `Fix these problems and keep what already works: ${issues.map((i) => `${i.problem} (${i.fix})`).join(" ")}` }),
+      },
+    );
+    edited = out.scripts[0] ?? script;
+  } catch (error) {
+    logger.warn("Video concept script: the editorial pass could not run; keeping the draft", { error: error instanceof Error ? error.message : String(error) });
+  }
+  const repaired = repairScript(edited, ctx.sourceText);
+  const synced = { ...repaired, scenes: repaired.scenes.map(syncSceneLines), voices: repaired.voices ?? script.voices, concept };
+  return splitLongScenes(trimToFit(synced, ctx));
+}
+
+/** Background job: write the full script for the concept the operator picked. Other scripts already written are kept. */
+export async function writeConceptScript(projectId: string, conceptId: string): Promise<void> {
+  const project = await getProject(projectId);
+  if (!project) return;
+  try {
+    const creative = project.brand?.brief;
+    const concept = project.brand?.concepts?.find((c) => c.id === conceptId);
+    if (!creative || !concept) throw new Error("That concept is no longer on this project. Ask for new concepts.");
+    let progress = advanceProgress(initialProgress(), "writing");
+    await setProgress(projectId, progress);
+    const ctx = writeContextFor(project, creative, storedBrief(project));
+    const written = await writeScriptForConcept(ctx, concept);
+    progress = advanceProgress(progress, "verifying");
+    await setProgress(projectId, progress);
+    const script = await polishConceptScript(written, ctx, concept);
+    const latest = (await getProject(projectId)) ?? project;
+    const scripts = [...(latest.scripts ?? []).filter((s) => s.id !== script.id), script];
+    await updateProject(projectId, { scripts, status: "scripts_ready", error: null });
+    await setProgress(projectId, advanceProgress(progress, "done"));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn("Video concept script could not be written", { projectId, conceptId, error: message });
+    // Back to the concepts with the reason, so the operator can pick again rather than start over.
+    await updateProject(projectId, { status: "concepts_ready", error: `The script could not be written: ${message}` }).catch(() => undefined);
+  }
+}
+
+/**
+ * Background job: the operator asked for a change to the idea itself. The script is rewritten from
+ * its concept with their request as direction; the script as it was is kept so the change can be undone.
+ */
+export async function rewriteConceptScript(projectId: string, scriptId: string, request: string): Promise<void> {
+  const project = await getProject(projectId);
+  if (!project) return;
+  try {
+    const creative = project.brand?.brief;
+    const current = project.scripts?.find((s) => s.id === scriptId);
+    if (!creative || !current?.concept) throw new Error("This script has no concept to rewrite from.");
+    const concept = current.concept;
+    const ctx = writeContextFor(project, creative, storedBrief(project));
+    const written = await writeScriptForConcept(ctx, concept, { previous: current, direction: `Rewrite this script around the operator's change to the idea, keeping the concept's strengths: ${request}` });
+    const polished = await polishConceptScript(written, ctx, concept);
+    const before = { ...current };
+    delete before.previousVersion;
+    const next = { ...polished, id: current.id, previousVersion: before, changeNote: `Rewritten around your change: ${request.trim().slice(0, 160)}` };
+    const latest = (await getProject(projectId)) ?? project;
+    await updateProject(projectId, { scripts: (latest.scripts ?? []).map((s) => (s.id === scriptId ? next : s)), status: "scripts_ready", error: null });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn("Video concept script could not be rewritten", { projectId, error: message });
+    await updateProject(projectId, { status: "scripts_ready", error: `The change could not be made: ${message}` }).catch(() => undefined);
+  }
+}
+
+/** Background job: three new concepts, never repeating one already shown here or for this client before. */
+export async function moreConcepts(projectId: string, feedback: string | null): Promise<void> {
+  const project = await getProject(projectId);
+  if (!project) return;
+  try {
+    const creative = project.brand?.brief;
+    if (!creative || !project.brand) throw new Error("This project has no brief to write concepts from. Start a new video.");
+    const shown = project.brand.shownConcepts ?? [];
+    const avoid = [...shown, ...(await conceptHistory(project.client_id, projectId))];
+    const brief = storedBrief(project);
+    const planned = await planConcepts(creative, { targetSeconds: Math.min(Math.max(Math.round(brief.targetSeconds), 15), 60), direction: brief.direction ?? null, avoid, feedback });
+    await updateProject(projectId, {
+      brand: { ...project.brand, concepts: planned.concepts, shownConcepts: [...shown, ...planned.concepts.map((c) => c.logline)], conceptLimitation: planned.limitation },
+      status: "concepts_ready",
+      error: null,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn("New video concepts could not be made", { projectId, error: message });
+    await updateProject(projectId, { status: "concepts_ready", error: `New concepts could not be made: ${message}` }).catch(() => undefined);
+  }
+}
+
+/**
+ * The operator brought their own concept, their own script, or both.
+ *  - A script is split into scenes with its words untouched and given visuals (following their
+ *    concept when they gave one), ad copy, and any change they asked for (and only that).
+ *  - A concept without a script is read as the chosen concept and its script is written from it;
+ *    their own text counts as a source, so a thin page never stops it.
+ * Either way it is then fitted to what the video model can make, and every adaptation is reported.
  */
 async function writeFromUploadedScript(input: { project: VideoProject; brief: VideoBrief; brand: NonNullable<VideoProject["brand"]>; stage: (s: "understanding" | "writing" | "verifying") => Promise<void> }) {
   const { project, brief, brand, stage } = input;
+  const conceptText = project.inputs.conceptText?.trim() || null;
+  if (!project.inputs.scriptText?.trim() && conceptText) return writeFromOperatorConcept({ project, brief, brand, stage, conceptText });
   const model = pickModel();
   if (!model) throw new Error("No language model is configured to read your script (set ANTHROPIC_API_KEY or OPENAI_API_KEY).");
   const scriptText = project.inputs.scriptText!;
   const facts = briefFacts(brief);
-  const ctx = { facts, assetIds: brief.images.map((i) => i.id), locale: brief.locale, model, direction: brief.direction ?? null };
+  const direction = [brief.direction, conceptText ? `THE OPERATOR'S OWN CONCEPT FOR THIS VIDEO (the visuals follow it):\n${conceptText}` : null].filter(Boolean).join("\n\n") || null;
+  const ctx = { facts, assetIds: brief.images.map((i) => i.id), locale: brief.locale, model, direction };
 
   await stage("understanding");
   const split = await structureUploadedScript(scriptText, ctx);
@@ -335,14 +449,39 @@ async function writeFromUploadedScript(input: { project: VideoProject; brief: Vi
   if (project.inputs.changeRequest?.trim()) script = await applyChangeRequest(script, project.inputs.changeRequest.trim(), ctx);
 
   await stage("verifying");
-  // The script's own numbers and claims are the operator's: they count as facts for the check.
-  const corpus = `${factsCorpus(brief)}\n${scriptText}\n${project.inputs.adCopyText ?? ""}\n${project.inputs.changeRequest ?? ""}`;
-  const verification = await checkOnly(script, { brief, facts, corpus, assetIds: ctx.assetIds, target: script.durationSeconds });
-  script = { ...script, warnings: verification.issues.map((i) => i.problem), verification };
+  // The script's own numbers and claims are the operator's: they count as facts.
+  const corpus = `${factsCorpus(brief)}\n${scriptText}\n${conceptText ?? ""}\n${project.inputs.adCopyText ?? ""}\n${project.inputs.changeRequest ?? ""}`;
+  const fitted = await fitToModel(normaliseVoices(script), { maxSeconds: MAX_SECONDS });
 
   await updateProject(project.id, {
     brand: { ...brand, facts, corpus },
-    scripts: [script],
+    scripts: [{ ...fitted.script, adaptations: fitted.adaptations }],
+    status: "scripts_ready",
+    error: null,
+  });
+}
+
+/** The operator gave a concept and no script: it becomes the chosen concept and its script is written, then fitted to the model. */
+async function writeFromOperatorConcept(input: { project: VideoProject; brief: VideoBrief; brand: NonNullable<VideoProject["brand"]>; stage: (s: "understanding" | "writing" | "verifying") => Promise<void>; conceptText: string }) {
+  const { project, brief, brand, stage, conceptText } = input;
+  await stage("understanding");
+  const creative = await buildCreativeBrief(briefInputFor(project, brief, brand.manifest));
+  const withFacts = mergeClaims(brief.claims ?? [], [...claimsFromFacts(creative.facts), ...operatorClaims([conceptText], "your concept")]);
+  brief.claims = withFacts;
+  if (brand.manifest) brand.manifest = { ...brand.manifest, claims: mergeClaims(brand.manifest.claims, withFacts) };
+  const base = writeContextFor(project, creative, brief);
+  // The operator's own concept is a source: what it says about the business may be said.
+  const ctx: WriteContext = { ...base, sourceText: `${base.sourceText}\n${conceptText}`, corpus: `${base.corpus}\n${conceptText}`, facts: `${base.facts}\nThe operator's own concept: ${conceptText}` };
+  const concept = await conceptFromText(conceptText, { targetSeconds: ctx.targetSeconds });
+
+  await stage("writing");
+  const written = await writeScriptForConcept(ctx, concept, { direction: "This is the operator's own concept: keep their idea, story, characters and any lines they wrote." });
+  await stage("verifying");
+  const polished = await polishConceptScript(written, ctx, concept);
+  const fitted = await fitToModel(polished, { maxSeconds: MAX_SECONDS });
+  await updateProject(project.id, {
+    brand: { ...brand, facts: ctx.facts, corpus: ctx.corpus, brief: creative, concepts: [concept], shownConcepts: [concept.logline] },
+    scripts: [{ ...fitted.script, source: "uploaded", adaptations: fitted.adaptations }],
     status: "scripts_ready",
     error: null,
   });

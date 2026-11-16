@@ -39,6 +39,8 @@ const payloadSchema = z.object({
   /** "upload": the operator brings their own script, which is kept word for word. */
   mode: z.enum(["write", "upload"]).default("write"),
   scriptText: z.string().max(40_000).optional(),
+  /** The operator's own concept for the video (with or without a script). */
+  conceptText: z.string().max(6000).optional(),
   adCopyText: z.string().max(4000).optional(),
   /** What to change in the uploaded script. Empty means nothing. */
   changeRequest: z.string().max(2000).optional(),
@@ -78,7 +80,7 @@ export async function GET(request: Request) {
   });
 }
 
-/** multipart: `payload` (JSON) and optional `images` files. Starts writing the three scripts in the background. */
+/** multipart: `payload` (JSON), an optional script file, and (for older callers) optional `images`. Starts the concepts, or reads the operator's own script or concept, in the background. */
 export async function POST(request: Request) {
   return withApiHandler(async () => {
     const user = await getCurrentUser();
@@ -97,7 +99,10 @@ export async function POST(request: Request) {
         const fromFile = /\.txt$/i.test(file.name) ? buffer.toString("utf8") : (await extractDocumentText({ filename: file.name, buffer, mimeType: file.type || undefined })).text;
         scriptText = [scriptText, fromFile.trim()].filter(Boolean).join("\n\n");
       }
-      if (scriptWordCount(scriptText) < MIN_SCRIPT_WORDS) throw new Error(`Paste or upload your script (at least ${MIN_SCRIPT_WORDS} words).`);
+      const conceptWords = scriptWordCount(body.conceptText ?? "");
+      const hasScript = scriptWordCount(scriptText) >= MIN_SCRIPT_WORDS;
+      if (!hasScript && conceptWords < 8) throw new Error(`Describe your concept (a sentence or two), or paste or upload your script (at least ${MIN_SCRIPT_WORDS} words).`);
+      if (!hasScript) scriptText = "";
     } else if (!body.landingPageUrl && !body.instructions && !body.offerDetails && !body.serviceId) {
       throw new Error("Give a landing page, instructions or offer details so there is something to write from.");
     }
@@ -123,7 +128,8 @@ export async function POST(request: Request) {
         format: body.format,
         priority: body.priority,
         mode: body.mode,
-        scriptText: body.mode === "upload" ? scriptText : null,
+        scriptText: body.mode === "upload" ? scriptText || null : null,
+        conceptText: body.mode === "upload" ? (body.conceptText?.trim() || null) : null,
         scriptFileName,
         adCopyText: body.mode === "upload" ? (body.adCopyText?.trim() || null) : null,
         changeRequest: body.mode === "upload" ? (body.changeRequest?.trim() || null) : null,

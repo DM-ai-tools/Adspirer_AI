@@ -54,3 +54,36 @@ export function retime<T extends TimedScene>(scenes: T[]): Array<T & { seconds: 
 export function wordsFor(seconds: number): number {
   return Math.floor((seconds - LANDING_PAUSE) * WORDS_PER_SECOND);
 }
+
+/** The longest one scene may run: one clip of every video model, including the cheaper ones. */
+export const MAX_SCENE_SECONDS = 15;
+
+/**
+ * Split spoken words into parts that each fit one scene, keeping every word in order. Breaks at
+ * sentences first, then at commas and other clause marks, and only then between words.
+ */
+export function splitLongLine(text: string, maxSeconds = MAX_SCENE_SECONDS): string[] {
+  const clean = text.trim().replace(/\s+/g, " ");
+  const max = Math.max(1, wordsFor(maxSeconds));
+  if (wordsIn(clean) <= max) return clean ? [clean] : [];
+  const pieces = (t: string, level: 0 | 1 | 2): string[] => {
+    if (wordsIn(t) <= max) return [t];
+    if (level === 2) {
+      const w = t.split(" ");
+      const out: string[] = [];
+      for (let i = 0; i < w.length; i += max) out.push(w.slice(i, i + max).join(" "));
+      return out;
+    }
+    const parts = t.split(level === 0 ? /(?<=[.!?])\s+/ : /(?<=[,;:\u2014])\s+/).filter(Boolean);
+    if (parts.length < 2) return pieces(t, (level + 1) as 1 | 2);
+    return parts.flatMap((p) => pieces(p, (level + 1) as 1 | 2));
+  };
+  // Pack the smallest pieces back together as long as they still fit one scene.
+  const out: string[] = [];
+  for (const piece of pieces(clean, 0)) {
+    const last = out[out.length - 1];
+    if (last && wordsIn(last) + wordsIn(piece) <= max) out[out.length - 1] = `${last} ${piece}`;
+    else out.push(piece);
+  }
+  return out;
+}

@@ -5,9 +5,7 @@ import { buildOverlayFilter } from "@/lib/video/assemble";
 import { insideSafeZone, layoutFor } from "@/lib/video/layout";
 import { figureRoundsTo, normaliseFigure, sourceClaims } from "@/lib/video/claims";
 import { repairText } from "@/lib/video/script-repairs";
-import { buildWrittenScript, scriptPrompt, trimToFit, writeScriptForAngle, type WriteContext, type WrittenScript } from "@/lib/video/script-writer";
 import type { VideoScene, VideoScript } from "@/lib/video/script";
-import type { AnglePlan, CreativeBrief } from "@/lib/video/script-types";
 
 const images = [
   { id: "IMG", name: "results.png", stats: [{ value: "$797K", label: "cost" }, { value: "12.2M", label: "conversion value" }, { value: "15.36", label: "return on spend" }] },
@@ -90,84 +88,6 @@ describe("the one main stat of each image", () => {
     expect(p).toMatch(/other numbers printed in an image are not/);
     expect(requiredStatsPrompt([])).toBeNull();
     expect(attachImageStats({ scenes: [] } as unknown as VideoScript, [])).toEqual({ scenes: [] });
-  });
-});
-
-describe("writing with a mandatory main stat", () => {
-  const prov = { id: "p", kind: "page" as const, label: "Landing page", quote: "We audit Google Ads accounts" };
-  const creative = { version: 1, createdAt: "", company: { name: "Acme", source: "m" }, offer: { name: "Ad audit", description: "", factIds: ["f1"] }, conversion: { action: "Book an audit", target: null, benefit: null, factIds: [] }, audience: { primary: "Shop owners", situation: "", factIds: [], inferred: true }, mechanism: null, facts: [{ id: "f1", text: "We audit Google Ads accounts", category: "mechanism", source: prov }], inferences: [], rejectedFacts: [], voice: { tone: "plain", vocabulary: [], avoid: [] }, defaults: [], gaps: [], sourceQuality: "rich", limitation: null, injectionFlags: [] } as CreativeBrief;
-  const ctx = (): WriteContext => ({
-    creative,
-    brief: { brandName: "Acme", offerName: "Ad audit", stats: [], images: images.map((i) => ({ ...i, summary: "results" })), targetSeconds: 30, style: "auto", locale: "en-AU" } as never,
-    targetSeconds: 30,
-    wordsPerSecond: 2.5,
-    assetIds: ["IMG", "TWO"],
-    claims: [],
-    sourceText: "We audit Google Ads accounts. $797K 12.2M 15.36 4.8",
-    facts: "",
-    corpus: "$797K 12.2M 15.36 4.8",
-  });
-  const angle: AnglePlan = { id: "a", name: "A", situation: "s", tension: "t", centralMessage: "m", hookPremise: "h", support: { text: "audit", factIds: ["f1"] }, tone: "plain", reasonToAct: "r", whyDifferent: "d" };
-  const words = (n: number, tag: string) => Array.from({ length: n }, (_, i) => `${tag}${i}`).join(" ");
-  const raw = (lines: string[]): WrittenScript => ({
-    title: "t",
-    hook_candidates: [lines[0]!, "b one two three", "c one two three", "d one two three"].map((line) => ({ line, why: "w" })),
-    chosen_hook: 0,
-    hook_payoff: "p",
-    style: "Documentary",
-    dramatisation: true,
-    character: null,
-    setting: "s",
-    scenes: lines.map((line) => ({ seconds: 4, visual: "v", camera: "c", speaker: "voiceover" as const, line, keywords: [], stat: null, asset_id: null, sound: "" })),
-    visual_direction: "v",
-    on_screen: [],
-    cta: { spoken: "Book an audit.", label: "Book Now", target: null, benefit: null },
-    sources: [],
-    primary_text: "x",
-    headline: "h",
-    description: "d",
-  });
-
-  it("puts the main stat of each image into the prompt as a requirement", () => {
-    const p = scriptPrompt(ctx(), angle);
-    expect(p).toMatch(/MAIN STAT OF EACH OF THE OPERATOR'S IMAGES \(MANDATORY\)/);
-    expect(p).toContain("15.36 return on spend");
-    expect(p).toContain("4.8 average rating");
-  });
-
-  it("links the image to the scene that says its main stat and records the coverage", () => {
-    const lines = [`${words(12, "a")} opener.`, `The return on spend was 15.36 ${words(10, "b")}.`, `Rated 4.8 ${words(10, "c")}.`, `${words(14, "d")} Book an audit.`];
-    const s = buildWrittenScript(raw(lines), angle, ctx());
-    expect(s.scenes[1]!).toMatchObject({ assetId: "IMG" });
-    expect(s.scenes[2]!).toMatchObject({ assetId: "TWO" });
-    expect(s.imageStats).toHaveLength(2);
-    expect(s.imageStats!.every((c) => c.said && c.shown)).toBe(true);
-  });
-
-  it("does not ask for the image's other numbers: a draft that says only the main stat is complete", async () => {
-    const prompts: string[] = [];
-    const lines = [`${words(14, "a")}.`, `The return on spend was 15.36 ${words(10, "b")}.`, `Rated 4.8 ${words(12, "c")}.`, `${words(10, "d")} Book an audit.`];
-    await writeScriptForAngle(ctx(), angle, { generate: async (p) => (prompts.push(p), raw(lines)) });
-    expect(prompts).toHaveLength(1);
-  });
-
-  it("asks again, naming the missing main stat, when a draft leaves it out", async () => {
-    const prompts: string[] = [];
-    const missing = [`${words(16, "a")}.`, `${words(14, "b")}.`, `Rated 4.8 ${words(16, "c")}.`, `${words(12, "d")} Book an audit.`];
-    const full = [`${words(14, "a")}.`, `The return on spend was 15.36 ${words(10, "b")}.`, `Rated 4.8 ${words(12, "c")}.`, `${words(10, "d")} Book an audit.`];
-    const drafts = [raw(missing), raw(full)];
-    const script = await writeScriptForAngle(ctx(), angle, { generate: async (p) => (prompts.push(p), drafts.shift() ?? raw(full)) });
-    expect(prompts[1]).toMatch(/MAIN STAT THAT MUST BE SAID/);
-    expect(prompts[1]).toContain("15.36");
-    expect(script.imageStats!.every((c) => c.said)).toBe(true);
-  });
-
-  it("never cuts a scene that carries an image stat when trimming for length", () => {
-    const lines = [`${words(8, "a")}.`, `The return on spend was 15.36 ${words(40, "b")}.`, `${words(40, "c")}.`, `${words(40, "d")}.`, `${words(8, "e")} Book an audit.`];
-    const s = buildWrittenScript(raw(lines), angle, ctx());
-    expect(s.scenes[1]!.assetId).toBe("IMG");
-    const out = trimToFit(s, { targetSeconds: 30, wordsPerSecond: 2.5 });
-    expect(out.scenes.some((x) => x.assetId === "IMG")).toBe(true);
   });
 });
 
@@ -309,59 +229,5 @@ describe("the image is on screen only while its main stat is said", () => {
     expect(out[0]!.assetId).toBe("OTHER");
     expect(out[1]!.assetId).toBe("IMG");
     expect(out[2]).toMatchObject({ assetId: null, stat: "99%" });
-  });
-});
-
-describe("making sure the main stat is said", () => {
-  const scene = (number: number, line: string, extra: Partial<VideoScene> = {}): VideoScene => ({ number, start: 0, end: 3, seconds: 3, visual: "v", camera: "c", speaker: "voiceover", line, keywords: [], stat: null, assetId: null, sound: "", ...extra });
-  const required = requiredStatsFrom([{ id: "IMG", name: "results.png", stats: [{ value: "5.25", label: "Conv. value / cost" }] }]);
-  const base = (scenes: VideoScene[]) => ({ id: "s", title: "t", scenes, cta: { spoken: "Book an audit.", label: "Book Now", target: null, benefit: null }, speech: { requestedSeconds: 30 }, warnings: [], adCopy: { primaryText: "x", headline: "h", description: "d", cta: "Book Now" } }) as unknown as VideoScript;
-  const ctx = { facts: "", assetIds: ["IMG"], targetSeconds: 30, wordsPerSecond: 2.5, brief: { locale: "en-AU" } };
-
-  it("rewrites one scene to say it, shows the image there, and records the coverage", async () => {
-    const { ensureMainStats } = await import("@/lib/video/script-writer");
-    const calls: Array<{ n: number; feedback: string }> = [];
-    const out = await ensureMainStats(base([scene(1, "Hook."), scene(2, "Middle one.", { assetId: "IMG" }), scene(3, "Middle two."), scene(4, "Book an audit.")]), required, ctx, {
-      rewriteScene: async ({ sceneNumber, feedback, script }) => (calls.push({ n: sceneNumber, feedback }), { ...script.scenes[sceneNumber - 1]!, line: "In the account shown here, every dollar of cost returned 5.25 in conversion value." }),
-    });
-    expect(calls).toHaveLength(1);
-    // the scene that already carried the image is the one that says it
-    expect(calls[0]!.n).toBe(2);
-    expect(calls[0]!.feedback).toContain("5.25");
-    expect(calls[0]!.feedback).toMatch(/do not add a period, whose it is/);
-    expect(out.scenes[1]).toMatchObject({ assetId: "IMG", stat: "5.25" });
-    expect(out.imageStats![0]).toMatchObject({ said: true, shown: true, scene: 2 });
-  });
-
-  it("does nothing when the main stat is already said, and never touches the opening, the closing line or an edited scene", async () => {
-    const { ensureMainStats } = await import("@/lib/video/script-writer");
-    let called = 0;
-    const said = await ensureMainStats(base([scene(1, "Hook."), scene(2, "That is 5.25 back per dollar."), scene(3, "Book an audit.")]), required, ctx, { rewriteScene: async () => (called += 1, scene(2, "x")) });
-    expect(called).toBe(0);
-    expect(said.imageStats![0]!.said).toBe(true);
-
-    const calls: number[] = [];
-    await ensureMainStats(base([scene(1, "Hook."), scene(2, "Mine.", { edited: true }), scene(3, "Middle."), scene(4, "Book an audit.")]), required, ctx, {
-      rewriteScene: async ({ sceneNumber }) => (calls.push(sceneNumber), scene(sceneNumber, "Still nothing.")),
-    });
-    expect(calls.every((n) => n === 3)).toBe(true);
-  });
-
-  it("tries at most twice, then leaves the stat reported as missing instead of faking it", async () => {
-    const { ensureMainStats } = await import("@/lib/video/script-writer");
-    let calls = 0;
-    const out = await ensureMainStats(base([scene(1, "Hook."), scene(2, "Middle one."), scene(3, "Middle two."), scene(4, "Book an audit.")]), required, ctx, {
-      rewriteScene: async ({ sceneNumber }) => (calls += 1, scene(sceneNumber, "A line that never says the figure.")),
-    });
-    expect(calls).toBe(2);
-    expect(out.imageStats![0]).toMatchObject({ said: false });
-  });
-
-  it("leaves an uploaded script's own words alone", async () => {
-    const { ensureMainStats } = await import("@/lib/video/script-writer");
-    let called = 0;
-    const s = { ...base([scene(1, "Mine."), scene(2, "Also mine."), scene(3, "Done.")]), source: "uploaded" } as VideoScript;
-    await ensureMainStats(s, required, ctx, { rewriteScene: async () => (called += 1, scene(2, "x")) });
-    expect(called).toBe(0);
   });
 });

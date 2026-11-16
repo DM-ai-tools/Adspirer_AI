@@ -4,7 +4,7 @@ import { VIDEO_TYPES, type VideoTypeId } from "@/lib/video/video-types";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { AlertTriangle, ArrowLeft, Check, FileUp, ChevronDown, ChevronUp, CircleDashed, Download, Film, ImagePlus, Loader2, MessageSquarePlus, Plus, RefreshCw, ShieldCheck, Sparkles, Trash2, Wand2, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Check, FileUp, ChevronDown, ChevronUp, CircleDashed, Download, Film, Loader2, MessageSquarePlus, RefreshCw, ShieldCheck, Trash2, Wand2, X } from "lucide-react";
 import { toast } from "sonner";
 import { useApp } from "@/components/layout/app-provider";
 import { PageHeader } from "@/components/shared/page-header";
@@ -20,11 +20,12 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { apiFetch } from "@/lib/api-client";
 import { ADSPIRER_META_CTAS } from "@/lib/adspirer/skills/ad-copywriting";
-import { describeEvent, mmss, overlayEvents, withTimes } from "@/lib/video/overlays";
+import { mmss, withTimes } from "@/lib/video/overlays";
 import { retime, sceneSeconds } from "@/lib/video/timing";
 import { buildScriptSpeech } from "@/lib/video/duration";
 import { SCRIPT_STAGES, UPLOAD_STAGES, viewProgress, type ScriptProgress } from "@/lib/video/progress";
 import { cn } from "@/lib/utils";
+import { Adaptations, ChangeBox, ConceptCards, ConceptSummary, SceneLinesEditor, type ConceptView, type SceneLineView, type VoiceView } from "./concept-ui";
 import type { ClientService } from "@/types";
 
 type Scene = {
@@ -42,6 +43,7 @@ type Scene = {
   sound: string;
   originalLine?: string | null;
   edited?: boolean;
+  lines?: SceneLineView[];
 };
 
 type Issue = { scene: number | null; severity: "low" | "medium" | "high"; area: string; problem: string; fix: string };
@@ -83,6 +85,11 @@ type Script = {
   dramatisation?: boolean;
   imageStats?: Array<{ assetId: string; assetName: string; value: string; label: string; said: boolean; shown: boolean; scene: number | null }>;
   editorial?: { hardFailures: Array<{ problem: string }>; open: Array<{ problem: string; severity: "hard" | "major" | "minor" }>; limitation: string | null };
+  voices?: VoiceView[];
+  concept?: ConceptView;
+  changeNote?: string | null;
+  adaptations?: string[];
+  previousVersion?: unknown;
 };
 
 type Plan = {
@@ -185,7 +192,6 @@ type GenerationView = {
   spentUsd: number;
   blocked: string | null;
   notice?: string | null;
-  statInserts?: StatInsertView[];
   error: string | null;
 };
 
@@ -194,10 +200,12 @@ type Asset = { id: string; name: string; summary: string; kind: string | null; s
 type ProjectView = {
   id: string;
   name: string;
-  status: "writing" | "needs_context" | "scripts_ready" | "confirmed" | "generating" | "paused" | "stopped" | "clips_ready" | "assembling" | "done" | "failed";
+  status: "writing" | "needs_context" | "concepts_ready" | "scripts_ready" | "confirmed" | "generating" | "paused" | "stopped" | "clips_ready" | "assembling" | "done" | "failed";
   error: string | null;
   contextBrief?: BriefView | null;
   angleLimitation?: string | null;
+  concepts?: ConceptView[];
+  conceptLimitation?: string | null;
   wordsPerSecond?: number | null;
   inputs: { landingPageUrl: string | null; targetSeconds: number; format: string; mode?: "write" | "upload"; scriptFileName?: string | null; changeRequest?: string | null };
   assets: Asset[];
@@ -213,7 +221,7 @@ type ProjectView = {
 
 type HistoryItem = { id: string; name: string; status: ProjectView["status"]; created_at: string; landing_page_url: string | null; target_seconds: number; title: string | null };
 
-const STATUS_LABEL: Record<ProjectView["status"], string> = { writing: "Writing scripts", needs_context: "Needs more information", scripts_ready: "Scripts ready", confirmed: "Script confirmed", generating: "Making the video", paused: "Waiting for your check", stopped: "Stopped", clips_ready: "Clips ready", assembling: "Finishing the video", done: "Finished", failed: "Failed" };
+const STATUS_LABEL: Record<ProjectView["status"], string> = { writing: "Working on it", needs_context: "Needs more information", concepts_ready: "Concepts ready", scripts_ready: "Script ready", confirmed: "Script confirmed", generating: "Making the video", paused: "Waiting for your check", stopped: "Stopped", clips_ready: "Clips ready", assembling: "Finishing the video", done: "Finished", failed: "Failed" };
 const STYLES = ["auto", "UGC creator walkthrough", "Cinematic", "Motion graphics over footage", "Documentary", "3D animated"];
 const FORMATS = [
   { value: "9:16", label: "9:16 Reels & Stories" },
@@ -221,8 +229,6 @@ const FORMATS = [
   { value: "1:1", label: "1:1 Square" },
 ];
 const SPEAKER_LABEL: Record<Scene["speaker"], string> = { on_camera: "Presenter speaks to camera", voiceover: "Voiceover (unseen voice)", none: "No speech" };
-
-type NewImage = { file: File; preview: string };
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
@@ -278,89 +284,6 @@ function ProgressCard({ progress, hasImages, upload }: { progress: ScriptProgres
   );
 }
 
-const SEVERITY_STYLE: Record<Issue["severity"], string> = {
-  high: "text-red-400",
-  medium: "text-amber-500",
-  low: "text-muted",
-};
-
-function VerdictBadge({ v }: { v: Verification }) {
-  const label = v.verdict === "passed" ? "Verified" : v.verdict === "fixed" ? "Verified, fixed" : "Needs a look";
-  return (
-    <Badge variant={v.verdict === "needs_review" ? "warning" : "secondary"}>
-      {v.verdict === "needs_review" ? <AlertTriangle className="mr-1 h-3 w-3" /> : <ShieldCheck className="mr-1 h-3 w-3" />}
-      {label}
-      {v.score !== null ? ` · ${v.score}/10` : ""}
-    </Badge>
-  );
-}
-
-/** What the verifier found about a scene or the ad copy, with ways to fix it: automatically, or from the operator's own note. */
-function FixBar({
-  id,
-  issues,
-  busy,
-  feedback,
-  noun,
-  onFeedback,
-  onRun,
-}: {
-  id: string;
-  issues: Issue[];
-  busy: string | null;
-  feedback: string | undefined;
-  noun: string;
-  onFeedback: (value: string | undefined) => void;
-  onRun: (issues: string[], feedback: string | undefined) => void;
-}) {
-  const working = busy === id;
-  const open = feedback !== undefined;
-  return (
-    <div className="space-y-2">
-      {issues.length ? (
-        <ul className="space-y-1 rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-xs">
-          {issues.map((i, k) => (
-            <li key={k} className={cn("flex gap-1.5", SEVERITY_STYLE[i.severity])}>
-              <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
-              <span>
-                {i.problem.replace(/^Scene \d+ /, "")} <span className="text-muted">Suggested fix: {i.fix}</span>
-              </span>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      <div className="flex flex-wrap items-center gap-2">
-        {issues.length ? (
-          <Button type="button" size="sm" variant="secondary" disabled={Boolean(busy)} onClick={() => onRun(issues.map((i) => `${i.problem} Fix: ${i.fix}`), open ? feedback : undefined)}>
-            {working ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Wand2 className="mr-1 h-3.5 w-3.5" />}
-            Fix the {issues.length === 1 ? "problem" : `${issues.length} problems`} automatically
-          </Button>
-        ) : null}
-        <Button type="button" size="sm" variant="ghost" disabled={Boolean(busy)} onClick={() => onFeedback(open ? undefined : "")}>
-          <MessageSquarePlus className="mr-1 h-3.5 w-3.5" />
-          {open ? "Cancel" : `Rewrite this ${noun} with my feedback`}
-        </Button>
-      </div>
-      {open ? (
-        <div className="space-y-2">
-          <Textarea
-            className="min-h-[64px] text-xs"
-            value={feedback}
-            onChange={(e) => onFeedback(e.target.value)}
-            placeholder={`What should change? e.g. "make it less salesy", "mention the free audit earlier", "shorter and punchier"`}
-          />
-          <Button type="button" size="sm" disabled={Boolean(busy) || !feedback?.trim()} onClick={() => onRun(issues.map((i) => `${i.problem} Fix: ${i.fix}`), feedback)}>
-            {working ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1 h-3.5 w-3.5" />}
-            Rewrite this {noun}
-          </Button>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-/** What a clean video is, where the old "add to the video" switches used to be. Nothing here can turn a graphic on. */
-/** The kind of video and the operator's own idea, asked before the script is read or written. */
 function VideoTypePicker({ value, onChange, idea, onIdea }: { value: VideoTypeId; onChange: (v: VideoTypeId) => void; idea: string; onIdea: (v: string) => void }) {
   return (
     <div className="space-y-2">
@@ -387,29 +310,6 @@ function VideoTypePicker({ value, onChange, idea, onIdea }: { value: VideoTypeId
           className="min-h-[70px]"
         />
       </Field>
-    </div>
-  );
-}
-
-type StatInsertView = { scene: number; figure: string; spoken: boolean; sourced: boolean; line: string };
-
-/** The figures in the script, to put on screen by hand: the footage itself never draws a number. */
-function StatInserts({ items, exported }: { items: StatInsertView[]; exported: boolean }) {
-  if (!items.length) return null;
-  return (
-    <div className="space-y-1 rounded-md border border-border p-3 text-xs">
-      <p className="font-medium">Stats to insert in editing</p>
-      <p className="text-[11px] text-muted">
-        The video says these figures; the footage shows no numbers (the video model cannot draw them cleanly). Add each one on screen while it is said.
-        {exported ? " The placement plan in the download gives the exact time for each." : " After export, the placement plan gives the exact time for each."}
-      </p>
-      {items.map((s) => (
-        <p key={`${s.scene}-${s.figure}`} className="text-[11px]">
-          <span className="font-medium">Scene {s.scene}: {s.figure}</span>
-          {s.spoken ? <> — said in &ldquo;{s.line}&rdquo;</> : <> — on screen only in the script; the line does not say it, so add it to the line if it should be heard</>}
-          {s.sourced ? null : <span className="text-amber-500"> · no recorded source, confirm before showing it</span>}
-        </p>
-      ))}
     </div>
   );
 }
@@ -517,10 +417,10 @@ function BriefCard({ brief, angleLimitation, onSave, busy }: { brief: BriefView;
     <Card>
       <CardContent className="space-y-3 p-4 text-sm">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="flex items-center gap-2 font-medium">
-            <ShieldCheck className="h-4 w-4 text-accent" /> What these scripts are written from
+          <div className="flex items-center gap-2 font-medium">
+            <ShieldCheck className="h-4 w-4 text-accent" /> What the concepts and scripts are written from
             <Badge variant={brief.sourceQuality === "rich" ? "secondary" : "danger"}>{brief.sourceQuality === "rich" ? "Plenty to work with" : brief.sourceQuality === "thin" ? "Thin source material" : "Not enough to go on"}</Badge>
-          </p>
+          </div>
           <Button size="sm" variant="ghost" onClick={() => setOpen((v) => !v)}>
             {open ? <ChevronUp className="mr-1 h-3.5 w-3.5" /> : <ChevronDown className="mr-1 h-3.5 w-3.5" />}
             {open ? "Hide" : "Show the brief"}
@@ -679,173 +579,6 @@ function NeedsContext({ brief, error, onSave, busy }: { brief: BriefView | null;
 }
 
 /** The clean spoken script, how long it should take to say, and what to show and ask: the part of a version people actually read. */
-function VersionSummary({
-  script,
-  spoken,
-  words,
-  speech,
-  requestedSeconds,
-  onAction,
-  busy,
-}: {
-  script: Script;
-  spoken: string;
-  words: number;
-  speech: { estimatedSeconds: number; wordsPerSecond: number; fit: "fits" | "long" | "short"; budgetWords: { min: number; max: number }; measuredSeconds?: number | null } | null;
-  requestedSeconds: number;
-  onAction: (action: "regenerate" | "rewrite_delivery" | "change_angle" | "retime", opts?: { instruction?: string; seconds?: number }) => void;
-  busy: string | null;
-}) {
-  const [instruction, setInstruction] = useState("");
-  const [newLength, setNewLength] = useState(String(requestedSeconds));
-  const [showSources, setShowSources] = useState(false);
-  const sources = (script.sources ?? []) as SourceView[];
-  const editorial = script.editorial;
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(spoken);
-      toast.success("Script copied");
-    } catch {
-      toast.error("Could not copy");
-    }
-  };
-  const fitText = !speech ? null : speech.fit === "fits" ? "fits the length asked for" : speech.fit === "long" ? "runs long: edit it down rather than speed it up" : "runs short";
-  return (
-    <div className="space-y-4 rounded-md border border-accent/30 p-4">
-      <div className="space-y-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge>{script.angle.name}</Badge>
-          {script.dramatisation ? <Badge variant="outline">Dramatisation, not a customer testimonial</Badge> : null}
-        </div>
-        {script.angleDetail ? <p className="text-xs text-muted">For: {script.angleDetail.situation}</p> : null}
-        {script.differentiator ? <p className="text-xs">{script.differentiator}</p> : null}
-      </div>
-
-      <div className="space-y-2">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-sm font-medium">The script, as it will be spoken</p>
-          <Button type="button" size="sm" variant="secondary" onClick={() => void copy()}>
-            Copy
-          </Button>
-        </div>
-        <div className="whitespace-pre-line rounded-md bg-secondary/30 p-3 text-sm leading-relaxed">{spoken || "Nothing is spoken yet."}</div>
-        <p className="text-xs text-muted">
-          {words} words
-          {speech ? (
-            <>
-              {" "}
-              · estimated {Math.round(speech.estimatedSeconds)}s spoken at {speech.wordsPerSecond} words a second (asked for {requestedSeconds}s, {fitText}; about {speech.budgetWords.min} to {speech.budgetWords.max} words fits)
-            </>
-          ) : null}
-          {speech?.measuredSeconds ? <> · measured from the audio: {speech.measuredSeconds}s</> : <> · the measured length appears once the video has been made</>}
-        </p>
-      </div>
-
-      {script.imageStats?.length ? (
-        <div className="space-y-1 rounded-md border border-border p-2 text-xs">
-          <p className="font-medium">Main stat from each of your images (it must be said, with its image shown)</p>
-          <ul className="space-y-0.5">
-            {script.imageStats.map((c, i) => (
-              <li key={i} className={c.said && c.shown ? "text-muted" : c.said ? "text-amber-500" : "text-destructive"}>
-                {c.said && c.shown ? "Said and shown" : c.said ? "Said, image not shown" : "Not said yet"} in {c.scene ? `scene ${c.scene}` : "no scene"}: <span className="text-foreground">{c.value}</span> {c.label}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-
-      {script.hook ? (
-        <p className="text-xs">
-          <span className="font-medium">Opening chosen:</span> “{script.hook.line}” <span className="text-muted">· pays off: {script.hook.payoff}</span>
-        </p>
-      ) : null}
-
-      <div className="grid gap-3 md:grid-cols-2 text-xs">
-        <div className="space-y-1">
-          <p className="font-medium">What is shown</p>
-          <p className="text-muted">{script.visualDirection ?? "See the scenes below."}</p>
-        </div>
-        <div className="space-y-1">
-          <p className="font-medium">Optional on-screen text, and the ask</p>
-          {script.onScreen?.length ? <p className="text-muted">Could be added by hand (not in the video): {script.onScreen.join(" · ")}</p> : null}
-          {script.cta ? (
-            <p className="text-muted">
-              Ends with: “{script.cta.spoken}” → button <span className="text-foreground">{script.cta.label}</span>
-              {script.cta.target ? ` (${script.cta.target})` : ""}
-              {script.cta.benefit ? ` · you get: ${script.cta.benefit}` : ""}
-            </p>
-          ) : null}
-        </div>
-      </div>
-
-      <div className="space-y-1 text-xs">
-        <button type="button" className="text-accent underline" onClick={() => setShowSources((v) => !v)}>
-          {showSources ? "Hide" : "Show"} where each claim comes from ({sources.length})
-        </button>
-        {showSources ? (
-          sources.length ? (
-            <ul className="space-y-1">
-              {sources.map((s, i) => (
-                <li key={i} className="rounded border border-border p-2">
-                  <span className="text-foreground">{s.claim}</span>
-                  <span className="block text-[10px] text-muted">
-                    {s.source.label}: “{s.source.quote.slice(0, 200)}”
-                  </span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="text-muted">This version states no factual claim that needs a source.</p>
-          )
-        ) : null}
-      </div>
-
-      {editorial && (editorial.hardFailures.length || editorial.open.length || editorial.limitation) ? (
-        <div className="space-y-1 rounded-md border border-border p-2 text-xs">
-          {editorial.hardFailures.map((i, k) => (
-            <p key={`h${k}`} className="text-destructive">
-              Must fix: {i.problem}
-            </p>
-          ))}
-          {editorial.open.filter((i) => i.severity !== "minor" && i.severity !== "hard").slice(0, 4).map((i, k) => (
-            <p key={`o${k}`} className="text-amber-500">
-              {i.problem}
-            </p>
-          ))}
-          {editorial.limitation ? <p className="text-muted">{editorial.limitation}</p> : null}
-          <p className="text-[10px] text-muted">The editor&apos;s ratings are editorial signals, not predictions of how the ad will perform.</p>
-        </div>
-      ) : null}
-
-      <div className="space-y-2 border-t border-border pt-3">
-        <p className="text-xs font-medium">Change this version (the other two stay as they are; scenes you edited are kept)</p>
-        <Input className="text-xs" value={instruction} onChange={(e) => setInstruction(e.target.value)} placeholder="Optional: what you want, in your words" />
-        <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" variant="secondary" disabled={Boolean(busy)} onClick={() => onAction("regenerate", { instruction: instruction.trim() || undefined })}>
-            {busy === "regenerate" ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1 h-3.5 w-3.5" />}
-            Write this version again
-          </Button>
-          <Button size="sm" variant="secondary" disabled={Boolean(busy)} onClick={() => onAction("rewrite_delivery", { instruction: instruction.trim() || undefined })}>
-            {busy === "rewrite_delivery" ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <MessageSquarePlus className="mr-1 h-3.5 w-3.5" />}
-            Same angle, new delivery
-          </Button>
-          <Button size="sm" variant="secondary" disabled={Boolean(busy)} onClick={() => onAction("change_angle", { instruction: instruction.trim() || undefined })}>
-            {busy === "change_angle" ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Wand2 className="mr-1 h-3.5 w-3.5" />}
-            Different angle, same facts
-          </Button>
-          <span className="flex items-center gap-1 text-xs">
-            <Input className="h-8 w-16 text-xs" type="number" min={15} max={60} value={newLength} onChange={(e) => setNewLength(e.target.value)} />
-            <Button size="sm" variant="secondary" disabled={Boolean(busy) || !Number(newLength)} onClick={() => onAction("retime", { seconds: Number(newLength) })}>
-              {busy === "retime" ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : null}
-              Make it {Number(newLength) || "?"}s
-            </Button>
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 type BrandCheck =
   | { checked: false }
   | {
@@ -1127,7 +860,6 @@ function PlanCard({ creative }: { creative: CreativeView }) {
           <p className="font-medium">Creative plan: {creative.narrative.approach}</p>
           <p className="text-muted">{creative.narrative.whyItFits}</p>
         </div>
-        <Badge variant={creative.validation.ok ? "secondary" : "danger"}>{creative.validation.ok ? "Checked" : "Failed checks"}</Badge>
       </div>
       <button type="button" className="text-accent underline" onClick={() => setOpen((v) => !v)}>
         {open ? "Hide scenes" : `Show ${creative.scenes.length} scenes`}
@@ -1149,9 +881,6 @@ function PlanCard({ creative }: { creative: CreativeView }) {
             </li>
           ))}
         </ol>
-      ) : null}
-      {creative.validation.issues.filter((i) => i.severity === "warning").length ? (
-        <p className="text-[11px] text-muted">Notes: {creative.validation.issues.filter((i) => i.severity === "warning").slice(0, 3).map((i) => i.message).join(" ")}</p>
       ) : null}
     </div>
   );
@@ -1306,7 +1035,6 @@ function GenerationPanel({ projectId, status, initial, onStatus, logoDownloadUrl
           <p className="text-[11px] text-muted">Makes the clips one after another so the person and voice carry through, then joins them. It takes several minutes and keeps going if you leave.</p>
         </div>
         <CleanVideoNote />
-        <StatInserts items={gen?.statInserts ?? []} exported={false} />
         {gen?.storageDurable === false ? <p className="text-xs text-amber-500">Files are being kept on this server&apos;s own disk and would be lost on a restart or redeploy. Set up the storage bucket before relying on a video made now.</p> : null}
         <JobFiles files={gen?.assets ?? []} cautions={gen?.cautions ?? []} started={false} />
         <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -1339,7 +1067,6 @@ function GenerationPanel({ projectId, status, initial, onStatus, logoDownloadUrl
   return (
     <div className="space-y-3">
       <JobFiles files={gen?.assets ?? []} cautions={gen?.cautions ?? []} started />
-      <StatInserts items={gen?.statInserts ?? []} exported={gen?.final?.state === "done"} />
       {figureChanges.length ? (
         <div className="space-y-1 rounded-md border border-amber-500/50 bg-amber-500/5 p-3 text-xs">
           <p className="font-medium">Scenes changed because a figure had no recorded source</p>
@@ -1741,8 +1468,8 @@ function VideoInner() {
   const [adCopyText, setAdCopyText] = useState("");
   const [changeRequest, setChangeRequest] = useState("");
   const [offerDetails, setOfferDetails] = useState("");
-  const [stats, setStats] = useState<string[]>([""]);
-  const [images, setImages] = useState<NewImage[]>([]);
+  // The operator's own concept, with or without a script.
+  const [conceptText, setConceptText] = useState("");
   const [seconds, setSeconds] = useState(35);
   const [audienceIn, setAudienceIn] = useState("");
   const [toneIn, setToneIn] = useState("");
@@ -1763,13 +1490,12 @@ function VideoInner() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<Script | null>(null);
   const [confirming, setConfirming] = useState(false);
-  // The verifier's review of the script on screen, the feedback boxes that are open, and which rewrite is running.
-  const [review, setReview] = useState<Verification | null>(null);
-  const [feedbackFor, setFeedbackFor] = useState<Record<string, string | undefined>>({});
-  const [rewriting, setRewriting] = useState<string | null>(null);
-  const [showDetails, setShowDetails] = useState(false);
   // Bumped to start following the project again after "write 3 new scripts".
   const [pollKey, setPollKey] = useState(0);
+  // The script to open again once a background rewrite of it finishes.
+  const [reopenId, setReopenId] = useState<string | null>(null);
+  // True while a change request is running: confirming then would confirm the script without the change.
+  const [changing, setChanging] = useState(false);
   const setProjectStatus = useCallback((status: ProjectView["status"]) => setView((v) => (v && v.status !== status ? { ...v, status } : v)), []);
 
   useEffect(() => {
@@ -1834,9 +1560,10 @@ function VideoInner() {
   }, [projectId, pollKey]);
 
   const scriptWords = scriptText.trim().split(/\s+/).filter(Boolean).length;
+  const conceptWords = conceptText.trim().split(/\s+/).filter(Boolean).length;
   const canStart =
     Boolean(selectedClientId) &&
-    (mode === "upload" ? scriptWords >= 15 || Boolean(scriptFile) : Boolean(landingUrl.trim() || instructions.trim() || offerDetails.trim() || serviceId));
+    (mode === "upload" ? scriptWords >= 15 || Boolean(scriptFile) || conceptWords >= 8 : Boolean(landingUrl.trim() || instructions.trim() || offerDetails.trim() || serviceId));
 
   async function start() {
     if (!selectedClientId) return;
@@ -1848,7 +1575,6 @@ function VideoInner() {
         landingPageUrl: landingUrl.trim() || undefined,
         instructions: instructions.trim() || undefined,
         offerDetails: offerDetails.trim() || undefined,
-        stats: stats.map((s) => s.trim()).filter(Boolean),
         targetSeconds: seconds,
         style,
         videoType,
@@ -1861,12 +1587,12 @@ function VideoInner() {
         goal: goalIn.trim() || undefined,
         platform: platformIn.trim() || undefined,
         scriptText: mode === "upload" ? scriptText.trim() || undefined : undefined,
+        conceptText: mode === "upload" ? conceptText.trim() || undefined : undefined,
         adCopyText: mode === "upload" ? adCopyText.trim() || undefined : undefined,
         changeRequest: mode === "upload" ? changeRequest.trim() || undefined : undefined,
       };
       const form = new FormData();
       form.set("payload", JSON.stringify(payload));
-      images.forEach((i) => form.append("images", i.file));
       if (mode === "upload" && scriptFile) form.set("scriptFile", scriptFile);
       const res = await fetch("/api/creatives/video", { method: "POST", body: form });
       const json = (await res.json()) as { ok: boolean; data?: { projectId: string }; error?: { message: string } };
@@ -1911,49 +1637,57 @@ function VideoInner() {
     const copy = structuredClone(script);
     copy.scenes = retime(copy.scenes);
     setDraft(copy);
-    setReview(script.verification ?? null);
-    setShowDetails(false);
-    setFeedbackFor({});
   }
 
-  // One version changed on its own: the other two and any scene the operator edited are left as they are.
-  const [revising, setRevising] = useState<string | null>(null);
-  async function revise(action: "regenerate" | "rewrite_delivery" | "change_angle" | "retime", opts: { instruction?: string; seconds?: number } = {}) {
-    if (!draft || !projectId) return;
-    setRevising(action);
-    try {
-      const res = await apiFetch<{ scripts: Script[]; scriptId: string }>(`/api/creatives/video/${projectId}/versions`, {
-        method: "POST",
-        body: JSON.stringify({
-          scriptId: draft.id,
-          action,
-          instruction: opts.instruction,
-          seconds: opts.seconds,
-          draft: { title: draft.title, scenes: draft.scenes.map((s) => ({ ...s, seconds: Number(s.seconds) || 2 })), adCopy: draft.adCopy },
-        }),
-      });
-      setView((v) => (v ? { ...v, scripts: res.scripts } : v));
-      const next = res.scripts.find((x) => x.id === res.scriptId);
-      if (next) pick(next);
-      toast.success(action === "retime" ? "Rewritten to the new length" : "This version was rewritten");
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Could not change this version");
-    } finally {
-      setRevising(null);
-    }
+  /** Follow the project again after something was started on the server (a concept picked, new concepts, a rewrite). */
+  function followAgain() {
+    setSelectedId(null);
+    setDraft(null);
+    setView((v) => (v ? { ...v, status: "writing", error: null, progress: null } : v));
+    setPollKey((k) => k + 1);
   }
 
-  async function chooseMainStat(assetId: string, value: string) {
+  /** Open a script already written (from the concepts screen): the server moves the project back onto it. */
+  async function openScript(scriptId: string) {
     if (!projectId) return;
     try {
-      await apiFetch(`/api/creatives/video/${projectId}/assets/${assetId}`, { method: "PATCH", body: JSON.stringify({ value }) });
-      setView((v) => (v ? { ...v, assets: v.assets.map((a) => (a.id === assetId ? { ...a, mainStat: a.stats.find((s) => s.value === value) ?? a.mainStat } : a)) } : v));
-      toast.success("Main stat changed. Write the scripts again to use it.");
+      await apiFetch(`/api/creatives/video/${projectId}/concepts`, { method: "POST", body: JSON.stringify({ action: "open", scriptId }) });
+      const script = view?.scripts?.find((s) => s.id === scriptId);
+      setView((v) => (v ? { ...v, status: "scripts_ready", error: null } : v));
+      if (script) pick(script);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Could not change the main stat");
+      toast.error(err instanceof Error ? err.message : "Could not open the script");
     }
   }
 
+  async function backToConcepts() {
+    if (!projectId) return;
+    try {
+      await apiFetch(`/api/creatives/video/${projectId}/concepts`, { method: "POST", body: JSON.stringify({ action: "back" }) });
+      setSelectedId(null);
+      setDraft(null);
+      setView((v) => (v ? { ...v, status: "concepts_ready" } : v));
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not go back to the concepts");
+    }
+  }
+
+  /** After a change or undo: reload and reopen the same script. A change to the idea runs in the background first. */
+  async function afterChange(scriptId: string, result: { started?: boolean }) {
+    if (!projectId) return;
+    if (result.started) {
+      setReopenId(scriptId);
+      followAgain();
+      return;
+    }
+    const next = await apiFetch<ProjectView>(`/api/creatives/video/${projectId}`);
+    setView(next);
+    const script = next.scripts?.find((x) => x.id === scriptId);
+    if (script) pick(script);
+  }
+
+  // Which background request (saving the brief) is running.
+  const [revising, setRevising] = useState<string | null>(null);
   async function saveContext(values: { audience?: string; tone?: string; goal?: string; platform?: string; offerDetails?: string; instructions?: string; speechRate?: number; rewrite: boolean }) {
     if (!projectId) return;
     setRevising("context");
@@ -1974,36 +1708,11 @@ function VideoInner() {
     }
   }
 
-  async function runRewrite(id: string, action: "scene" | "copy" | "check", opts: { sceneNumber?: number; issues?: string[]; feedback?: string } = {}) {
-    if (!draft || !projectId) return;
-    setRewriting(id);
-    try {
-      const res = await apiFetch<{ scene: Scene | null; adCopy: Script["adCopy"] | null; verification: Verification; speech?: Script["speech"] | null; imageStats?: Script["imageStats"] }>(`/api/creatives/video/${projectId}/rewrite`, {
-        method: "POST",
-        body: JSON.stringify({
-          scriptId: draft.id,
-          action,
-          sceneNumber: opts.sceneNumber,
-          issues: opts.issues,
-          feedback: opts.feedback?.trim() || undefined,
-          draft: { title: draft.title, scenes: draft.scenes.map((s) => ({ ...s, seconds: Number(s.seconds) || 2 })), adCopy: draft.adCopy },
-        }),
-      });
-      if (res.scene) {
-        const n = res.scene.number;
-        setDraft((d) => (d ? { ...d, scenes: d.scenes.map((s) => (s.number === n ? { ...res.scene!, start: s.start, end: s.end } : s)) } : d));
-      }
-      if (res.adCopy) setDraft((d) => (d ? { ...d, adCopy: res.adCopy! } : d));
-      setReview(res.verification);
-      if (res.speech) setDraft((d) => (d ? { ...d, speech: res.speech! } : d));
-      if (res.imageStats) setDraft((d) => (d ? { ...d, imageStats: res.imageStats! } : d));
-      setFeedbackFor((f) => ({ ...f, [id]: undefined }));
-      if (action !== "check") toast.success(action === "scene" ? "Scene rewritten and the script re-checked" : "Ad copy rewritten and the script re-checked");
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Could not rewrite");
-    } finally {
-      setRewriting(null);
-    }
+  // Who says what in a scene: the scene's words and speaker follow its lines.
+  function editLines(i: number, lines: SceneLineView[]) {
+    const line = lines.map((l) => l.text.trim()).filter(Boolean).join(" ");
+    const speaker: Scene["speaker"] = !line ? "none" : lines.some((l) => l.onCamera && l.text.trim()) ? "on_camera" : "voiceover";
+    editScene(i, { lines, line, speaker });
   }
 
   // A scene's length follows what is said in it (and whether a stat or image needs time on screen). Only a
@@ -2023,24 +1732,24 @@ function VideoInner() {
     );
   }
 
-  // An uploaded script is the only one there is: open it straight away.
+  // The script just written (the last one) opens straight away; after a change to a script's idea, that same script does.
   useEffect(() => {
-    if (view?.status === "scripts_ready" && view.scripts?.length === 1 && !draft) pick(view.scripts[0]!);
+    if (view?.status !== "scripts_ready" || !view.scripts?.length || draft) return;
+    const again = reopenId ? view.scripts.find((s) => s.id === reopenId) : undefined;
+    pick(again ?? view.scripts[view.scripts.length - 1]!);
+    if (reopenId) setReopenId(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view?.status, view?.scripts]);
 
   const timed = useMemo(() => (draft ? withTimes(draft.scenes) : []), [draft]);
   const draftTotal = timed.length ? timed[timed.length - 1]!.end : 0;
-  // The clean spoken script and its length estimate follow the words as they are being edited.
-  const spokenText = useMemo(() => (draft ? draft.scenes.map((s) => s.line.trim()).filter(Boolean).join("\n\n") : ""), [draft]);
+  // The spoken script's length estimate follows the words as they are being edited.
   const draftSpeech = useMemo(() => {
     if (!draft) return null;
     const requested = draft.speech?.requestedSeconds ?? view?.inputs.targetSeconds ?? 35;
     const built = buildScriptSpeech(draft.scenes.map((s) => s.line).filter((l) => l.trim()), requested, view?.wordsPerSecond ?? draft.speech?.wordsPerSecond ?? null);
     return { ...built, measuredSeconds: draft.speech?.measuredSeconds ?? null };
   }, [draft, view?.inputs.targetSeconds, view?.wordsPerSecond]);
-  const assetName = useCallback((id: string) => view?.assets.find((a) => a.id === id)?.name, [view]);
-  const events = useMemo(() => overlayEvents(timed), [timed]);
 
   // A confirmed script can be reopened for last-minute changes until a clip has been made from it.
   const [reopening, setReopening] = useState(false);
@@ -2090,7 +1799,7 @@ function VideoInner() {
     <div>
       <PageHeader
         title="Video ad"
-        description="A brief in, three different scripts out. Pick one, edit it, confirm it."
+        description="Three video concepts first. Pick one, shape its voiceover and scenes, confirm it."
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Select value={selectedClientId ?? undefined} onValueChange={setSelectedClientId}>
@@ -2179,7 +1888,7 @@ function VideoInner() {
                     Write the script for me
                   </button>
                   <button type="button" role="tab" aria-selected={mode === "upload"} onClick={() => setMode("upload")} className={cn("rounded-md px-3 py-1.5", mode === "upload" ? "bg-card font-medium text-foreground shadow-sm" : "text-muted")}>
-                    I already have a script
+                    I have my own concept or script
                   </button>
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
@@ -2230,7 +1939,10 @@ function VideoInner() {
                   </>
                 ) : (
                   <div className="space-y-4 rounded-md border border-border p-3">
-                    <Field label="Your script" hint="Paste it here, or upload a file below. Your words are kept exactly as you wrote them: we only split it into scenes and add visuals, sound and ad copy around it.">
+                    <Field label="Your concept (optional)" hint="The idea for the video in your own words: the story, the format, who is in it. With no script, the voiceover and scenes are written from it. With a script, the visuals follow it.">
+                      <Textarea value={conceptText} onChange={(e) => setConceptText(e.target.value)} placeholder="e.g. A nature documentary narrator follows a shop owner through their day, whispering about the 'rare' moment their ads finally pay off." className="min-h-[96px]" />
+                    </Field>
+                    <Field label="Your script (optional if you gave a concept)" hint="Paste it here, or upload a file below. Your words are kept exactly as you wrote them: we split it into scenes, add visuals, sound and ad copy, and fit it to what the video model can make (and tell you what had to change).">
                       <Textarea value={scriptText} onChange={(e) => setScriptText(e.target.value)} placeholder="Paste your script. Scene notes, speaker labels (like VO: or Presenter:) and directions are fine: they are used for the visuals and not spoken." className="min-h-[220px]" />
                     </Field>
                     <div className="flex flex-wrap items-center gap-3">
@@ -2257,62 +1969,6 @@ function VideoInner() {
                     </Field>
                   </div>
                 )}
-
-                <div className="space-y-2">
-                  <p className="text-[11px] font-medium">Images to use in the video (screenshots of results, stats, product)</p>
-                  <p className="text-[11px] text-muted">We read each image automatically and pick its main stat (you can change it). The script says that stat. The image itself is not put into the video: it is kept exactly as uploaded and handed back with a note on where it could go. PNG, JPG or WebP, up to 8.</p>
-                  <div className="flex flex-wrap gap-2">
-                    {images.map((img, i) => (
-                      <div key={i} className="relative">
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={img.preview} alt={img.file.name} className="h-20 w-20 rounded-md border border-border object-cover" />
-                        <button
-                          type="button"
-                          aria-label={`Remove ${img.file.name}`}
-                          onClick={() => setImages((p) => p.filter((_, k) => k !== i))}
-                          className="absolute -right-1.5 -top-1.5 rounded-full border border-border bg-card p-0.5 hover:bg-secondary"
-                        >
-                          <X className="h-3 w-3" />
-                        </button>
-                      </div>
-                    ))}
-                    {images.length < 8 ? (
-                      <label className="flex h-20 w-20 cursor-pointer flex-col items-center justify-center gap-1 rounded-md border border-dashed border-border text-[11px] text-muted hover:bg-secondary">
-                        <ImagePlus className="h-4 w-4" />
-                        Add
-                        <input
-                          type="file"
-                          accept="image/png,image/jpeg,image/webp"
-                          multiple
-                          className="hidden"
-                          onChange={(e) => {
-                            const files = Array.from(e.target.files ?? []);
-                            setImages((p) => [...p, ...files.map((file) => ({ file, preview: URL.createObjectURL(file) }))].slice(0, 8));
-                            e.target.value = "";
-                          }}
-                        />
-                      </label>
-                    ) : null}
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <p className="text-[11px] font-medium">Other stats to show (only ones that are not in your images)</p>
-                  {stats.map((s, i) => (
-                    <div key={i} className="flex gap-2">
-                      <Input value={s} onChange={(e) => setStats((p) => p.map((x, k) => (k === i ? e.target.value : x)))} placeholder="e.g. 255% average client ROI" />
-                      {stats.length > 1 ? (
-                        <Button type="button" size="icon" variant="ghost" aria-label="Remove stat" onClick={() => setStats((p) => p.filter((_, k) => k !== i))}>
-                          <X className="h-4 w-4" />
-                        </Button>
-                      ) : null}
-                    </div>
-                  ))}
-                  <Button type="button" size="sm" variant="secondary" onClick={() => setStats((p) => [...p, ""])}>
-                    <Plus className="mr-1 h-3.5 w-3.5" />
-                    Add stat
-                  </Button>
-                </div>
 
                 <div className="grid gap-4 md:grid-cols-4">
                   {mode === "write" ? (
@@ -2374,9 +2030,9 @@ function VideoInner() {
                 <div className="flex flex-wrap items-center gap-3">
                   <Button onClick={() => void start()} disabled={!canStart || starting}>
                     {starting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Film className="mr-2 h-4 w-4" />}
-                    {mode === "upload" ? "Analyse my script" : "Write 3 scripts"}
+                    {mode === "upload" ? (scriptWords || scriptFile ? "Analyse my script" : "Use my concept") : "Show me 3 concepts"}
                   </Button>
-                  <p className="text-[11px] text-muted">{mode === "upload" ? "Takes under a minute. Your wording is not changed unless you ask. No video is generated until you confirm." : "Takes about a minute. No video is generated yet: you choose and confirm a script first."}</p>
+                  <p className="text-[11px] text-muted">{mode === "upload" ? "Takes about a minute. Your wording is not changed unless you ask. No video is generated until you confirm." : "Takes about a minute. You see three concepts first; the full script is written for the one you pick. No video is generated until you confirm."}</p>
                 </div>
               </CardContent>
             </Card>
@@ -2395,7 +2051,7 @@ function VideoInner() {
               {view.status !== "writing" ? (
                 <Button size="sm" variant="secondary" onClick={() => void rewrite()}>
                   <RefreshCw className="mr-1 h-3.5 w-3.5" />
-                  {view.inputs.mode === "upload" ? "Read my script again" : "Write 3 new scripts"}
+                  {view.inputs.mode === "upload" ? "Read it again" : "Start again from the brief"}
                 </Button>
               ) : null}
               <Button size="sm" variant="secondary" onClick={() => router.replace("/creatives/video?tab=history")}>
@@ -2442,95 +2098,46 @@ function VideoInner() {
                   <GenerationPanel projectId={view.id} status={view.status} initial={view.generation} onStatus={setProjectStatus} logoDownloadUrl={view.brandCheck?.checked ? (view.brandCheck.logo?.downloadUrl ?? null) : null} />
                 </CardContent>
               </Card>
-              <ScriptBody script={view.chosenScript} assets={view.assets} />
+              <ScriptBody script={view.chosenScript} />
+            </div>
+          ) : view.status === "concepts_ready" ? (
+            <div className="space-y-4">
+              <ConceptCards
+                projectId={view.id}
+                concepts={view.concepts ?? []}
+                limitation={view.conceptLimitation ?? null}
+                error={view.error}
+                scripts={(view.scripts ?? []).map((s) => ({ id: s.id, title: s.concept?.title ?? s.title, conceptId: s.concept?.id ?? null }))}
+                onStarted={followAgain}
+                onOpen={(scriptId) => void openScript(scriptId)}
+              />
+              {view.contextBrief ? <BriefCard brief={view.contextBrief} angleLimitation={null} busy={revising === "context"} onSave={(v) => void saveContext(v)} /> : null}
             </div>
           ) : view.status === "needs_context" ? (
             <NeedsContext brief={view.contextBrief ?? null} error={view.error} busy={revising === "context"} onSave={(v) => void saveContext(v)} />
           ) : view.status === "failed" ? (
             <Card>
-              <CardContent className="p-4 text-sm text-destructive">Could not write the scripts: {view.error || "the script step stopped without a reason. Choose \"Read my script again\" (or write again) to retry."}</CardContent>
+              <CardContent className="p-4 text-sm text-destructive">Could not finish: {view.error || "the script step stopped without a reason. Choose \"Start again\" to retry."}</CardContent>
             </Card>
           ) : (
             <div className="space-y-4">
               <BrandCheckCard projectId={view.id} brand={view.brandCheck} onChanged={(b) => setView((v) => (v ? { ...v, brandCheck: b } : v))} />
-              {view.contextBrief ? <BriefCard brief={view.contextBrief} angleLimitation={view.angleLimitation ?? null} busy={revising === "context"} onSave={(v) => void saveContext(v)} /> : null}
-              {view.assets.length ? (
-                <Card>
-                  <CardContent className="space-y-3 p-4">
-                    <p className="flex items-center gap-1.5 text-sm font-medium">
-                      <Sparkles className="h-4 w-4 text-accent" /> Read from your images
-                    </p>
-                    <div className="grid gap-3 md:grid-cols-2">
-                      {view.assets.map((a) => (
-                        <div key={a.id} className="flex gap-3 rounded-md border border-border p-2">
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img src={a.url} alt={a.name} className="h-16 w-16 shrink-0 rounded object-cover" />
-                          <div className="min-w-0 space-y-1 text-xs">
-                            <p className="truncate font-medium">{a.name}</p>
-                            <p className="text-muted">{a.summary || (a.analysed ? "No description" : "Could not be read, so no stats were taken from it.")}</p>
-                            {a.dateRange ? <p className="text-[11px] text-muted">Period shown in the image: {a.dateRange}</p> : null}
-                            {a.cautions?.map((c) => (
-                              <p key={c} className="flex gap-1 text-[11px] text-amber-500">
-                                <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" /> {c}
-                              </p>
-                            ))}
-                            <div className="flex flex-wrap gap-1">
-                              {a.stats.length ? (
-                                a.stats.map((s, i) => {
-                                  const isMain = a.mainStat?.value === s.value;
-                                  return (
-                                    <button
-                                      key={i}
-                                      type="button"
-                                      title={isMain ? "The main stat: the script says this one" : "Make this the main stat"}
-                                      onClick={() => void chooseMainStat(a.id, s.value)}
-                                      className={cn("rounded-md border px-2 py-0.5 text-[11px] transition-colors", isMain ? "border-accent bg-accent/10 font-medium text-foreground" : "border-border text-muted hover:border-accent")}
-                                    >
-                                      {isMain ? "Main · " : ""}
-                                      {s.value} {s.label}
-                                    </button>
-                                  );
-                                })
-                              ) : (
-                                <span className="text-[11px] text-muted">No numbers found in it</span>
-                              )}
-                            </div>
-                            {a.stats.length ? <p className="text-[10px] text-muted">The main stat is the one the script says, with this image shown while it is said. Click another to change it, then write the scripts again.</p> : null}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </CardContent>
-                </Card>
+              {view.error ? <p className="text-xs text-destructive">{view.error}</p> : null}
+              {(view.scripts ?? []).length > 1 ? (
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className="text-muted">Scripts written:</span>
+                  {(view.scripts ?? []).map((s) => (
+                    <button
+                      key={s.id}
+                      type="button"
+                      onClick={() => pick(s)}
+                      className={cn("rounded-md border px-2 py-1 transition-colors hover:bg-secondary/40", selectedId === s.id ? "border-accent font-medium" : "border-border text-muted")}
+                    >
+                      {s.concept?.title ?? s.title}
+                    </button>
+                  ))}
+                </div>
               ) : null}
-
-              <div className="grid gap-3 lg:grid-cols-3">
-                {(view.scripts ?? []).map((s) => (
-                  <button
-                    key={s.id}
-                    type="button"
-                    onClick={() => pick(s)}
-                    className={cn("rounded-lg border p-4 text-left transition-colors hover:bg-secondary/40", selectedId === s.id ? "border-accent ring-1 ring-accent/30" : "border-border")}
-                  >
-                    <div className="mb-2 flex flex-wrap gap-1.5">
-                      <Badge>{s.angle.name}</Badge>
-                      {s.angle.stage ? <Badge variant="outline">{s.angle.stage}</Badge> : null}
-                      <Badge variant="outline">{s.speech ? `${s.speech.words} words · about ${Math.round(s.speech.estimatedSeconds)}s` : `${s.durationSeconds}s`}</Badge>
-                    </div>
-                    <p className="text-sm font-medium">{s.title}</p>
-                    <p className="mt-1 text-[11px] text-muted">{s.style}</p>
-                    <p className="mt-2 text-xs text-muted">{s.angleDetail ? s.angleDetail.situation : `Targets: ${s.pain}`}</p>
-                    {s.differentiator ? <p className="mt-1 text-xs">{s.differentiator}</p> : null}
-                    <p className="mt-2 text-xs">&ldquo;{s.hook?.line ?? s.hookAlternatives[0]}&rdquo;</p>
-                    {s.verification ? (
-                      <div className="mt-2">
-                        <VerdictBadge v={s.verification} />
-                        {s.verification.fixes.length ? <p className="mt-1 text-[11px] text-muted">{s.verification.fixes.length} fixed automatically</p> : null}
-                      </div>
-                    ) : null}
-                  </button>
-                ))}
-              </div>
 
               {draft ? (
                 <Card>
@@ -2547,9 +2154,23 @@ function VideoInner() {
                       </p>
                     </div>
 
-                    {draft.source !== "uploaded" ? (
-                      <VersionSummary script={draft} spoken={spokenText} words={spokenText.split(/\s+/).filter(Boolean).length} speech={draftSpeech} requestedSeconds={draft.speech?.requestedSeconds ?? view.inputs.targetSeconds} onAction={(a, o) => void revise(a, o)} busy={revising} />
-                    ) : null}
+                    {draft.concept ? <ConceptSummary concept={draft.concept} onBack={draft.source !== "uploaded" && (view.concepts ?? []).length > 1 ? () => void backToConcepts() : undefined} /> : null}
+                    <Adaptations items={draft.adaptations ?? []} />
+                    <details open className="rounded-md border border-border p-3 text-xs">
+                      <summary className="cursor-pointer text-sm font-medium">
+                        The full voiceover{draftSpeech ? <span className="font-normal text-muted"> · {draftSpeech.words} words, about {Math.round(draftSpeech.estimatedSeconds)}s spoken</span> : null}
+                      </summary>
+                      <div className="mt-2 space-y-1.5">
+                        {draft.scenes.flatMap((sc) =>
+                          (sc.lines?.length ? sc.lines : sc.line.trim() ? [{ voiceId: "", text: sc.line, onCamera: sc.speaker === "on_camera" }] : []).map((l, k) => (
+                            <p key={`${sc.number}-${k}`}>
+                              {draft.voices && draft.voices.length > 1 ? <span className="font-medium">{draft.voices.find((v) => v.id === l.voiceId)?.who ?? "Voice"}: </span> : null}
+                              {l.text}
+                            </p>
+                          )),
+                        )}
+                      </div>
+                    </details>
 
                     {draft.source === "uploaded" ? (
                       <div className="space-y-1.5 rounded-md border border-accent/40 bg-accent/5 p-3 text-xs">
@@ -2588,54 +2209,6 @@ function VideoInner() {
                       </div>
                     ) : null}
 
-                    <div className="rounded-md border border-border p-3">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex flex-wrap items-center gap-2 text-sm">
-                          <ShieldCheck className="h-4 w-4 text-accent" />
-                          <span className="font-medium">Verification</span>
-                          {review ? <VerdictBadge v={review} /> : <span className="text-xs text-muted">Not reviewed yet</span>}
-                          {review ? (
-                            <span className="text-xs text-muted">
-                              {(() => {
-                                const open = review.issues.filter((i) => i.severity !== "low").length;
-                                const parts = [open ? `${open} to look at` : "nothing open", review.fixes.length ? `${review.fixes.length} fixed` : null].filter(Boolean);
-                                return parts.join(" · ");
-                              })()}
-                            </span>
-                          ) : null}
-                        </div>
-                        <div className="flex items-center gap-1">
-                          {review && (review.summary || review.fixes.length) ? (
-                            <Button type="button" size="sm" variant="ghost" onClick={() => setShowDetails((v) => !v)}>
-                              {showDetails ? <ChevronUp className="mr-1 h-3.5 w-3.5" /> : <ChevronDown className="mr-1 h-3.5 w-3.5" />}
-                              Details
-                            </Button>
-                          ) : null}
-                          <Button type="button" size="sm" variant="secondary" disabled={Boolean(rewriting)} onClick={() => void runRewrite("check", "check")}>
-                            {rewriting === "check" ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1 h-3.5 w-3.5" />}
-                            Check again
-                          </Button>
-                        </div>
-                      </div>
-                      {review && showDetails ? (
-                        <div className="mt-2 space-y-1 border-t border-border pt-2 text-xs text-muted">
-                          {review.summary ? <p>{review.summary.split(/(?<=[.!?])\s/)[0]}</p> : null}
-                          {review.fixes.map((f, k) => (
-                            <p key={k}>
-                              <span className="text-foreground">{f.target}</span> was rewritten.
-                            </p>
-                          ))}
-                          {review.issues
-                            .filter((i) => i.scene === null && !["copy", "cta"].includes(i.area) && i.severity !== "low")
-                            .map((i, k) => (
-                              <p key={k} className={SEVERITY_STYLE[i.severity]}>
-                                {i.problem}
-                              </p>
-                            ))}
-                        </div>
-                      ) : null}
-                    </div>
-
                     <div className="space-y-1 rounded-md bg-secondary/30 p-3 text-xs">
                       {draft.character ? (
                         <p>
@@ -2645,6 +2218,11 @@ function VideoInner() {
                       <p>
                         <span className="font-medium">Setting:</span> <span className="text-muted">{draft.setting}</span>
                       </p>
+                      {draft.voices?.length ? (
+                        <p>
+                          <span className="font-medium">Voices</span> (each kept the same in every clip): <span className="text-muted">{draft.voices.map((v) => `${v.who}${v.description ? ` (${v.description})` : ""}`).join("; ")}</span>
+                        </p>
+                      ) : null}
                       <p>
                         <span className="font-medium">Other openings you could use:</span>{" "}
                         <span className="text-muted">{draft.hookAlternatives.map((h) => `“${h}”`).join("  ·  ")}</span>
@@ -2681,6 +2259,13 @@ function VideoInner() {
                                 <Input className="text-xs" value={draft.scenes[i]!.sound} onChange={(e) => editScene(i, { sound: e.target.value })} />
                               </Field>
                             </div>
+                            {draft.voices?.length ? (
+                              <SceneLinesEditor
+                                lines={draft.scenes[i]!.lines ?? (draft.scenes[i]!.line.trim() ? [{ voiceId: draft.voices[0]!.id, text: draft.scenes[i]!.line, onCamera: draft.scenes[i]!.speaker === "on_camera" }] : [])}
+                                voices={draft.voices}
+                                onChange={(lines) => editLines(i, lines)}
+                              />
+                            ) : (
                             <div className="space-y-3">
                               <Field label="Who speaks">
                                 <Select value={draft.scenes[i]!.speaker} onValueChange={(v) => editScene(i, { speaker: v as Scene["speaker"] })}>
@@ -2707,56 +2292,11 @@ function VideoInner() {
                                   </button>
                                 </div>
                               ) : null}
-                              <div className="grid grid-cols-2 gap-2">
-                                <Field label="Words that could be emphasised (optional, added by hand)" hint="Up to 3, comma separated. Not shown in the video.">
-                                  <Input className="text-xs" value={draft.scenes[i]!.keywords.join(", ")} onChange={(e) => editScene(i, { keywords: e.target.value.split(",").map((k) => k.trim()).filter(Boolean).slice(0, 3) })} placeholder="e.g. free audit" />
-                                </Field>
-                                <Field label="Figure that could be shown (optional, added by hand)" hint="Only a real number. Not shown in the video.">
-                                  <Input className="text-xs" value={draft.scenes[i]!.stat ?? ""} onChange={(e) => editScene(i, { stat: e.target.value.trim() ? e.target.value : null })} placeholder="e.g. 255%" />
-                                </Field>
-                              </div>
-                              <Field label="Your image that belongs with this scene (not put in the video)">
-                                <Select value={draft.scenes[i]!.assetId ?? "none"} onValueChange={(v) => editScene(i, { assetId: v === "none" ? null : v })}>
-                                  <SelectTrigger className="h-9 text-xs">
-                                    <SelectValue />
-                                  </SelectTrigger>
-                                  <SelectContent>
-                                    <SelectItem value="none">None</SelectItem>
-                                    {(view.assets ?? []).map((a) => (
-                                      <SelectItem key={a.id} value={a.id}>
-                                        {a.name}
-                                      </SelectItem>
-                                    ))}
-                                  </SelectContent>
-                                </Select>
-                              </Field>
                             </div>
+                            )}
                           </div>
-                          <FixBar
-                            id={`scene-${s.number}`}
-                            noun="scene"
-                            issues={(review?.issues ?? []).filter((i) => i.scene === s.number)}
-                            busy={rewriting}
-                            feedback={feedbackFor[`scene-${s.number}`]}
-                            onFeedback={(v) => setFeedbackFor((f) => ({ ...f, [`scene-${s.number}`]: v }))}
-                            onRun={(issues, feedback) => void runRewrite(`scene-${s.number}`, "scene", { sceneNumber: s.number, issues, feedback })}
-                          />
                         </div>
                       ))}
-                    </div>
-
-                    <div className="space-y-2 rounded-md border border-border p-3">
-                      <p className="text-sm font-medium">Optional on-screen text and images, to add by hand</p>
-            <p className="text-[11px] text-muted">None of this is in the video. It is kept apart from what is spoken and goes into the placement plan, with times from the finished video.</p>
-                      {events.length ? (
-                        <ul className="space-y-1 text-xs text-muted">
-                          {events.map((e, i) => (
-                            <li key={i}>{describeEvent(e, assetName)}</li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <p className="text-xs text-muted">Nothing suggested. The video does not need any.</p>
-                      )}
                     </div>
 
                     <div className="space-y-3">
@@ -2788,24 +2328,16 @@ function VideoInner() {
                       </div>
                     </div>
 
-                    <FixBar
-                      id="copy"
-                      noun="ad copy"
-                      issues={(review?.issues ?? []).filter((i) => i.scene === null && ["copy", "cta"].includes(i.area))}
-                      busy={rewriting}
-                      feedback={feedbackFor["copy"]}
-                      onFeedback={(v) => setFeedbackFor((f) => ({ ...f, copy: v }))}
-                      onRun={(issues, feedback) => void runRewrite("copy", "copy", { issues, feedback })}
-                    />
+                    <ChangeBox onBusy={setChanging} projectId={view.id} scriptId={draft.id} canUndo={Boolean(draft.previousVersion)} changeNote={draft.changeNote ?? null} onChanged={(r) => void afterChange(draft.id, r)} />
 
-                    <Button onClick={() => void confirm()} disabled={confirming || draftTotal > 60 || draftTotal < 15}>
+                    <Button onClick={() => void confirm()} disabled={confirming || changing || draftTotal > 60 || draftTotal < 15}>
                       {confirming ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
                       {view?.chosenScript?.id === draft.id ? "Confirm the changes" : "Confirm this script"}
                     </Button>
                   </CardContent>
                 </Card>
               ) : (
-                <p className="text-sm text-muted">Pick a script to read it in full, edit it and confirm it.</p>
+                <p className="text-sm text-muted">Opening the script…</p>
               )}
             </div>
           )}
@@ -2815,19 +2347,17 @@ function VideoInner() {
   );
 }
 
-function ScriptBody({ script, assets }: { script: Script; assets: Asset[] }) {
-  const events = overlayEvents(script.scenes);
-  const name = (id: string) => assets.find((a) => a.id === id)?.name;
+function ScriptBody({ script }: { script: Script }) {
+  const who = (id: string) => script.voices?.find((v) => v.id === id)?.who ?? id;
   return (
     <Card>
       <CardContent className="space-y-4 p-4">
         <div className="flex flex-wrap gap-1.5">
-          <Badge>{script.angle.name}</Badge>
-          {script.angle.stage ? <Badge variant="outline">{script.angle.stage}</Badge> : null}
-          {script.framework.name ? <Badge variant="outline">{script.framework.name}</Badge> : null}
+          {script.concept ? <Badge>{script.concept.title}</Badge> : null}
+          {script.concept ? <Badge variant="outline">{script.concept.format}</Badge> : null}
           <Badge variant="outline">{script.style}</Badge>
         </div>
-        <p className="text-xs text-muted">Targets: {script.pain}</p>
+        {script.concept ? <p className="text-xs text-muted">{script.concept.logline}</p> : null}
         {script.character ? (
           <p className="text-xs">
             <span className="font-medium">Presenter:</span> <span className="text-muted">{script.character}</span>
@@ -2847,23 +2377,22 @@ function ScriptBody({ script, assets }: { script: Script; assets: Asset[] }) {
                 <p className="text-muted">{s.visual}</p>
               </div>
               <div className="space-y-1">
-                <p className="text-[11px] font-medium">{SPEAKER_LABEL[s.speaker]}</p>
-                <p>{s.line ? `“${s.line}”` : <span className="text-muted">No speech</span>}</p>
+                {s.lines?.length && script.voices?.length ? (
+                  s.lines.map((l, k) => (
+                    <p key={k}>
+                      <span className="text-[11px] font-medium">{who(l.voiceId)}{l.onCamera ? " (on camera)" : ""}:</span> “{l.text}”
+                    </p>
+                  ))
+                ) : (
+                  <>
+                    <p className="text-[11px] font-medium">{SPEAKER_LABEL[s.speaker]}</p>
+                    <p>{s.line ? `“${s.line}”` : <span className="text-muted">No speech</span>}</p>
+                  </>
+                )}
               </div>
             </div>
           ))}
         </div>
-        {events.length ? (
-          <div className="space-y-1">
-            <p className="text-sm font-medium">Optional on-screen text and images, to add by hand</p>
-            <p className="text-[11px] text-muted">None of this is in the video. It is kept apart from what is spoken and goes into the placement plan, with times from the finished video.</p>
-            <ul className="space-y-1 text-xs text-muted">
-              {events.map((e, i) => (
-                <li key={i}>{describeEvent(e, name)}</li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
         <div className="space-y-2 text-sm">
           <p className="font-medium">Ad copy</p>
           <div>

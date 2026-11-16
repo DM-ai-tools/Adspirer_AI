@@ -1,11 +1,6 @@
-import { generateObject } from "ai";
 import { z } from "zod";
-import { ADSPIRER_META_CTAS } from "@/lib/adspirer/skills/ad-copywriting";
-import { pickModel } from "@/lib/creatives/concept-writer";
-import { pickBulkAngles, STAGE_LABEL, type BulkAngle } from "@/lib/creatives/bulk/angles";
-import { HUMAN_VOICE, SYSTEM } from "@/lib/video/voice";
-import { retime, WORDS_PER_SECOND } from "@/lib/video/timing";
-import { textRisk, VISUAL_DIRECTION_RULES } from "@/lib/video/visual-rules";
+import { textRisk } from "@/lib/video/visual-rules";
+import type { VideoConcept } from "@/lib/video/script-types";
 import type { Verification } from "@/lib/video/verify";
 import type { ApprovedClaim } from "@/lib/video/pipeline-types";
 import type { ScriptExtras } from "@/lib/video/script-types";
@@ -18,40 +13,6 @@ export const DEFAULT_SECONDS = 35;
 /** English ad voiceover runs about 2.5 words a second; faster than this is hard to follow and to lip-sync. */
 export const MAX_WORDS_PER_SECOND = 3.0;
 export const SCRIPT_COUNT = 3;
-
-export type Framework = { key: string; name: string; beats: string; fits: Array<BulkAngle["kind"]> };
-
-/**
- * Structures that work for short paid-social video. They are structure only: the look (UGC,
- * cinematic, motion graphics, documentary...) is chosen per script by the writer. Sources agree the
- * opening 1.5-2s decides the scroll, and that Hook-Body-CTA underlies most of these.
- */
-export const FRAMEWORKS: Framework[] = [
-  { key: "pas", name: "Problem, agitate, solution", fits: ["pain"], beats: "Hook names the pain in the viewer's words (0-3s). Agitate: what it costs them (3-12s). Solution reveal with the mechanism (12-24s). Proof (24-31s). One clear CTA (last 4-5s)." },
-  { key: "ugc_skeptic", name: "UGC \"I was sceptical\" walkthrough", fits: ["proof", "pain", "hope"], beats: "Creator-style confession hook (0-3s). What they tried before and why it failed (3-10s). What changed and how it works, shown (10-25s). The result, only with facts from the page (25-32s). Casual recommendation CTA. Never presented as a real customer review." },
-  { key: "myth_bust", name: "Myth-bust / contrarian", fits: ["belief"], beats: "Contrarian hook that challenges a common belief (0-3s). Why it is wrong, with a concrete example (3-14s). The truth and mechanism (14-26s). Proof (26-32s). CTA." },
-  { key: "bab", name: "Before, after, bridge", fits: ["hope", "pain"], beats: "Hook shows the painful before in one image (0-3s). The after the viewer wants, vivid (3-12s). The bridge: how to get from one to the other (12-27s). Proof and CTA." },
-  { key: "listicle", name: "Numbered list", fits: ["belief", "pain"], beats: "Numbered hook (\"3 mistakes...\", \"3 things...\") (0-3s). Each item gets one fast beat with an on-screen number and keyword. The last item is the offer. CTA." },
-  { key: "expert_talk", name: "Expert / founder to camera", fits: ["proof", "belief"], beats: "Credibility hook (0-3s). One sharp insight (3-14s). A demonstration or example shown over the talk (14-28s). CTA to act on the insight." },
-  { key: "versus", name: "Old way vs new way", fits: ["belief", "objection"], beats: "Hook sets up the comparison (0-3s). The old way's problems, quick cuts (3-13s). The new way's advantages (13-26s). Proof and CTA." },
-  { key: "demo_steps", name: "Demonstration in steps", fits: ["belief", "proof"], beats: "Outcome hook (0-3s). Step 1, 2, 3 each shown with an on-screen label (3-27s). The result and CTA." },
-  { key: "pov_story", name: "POV / relatable story", fits: ["pain", "hope"], beats: "Relatable moment hook (0-3s). The turning point (3-14s). The outcome (14-28s). A soft CTA." },
-  { key: "open_loop", name: "Curiosity open loop", fits: ["belief", "hope"], beats: "Open a question the viewer must close (0-3s). Build with relevant detail, withholding the answer (3-22s). Pay it off (22-31s). CTA." },
-  { key: "stat_led", name: "Stat-led proof", fits: ["proof"], beats: "A striking true number from the facts as the hook (0-3s). What stands behind it (3-15s). How the viewer can get the same (15-28s). CTA." },
-  { key: "objection_answer", name: "Objection, answered", fits: ["objection"], beats: "State the doubt in the viewer's words (0-3s). Acknowledge it honestly (3-10s). Answer with evidence (10-26s). Remove the risk and CTA." },
-];
-
-/** Three frameworks, each fitting its angle, none repeated. */
-export function assignFrameworks(angles: BulkAngle[], random: () => number = Math.random): Framework[] {
-  const used = new Set<string>();
-  return angles.map((angle) => {
-    const fitting = FRAMEWORKS.filter((f) => !used.has(f.key) && f.fits.includes(angle.kind));
-    const pool = fitting.length ? fitting : FRAMEWORKS.filter((f) => !used.has(f.key));
-    const choice = pool[Math.floor(random() * pool.length)]!;
-    used.add(choice.key);
-    return choice;
-  });
-}
 
 export type VideoScene = {
   number: number;
@@ -75,7 +36,18 @@ export type VideoScene = {
   originalLine?: string | null;
   /** The operator changed this scene's words or picture: later rewrites keep it as it is. */
   edited?: boolean;
+  /**
+   * Who says what, in spoken order, when the script has voices (see VideoScript.voices). `line` is
+   * these texts joined, and `speaker` is derived from them, so older readers keep working.
+   */
+  lines?: SceneLine[];
 };
+
+/** One spoken part of a scene: which voice says it and whether that speaker is on camera. */
+export type SceneLine = { voiceId: string; text: string; onCamera: boolean };
+
+/** A speaking voice: a narrator or a character who talks. */
+export type ScriptVoice = { id: string; who: string; description: string };
 
 export type VideoScript = {
   id: string;
@@ -108,6 +80,16 @@ export type VideoScript = {
     unusedText: string[];
     changes: Array<{ target: string; was: string; now: string }>;
   } | null;
+  /** Every voice that speaks, at most three. Absent on older scripts: they have one voice. */
+  voices?: ScriptVoice[];
+  /** The concept the operator chose, when the script was written from one. */
+  concept?: VideoConcept;
+  /** The script as it was before the last change the operator asked for, so that change can be undone. */
+  previousVersion?: VideoScript;
+  /** One plain line on what the last change did. */
+  changeNote?: string | null;
+  /** What was changed so an uploaded script or concept fits what the video model can make. */
+  adaptations?: string[];
 } & ScriptExtras;
 
 export type VideoBrief = {
@@ -143,8 +125,6 @@ export type VideoBrief = {
   pronunciationNotes?: string[];
 };
 
-const CTA_VALUES = ADSPIRER_META_CTAS as unknown as [string, ...string[]];
-
 export const sceneSchema = z.object({
   seconds: z.number().min(2).max(12).describe("Only for a scene with no speech: how long the visual holds (2-5). For a scene with speech this is ignored: its length follows the words."),
   visual: z.string().describe("What is seen: subject, setting, action. Concrete and filmable."),
@@ -155,29 +135,6 @@ export const sceneSchema = z.object({
   stat: z.string().nullable().describe("A number to show big on screen, only if it appears in the facts or operator stats; else null"),
   asset_id: z.string().nullable().describe("The id of an uploaded image to show in this scene (so a screenshot with a stat is on screen while the stat is said), or null"),
   sound: z.string().describe("Music and sound effects for this scene"),
-});
-
-const scriptSchema = z.object({
-  scripts: z.array(
-    z.object({
-      angle_key: z.string().describe("Exactly the assigned angle key"),
-      title: z.string().describe("A short working title"),
-      pain: z.string().describe("The specific pain, hope or objection this script targets, in one sentence"),
-      style: z.string().describe("The look, e.g. UGC creator walkthrough, cinematic, motion graphics over footage, documentary, 3D animated. Different for each script."),
-      hook_alternatives: z.array(z.string()).length(3).describe("Three different spoken or on-screen openings for the first 2 seconds"),
-      character: z.string().nullable().describe("If a person appears: ONE precise description (age range, build, hair, wardrobe, accent, manner) that will be repeated word for word in every clip. null if nobody appears."),
-      setting: z.string().describe("Where it takes place and the lighting, kept consistent"),
-      scenes: z.array(sceneSchema).min(4).max(14),
-      primary_text: z
-        .string()
-        .describe(
-          "The ad's primary text, 70 to 130 words, facts only. Line 1: a standalone hook under 125 characters (a pain in the viewer's words, a surprising fact from the page, or a bold claim you can back). Then 2 to 3 short paragraphs separated by blank lines: the moment or problem they will recognise, what changes and how it works, and proof taken from the facts. Last line: the next step, in plain words. Conversational, no dashes, no stock marketing words, no emoji unless the brand voice uses them.",
-        ),
-      headline: z.string().describe("Under 40 characters"),
-      description: z.string().describe("Under 30 characters"),
-      cta: z.enum(CTA_VALUES),
-    }),
-  ),
 });
 
 export function briefFacts(b: VideoBrief): string {
@@ -393,136 +350,7 @@ export function adaptToMissingSources(script: VideoScript, claims: ApprovedClaim
   return { script: { ...script, scenes }, adjustments };
 }
 
-type RawScript = z.infer<typeof scriptSchema>["scripts"][number];
-
-export function buildScripts(
-  raw: RawScript[],
-  assigned: Array<{ angle: BulkAngle; framework: Framework }>,
-  ctx: { corpus: string; assetIds: string[]; target: number; claims?: ApprovedClaim[] },
-): VideoScript[] {
-  const byKey = new Map<string, RawScript>();
-  for (const r of raw) if (!byKey.has(r.angle_key)) byKey.set(r.angle_key, r);
-  const out: VideoScript[] = [];
-  for (const { angle, framework } of assigned) {
-    const r = byKey.get(angle.key);
-    if (!r) continue;
-    // Each scene is as long as its line takes to say; the writer's "seconds" only sets how long a silent visual holds.
-    const scenes: VideoScene[] = retime(
-      r.scenes.map((sc, i) => ({
-        number: i + 1,
-        seconds: sc.seconds,
-        visual: sc.visual,
-        camera: sc.camera,
-        speaker: sc.speaker,
-        line: sc.line.trim(),
-        keywords: sc.keywords.map((k) => k.trim()).filter(Boolean),
-        stat: sc.stat?.trim() || null,
-        assetId: sc.asset_id && ctx.assetIds.includes(sc.asset_id) ? sc.asset_id : null,
-        sound: sc.sound,
-      })),
-    );
-    const cursor = scenes.length ? scenes[scenes.length - 1]!.end : 0;
-    const script: VideoScript = {
-      id: `script_${angle.key}`,
-      title: r.title,
-      angle: { key: angle.key, name: angle.name, stage: STAGE_LABEL[angle.stage], kind: angle.kind },
-      pain: r.pain,
-      framework: { key: framework.key, name: framework.name },
-      style: r.style,
-      durationSeconds: cursor,
-      hookAlternatives: r.hook_alternatives,
-      character: r.character?.trim() || null,
-      setting: r.setting,
-      scenes,
-      adCopy: { primaryText: r.primary_text, headline: r.headline, description: r.description, cta: r.cta },
-      warnings: [],
-    };
-    script.warnings = checkScript(script, ctx);
-    out.push(script);
-  }
-  return out;
-}
-
 /** Everything the script may state as fact: the page, the operator's words and stats. Numbers are checked against it. */
 export function factsCorpus(b: VideoBrief, extra: string[] = []): string {
   return [briefFacts(b), ...extra].join("\n");
-}
-
-const messageMapSchema = z.object({
-  pains: z.array(z.string()),
-  desires: z.array(z.string()),
-  objections: z.array(z.string()),
-  proof: z.array(z.string()).describe("Real proof points from the facts only"),
-  mechanism: z.string(),
-});
-
-/**
- * LEGACY single-call writer (fixed angle bank, randomly assigned named frameworks). The app now writes through
- * the creative brief, planned angles and `script-writer.ts`; this is kept only so the live evaluation can
- * compare the old output with the new on the same inputs.
- */
-export async function writeVideoScripts(brief: VideoBrief, onStage?: (stage: "understanding" | "writing") => Promise<void> | void): Promise<{ scripts: VideoScript[]; messageMap: z.infer<typeof messageMapSchema> }> {
-  const model = pickModel();
-  if (!model) throw new Error("No language model is configured to write scripts (set ANTHROPIC_API_KEY or OPENAI_API_KEY).");
-  const facts = briefFacts(brief);
-  const target = Math.min(Math.max(Math.round(brief.targetSeconds || DEFAULT_SECONDS), 15), MAX_SECONDS);
-
-  await onStage?.("understanding");
-  const { object: messageMap } = await generateObject({
-    model,
-    schema: messageMapSchema,
-    temperature: 0.4,
-    system: SYSTEM,
-    prompt: `${facts}\n\nAnalyse the offer: the audience's real pains, desires and objections, the proof points that actually appear above, and how the offer delivers its result. Ground everything in the facts.`,
-  });
-
-  const angles = pickBulkAngles(SCRIPT_COUNT);
-  const frameworks = assignFrameworks(angles);
-  const assigned = angles.map((angle, i) => ({ angle, framework: frameworks[i]! }));
-  const ctx = { corpus: factsCorpus(brief, [JSON.stringify(messageMap)]), assetIds: brief.images.map((i) => i.id), target, claims: brief.claims };
-
-  const write = async (extra?: string) => {
-    const { object } = await generateObject({
-      model,
-      schema: scriptSchema,
-      temperature: 0.85,
-      system: SYSTEM,
-      prompt: [
-        facts,
-        `\nMessage map:\n${JSON.stringify(messageMap)}`,
-        `\nWrite exactly ${assigned.length} video ad scripts, one for EACH assignment below, with the exact angle_key. Each targets a different pain, hope or objection and uses a different look, so the three are genuinely different ads, not rewordings.`,
-        assigned
-          .map(
-            (a, i) =>
-              `${i + 1}. angle_key "${a.angle.key}" · ${a.angle.name} · ${STAGE_LABEL[a.angle.stage]} · targets a ${a.angle.kind}: ${a.angle.brief}\n   Framework "${a.framework.name}": ${a.framework.beats}`,
-          )
-          .join("\n"),
-        `\nLength: aim for about ${target} seconds, but never pad or squeeze to hit it. Each scene is exactly as long as its spoken line takes to say (about ${WORDS_PER_SECOND} words a second, plus a beat), so write about ${Math.round(target * WORDS_PER_SECOND * 0.85)} words of speech across the whole script and let the length fall where it falls. A scene with no speech holds for a short visual beat (2 to 5 seconds). The total must not pass 60 seconds. Vertical 9:16 for Reels and Stories, watched mostly muted: every spoken line also appears as an on-screen keyword or caption, and the first 2 seconds must already earn attention with a visual and a line that fit the framework.`,
-        `Voice and language: ${brief.locale}. Spoken lines are natural, conversational and about 2.5 words a second at most.`,
-        brief.style && brief.style !== "auto" ? `Preferred style: ${brief.style}. Use it for the scripts where it suits, and a different look for the others.` : "Choose a different style for each script from what suits the business and angle (for example UGC creator walkthrough, cinematic, motion graphics over footage, documentary, 3D animated).",
-        `Scene detail: each scene's visual is concrete and filmable, with camera, who speaks (on_camera = the presenter speaks to camera, voiceover = unseen voice over the visuals), the exact line, up to 3 keywords to highlight, a stat if (and only if) it is in the facts or the operator's stats, and sound. Use every stat found in the uploaded images, and the operator's own stats, in the scene whose spoken line makes the point: set stat to the number exactly as printed and asset_id to the image it came from, so the screenshot is shown and the number is highlighted at that moment. One person at most speaks on camera and is the same person throughout: describe them once in "character".`,
-        HUMAN_VOICE,
-        VISUAL_DIRECTION_RULES,
-        `Ad copy: write it like a short post from a person, not a brochure. 70 to 130 words. The first line is a standalone hook under 125 characters, because Meta cuts the text there. Then two or three short paragraphs separated by blank lines: the situation the viewer recognises, what changes and how it works, and proof taken from the facts. End with the next step in plain words. Facts only. The headline is under 40 characters and the description under 30. Pick the CTA button from the list.`,
-        extra ?? null,
-      ]
-        .filter(Boolean)
-        .join("\n"),
-    });
-    return object.scripts;
-  };
-
-  await onStage?.("writing");
-  let scripts = buildScripts(await write(), assigned, ctx);
-  // Only if a whole script is missing is it worth writing again; everything else is the verifier's job.
-  if (scripts.length < assigned.length) {
-    try {
-      const retry = buildScripts(await write("One or more of the assigned scripts was missing. Write all of them."), assigned, ctx);
-      if (retry.length > scripts.length) scripts = retry;
-    } catch {
-      // keep the first attempt
-    }
-  }
-  if (!scripts.length) throw new Error("The script writer returned nothing usable. Try again.");
-  return { scripts, messageMap };
 }

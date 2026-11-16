@@ -31,12 +31,23 @@ export function repairText(text: string, sourceText: string): { text: string; ch
   let out = text;
 
   // "free": kept only where the sources say "free <the next word>" (or the word before it); otherwise the word is dropped.
+  let freeAtEnd = false;
   out = out.replace(/(?<![\w-])free\b(\s+)?(\w+)?/gi, (match, _space: string | undefined, next: string | undefined) => {
     if (next && source.includes(`free ${next.toLowerCase()}`)) return match;
     if (next && source.includes(`${next.toLowerCase()} free`)) return match;
     changes.push(`removed an unsupported "free"`);
+    if (!next) freeAtEnd = true;
     return next ?? "";
   });
+
+  // A sentence that only said something was free ("It's free.") is left dangling once the word goes: drop it when
+  // there is something else to say, as with urgency below, rather than ship "It's.".
+  if (freeAtEnd) {
+    const DANGLING = /(?:\b(?:is|are|was|were|be|it'?s|that'?s|they'?re|its|totally|completely|entirely|absolutely|always|100%)|'s)\s*[.!?]+$/i;
+    const parts = out.split(/(?<=[.!?])\s+/);
+    const keep = parts.filter((p) => !DANGLING.test(p.trim()));
+    if (keep.length && keep.length < parts.length) out = keep.join(" ");
+  }
 
   // Rankings and "best": dropped unless the sources use the word themselves.
   out = out.replace(/\b(best|leading|top[- ]rated|number one|world[- ]class)\b\s*/gi, (match, word: string) => {
@@ -92,9 +103,24 @@ export function repairScript(script: VideoScript, sourceText: string): VideoScri
   const notes: string[] = [];
   const scenes: VideoScene[] = script.scenes.map((s) => {
     if (s.edited || !s.line.trim()) return s;
+    // With several voices each voice's words are repaired on their own, so a repair never moves words between speakers.
+    if (s.lines && s.lines.length > 1) {
+      const changes: string[] = [];
+      const lines = s.lines
+        .map((l) => {
+          const r = repairText(l.text, sourceText);
+          changes.push(...r.changes);
+          return { ...l, text: r.text };
+        })
+        .filter((l) => l.text.trim());
+      if (!changes.length) return s;
+      notes.push(`Scene ${s.number}: ${[...new Set(changes)].join(", ")}.`);
+      return { ...s, lines, line: lines.map((l) => l.text).join(" ") };
+    }
     const r = repairText(s.line, sourceText);
     if (r.changes.length) notes.push(`Scene ${s.number}: ${[...new Set(r.changes)].join(", ")}.`);
-    return r.changes.length ? { ...s, line: r.text } : s;
+    if (!r.changes.length) return s;
+    return { ...s, line: r.text, ...(s.lines?.length === 1 ? { lines: r.text.trim() ? [{ ...s.lines[0]!, text: r.text }] : [] } : {}) };
   });
   const copy = (value: string, label: string) => {
     const r = repairText(value, sourceText);
