@@ -67,14 +67,13 @@ describe("renderProblems", () => {
         beats: [{ text: "a long take", seconds: 20 }],
         voices: [1, 2, 3, 4].map((i) => ({ id: `v${i}`, who: `person ${i}`, description: "x" })),
       }),
-      id: "c1",
     });
     expect(problems.join(" ")).toMatch(/15 seconds/);
     expect(problems.join(" ")).toMatch(/voices/);
   });
 
   it("finds nothing wrong with a concept the model can make", () => {
-    expect(renderProblems({ ...candidate(1), id: "c1" })).toEqual([]);
+    expect(renderProblems(candidate(1))).toEqual([]);
   });
 });
 
@@ -102,7 +101,7 @@ describe("planConcepts", () => {
   });
 
   it("tells the model which ideas were already made for this client", async () => {
-    const invent = vi.fn(async (_prompt: string) => ({ concepts: Array.from({ length: 3 }, (_, i) => candidate(i + 1)) }));
+    const invent = vi.fn(async (prompt: string) => ({ prompt, concepts: Array.from({ length: 3 }, (_, i) => candidate(i + 1)) }));
     const judge = vi.fn(async () => ({ scores: [score(0, 8), score(1, 7), score(2, 6)] }));
     await planConcepts(BRIEF, { targetSeconds: 30, direction: "a movie trailer", avoid: ["A heist to steal a flat tyre"], deps: { invent, judge } });
     const prompt = invent.mock.calls[0]![0];
@@ -119,7 +118,7 @@ describe("planConcepts", () => {
   });
 
   it("asks once more with the reasons, then shows what survived with a plain note", async () => {
-    const invent = vi.fn(async () => ({ concepts: [candidate(1), candidate(2)] }));
+    const invent = vi.fn(async (prompt: string) => ({ prompt, concepts: [candidate(1), candidate(2)] }));
     const judge = vi.fn(async () => ({ scores: [score(0, 8), score(1, 7, { truth: 2, note: "invents a guarantee" })] }));
     const out = await planConcepts(BRIEF, { targetSeconds: 30, direction: null, avoid: [], deps: { invent, judge } });
     expect(invent).toHaveBeenCalledTimes(2);
