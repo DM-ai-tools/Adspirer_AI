@@ -177,3 +177,37 @@ export type ScriptExtras = {
 };
 
 export const hasHardFailure = (issues: Array<Pick<EditorialIssue, "severity">>) => issues.some((i) => i.severity === "hard");
+
+// ------------------------------------------------------------------ concepts
+
+/** A speaking voice in a video: a narrator or a character who talks. */
+export type ConceptVoice = { id: string; who: string; description: string };
+
+/** How the judge rated a concept, 1-10 each. */
+export type ConceptScores = { originality: number; hook: number; emotion: number; brandLink: number; renderable: number; truth: number };
+
+/**
+ * One video idea, shown to the operator as a summary before any script is written. Invented by the
+ * model for this offer and this kind of video: there is no fixed list of concepts behind it.
+ */
+export type VideoConcept = {
+  id: string;
+  title: string;
+  /** The model's own words for the format, e.g. "faux movie trailer", "heist scene". */
+  format: string;
+  /** The whole idea in one sentence. */
+  logline: string;
+  /** What happens in the first two seconds that stops the scroll. */
+  hook: string;
+  /** The story in plain words, beat by beat, each with roughly how long it runs. */
+  beats: Array<{ text: string; seconds: number }>;
+  whyItWorks: string;
+  /** How the story lands on the brand's real message. */
+  brandLink: string;
+  look: string;
+  cast: string[];
+  settings: string[];
+  voices: ConceptVoice[];
+  seconds: number;
+  scores?: ConceptScores;
+};
