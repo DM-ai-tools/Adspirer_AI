@@ -14,14 +14,13 @@ import { z } from "zod";
 import { briefForPrompt } from "@/lib/video/creative-brief";
 import { modelCandidates, withModelFallback } from "@/lib/video/model-fallback";
 import { logger } from "@/lib/observability/logger";
+import { MAX_SCENE_SECONDS } from "@/lib/video/timing";
 import type { ConceptScores, CreativeBrief, VideoConcept } from "@/lib/video/script-types";
 
 /** How many concepts the operator sees. */
 export const CONCEPT_COUNT = 3;
 /** How many candidates are invented per round (more than are shown: the weak and the similar are dropped). */
 export const CONCEPT_CANDIDATES = 8;
-/** The longest one scene (one beat) may be: no scene may run longer than one clip of the cheaper video models. */
-export const MAX_SCENE_SECONDS = 15;
 export const MAX_VIDEO_SECONDS = 60;
 export const MAX_VOICES = 3;
 export const MAX_CAST = 3;

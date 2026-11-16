@@ -6,6 +6,7 @@ import { pickBulkAngles, STAGE_LABEL, type BulkAngle } from "@/lib/creatives/bul
 import { HUMAN_VOICE, SYSTEM } from "@/lib/video/voice";
 import { retime, WORDS_PER_SECOND } from "@/lib/video/timing";
 import { textRisk, VISUAL_DIRECTION_RULES } from "@/lib/video/visual-rules";
+import type { VideoConcept } from "@/lib/video/script-types";
 import type { Verification } from "@/lib/video/verify";
 import type { ApprovedClaim } from "@/lib/video/pipeline-types";
 import type { ScriptExtras } from "@/lib/video/script-types";
@@ -75,7 +76,18 @@ export type VideoScene = {
   originalLine?: string | null;
   /** The operator changed this scene's words or picture: later rewrites keep it as it is. */
   edited?: boolean;
+  /**
+   * Who says what, in spoken order, when the script has voices (see VideoScript.voices). `line` is
+   * these texts joined, and `speaker` is derived from them, so older readers keep working.
+   */
+  lines?: SceneLine[];
 };
+
+/** One spoken part of a scene: which voice says it and whether that speaker is on camera. */
+export type SceneLine = { voiceId: string; text: string; onCamera: boolean };
+
+/** A speaking voice: a narrator or a character who talks. */
+export type ScriptVoice = { id: string; who: string; description: string };
 
 export type VideoScript = {
   id: string;
@@ -108,6 +120,10 @@ export type VideoScript = {
     unusedText: string[];
     changes: Array<{ target: string; was: string; now: string }>;
   } | null;
+  /** Every voice that speaks, at most three. Absent on older scripts: they have one voice. */
+  voices?: ScriptVoice[];
+  /** The concept the operator chose, when the script was written from one. */
+  concept?: VideoConcept;
 } & ScriptExtras;
 
 export type VideoBrief = {
