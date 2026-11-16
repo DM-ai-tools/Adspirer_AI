@@ -29,7 +29,7 @@ export const MAX_SETTINGS = 4;
 const TRUTH_FLOOR = 6;
 const RENDER_FLOOR = 6;
 
-const conceptSchema = z.object({
+export const conceptSchema = z.object({
   title: z.string().describe("2-5 words, the concept's own name"),
   format: z.string().describe("The format in your own words, e.g. 'faux movie trailer', 'nature documentary parody', 'one-take heist'"),
   logline: z.string().describe("The whole idea in one sentence"),

@@ -2,18 +2,15 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import { ADSPIRER_META_CTAS } from "@/lib/adspirer/skills/ad-copywriting";
 import { pickModel } from "@/lib/creatives/concept-writer";
-import { BULK_ANGLES, STAGE_LABEL } from "@/lib/creatives/bulk/angles";
-import { FRAMEWORKS, sceneSchema, type VideoScene, type VideoScript } from "@/lib/video/script";
+import { sceneSchema, type VideoScene, type VideoScript } from "@/lib/video/script";
 import { rewriteAdCopy } from "@/lib/video/rewrite";
 import { restoreVerbatim, unusedText, verbatimCheck } from "@/lib/video/verbatim";
 import { restoreMissingSpeech, spokenBlocks } from "@/lib/video/spoken-blocks";
-import { retime } from "@/lib/video/timing";
+import { MAX_SCENE_SECONDS, retime, wordsFor } from "@/lib/video/timing";
 import { HUMAN_VOICE } from "@/lib/video/voice";
 import { VISUAL_DIRECTION_RULES } from "@/lib/video/visual-rules";
 
 const CTA_VALUES = ADSPIRER_META_CTAS as unknown as [string, ...string[]];
-const ANGLE_KEYS = BULK_ANGLES.map((a) => a.key) as [string, ...string[]];
-const FRAMEWORK_KEYS = [...FRAMEWORKS.map((f) => f.key), "custom"] as unknown as [string, ...string[]];
 
 export const MIN_SCRIPT_WORDS = 15;
 
@@ -22,9 +19,9 @@ const STRUCTURE_SYSTEM =
 
 const structureSchema = z.object({
   title: z.string().describe("A short working title taken from the script's own title or first idea"),
-  angle_key: z.enum(ANGLE_KEYS).describe("The advertising angle this script is closest to"),
+  angle_name: z.string().describe("The script's angle or idea, in a few words of your own"),
   pain: z.string().describe("The pain, hope or objection the script targets, in one sentence"),
-  framework_key: z.enum(FRAMEWORK_KEYS).describe("The structure it follows, or custom"),
+  structure: z.string().describe("The structure or format it follows, in a few words of your own (e.g. 'mini movie trailer', 'problem then demo')"),
   style: z.string().describe("The look the script implies (UGC creator, cinematic, motion graphics, documentary...). Use its own direction if it gives one."),
   character: z.string().nullable().describe("If a person speaks on camera: one precise description (age range, build, hair, wardrobe, manner). Use the script's description if it has one; otherwise propose a fitting one. null when nobody appears."),
   setting: z.string().describe("Where it takes place and the light. Use the script's own description if it has one; otherwise propose one that fits."),
@@ -49,8 +46,8 @@ const structureSchema = z.object({
 
 type Structured = z.infer<typeof structureSchema>;
 
-/** How many words a scene may carry, so each scene is a beat and not a paragraph. */
-const MAX_WORDS_PER_SCENE = 40;
+/** How many words a scene may carry: no scene may run longer than one clip. */
+const MAX_WORDS_PER_SCENE = wordsFor(MAX_SCENE_SECONDS);
 
 const changeSchema = z.object({
   understood: z.string().describe("One sentence: what the operator asked to change"),
@@ -244,16 +241,14 @@ export async function applyChangeRequest(script: VideoScript, request: string, c
 /** Build the VideoScript from the structured result (the operator's words, with visuals added). */
 export function assembleUploaded(input: { structured: Structured; lines: string[]; restoredScenes: number[]; removedScenes: number[]; addedScenes?: number[]; unused: string[]; assetIds: string[] }): VideoScript {
   const { structured } = input;
-  const angle = BULK_ANGLES.find((a) => a.key === structured.angle_key) ?? BULK_ANGLES[0]!;
-  const framework = FRAMEWORKS.find((f) => f.key === structured.framework_key);
   const kept = structured.scenes.map((s, i) => ({ raw: s, line: input.lines[i]!.trim() }));
   const scenes = retime(kept.map((k, i) => sceneFrom(k.raw, i + 1, k.line, input.assetIds)));
   return {
     id: "script_uploaded",
     title: structured.title,
-    angle: { key: angle.key, name: angle.name, stage: STAGE_LABEL[angle.stage], kind: angle.kind },
+    angle: { key: "uploaded", name: structured.angle_name.trim(), stage: "", kind: "custom" },
     pain: structured.pain,
-    framework: { key: framework?.key ?? "custom", name: framework?.name ?? "Your own structure" },
+    framework: { key: "custom", name: structured.structure.trim() || "Your own structure" },
     style: structured.style,
     durationSeconds: scenes.length ? scenes[scenes.length - 1]!.end : 0,
     hookAlternatives: structured.hook_alternatives,

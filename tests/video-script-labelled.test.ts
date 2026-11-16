@@ -127,7 +127,7 @@ vi.mock("@/lib/creatives/concept-writer", async (orig) => ({ ...(await orig<type
 vi.mock("ai", () => ({
   generateObject: async ({ prompt }: { prompt: string }) => {
     prompts.push(prompt);
-    return { object: { title: "ROAS stuck", angle_key: "hidden_cost", pain: "ad spend up, sales flat", framework_key: "custom", style: "Motion graphics", character: null, setting: "Dark brand frame", hook_alternatives: ["a", "b", "c"], scenes: modelScenes } };
+    return { object: { title: "ROAS stuck", angle_name: "hidden cost", pain: "ad spend up, sales flat", structure: "custom", style: "Motion graphics", character: null, setting: "Dark brand frame", hook_alternatives: ["a", "b", "c"], scenes: modelScenes } };
   },
 }));
 

@@ -45,7 +45,8 @@ const creative: CreativeBrief = {
   limitation: null,
   injectionFlags: [],
 };
-vi.mock("@/lib/video/creative-brief", async (orig) => ({ ...(await orig<typeof import("@/lib/video/creative-brief")>()), buildCreativeBrief: async () => creative }));
+let briefQuality: CreativeBrief["sourceQuality"] = "rich";
+vi.mock("@/lib/video/creative-brief", async (orig) => ({ ...(await orig<typeof import("@/lib/video/creative-brief")>()), buildCreativeBrief: async () => ({ ...creative, sourceQuality: briefQuality }) }));
 
 let round = 0;
 const conceptCalls: Array<{ avoid: string[]; feedback?: string | null; direction: string | null }> = [];
@@ -100,6 +101,7 @@ vi.mock("@/lib/video/script-writer", async (orig) => ({
     };
   },
 }));
+vi.mock("@/lib/video/fit-to-model", async (orig) => ({ ...(await orig<typeof import("@/lib/video/fit-to-model")>()), conceptFromText: async (text: string) => ({ ...concept(99), logline: text }) }));
 vi.mock("@/lib/video/editorial", async (orig) => ({ ...(await orig<typeof import("@/lib/video/editorial")>()), editorialPass: async (scripts: unknown[]) => ({ scripts, overlap: { pairs: [], findings: [] } }) }));
 
 const inputs = { landingPageUrl: "https://acme.test", stats: [], targetSeconds: 30, style: "auto", locale: "en-AU", format: "9:16" as const, priority: "balanced" as const, videoType: "action_trailer" };
@@ -190,6 +192,26 @@ describe("changing the idea of a written script", () => {
     expect(after.id).toBe(before.id);
     expect(after.changeNote).toMatch(/hail was innocent/);
     expect(undoChange(after)?.id).toBe(before.id);
+  });
+});
+
+describe("bringing your own concept", () => {
+  it("writes the script from it even when the page alone would not be enough", async () => {
+    briefQuality = "insufficient";
+    try {
+      const { createProject, getProject } = await import("@/lib/video/projects");
+      const { writeProjectScripts } = await import("@/lib/video/brief");
+      const project = await createProject({ clientId: "client-flow-7", inputs: { ...inputs, mode: "upload", conceptText: "A goldfish narrates a shop owner's day as a nature documentary." } });
+      await writeProjectScripts(project.id);
+      const p = (await getProject(project.id))!;
+      expect(p.status).toBe("scripts_ready");
+      expect(p.scripts).toHaveLength(1);
+      expect(p.scripts![0]!.concept?.logline).toBe("A goldfish narrates a shop owner's day as a nature documentary.");
+      expect(p.scripts![0]!.source).toBe("uploaded");
+      expect(p.scripts![0]!.adaptations).toEqual([]);
+    } finally {
+      briefQuality = "rich";
+    }
   });
 });
 

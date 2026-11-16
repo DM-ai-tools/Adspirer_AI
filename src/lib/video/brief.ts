@@ -8,15 +8,15 @@ import { claimsFromFacts, findClaimsInText, mergeClaims } from "@/lib/video/clai
 import { defaultFetchAsset } from "@/lib/video/logo-verify";
 import type { ApprovedClaim, BrandManifest } from "@/lib/video/pipeline-types";
 import { getProject, listProjects, setProgress, updateProject, type VideoProject } from "@/lib/video/projects";
-import { briefFacts, factsCorpus, type VideoBrief } from "@/lib/video/script";
-import { checkOnly } from "@/lib/video/verify";
+import { briefFacts, factsCorpus, MAX_SECONDS, type VideoBrief } from "@/lib/video/script";
+import { fitToModel, conceptFromText } from "@/lib/video/fit-to-model";
 import { buildCreativeBrief, buildSourceDocs, type BriefInput } from "@/lib/video/creative-brief";
 import { planConcepts } from "@/lib/video/concepts";
 import { editorialPass, refreshEditorial } from "@/lib/video/editorial";
 import { resolveWordsPerSecond } from "@/lib/video/duration";
 import { contactTokens, repairScript } from "@/lib/video/script-repairs";
 import { requiredStatsFrom, spokenForms } from "@/lib/video/required-stats";
-import { conceptAngle, ensureMainStats, splitLongScenes, syncSceneLines, trimToFit, writeScriptForAngle, writeScriptForConcept, type WriteContext } from "@/lib/video/script-writer";
+import { conceptAngle, ensureMainStats, normaliseVoices, splitLongScenes, syncSceneLines, trimToFit, writeScriptForAngle, writeScriptForConcept, type WriteContext } from "@/lib/video/script-writer";
 import { storedBrief } from "@/lib/video/script-actions";
 import type { AnglePlan, CreativeBrief, VideoConcept } from "@/lib/video/script-types";
 import type { VideoScript } from "@/lib/video/script";
@@ -259,7 +259,7 @@ export async function writeProjectScripts(projectId: string): Promise<void> {
     }
     const { brief, brand } = await buildBrief(project);
 
-    if (project.inputs.mode === "upload" && project.inputs.scriptText) {
+    if (project.inputs.mode === "upload" && (project.inputs.scriptText?.trim() || project.inputs.conceptText?.trim())) {
       await writeFromUploadedScript({ project, brief, brand, stage });
       await stage("done");
       return;
@@ -425,17 +425,23 @@ export async function moreConcepts(projectId: string, feedback: string | null): 
 }
 
 /**
- * The operator brought their own script. It is split into scenes with its words untouched, given
- * visuals and ad copy, any change they asked for is applied (and only that), and it is reviewed but
- * never rewritten on its own: fixing is left to the operator.
+ * The operator brought their own concept, their own script, or both.
+ *  - A script is split into scenes with its words untouched and given visuals (following their
+ *    concept when they gave one), ad copy, and any change they asked for (and only that).
+ *  - A concept without a script is read as the chosen concept and its script is written from it;
+ *    their own text counts as a source, so a thin page never stops it.
+ * Either way it is then fitted to what the video model can make, and every adaptation is reported.
  */
 async function writeFromUploadedScript(input: { project: VideoProject; brief: VideoBrief; brand: NonNullable<VideoProject["brand"]>; stage: (s: "understanding" | "writing" | "verifying") => Promise<void> }) {
   const { project, brief, brand, stage } = input;
+  const conceptText = project.inputs.conceptText?.trim() || null;
+  if (!project.inputs.scriptText?.trim() && conceptText) return writeFromOperatorConcept({ project, brief, brand, stage, conceptText });
   const model = pickModel();
   if (!model) throw new Error("No language model is configured to read your script (set ANTHROPIC_API_KEY or OPENAI_API_KEY).");
   const scriptText = project.inputs.scriptText!;
   const facts = briefFacts(brief);
-  const ctx = { facts, assetIds: brief.images.map((i) => i.id), locale: brief.locale, model, direction: brief.direction ?? null };
+  const direction = [brief.direction, conceptText ? `THE OPERATOR'S OWN CONCEPT FOR THIS VIDEO (the visuals follow it):\n${conceptText}` : null].filter(Boolean).join("\n\n") || null;
+  const ctx = { facts, assetIds: brief.images.map((i) => i.id), locale: brief.locale, model, direction };
 
   await stage("understanding");
   const split = await structureUploadedScript(scriptText, ctx);
@@ -449,14 +455,39 @@ async function writeFromUploadedScript(input: { project: VideoProject; brief: Vi
   if (project.inputs.changeRequest?.trim()) script = await applyChangeRequest(script, project.inputs.changeRequest.trim(), ctx);
 
   await stage("verifying");
-  // The script's own numbers and claims are the operator's: they count as facts for the check.
-  const corpus = `${factsCorpus(brief)}\n${scriptText}\n${project.inputs.adCopyText ?? ""}\n${project.inputs.changeRequest ?? ""}`;
-  const verification = await checkOnly(script, { brief, facts, corpus, assetIds: ctx.assetIds, target: script.durationSeconds });
-  script = { ...script, warnings: verification.issues.map((i) => i.problem), verification };
+  // The script's own numbers and claims are the operator's: they count as facts.
+  const corpus = `${factsCorpus(brief)}\n${scriptText}\n${conceptText ?? ""}\n${project.inputs.adCopyText ?? ""}\n${project.inputs.changeRequest ?? ""}`;
+  const fitted = await fitToModel(normaliseVoices(script), { maxSeconds: MAX_SECONDS });
 
   await updateProject(project.id, {
     brand: { ...brand, facts, corpus },
-    scripts: [script],
+    scripts: [{ ...fitted.script, adaptations: fitted.adaptations }],
+    status: "scripts_ready",
+    error: null,
+  });
+}
+
+/** The operator gave a concept and no script: it becomes the chosen concept and its script is written, then fitted to the model. */
+async function writeFromOperatorConcept(input: { project: VideoProject; brief: VideoBrief; brand: NonNullable<VideoProject["brand"]>; stage: (s: "understanding" | "writing" | "verifying") => Promise<void>; conceptText: string }) {
+  const { project, brief, brand, stage, conceptText } = input;
+  await stage("understanding");
+  const creative = await buildCreativeBrief(briefInputFor(project, brief, brand.manifest));
+  const withFacts = mergeClaims(brief.claims ?? [], [...claimsFromFacts(creative.facts), ...operatorClaims([conceptText], "your concept")]);
+  brief.claims = withFacts;
+  if (brand.manifest) brand.manifest = { ...brand.manifest, claims: mergeClaims(brand.manifest.claims, withFacts) };
+  const base = writeContextFor(project, creative, brief);
+  // The operator's own concept is a source: what it says about the business may be said.
+  const ctx: WriteContext = { ...base, sourceText: `${base.sourceText}\n${conceptText}`, corpus: `${base.corpus}\n${conceptText}`, facts: `${base.facts}\nThe operator's own concept: ${conceptText}` };
+  const concept = await conceptFromText(conceptText, { targetSeconds: ctx.targetSeconds });
+
+  await stage("writing");
+  const written = await writeScriptForConcept(ctx, concept, { direction: "This is the operator's own concept: keep their idea, story, characters and any lines they wrote." });
+  await stage("verifying");
+  const polished = await polishConceptScript(written, ctx, concept);
+  const fitted = await fitToModel(polished, { maxSeconds: MAX_SECONDS });
+  await updateProject(project.id, {
+    brand: { ...brand, facts: ctx.facts, corpus: ctx.corpus, brief: creative, concepts: [concept], shownConcepts: [concept.logline] },
+    scripts: [{ ...fitted.script, source: "uploaded", adaptations: fitted.adaptations }],
     status: "scripts_ready",
     error: null,
   });
