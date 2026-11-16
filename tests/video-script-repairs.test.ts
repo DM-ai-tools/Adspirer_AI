@@ -11,6 +11,13 @@ describe("mechanical repairs", () => {
     expect(repairText("It is carefree and sugar-free.", source).text).toBe("It is carefree and sugar-free.");
   });
 
+  it("drops a sentence that removing an unsupported 'free' would leave dangling", () => {
+    expect(repairText("Book it now. No obligation. It's free.", source).text).toBe("Book it now. No obligation.");
+    expect(repairText("Book now. The audit is completely free! No catch.", source).text).toBe("Book now. No catch.");
+    expect(repairText("Book it now. It's free.", source).changes.join(" ")).toMatch(/free/);
+    expect(repairText("That is what it is. Book now.", source).text).toBe("That is what it is. Book now.");
+  });
+
   it("drops a best or ranking nobody substantiates, and keeps the word when the sources use it", () => {
     expect(repairText("We have the best tools in town.", source).text).toBe("We have the tools in town.");
     expect(repairText("We are the leading roofers.", source).text).toBe("We are the roofers.");

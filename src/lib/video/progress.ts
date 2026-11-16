@@ -10,18 +10,18 @@
 export type ScriptStage = "reading" | "understanding" | "writing" | "verifying" | "done";
 
 export const SCRIPT_STAGES: Array<{ key: Exclude<ScriptStage, "done">; label: string; from: number; to: number; typicalSeconds: number }> = [
-  { key: "reading", label: "Reading your website and images", from: 0, to: 25, typicalSeconds: 15 },
+  { key: "reading", label: "Reading your website", from: 0, to: 25, typicalSeconds: 15 },
   { key: "understanding", label: "Reading what the page really says, and what is missing", from: 25, to: 40, typicalSeconds: 15 },
-  { key: "writing", label: "Choosing three different angles, then writing each", from: 40, to: 85, typicalSeconds: 50 },
-  { key: "verifying", label: "Editing: checking facts, voice and length, and fixing weak lines", from: 85, to: 98, typicalSeconds: 30 },
+  { key: "writing", label: "Inventing concepts and keeping the three strongest, or writing the voiceover and scenes for the one you picked", from: 40, to: 85, typicalSeconds: 50 },
+  { key: "verifying", label: "Polishing: length, scene length and the facts", from: 85, to: 98, typicalSeconds: 30 },
 ];
 
 /** The same four stages, worded for reading someone's own script. */
 export const UPLOAD_STAGES: typeof SCRIPT_STAGES = [
-  { key: "reading", label: "Reading your website and images", from: 0, to: 20, typicalSeconds: 12 },
-  { key: "understanding", label: "Splitting your script into scenes, word for word", from: 20, to: 55, typicalSeconds: 25 },
-  { key: "writing", label: "Adding visuals and ad copy", from: 55, to: 85, typicalSeconds: 20 },
-  { key: "verifying", label: "Checking nothing in your wording changed", from: 85, to: 98, typicalSeconds: 12 },
+  { key: "reading", label: "Reading your website", from: 0, to: 20, typicalSeconds: 12 },
+  { key: "understanding", label: "Reading your concept, or splitting your script into scenes word for word", from: 20, to: 55, typicalSeconds: 25 },
+  { key: "writing", label: "Writing the scenes, visuals and ad copy", from: 55, to: 85, typicalSeconds: 20 },
+  { key: "verifying", label: "Fitting it to what the video model can make", from: 85, to: 98, typicalSeconds: 12 },
 ];
 
 export type ScriptProgress = {
