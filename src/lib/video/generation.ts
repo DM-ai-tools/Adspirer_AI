@@ -22,10 +22,12 @@ import { resolveFinishing, type FinishingInput } from "@/lib/video/clean-mode";
 import { assetCautions, jobAssets, snapshotAssets, snapshotLogo } from "@/lib/video/assets";
 import { narrationCautions } from "@/lib/video/evidence";
 import { claimProjectLease, getProject, releaseProjectLease, updateProject, type VideoProject } from "@/lib/video/projects";
-import { buildPlannedClipPrompt } from "@/lib/video/clip-prompt";
+import { buildPlannedClipPrompt, type PlannedClipPromptInput, type PlannedVoice } from "@/lib/video/clip-prompt";
 import { effectiveClaims } from "@/lib/video/claims";
 import { statInserts, type VideoScript } from "@/lib/video/script";
 import { sceneSeconds } from "@/lib/video/timing";
+import { normaliseVoices } from "@/lib/video/script-writer";
+import { applyLexicon } from "@/lib/video/pronunciation";
 import {
   applyPlanDurations,
   brandBlockers,
@@ -183,8 +185,27 @@ function buildPlannedClipRequest(project: VideoProject, plan: GenerationPlan, cl
   const previousFrameRole: "continue" | "look" = cont.continues ? "continue" : "look";
   // One voice for the whole ad: every clip with speech hears the same earlier clip (the first one that spoke), on camera or
   // voiceover alike. Chaining each clip to the one before lets the voice drift a little at every join.
-  const anchor = voiceAnchor(script, clips, clip, now);
+  // With several speaking voices, each voice has its own reference instead (see voiceAnchors).
+  const several = hasSeveralVoices(script);
+  const anchor = several ? null : voiceAnchor(script, clips, clip, now);
   const previousVideo = anchor && clipSpeaks(script, clip) ? anchor.sourceVideoUrl : null;
+  const voiceVideos: string[] = [];
+  let voices: PlannedVoice[] | undefined;
+  if (several) {
+    const anchors = voiceAnchors(script, clips, clip, now);
+    const speaking = clipVoices(script, clip);
+    const room = SEEDANCE_SPECS[model].maxVideoRefs;
+    voices = normaliseVoices(script)
+      .voices!.filter((v) => speaking.has(v.id))
+      .map((v) => {
+        const url = anchors[v.id]?.sourceVideoUrl;
+        if (url && voiceVideos.length < room) {
+          voiceVideos.push(url);
+          return { ...v, videoRef: voiceVideos.length };
+        }
+        return { ...v, videoRef: null };
+      });
+  }
 
   // References, in the order the prompt names them: people, then places, then the previous frame; within the model's limit.
   const room = SEEDANCE_SPECS[model].maxImageRefs - (previousFrame ? 1 : 0);
@@ -193,10 +214,17 @@ function buildPlannedClipRequest(project: VideoProject, plan: GenerationPlan, cl
   const chosenPeople = people.slice(0, room);
   const chosenPlaces = places.slice(0, Math.max(room - chosenPeople.length, 0));
 
-  const spoken: Record<number, { text: string; speaker: "on_camera" | "voiceover" | "none" }> = {};
-  for (const s of script.scenes) {
+  const spoken: PlannedClipPromptInput["spoken"] = {};
+  const who = new Map((script.voices ?? []).map((v) => [v.id, v.who]));
+  for (const s of several ? normaliseVoices(script).scenes : script.scenes) {
     const line = plan.speech?.lines.find((l) => l.sceneNumber === s.number);
-    if (line) spoken[s.number] = { text: line.spoken, speaker: s.speaker };
+    if (!line) continue;
+    // Each voice's words go through the same pronunciation as the whole line, so the spoken text matches what is checked.
+    const parts =
+      several && s.lines?.length
+        ? s.lines.map((l) => ({ voiceId: l.voiceId, who: who.get(l.voiceId) ?? l.voiceId, onCamera: l.onCamera, text: plan.speech?.lexicon ? applyLexicon(s.number, l.text, plan.speech.lexicon).spoken : l.text }))
+        : undefined;
+    spoken[s.number] = { text: line.spoken, speaker: s.speaker, ...(parts ? { parts } : {}) };
   }
   const nextClip = clips[clip.number];
   const nextContinues = Boolean(nextClip && (briefsFor(creative, nextClip)[0]?.entry.mode ?? "cut") === "continue_previous");
@@ -211,6 +239,7 @@ function buildPlannedClipRequest(project: VideoProject, plan: GenerationPlan, cl
     locale: project.inputs.locale,
     refs: { characterIds: chosenPeople.map((r) => r.id), environmentIds: chosenPlaces.map((r) => r.id), previousFrame: Boolean(previousFrame), previousFrameRole, previousVideo: Boolean(previousVideo) },
     voice: creative.voice,
+    ...(voices ? { voices } : {}),
     corrections: clip.corrections ?? [],
     nextContinues,
     // A clean video's footage is the finished picture: the prompt then says nothing about graphics, even for a plan made before clean video existed.
@@ -221,6 +250,7 @@ function buildPlannedClipRequest(project: VideoProject, plan: GenerationPlan, cl
     if (url) content.push({ type: "image_url", image_url: { url }, role: "reference_image" });
   }
   if (previousVideo) content.push({ type: "video_url", video_url: { url: previousVideo }, role: "reference_video" });
+  for (const url of voiceVideos) content.push({ type: "video_url", video_url: { url }, role: "reference_video" });
   return { prompt, content };
 }
 
@@ -235,6 +265,37 @@ export function clipSpeaks(script: Pick<VideoScript, "scenes">, clip: Pick<ClipS
  */
 export function voiceAnchor(script: Pick<VideoScript, "scenes">, clips: ClipState[], clip: Pick<ClipState, "number">, now = Date.now()): ClipState | null {
   return clips.find((c) => c.number < clip.number && c.status === "succeeded" && Boolean(c.sourceVideoUrl) && fresh(c.finishedAt, now) && clipSpeaks(script, c)) ?? null;
+}
+
+/** The voices that speak in a clip (by voice id). An older script has one voice, "narrator". */
+export function clipVoices(script: Pick<VideoScript, "scenes" | "voices">, clip: Pick<ClipState, "sceneNumbers">): Set<string> {
+  const normal = normaliseVoices(script);
+  const out = new Set<string>();
+  for (const n of clip.sceneNumbers) for (const l of normal.scenes.find((s) => s.number === n)?.lines ?? []) if (l.text.trim()) out.add(l.voiceId);
+  return out;
+}
+
+/** True when the script has more than one speaking voice. */
+export function hasSeveralVoices(script: Pick<VideoScript, "voices">): boolean {
+  return (script.voices?.length ?? 0) > 1;
+}
+
+/**
+ * One voice reference per speaker: for each voice that speaks in this clip, the first earlier clip
+ * where that voice spoke ALONE (so the reference holds only that voice) and whose file the video model
+ * can still fetch. A voice with no such clip yet has no reference: it is described in words only.
+ */
+export function voiceAnchors(script: Pick<VideoScript, "scenes" | "voices">, clips: ClipState[], clip: Pick<ClipState, "number" | "sceneNumbers">, now = Date.now()): Record<string, ClipState> {
+  const out: Record<string, ClipState> = {};
+  for (const voice of clipVoices(script, clip)) {
+    const anchor = clips.find((c) => {
+      if (c.number >= clip.number || c.status !== "succeeded" || !c.sourceVideoUrl || !fresh(c.finishedAt, now)) return false;
+      const spoken = clipVoices(script, c);
+      return spoken.size === 1 && spoken.has(voice);
+    });
+    if (anchor) out[voice] = anchor;
+  }
+  return out;
 }
 
 /** Everything needed to ask for one clip. */

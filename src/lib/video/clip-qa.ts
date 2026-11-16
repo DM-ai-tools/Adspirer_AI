@@ -422,7 +422,7 @@ export type VisionResult = {
 
 export type VisionReviewer = (input: { frames: Array<{ at: number; bytes: Buffer }>; reference: Buffer | null; rubric: string }) => Promise<VisionResult>;
 
-export function visionRubric(ctx: { scenes: SceneBrief[]; characterDescription: string | null; expectsSpeech: boolean; allowedText: string[] }): string {
+export function visionRubric(ctx: { scenes: SceneBrief[]; characterDescription: string | null; expectsSpeech: boolean; allowedText: string[]; speakers?: string[] }): string {
   const scenes = ctx.scenes.length
     ? ctx.scenes
         .map((s) => [`Scene ${s.number}: ${s.purpose}`, `  subject: ${s.subject}; setting: ${s.setting}; action: ${s.action}; framing: ${s.framing}`, s.acceptance.length ? `  acceptance checks: ${s.acceptance.join(" | ")}` : null].filter(Boolean).join("\n"))
@@ -435,6 +435,7 @@ export function visionRubric(ctx: { scenes: SceneBrief[]; characterDescription: 
     scenes,
     ctx.characterDescription ? `Presenter (must stay the same person throughout and match the reference image): ${ctx.characterDescription}` : "No recurring presenter is specified.",
     ctx.expectsSpeech ? "This is a speaking clip: a person talks to camera." : "This clip has no spoken line on camera.",
+    ctx.speakers?.length ? `Who speaks, in order (several voices): ${ctx.speakers.join(" | ")}` : null,
     "",
     "CHECK EACH OF THESE AND REPORT EVERY REAL FAILURE AS AN OBSERVATION (category, severity, time, what you see, what the frame should show instead):",
     "1. IDENTITY (category face): compare the presenter with the reference image and across frames: facial structure, hair, skin tone, clothing, apparent age. Set faceConsistent=false if the person changes or does not match the reference; true if consistent; null if there is no face or no reference.",
@@ -446,12 +447,15 @@ export function visionRubric(ctx: { scenes: SceneBrief[]; characterDescription: 
     "7. TEXT OF ANY KIND (category text or branding): words, letters, numbers, wordmarks, logo-like marks, buttons, labels, signs, legible gibberish, dashboards or interface screens. The footage is meant to carry no text at all. List EVERY piece in textSeen, verbatim when you can read it (kind: word, number, logo_like, ui or gibberish) with the time. For a logo-like mark you cannot read, put a short description as its text. For each piece also say: placement = graphic when it is drawn OVER the picture (a subtitle or caption, a title or headline, a highlighted word, a statistic badge, a button, a web address, a watermark, a panel or dashboard floating in the air), or scene when it is physically part of the filmed place (lettering on a book spine, a far-off sign, a label on an object); and prominence = incidental ONLY when it is small, in the background, out of focus or barely readable AND a viewer would not take it as part of the ad's message, otherwise prominent. Anything drawn over the picture is prominent. Fabricated branding or a product name drawn in the footage is critical.",
     "8. RELEVANCE (category relevance): does the footage show each scene's subject, setting and action, and satisfy its acceptance checks? Report what is missing or wrong.",
     ctx.expectsSpeech ? "9. SPEECH (category lipsync): do the mouth movements look plausible for talking: opening and closing in rhythm, lips matching a person speaking, no frozen or rubbery mouth? Report a mouth that moves without speech or stays still while speaking." : "9. Skip speech checks.",
+    ctx.speakers?.length ? "10. RIGHT SPEAKER (category lipsync): the person seen talking must be the one named as speaking on camera for that line; a speaker marked off camera is not seen talking, and nobody else's mouth moves while they speak. Report the wrong person talking as major." : null,
     "",
     ctx.allowedText.length ? `Text that is allowed to appear in the footage itself: ${ctx.allowedText.map((t) => `"${t}"`).join(", ")}. Still list it in textSeen.` : "No text at all is allowed in the footage itself.",
     "",
     "SEVERITY: critical = unusable as an ad (identity change, prominent face artifact, any graphic, caption or prominent readable text, logo or UI in the footage, a frame-splitting line, wrong subject). A small incidental background detail is not a reason to reject a shot. major = clearly noticeable defect a viewer would see (finger errors, warping object, flicker, wrong action). minor = small imperfection. In each observation's evidence say exactly what you see and where. In correction say, in positive terms, what the frame should show instead.",
     "Fill summary with two sentences on the clip's overall state.",
-  ].join("\n");
+  ]
+    .filter((l): l is string => l !== null)
+    .join("\n");
 }
 
 const visionSchema = z.object({
@@ -776,6 +780,8 @@ export function summariseQa(report: QaReport): string {
 // ------------------------------------------------------------------ orchestrator
 
 export type ReviewClipInput = {
+  /** With several voices: who says what, in order, for the inspector to check the right person is seen speaking. */
+  speakers?: string[];
   file: string;
   clip: number;
   attempt: number;
@@ -859,7 +865,7 @@ export async function reviewClip(input: ReviewClipInput, deps: ReviewClipDeps = 
     try {
       const frames = await sampleFrames(input.file, input.frameCount ?? 8, path.join(input.workDir, `clip-${input.clip}-a${input.attempt}`));
       if (!frames.length) throw new Error("no frames could be extracted from the clip");
-      const rubric = visionRubric({ scenes: input.scenes, characterDescription: input.characterDescription, expectsSpeech: input.expectsSpeech, allowedText });
+      const rubric = visionRubric({ scenes: input.scenes, characterDescription: input.characterDescription, expectsSpeech: input.expectsSpeech, allowedText, speakers: input.speakers });
       const result = await reviewer({ frames: frames.map((f) => ({ at: f.at, bytes: f.bytes })), reference: input.referenceImage, rubric });
       visionAvailable = true;
       framesInspected = frames.length;

@@ -37,6 +37,8 @@ export type PlanScriptScene = {
   visual: string;
   camera: string;
   sound: string;
+  /** With several voices: who says this scene's words, in order (e.g. "Maya (on camera), then the narrator (off camera)"). */
+  who?: string;
 };
 
 export type PlanInput = {
@@ -54,6 +56,8 @@ export type PlanInput = {
   locale: string;
   script: {
     style: string;
+    /** Every speaking voice, when there is more than one. */
+    voices?: Array<{ id: string; who: string; description: string }>;
     character: string | null;
     setting: string;
     scenes: PlanScriptScene[];
@@ -180,12 +184,13 @@ function listCapabilities(c: ProviderCapabilities, clean = false): string {
 
 function listScript(input: PlanInput): string {
   const clean = isClean(input);
-  return input.script.scenes
+  const voices = (input.script.voices?.length ?? 0) > 1 ? `Speaking voices: ${input.script.voices!.map((v) => `${v.who} (${v.description || "voice not described yet"})`).join("; ")}\n` : "";
+  return voices + input.script.scenes
     .map((s) => {
       // In a clean video nothing is shown on screen: what the script marked for display is only material for an editing note.
       const marked = [s.stat ? `figure "${s.stat}"` : null, s.assetId ? `evidence file ${s.assetId}` : null, s.keywords.length ? `phrases ${s.keywords.join(", ")}` : null].filter(Boolean).join("; ");
       const bits = [
-        `Scene ${s.number} (${s.seconds}s, speaker ${s.speaker}${secondsNeeded(s.line, s.speaker) ? `; its words need at least ${Math.ceil(secondsNeeded(s.line, s.speaker))}s to say` : ""})`,
+        `Scene ${s.number} (${s.seconds}s, ${s.who ? `spoken by ${s.who}` : `speaker ${s.speaker}`}${secondsNeeded(s.line, s.speaker) ? `; its words need at least ${Math.ceil(secondsNeeded(s.line, s.speaker))}s to say` : ""})`,
         clean ? `  spoken line (heard, never displayed): ${s.line ? `"${s.line}"` : "(none)"}` : `  spoken line: ${s.line ? `"${s.line}"` : "(none)"}`,
         !clean && s.keywords.length ? `  keywords highlighted: ${s.keywords.join(", ")}` : null,
         !clean && s.stat ? `  stat to show: ${s.stat}` : null,
@@ -255,6 +260,10 @@ export const SETTING_RULE =
 export const EDIT_RULE =
   "Shoot and cut it like a top paid-social editor: open on the most arresting image within the first second; vary shot sizes from scene to scene (wide, medium, close-up, detail insert) so no two cuts in a row repeat a size; move the camera with a reason; cut on action, on a look or on a matching shape where the story allows (a match_cut needs that link in its rationale); keep the rhythm tight to the voice; and use a dissolve or dip only where time or mood genuinely shifts.";
 
+/** Several speakers: each keeps one fixed voice, and only the on-camera speaker is seen talking. */
+export const SEVERAL_VOICES_RULE =
+  "This ad has several speaking voices (listed with the script). In the voice field, describe EACH voice in one sentence prefixed by who it is (for example 'Maya: ...; the narrator: ...'): gender, rough age, timbre, accent, pace. Each speaker keeps that same voice in every scene. A speaker marked on camera is the person seen talking in that shot; an off-camera speaker is never seen talking.";
+
 /** One voice from the first word to the last. */
 export const VOICE_RULE =
   "Choose ONE voice for the whole ad in the voice field (gender, rough age, timbre and pitch, accent, pace, energy). If a recurring person speaks on camera, it is that person's voice, and any voiceover is the same person. Never describe a different voice for a later scene.";
@@ -275,9 +284,10 @@ const HARD_RULES = [
 ];
 
 /** The hard rules that apply: a clean video swaps the two rules about composited graphics for the clean-video rules. */
-export function hardRulesFor(input: Pick<PlanInput, "mode"> & { script?: Pick<PlanInput["script"], "style"> }): string[] {
+export function hardRulesFor(input: Pick<PlanInput, "mode"> & { script?: Pick<PlanInput["script"], "style" | "voices"> }): string[] {
   // Realism is asked of live action only; a stylised animation keeps its own look.
-  const craft = [CONCEPT_RULE, SETTING_RULE, EDIT_RULE, VOICE_RULE, ...(!input.script || wantsRealism(input.script.style) ? [`Every shot is written to look real: ${REALISM_RULE}`] : [])];
+  const voiceRule = (input.script?.voices?.length ?? 0) > 1 ? SEVERAL_VOICES_RULE : VOICE_RULE;
+  const craft = [CONCEPT_RULE, SETTING_RULE, EDIT_RULE, voiceRule, ...(!input.script || wantsRealism(input.script.style) ? [`Every shot is written to look real: ${REALISM_RULE}`] : [])];
   if (!isClean(input)) return [...craft, ...HARD_RULES];
   const kept = HARD_RULES.filter((r) => !r.startsWith("The video model must NEVER draw readable text") && !r.startsWith("Use only the asset ids and claim ids"));
   return [

@@ -66,6 +66,8 @@ export function claimNotice(script: VideoScript, manifest: BrandManifest, claims
 }
 
 export function planInputFor(project: VideoProject, script: VideoScript, manifest: BrandManifest, mode: VideoMode = project.plan?.creative?.mode ?? videoMode(project)): PlanInput {
+  const several = (script.voices?.length ?? 0) > 1;
+  const voiceName = (id: string) => script.voices?.find((v) => v.id === id)?.who ?? id;
   const capabilities = providerCapabilities();
   return {
     mode,
@@ -81,9 +83,22 @@ export function planInputFor(project: VideoProject, script: VideoScript, manifes
     locale: project.inputs.locale,
     script: {
       style: script.style,
+      ...(several ? { voices: script.voices } : {}),
       character: script.character,
       setting: script.setting,
-      scenes: script.scenes.map((s) => ({ number: s.number, line: s.line, seconds: s.seconds, speaker: s.speaker, keywords: s.keywords, stat: s.stat, assetId: s.assetId, visual: s.visual, camera: s.camera, sound: s.sound })),
+      scenes: script.scenes.map((s) => ({
+        number: s.number,
+        line: s.line,
+        seconds: s.seconds,
+        speaker: s.speaker,
+        keywords: s.keywords,
+        stat: s.stat,
+        assetId: s.assetId,
+        visual: s.visual,
+        camera: s.camera,
+        sound: s.sound,
+        ...(several && s.lines?.length ? { who: s.lines.map((l) => `${voiceName(l.voiceId)} (${l.onCamera ? "on camera" : "off camera"})`).join(", then ") } : {}),
+      })),
     },
     assets: project.assets.map((a) => ({ id: a.id, name: a.name, summary: a.analysis?.summary ?? a.caption, stats: a.analysis?.stats ?? [] })),
     claims: effectiveClaims(project.brand),
@@ -267,8 +282,14 @@ export async function reviewDownloadedClip(project: VideoProject, plan: Generati
     const attempt = (clip.qaAttempts ?? 0) + 1;
     const reviewer = createVisionReviewer();
 
+    // With several voices the inspector is told who says each line, to check the right person is seen speaking.
+    const speakers = (script.voices?.length ?? 0) > 1
+      ? script.scenes
+          .filter((s) => clip.sceneNumbers.includes(s.number))
+          .flatMap((s) => (s.lines ?? []).map((l) => `Scene ${s.number}: ${script.voices!.find((v) => v.id === l.voiceId)?.who ?? l.voiceId}, ${l.onCamera ? "on camera" : "off camera"}, says "${l.text}"`))
+      : undefined;
     const base = await reviewClip(
-      { file, clip: clip.number, attempt, scenes: briefs, characterDescription: character?.description ?? null, referenceImage: reference, expectedSeconds: clip.seconds, expectsSpeech, speech: [], asr, requireVision: true, workDir: dir },
+      { file, clip: clip.number, attempt, scenes: briefs, characterDescription: character?.description ?? null, referenceImage: reference, expectedSeconds: clip.seconds, expectsSpeech, speech: [], asr, requireVision: true, workDir: dir, ...(speakers?.length ? { speakers } : {}) },
       { reviewer },
     );
     const findings = [...base.findings];
