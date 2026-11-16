@@ -341,23 +341,34 @@ export async function polishConceptScript(script: VideoScript, ctx: WriteContext
   return splitLongScenes(trimToFit(synced, ctx));
 }
 
+/**
+ * What a concept's script is written from: the verified brief and, when the operator gave their own
+ * concept, their words too (what it says about the business may be said, as when it was first written).
+ */
+export function conceptContext(project: VideoProject, creative: CreativeBrief): WriteContext {
+  const base = writeContextFor(project, creative, storedBrief(project));
+  const own = project.inputs.conceptText?.trim();
+  if (!own) return base;
+  return { ...base, sourceText: `${base.sourceText}\n${own}`, corpus: `${base.corpus}\n${own}`, facts: `${base.facts}\nThe operator's own concept: ${own}` };
+}
+
 /** Background job: write the full script for the concept the operator picked. Other scripts already written are kept. */
 export async function writeConceptScript(projectId: string, conceptId: string): Promise<void> {
-  const project = await getProject(projectId);
-  if (!project) return;
   try {
+    const project = await getProject(projectId);
+    if (!project) return;
     const creative = project.brand?.brief;
     const concept = project.brand?.concepts?.find((c) => c.id === conceptId);
     if (!creative || !concept) throw new Error("That concept is no longer on this project. Ask for new concepts.");
     let progress = advanceProgress(initialProgress(), "writing");
     await setProgress(projectId, progress);
-    const ctx = writeContextFor(project, creative, storedBrief(project));
+    const ctx = conceptContext(project, creative);
     const written = await writeScriptForConcept(ctx, concept);
     progress = advanceProgress(progress, "verifying");
     await setProgress(projectId, progress);
     const script = await polishConceptScript(written, ctx, concept);
     const latest = (await getProject(projectId)) ?? project;
-    const scripts = [...(latest.scripts ?? []).filter((s) => s.id !== script.id), script];
+    const scripts = [...(latest.scripts ?? []).filter((x) => x.id !== script.id), script];
     await updateProject(projectId, { scripts, status: "scripts_ready", error: null });
     await setProgress(projectId, advanceProgress(progress, "done"));
   } catch (error) {
@@ -373,21 +384,27 @@ export async function writeConceptScript(projectId: string, conceptId: string): 
  * its concept with their request as direction; the script as it was is kept so the change can be undone.
  */
 export async function rewriteConceptScript(projectId: string, scriptId: string, request: string): Promise<void> {
-  const project = await getProject(projectId);
-  if (!project) return;
   try {
+    const project = await getProject(projectId);
+    if (!project) return;
+    let progress = advanceProgress(initialProgress(), "writing");
+    await setProgress(projectId, progress);
     const creative = project.brand?.brief;
     const current = project.scripts?.find((s) => s.id === scriptId);
     if (!creative || !current?.concept) throw new Error("This script has no concept to rewrite from.");
     const concept = current.concept;
-    const ctx = writeContextFor(project, creative, storedBrief(project));
+    const ctx = conceptContext(project, creative);
     const written = await writeScriptForConcept(ctx, concept, { previous: current, direction: `Rewrite this script around the operator's change to the idea, keeping the concept's strengths: ${request}` });
+    progress = advanceProgress(progress, "verifying");
+    await setProgress(projectId, progress);
     const polished = await polishConceptScript(written, ctx, concept);
     const before = { ...current };
     delete before.previousVersion;
-    const next = { ...polished, id: current.id, previousVersion: before, changeNote: `Rewritten around your change: ${request.trim().slice(0, 160)}` };
+    // The script stays what it was (the operator's own, with what was adapted for the model) while its words change.
+    const next = { ...polished, id: current.id, source: current.source, adaptations: current.adaptations, previousVersion: before, changeNote: `Rewritten around your change: ${request.trim().slice(0, 160)}` };
     const latest = (await getProject(projectId)) ?? project;
-    await updateProject(projectId, { scripts: (latest.scripts ?? []).map((s) => (s.id === scriptId ? next : s)), status: "scripts_ready", error: null });
+    await updateProject(projectId, { scripts: (latest.scripts ?? []).map((x) => (x.id === scriptId ? next : x)), status: "scripts_ready", error: null });
+    await setProgress(projectId, advanceProgress(progress, "done"));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn("Video concept script could not be rewritten", { projectId, error: message });
@@ -397,9 +414,11 @@ export async function rewriteConceptScript(projectId: string, scriptId: string, 
 
 /** Background job: three new concepts, never repeating one already shown here or for this client before. */
 export async function moreConcepts(projectId: string, feedback: string | null): Promise<void> {
-  const project = await getProject(projectId);
-  if (!project) return;
   try {
+    const project = await getProject(projectId);
+    if (!project) return;
+    const progress = advanceProgress(initialProgress(), "writing");
+    await setProgress(projectId, progress);
     const creative = project.brand?.brief;
     if (!creative || !project.brand) throw new Error("This project has no brief to write concepts from. Start a new video.");
     const shown = project.brand.shownConcepts ?? [];
@@ -411,6 +430,7 @@ export async function moreConcepts(projectId: string, feedback: string | null): 
       status: "concepts_ready",
       error: null,
     });
+    await setProgress(projectId, advanceProgress(progress, "done"));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn("New video concepts could not be made", { projectId, error: message });

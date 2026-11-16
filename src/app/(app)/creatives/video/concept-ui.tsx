@@ -180,6 +180,7 @@ export function ChangeBox({
   scriptId,
   canUndo,
   changeNote,
+  draft,
   onChanged,
   onBusy,
 }: {
@@ -188,6 +189,8 @@ export function ChangeBox({
   canUndo: boolean;
   changeNote: string | null;
   onChanged: (result: { started?: boolean }) => void;
+  /** What is on screen now, unsaved edits included: the change is made on top of it so those edits are kept. */
+  draft?: { title: string; scenes: unknown[]; adCopy: unknown };
   /** Told when a change starts and ends, so the page can hold back confirming meanwhile. */
   onBusy?: (busy: boolean) => void;
 }) {
@@ -219,11 +222,11 @@ export function ChangeBox({
       <p className="flex items-center gap-1.5 text-sm font-medium">
         <Wand2 className="h-4 w-4 text-accent" /> Tell us what to change
       </p>
-      <p className="text-[11px] text-muted">Say it in your own words: the voiceover, a scene, who says a line, the ending, the ad copy, or the idea itself. Only what you mention changes. It works on the saved script, so ask first and fine-tune the fields after.</p>
+      <p className="text-[11px] text-muted">Say it in your own words: the voiceover, a scene, who says a line, the ending, the ad copy, or the idea itself. Only what you mention changes, and edits you made in the fields below are kept.</p>
       {changeNote ? <p className="text-[11px] text-accent">Last change: {changeNote}</p> : null}
       <Textarea className="min-h-[64px] text-xs" value={request} onChange={(e) => setRequest(e.target.value)} placeholder={'e.g. "make the voiceover funnier", "scene 3 should end on the chase", "let the inspector say the last line"'} />
       <div className="flex flex-wrap gap-2">
-        <Button size="sm" disabled={Boolean(busy) || request.trim().length < 3} onClick={() => void send({ scriptId, request: request.trim() }, "change")}>
+        <Button size="sm" disabled={Boolean(busy) || request.trim().length < 3} onClick={() => void send({ scriptId, request: request.trim(), ...(draft ? { draft } : {}) }, "change")}>
           {busy === "change" ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Wand2 className="mr-1 h-3.5 w-3.5" />}
           Make the change
         </Button>

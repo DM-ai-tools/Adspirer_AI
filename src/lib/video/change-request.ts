@@ -165,6 +165,9 @@ export function applyChange(script: VideoScript, plan: ChangePlan): VideoScript 
     changeNote: plan.summary || "Changed as you asked.",
   };
   next = splitLongScenes(next);
+  // The recorded closing line is whatever is said last, as it now stands.
+  const lastSpoken = [...next.scenes].reverse().find((sc) => sc.line.trim())?.line.trim();
+  if (next.cta && lastSpoken && lastSpoken !== next.cta.spoken) next = { ...next, cta: { ...next.cta, spoken: lastSpoken } };
   if (next.speech) {
     const ctaWords = (next.cta?.spoken ?? "").trim().split(/\s+/).filter(Boolean).length;
     next = { ...next, speech: { ...buildScriptSpeech(next.scenes.map((s) => s.line).filter(Boolean), next.speech.requestedSeconds, next.speech.wordsPerSecond, { ctaWords }), measuredSeconds: next.speech.measuredSeconds ?? null } };

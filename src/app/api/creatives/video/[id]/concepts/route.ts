@@ -33,7 +33,8 @@ export async function POST(request: Request, ctx: Ctx) {
     await assertClientAccess(user.id, project.client_id);
     const body = await parseBody(request, bodySchema);
     if (!project.brand?.concepts?.length) throw new Error("This video has no concepts. Write the script again to get some.");
-    if (!OPEN.has(project.status)) throw new Error(project.status === "writing" ? "Still working on the last request. Wait for it to finish." : "A script is already confirmed for this video. Edit the script to change it.");
+    // A failed video that already had a script confirmed (and maybe clips) is not sent back to concepts from here.
+    if (!OPEN.has(project.status) || (project.status === "failed" && project.chosen_script)) throw new Error(project.status === "writing" ? "Still working on the last request. Wait for it to finish." : "A script is already confirmed for this video. Edit the script to change it.");
 
     if (body.action === "open") {
       if (!project.scripts?.some((s) => s.id === body.scriptId)) throw new Error("That script is not part of this video.");

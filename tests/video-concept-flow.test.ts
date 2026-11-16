@@ -75,9 +75,11 @@ vi.mock("@/lib/video/concepts", async (orig) => ({
 }));
 
 let failWriting = false;
+let lastWriteCtx: { sourceText: string } | null = null;
 vi.mock("@/lib/video/script-writer", async (orig) => ({
   ...(await orig<typeof import("@/lib/video/script-writer")>()),
-  writeScriptForConcept: async (_ctx: unknown, c: VideoConcept): Promise<VideoScript> => {
+  writeScriptForConcept: async (ctx: { sourceText: string }, c: VideoConcept): Promise<VideoScript> => {
+    lastWriteCtx = ctx;
     if (failWriting) throw new Error("the writer is down");
     return {
       id: `script_${c.id}`,
@@ -227,6 +229,37 @@ describe("bringing your own concept", () => {
     } finally {
       briefQuality = "rich";
     }
+  });
+});
+
+describe("changing the idea of your own concept's script", () => {
+  it("keeps your concept as a source and the script as yours", async () => {
+    const { createProject, getProject, updateProject } = await import("@/lib/video/projects");
+    const { writeProjectScripts, rewriteConceptScript } = await import("@/lib/video/brief");
+    const own = "A goldfish narrates a shop owner's day as a nature documentary, with a free audit at the end.";
+    const project = await createProject({ clientId: "client-flow-9", inputs: { ...inputs, mode: "upload", conceptText: own } });
+    await writeProjectScripts(project.id);
+    const written = (await getProject(project.id))!.scripts![0]!;
+    await updateProject(project.id, { scripts: [{ ...written, adaptations: ["Scene 2 split in 2."] }] });
+    await rewriteConceptScript(project.id, written.id, "make the goldfish more dramatic");
+    expect(lastWriteCtx!.sourceText).toContain(own);
+    const after = (await getProject(project.id))!.scripts![0]!;
+    expect(after.source).toBe("uploaded");
+    expect(after.adaptations).toEqual(["Scene 2 split in 2."]);
+  });
+});
+
+describe("progress for new concepts", () => {
+  it("starts again instead of showing the last job as finished", async () => {
+    const { createProject, getProject, setProgress } = await import("@/lib/video/projects");
+    const { writeProjectScripts, moreConcepts } = await import("@/lib/video/brief");
+    const project = await createProject({ clientId: "client-flow-10", inputs });
+    await writeProjectScripts(project.id);
+    await setProgress(project.id, { stage: "done", startedAt: "2020-01-01T00:00:00.000Z", stageStartedAt: "2020-01-01T00:00:00.000Z" });
+    await moreConcepts(project.id, null);
+    const p = (await getProject(project.id))!;
+    expect(p.progress?.startedAt).not.toBe("2020-01-01T00:00:00.000Z");
+    expect(p.progress?.stage).toBe("done");
   });
 });
 

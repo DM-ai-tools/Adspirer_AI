@@ -2260,11 +2260,25 @@ function VideoInner() {
                               </Field>
                             </div>
                             {draft.voices?.length ? (
-                              <SceneLinesEditor
-                                lines={draft.scenes[i]!.lines ?? (draft.scenes[i]!.line.trim() ? [{ voiceId: draft.voices[0]!.id, text: draft.scenes[i]!.line, onCamera: draft.scenes[i]!.speaker === "on_camera" }] : [])}
-                                voices={draft.voices}
-                                onChange={(lines) => editLines(i, lines)}
-                              />
+                              <div className="space-y-2">
+                                <SceneLinesEditor
+                                  lines={draft.scenes[i]!.lines ?? (draft.scenes[i]!.line.trim() ? [{ voiceId: draft.voices[0]!.id, text: draft.scenes[i]!.line, onCamera: draft.scenes[i]!.speaker === "on_camera" }] : [])}
+                                  voices={draft.voices}
+                                  onChange={(lines) => editLines(i, lines)}
+                                />
+                                {draft.scenes[i]!.originalLine && draft.scenes[i]!.originalLine !== draft.scenes[i]!.line ? (
+                                  <div className="rounded-md bg-secondary/40 p-2 text-[11px] text-muted">
+                                    Your original: “{draft.scenes[i]!.originalLine}”{" "}
+                                    <button
+                                      type="button"
+                                      className="font-medium text-accent hover:underline"
+                                      onClick={() => editLines(i, [{ voiceId: draft.scenes[i]!.lines?.[0]?.voiceId ?? draft.voices![0]!.id, text: draft.scenes[i]!.originalLine ?? "", onCamera: draft.scenes[i]!.lines?.[0]?.onCamera ?? draft.scenes[i]!.speaker === "on_camera" }])}
+                                    >
+                                      Put it back
+                                    </button>
+                                  </div>
+                                ) : null}
+                              </div>
                             ) : (
                             <div className="space-y-3">
                               <Field label="Who speaks">
@@ -2328,7 +2342,7 @@ function VideoInner() {
                       </div>
                     </div>
 
-                    <ChangeBox onBusy={setChanging} projectId={view.id} scriptId={draft.id} canUndo={Boolean(draft.previousVersion)} changeNote={draft.changeNote ?? null} onChanged={(r) => void afterChange(draft.id, r)} />
+                    <ChangeBox onBusy={setChanging} draft={{ title: draft.title, scenes: draft.scenes.map((sc) => ({ ...sc, seconds: Number(sc.seconds) || 2 })), adCopy: draft.adCopy }} projectId={view.id} scriptId={draft.id} canUndo={Boolean(draft.previousVersion)} changeNote={draft.changeNote ?? null} onChanged={(r) => void afterChange(draft.id, r)} />
 
                     <Button onClick={() => void confirm()} disabled={confirming || changing || draftTotal > 60 || draftTotal < 15}>
                       {confirming ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
