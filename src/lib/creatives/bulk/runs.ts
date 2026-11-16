@@ -5,7 +5,19 @@ import type { ImageFormat } from "@/lib/creatives/formats";
 import type { BulkBody, BulkCta, MessageMap } from "@/lib/creatives/bulk/plan";
 
 /** An earlier look of an image, kept when it is edited so the edit can be undone. */
-export type ImageVersion = { id: string; key: string; at: string; instruction: string; mode: "edit" | "full"; /** What the app understood the request to mean and changed. */ understood?: string };
+export type ImageVersion = {
+  id: string;
+  key: string;
+  at: string;
+  instruction: string;
+  mode: "edit" | "full";
+  /** What the app understood the request to mean and changed. */
+  understood?: string;
+  /** The ad copy as it was before this edit, when the edit rewrote it to match the new image. Undo puts it back. */
+  copy?: { headline: string; primary_text: string; description: string | null };
+  /** The art direction as it was before this edit, when the edit rewrote its ON-IMAGE TEXT line. Undo puts it back. */
+  direction?: string;
+};
 
 export type RunItem = {
   draft_id: string;

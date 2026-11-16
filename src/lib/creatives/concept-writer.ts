@@ -89,13 +89,15 @@ export function directionWithText(
   text: { headline: string; highlights: string[]; cta_label: string } | undefined,
 ): string {
   if (!text) return direction;
+  return [direction.trim(), onImageTextLine(text)].join("\n");
+}
+
+/** The ON-IMAGE TEXT line of an art direction (read back by the export and by later edits). */
+export function onImageTextLine(text: { headline: string; highlights: string[]; cta_label: string }): string {
   const chips = text.highlights.map((h) => h.trim()).filter(Boolean);
-  return [
-    direction.trim(),
-    `ON-IMAGE TEXT (typeset exactly as written, spelled correctly): headline "${text.headline.trim()}"${
-      chips.length ? `; highlighted keywords ${chips.map((c) => `"${c}"`).join(", ")}` : ""
-    }; call-to-action button "${text.cta_label.trim()}".`,
-  ].join("\n");
+  return `ON-IMAGE TEXT (typeset exactly as written, spelled correctly): headline "${text.headline.trim()}"${
+    chips.length ? `; highlighted keywords ${chips.map((c) => `"${c}"`).join(", ")}` : ""
+  }; call-to-action button "${text.cta_label.trim()}".`;
 }
 
 export function pickModel() {
