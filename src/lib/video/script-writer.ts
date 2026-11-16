@@ -470,6 +470,14 @@ export function normaliseVoices<T extends Pick<VideoScript, "scenes"> & { voices
 /** Turn a concept draft into a script: the shared version checks, plus who says what in each scene. Pure. */
 export function buildConceptScript(raw: ConceptWritten, concept: VideoConcept, ctx: WriteContext, previous?: VideoScript | null): VideoScript {
   const voices: ScriptVoice[] = raw.voices.slice(0, 3).map((v) => ({ id: v.id.trim() || "narrator", who: v.who.trim(), description: v.description.trim() }));
+  // A scene the operator edited keeps its speakers: a voice it uses that the new draft dropped is kept (within three).
+  for (const sc of lockedScenes(previous)) {
+    for (const l of sc.lines ?? []) {
+      if (voices.some((v) => v.id === l.voiceId) || voices.length >= 3) continue;
+      const before = previous?.voices?.find((v) => v.id === l.voiceId);
+      if (before) voices.push(before);
+    }
+  }
   const known = new Set(voices.map((v) => v.id));
   const first = voices[0]!.id;
   const sceneLines: SceneLine[][] = raw.scenes.map((sc) =>
@@ -482,7 +490,11 @@ export function buildConceptScript(raw: ConceptWritten, concept: VideoConcept, c
   const built = buildWrittenScript(asWritten, conceptAngle(concept), ctx, previous);
   const locked = new Set(lockedScenes(previous).map((sc) => sc.number));
   const scenes = built.scenes.map((sc, i) => {
-    if (locked.has(sc.number)) return normaliseVoices({ scenes: [sc], voices }).scenes[0]!;
+    if (locked.has(sc.number)) {
+      const kept = normaliseVoices({ scenes: [sc], voices }).scenes[0]!;
+      const ids = new Set(voices.map((v) => v.id));
+      return { ...kept, lines: kept.lines?.map((l) => (ids.has(l.voiceId) ? l : { ...l, voiceId: first })) };
+    }
     let lines = sceneLines[i] ?? [];
     // The shared builder may have put the closing line into the last scene: the parts then follow what is actually said.
     if (joinLines(lines) !== sc.line.trim()) lines = sc.line.trim() ? [{ voiceId: lines[lines.length - 1]?.voiceId ?? first, text: sc.line.trim(), onCamera: sc.speaker === "on_camera" }] : [];

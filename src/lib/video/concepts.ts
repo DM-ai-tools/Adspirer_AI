@@ -204,7 +204,8 @@ export async function planConcepts(
     try {
       candidates = parseCandidates(await invent(prompt));
     } catch (error) {
-      if (round === 0) throw error;
+      // With nothing kept yet, the real reason (a rate limit, a model outage) is what the operator needs to see.
+      if (round === 0 || !kept.length) throw error;
       break;
     }
     // An idea already shown (this round's repeat of an earlier one, or one made before for this client) is not shown again.
@@ -220,7 +221,8 @@ export async function planConcepts(
     const byIndex = new Map((scores ?? []).map((s) => [s.index, s]));
     const ranked = candidates
       .map((c, i) => ({ c, i, s: byIndex.get(i) ?? null }))
-      .sort((a, b) => (a.s && b.s ? total(b.s) - total(a.s) : a.i - b.i));
+      // Scored concepts by score; any the judge left out come after them, in the order they were written.
+      .sort((a, b) => (a.s && b.s ? total(b.s) - total(a.s) : a.s ? -1 : b.s ? 1 : a.i - b.i));
 
     problems = [];
     const takenIndexes = new Set<number>();
