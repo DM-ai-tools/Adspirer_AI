@@ -173,6 +173,26 @@ describe("concepts first, then the script", () => {
   });
 });
 
+describe("changing the idea of a written script", () => {
+  it("rewrites it from its concept and keeps the old one for undo", async () => {
+    const { createProject, getProject } = await import("@/lib/video/projects");
+    const { writeProjectScripts, writeConceptScript, rewriteConceptScript } = await import("@/lib/video/brief");
+    const { undoChange } = await import("@/lib/video/change-request");
+    const project = await createProject({ clientId: "client-flow-6", inputs });
+    await writeProjectScripts(project.id);
+    const [first] = (await getProject(project.id))!.brand!.concepts!;
+    await writeConceptScript(project.id, first!.id);
+    const before = (await getProject(project.id))!.scripts![0]!;
+    await rewriteConceptScript(project.id, before.id, "make the twist that the hail was innocent");
+    const p = (await getProject(project.id))!;
+    expect(p.status).toBe("scripts_ready");
+    const after = p.scripts![0]!;
+    expect(after.id).toBe(before.id);
+    expect(after.changeNote).toMatch(/hail was innocent/);
+    expect(undoChange(after)?.id).toBe(before.id);
+  });
+});
+
 describe("confirming a script", () => {
   it("no longer needs any stat to be said", async () => {
     const { createProject, getProject, updateProject } = await import("@/lib/video/projects");

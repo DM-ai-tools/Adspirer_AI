@@ -124,6 +124,12 @@ export type VideoScript = {
   voices?: ScriptVoice[];
   /** The concept the operator chose, when the script was written from one. */
   concept?: VideoConcept;
+  /** The script as it was before the last change the operator asked for, so that change can be undone. */
+  previousVersion?: VideoScript;
+  /** One plain line on what the last change did. */
+  changeNote?: string | null;
+  /** What was changed so an uploaded script or concept fits what the video model can make. */
+  adaptations?: string[];
 } & ScriptExtras;
 
 export type VideoBrief = {

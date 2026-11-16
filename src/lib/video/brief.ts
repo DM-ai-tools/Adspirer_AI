@@ -374,6 +374,33 @@ export async function writeConceptScript(projectId: string, conceptId: string): 
   }
 }
 
+/**
+ * Background job: the operator asked for a change to the idea itself. The script is rewritten from
+ * its concept with their request as direction; the script as it was is kept so the change can be undone.
+ */
+export async function rewriteConceptScript(projectId: string, scriptId: string, request: string): Promise<void> {
+  const project = await getProject(projectId);
+  if (!project) return;
+  try {
+    const creative = project.brand?.brief;
+    const current = project.scripts?.find((s) => s.id === scriptId);
+    if (!creative || !current?.concept) throw new Error("This script has no concept to rewrite from.");
+    const concept = current.concept;
+    const ctx = writeContextFor(project, creative, storedBrief(project));
+    const written = await writeScriptForConcept(ctx, concept, { previous: current, direction: `Rewrite this script around the operator's change to the idea, keeping the concept's strengths: ${request}` });
+    const polished = await polishConceptScript(written, ctx, concept);
+    const before = { ...current };
+    delete before.previousVersion;
+    const next = { ...polished, id: current.id, previousVersion: before, changeNote: `Rewritten around your change: ${request.trim().slice(0, 160)}` };
+    const latest = (await getProject(projectId)) ?? project;
+    await updateProject(projectId, { scripts: (latest.scripts ?? []).map((s) => (s.id === scriptId ? next : s)), status: "scripts_ready", error: null });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn("Video concept script could not be rewritten", { projectId, error: message });
+    await updateProject(projectId, { status: "scripts_ready", error: `The change could not be made: ${message}` }).catch(() => undefined);
+  }
+}
+
 /** Background job: three new concepts, never repeating one already shown here or for this client before. */
 export async function moreConcepts(projectId: string, feedback: string | null): Promise<void> {
   const project = await getProject(projectId);
