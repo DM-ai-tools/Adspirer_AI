@@ -471,6 +471,20 @@ export function conceptScriptPrompt(ctx: WriteContext, concept: VideoConcept, op
 const joinLines = (lines: SceneLine[]) => lines.map((l) => l.text.trim()).filter(Boolean).join(" ");
 const speakerOf = (lines: SceneLine[]): VideoScene["speaker"] => (!lines.some((l) => l.text.trim()) ? "none" : lines.some((l) => l.onCamera && l.text.trim()) ? "on_camera" : "voiceover");
 
+/**
+ * A scene whose words were changed somewhere that only knows `line` (an edit, a repair, a rewrite)
+ * gets its parts brought back in step: the words as they now stand, said by the voice that said
+ * them before. A scene whose parts already match is returned as it is. Pure.
+ */
+export function syncSceneLines<T extends Pick<VideoScene, "line" | "speaker" | "lines">>(scene: T): T {
+  if (!scene.lines || joinLines(scene.lines) === scene.line.trim()) return scene;
+  const text = scene.line.trim();
+  if (!text) return { ...scene, lines: [] };
+  const voiceId = scene.lines[0]?.voiceId ?? "narrator";
+  const onCamera = scene.lines.length ? scene.lines[0]!.onCamera : scene.speaker === "on_camera";
+  return { ...scene, lines: [{ voiceId, text, onCamera }] };
+}
+
 /** Older scripts have one voice and a single line per scene: give them the voices shape. Pure. */
 export function normaliseVoices<T extends Pick<VideoScript, "scenes"> & { voices?: ScriptVoice[]; character?: string | null }>(script: T): T {
   const voices = script.voices?.length ? script.voices : [{ id: "narrator", who: script.character ? "the presenter" : "narrator", description: "" }];

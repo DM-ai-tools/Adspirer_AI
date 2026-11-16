@@ -7,17 +7,18 @@ import { resolveBrandManifest } from "@/lib/video/brand-resolve";
 import { claimsFromFacts, findClaimsInText, mergeClaims } from "@/lib/video/claims";
 import { defaultFetchAsset } from "@/lib/video/logo-verify";
 import type { ApprovedClaim, BrandManifest } from "@/lib/video/pipeline-types";
-import { getProject, setProgress, updateProject, type VideoProject } from "@/lib/video/projects";
+import { getProject, listProjects, setProgress, updateProject, type VideoProject } from "@/lib/video/projects";
 import { briefFacts, factsCorpus, type VideoBrief } from "@/lib/video/script";
 import { checkOnly } from "@/lib/video/verify";
 import { buildCreativeBrief, buildSourceDocs, type BriefInput } from "@/lib/video/creative-brief";
-import { planAngles } from "@/lib/video/angles";
+import { planConcepts } from "@/lib/video/concepts";
 import { editorialPass, refreshEditorial } from "@/lib/video/editorial";
 import { resolveWordsPerSecond } from "@/lib/video/duration";
 import { contactTokens, repairScript } from "@/lib/video/script-repairs";
 import { requiredStatsFrom, spokenForms } from "@/lib/video/required-stats";
-import { ensureMainStats, trimToFit, writeScriptForAngle, writeScriptSet, type WriteContext } from "@/lib/video/script-writer";
-import type { AnglePlan, CreativeBrief } from "@/lib/video/script-types";
+import { conceptAngle, ensureMainStats, splitLongScenes, syncSceneLines, trimToFit, writeScriptForAngle, writeScriptForConcept, type WriteContext } from "@/lib/video/script-writer";
+import { storedBrief } from "@/lib/video/script-actions";
+import type { AnglePlan, CreativeBrief, VideoConcept } from "@/lib/video/script-types";
 import type { VideoScript } from "@/lib/video/script";
 import { pickModel } from "@/lib/creatives/concept-writer";
 import { styleForType, videoDirection } from "@/lib/video/video-types";
@@ -206,8 +207,6 @@ export function writeContextFor(project: VideoProject, creative: CreativeBrief, 
   };
 }
 
-const SCRIPT_VERSIONS = 3;
-
 /**
  * The editorial pass for a set of versions: the checks and the model review, targeted rewrites of
  * weak lines (bounded), and a comparison of the versions against one another. A version that is
@@ -286,20 +285,15 @@ export async function writeProjectScripts(projectId: string): Promise<void> {
       return;
     }
 
+    // Three concepts are shown first; the full script is written only for the one the operator picks.
     await stage("writing");
     const ctx = writeContextFor(project, creative, brief);
-    const planned = await planAngles(creative, { count: SCRIPT_VERSIONS });
-    if (!planned.angles.length) throw new Error(planned.limitation ?? "No angle could be built from this page. Add details about the offer and try again.");
-    const written = await writeScriptSet(ctx, planned.angles);
-    if (!written.scripts.length) throw new Error(`The scripts could not be written: ${written.failures.map((f) => f.error).join("; ") || "no model answered"}`);
-
-    // Nothing is shown until each version has been edited against the facts, its voice, its length and the other versions.
-    await stage("verifying");
-    const scripts = await editScripts(written.scripts, ctx, planned.angles);
+    const avoid = await conceptHistory(project.client_id, projectId);
+    const planned = await planConcepts(creative, { targetSeconds: ctx.targetSeconds, direction: brief.direction ?? null, avoid });
     await updateProject(projectId, {
-      brand: { ...brand, facts, corpus: ctx.corpus, brief: creative, angles: planned.angles, angleLimitation: planned.limitation },
-      scripts,
-      status: "scripts_ready",
+      brand: { ...brand, facts, corpus: ctx.corpus, brief: creative, concepts: planned.concepts, shownConcepts: planned.concepts.map((c) => c.logline), conceptLimitation: planned.limitation },
+      scripts: null,
+      status: "concepts_ready",
       error: null,
     });
     await stage("done");
@@ -307,6 +301,99 @@ export async function writeProjectScripts(projectId: string): Promise<void> {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn("Video script writing failed", { projectId, error: message });
     await updateProject(projectId, { status: "failed", error: message }).catch(() => undefined);
+  }
+}
+
+/** How many ideas made for the same client are passed on to be avoided. */
+const HISTORY_LIMIT = 30;
+
+/** The loglines of concepts shown on the client's other video projects, newest projects first. */
+export async function conceptHistory(clientId: string, excludeProjectId: string): Promise<string[]> {
+  try {
+    const projects = await listProjects(clientId, 40);
+    return projects
+      .filter((p) => p.id !== excludeProjectId)
+      .flatMap((p) => [...(p.brand?.shownConcepts ?? [])].reverse())
+      .slice(0, HISTORY_LIMIT);
+  } catch (error) {
+    logger.warn("Video concepts: earlier ideas for the client could not be read", { error: error instanceof Error ? error.message : String(error) });
+    return [];
+  }
+}
+
+/**
+ * The finishing pass for a script written from a concept: a silent editorial review (one bounded
+ * pass; nothing it finds is shown or blocks), brand-truth repairs, the length cut, and the scene
+ * cap. Who says what is brought back in step wherever the words changed.
+ */
+export async function polishConceptScript(script: VideoScript, ctx: WriteContext, concept: VideoConcept): Promise<VideoScript> {
+  const angle = conceptAngle(concept);
+  let edited = script;
+  try {
+    const out = await editorialPass(
+      [script],
+      { brief: ctx.creative, angles: [angle], facts: ctx.facts, claims: ctx.claims, sourceText: ctx.sourceText, wordsPerSecond: ctx.wordsPerSecond, targetSeconds: ctx.targetSeconds, assetIds: ctx.assetIds, locale: ctx.brief.locale, maxPasses: 1 },
+      {
+        rewriteScript: async (current, issues) =>
+          writeScriptForConcept(ctx, concept, { previous: current, direction: `Fix these problems and keep what already works: ${issues.map((i) => `${i.problem} (${i.fix})`).join(" ")}` }),
+      },
+    );
+    edited = out.scripts[0] ?? script;
+  } catch (error) {
+    logger.warn("Video concept script: the editorial pass could not run; keeping the draft", { error: error instanceof Error ? error.message : String(error) });
+  }
+  const repaired = repairScript(edited, ctx.sourceText);
+  const synced = { ...repaired, scenes: repaired.scenes.map(syncSceneLines), voices: repaired.voices ?? script.voices, concept };
+  return splitLongScenes(trimToFit(synced, ctx));
+}
+
+/** Background job: write the full script for the concept the operator picked. Other scripts already written are kept. */
+export async function writeConceptScript(projectId: string, conceptId: string): Promise<void> {
+  const project = await getProject(projectId);
+  if (!project) return;
+  try {
+    const creative = project.brand?.brief;
+    const concept = project.brand?.concepts?.find((c) => c.id === conceptId);
+    if (!creative || !concept) throw new Error("That concept is no longer on this project. Ask for new concepts.");
+    let progress = advanceProgress(initialProgress(), "writing");
+    await setProgress(projectId, progress);
+    const ctx = writeContextFor(project, creative, storedBrief(project));
+    const written = await writeScriptForConcept(ctx, concept);
+    progress = advanceProgress(progress, "verifying");
+    await setProgress(projectId, progress);
+    const script = await polishConceptScript(written, ctx, concept);
+    const latest = (await getProject(projectId)) ?? project;
+    const scripts = [...(latest.scripts ?? []).filter((s) => s.id !== script.id), script];
+    await updateProject(projectId, { scripts, status: "scripts_ready", error: null });
+    await setProgress(projectId, advanceProgress(progress, "done"));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn("Video concept script could not be written", { projectId, conceptId, error: message });
+    // Back to the concepts with the reason, so the operator can pick again rather than start over.
+    await updateProject(projectId, { status: "concepts_ready", error: `The script could not be written: ${message}` }).catch(() => undefined);
+  }
+}
+
+/** Background job: three new concepts, never repeating one already shown here or for this client before. */
+export async function moreConcepts(projectId: string, feedback: string | null): Promise<void> {
+  const project = await getProject(projectId);
+  if (!project) return;
+  try {
+    const creative = project.brand?.brief;
+    if (!creative || !project.brand) throw new Error("This project has no brief to write concepts from. Start a new video.");
+    const shown = project.brand.shownConcepts ?? [];
+    const avoid = [...shown, ...(await conceptHistory(project.client_id, projectId))];
+    const brief = storedBrief(project);
+    const planned = await planConcepts(creative, { targetSeconds: Math.min(Math.max(Math.round(brief.targetSeconds), 15), 60), direction: brief.direction ?? null, avoid, feedback });
+    await updateProject(projectId, {
+      brand: { ...project.brand, concepts: planned.concepts, shownConcepts: [...shown, ...planned.concepts.map((c) => c.logline)], conceptLimitation: planned.limitation },
+      status: "concepts_ready",
+      error: null,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn("New video concepts could not be made", { projectId, error: message });
+    await updateProject(projectId, { status: "concepts_ready", error: `New concepts could not be made: ${message}` }).catch(() => undefined);
   }
 }
 

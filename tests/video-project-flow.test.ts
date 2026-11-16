@@ -87,42 +87,6 @@ vi.mock("ai", () => ({
 }));
 
 describe("writing scripts for a project with an uploaded image", () => {
-  it("reads the image, plans three different angles, writes each from its own, and records progress through to done", async () => {
-    quality = "rich";
-    const { createProject, getProject, updateProject } = await import("@/lib/video/projects");
-    const { writeProjectScripts } = await import("@/lib/video/brief");
-
-    const project = await createProject({
-      clientId: "c1",
-      inputs: { landingPageUrl: "https://acme.test", stats: [], targetSeconds: 35, style: "auto", locale: "en-AU", format: "9:16", priority: "balanced" },
-    });
-    await updateProject(project.id, { assets: [{ id: "IMG", name: "results.png", caption: "", role: "show", key: "k", mime: "image/png" }] });
-
-    await writeProjectScripts(project.id);
-
-    const done = (await getProject(project.id))!;
-    expect(done.status).toBe("scripts_ready");
-    expect(done.progress?.stage).toBe("done");
-    // The image was read and is now marked to highlight.
-    expect(done.assets[0]!.analysis?.stats[0]?.value).toBe("255%");
-    expect(done.assets[0]!.role).toBe("highlight");
-    // The brief and the angles are kept, so one version can be changed later without losing the others.
-    expect(done.brand?.brief?.sourceQuality).toBe("rich");
-    expect(done.brand?.angles).toHaveLength(3);
-    // Each version came from its own angle, with its own opening, source and speech estimate.
-    expect(done.scripts).toHaveLength(3);
-    expect(new Set(done.scripts!.map((s) => s.angle.name)).size).toBe(3);
-    expect(new Set(done.scripts!.map((s) => s.hook!.line)).size).toBe(3);
-    for (const s of done.scripts!) {
-      // The stat came from the image, so it passes the fact check and is tied to that image.
-      expect(s.scenes[2]!.stat).toBe("255%");
-      expect(s.scenes[2]!.assetId).toBe("IMG");
-      expect(s.warnings.join(" ")).not.toMatch(/255/);
-      expect(s.sources!.length).toBeGreaterThan(0);
-      expect(s.speech!.requestedSeconds).toBe(35);
-    }
-  });
-
   it("asks for what is essential instead of inventing when the page cannot support scripts", async () => {
     quality = "insufficient";
     const { createProject, getProject } = await import("@/lib/video/projects");

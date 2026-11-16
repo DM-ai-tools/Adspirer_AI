@@ -1,4 +1,3 @@
-import { effectiveClaims } from "@/lib/video/claims";
 import { z } from "zod";
 import { getCurrentUser } from "@/lib/security/auth";
 import { assertAuthenticated, assertClientAccess } from "@/lib/authz/assert";
@@ -6,17 +5,15 @@ import { deleteProject, getProject, updateProject, type VideoProject } from "@/l
 import { projectName } from "@/lib/video/naming";
 import { effectiveProject, viewGeneration } from "@/lib/video/generation";
 import { getObjectStorage } from "@/lib/storage/r2";
-import { operatorClaims, writeProjectScripts } from "@/lib/video/brief";
+import { writeProjectScripts } from "@/lib/video/brief";
 import { brandView } from "@/lib/video/brand-view";
 import { logoState } from "@/lib/video/brand-resolve";
 import { assetCautions, purposeOf } from "@/lib/video/assets";
 import { splitLabel } from "@/lib/video/evidence";
-import { markEdited, requiredStatsForProject, withSpeech } from "@/lib/video/script-actions";
-import { attachImageStats, linkImageStats, pickMainStat } from "@/lib/video/required-stats";
-import { checkScript, MAX_SECONDS, type VideoScript } from "@/lib/video/script";
+import { confirmScript } from "@/lib/video/script-actions";
+import { pickMainStat } from "@/lib/video/required-stats";
 import { previewPlan } from "@/lib/video/plan-view";
 import { runAfterResponse } from "@/lib/api/background";
-import { retime } from "@/lib/video/timing";
 import { jsonOk, parseBody, withApiHandler } from "@/lib/api/response";
 
 export const maxDuration = 300;
@@ -67,6 +64,8 @@ async function view(raw: VideoProject) {
     brandCheck: brandView(project, logo),
     contextBrief: project.brand?.brief ?? null,
     angleLimitation: project.brand?.angleLimitation ?? null,
+    concepts: project.brand?.concepts ?? [],
+    conceptLimitation: project.brand?.conceptLimitation ?? null,
     wordsPerSecond: project.inputs.speechRate ?? null,
     creative: project.plan?.creative ?? null,
     capabilities: project.plan?.capabilities ?? null,
@@ -93,6 +92,7 @@ const sceneEdit = z.object({
   assetId: z.string().nullable(),
   sound: z.string().max(400),
   originalLine: z.string().max(600).nullable().optional(),
+  lines: z.array(z.object({ voiceId: z.string().max(40), text: z.string().max(600), onCamera: z.boolean() })).max(2).optional(),
 });
 
 const confirmSchema = z.object({
@@ -109,53 +109,8 @@ export async function PATCH(request: Request, ctx: Ctx) {
   return withApiHandler(async () => {
     const project = await load(ctx);
     const body = await parseBody(request, confirmSchema);
-    const original = project.scripts?.find((s) => s.id === body.scriptId);
-    if (!original) throw new Error("That script is not part of this project.");
-
-    // Lengths follow the words: the client's seconds only matter for a scene with no speech.
-    // A scene the operator changed is approved wording: later rewrites keep it.
-    const scenes = retime(markEdited(original, body.edits.scenes).map((s, i) => ({ ...s, number: i + 1 })));
-    const cursor = scenes.length ? scenes[scenes.length - 1]!.end : 0;
-    if (cursor > MAX_SECONDS) throw new Error(`The script runs ${cursor}s; the limit is ${MAX_SECONDS}s.`);
-    const edited: VideoScript = {
-      ...original,
-      title: body.edits.title,
-      durationSeconds: cursor,
-      scenes,
-      adCopy: body.edits.adCopy,
-      warnings: [],
-      // The review was of the version before these edits.
-      verification: null,
-    };
-    // Numbers the operator typed count as theirs; the rest must come from the page, the inputs or the original script.
-    const corpus = [JSON.stringify(project.inputs), project.brand?.summary ?? "", JSON.stringify(original), body.edits.scenes.map((s) => `${s.line} ${s.stat ?? ""}`).join(" ")].join("\n");
-    // A figure the operator typed in the editor (not in the version written for them) is theirs, with that recorded as its source.
-    const manifest = project.brand?.manifest ?? null;
-    let claims = manifest ? effectiveClaims(project.brand) : undefined;
-    let brand = project.brand;
-    if (manifest && claims) {
-      const originalText = [...original.scenes.map((s) => `${s.line} ${s.stat ?? ""}`), original.adCopy.primaryText, original.adCopy.headline].join("\n");
-      const editedTexts = [...body.edits.scenes.map((s) => `${s.line} ${s.stat ?? ""}`), body.edits.adCopy.primaryText, body.edits.adCopy.headline];
-      const typed = operatorClaims(editedTexts, "typed by you in the script editor", claims.length + 1).filter((c) => !originalText.includes(c.figure ?? "\u0000"));
-      const known = new Set(claims.map((c) => (c.figure ?? c.text).toLowerCase()));
-      const added = typed.filter((c) => !known.has((c.figure ?? c.text).toLowerCase()));
-      if (added.length) {
-        claims = [...claims, ...added];
-        brand = { ...project.brand!, manifest: { ...manifest, claims } };
-      }
-    }
-    edited.warnings = checkScript(edited, { corpus, assetIds: project.assets.map((a) => a.id), target: cursor, claims });
-    // Length and the spoken estimate follow the words as they now stand.
-    const lengthed = { ...withSpeech(edited, project.inputs.speechRate, original.speech?.requestedSeconds ?? project.inputs.targetSeconds), warnings: edited.warnings };
-    // The stats read from the uploaded images are mandatory in a script we wrote: they must be said (an uploaded script keeps the operator's own words).
-    const required = requiredStatsForProject(project);
-    const linked = attachImageStats({ ...lengthed, scenes: linkImageStats(lengthed.scenes, required) }, required);
-    const unsaid = original.source === "uploaded" ? [] : (linked.imageStats ?? []).filter((c) => !c.said);
-    if (unsaid.length) {
-      throw new Error(`The stats from your image${new Set(unsaid.map((c) => c.assetId)).size > 1 ? "s" : ""} must be said in the script: ${unsaid.map((c) => `${c.value}${c.label ? ` (${c.label})` : ""}`).join(", ")}. Say each one in a scene (write the figure as it is printed) and the image is shown with it.`);
-    }
-    const withLength = linked;
-    const updated = await updateProject(project.id, { chosen_script: withLength, status: "confirmed", ...(brand !== project.brand ? { brand } : {}) });
+    const { chosen, brand } = confirmScript(project, body);
+    const updated = await updateProject(project.id, { chosen_script: chosen, status: "confirmed", ...(brand !== project.brand ? { brand } : {}) });
     return jsonOk(await view(updated));
   });
 }
