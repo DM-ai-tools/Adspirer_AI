@@ -98,6 +98,15 @@ ${STRATEGY_RULES}
 
 ${SHARED_ANALYSIS_RULES}
 
+## Campaign scope and breakdown
+- When the evidence has **Strategy scope** naming campaigns, the whole report is for those campaigns: title it with their name(s) ("# <Account> — <Campaign> strategy to <target> by <date>"), say the scope in section 1, and use only their figures. Never fall back to account totals.
+- When the evidence has **Campaign breakdown**, keep the 12 sections and add the campaign detail inside them:
+  - Section 4: after the account table, a table Campaign | Now (cost per <unit> and ROAS for sales) | Target | By — each campaign's own figure for the option the operator picked (marked "the account's pick" in the evidence).
+  - Section 5: after the pillars, one "### <Campaign name>" sub-section per campaign in the evidence, in its order, each with: **Where it stands** (one line with its numbers, share of spend, learning and live ads), **What to change** (its waste and best ad sets by name, with figures), **Target** (its picked option), and **Moves** (the STR IDs from section 6 that touch it). Thin data ("directional only") is said once per campaign.
+  - Section 6: the short table gets a Campaign column after Action, and every card names its campaign.
+  - Section 7: the budget table lists every campaign in the breakdown.
+- Every campaign figure comes from its block in the evidence; never split or estimate account figures across campaigns.
+
 ## Format (exactly these headings, in this order)
 # <Account name> — strategy to <the target> by <date>
 ## 1. Strategy header

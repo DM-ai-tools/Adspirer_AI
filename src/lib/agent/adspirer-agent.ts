@@ -197,6 +197,7 @@ import {
 import { loadDocumentsForContext } from "@/lib/documents/service";
 import { extractCreativeSource } from "@/lib/creatives/source-from-documents";
 import { META_AUDIT_FRAMEWORK } from "@/lib/agent/meta-audit-framework";
+import { renderCampaignBreakdownEvidence } from "@/lib/strategy/campaign-breakdown";
 import { endOnLastWholeDay } from "@/lib/comparison/windows-end";
 import {
   GENERIC_FALLBACK_REPLY,
@@ -224,7 +225,7 @@ import {
 } from "@/lib/agent/account-strategy-brief";
 import { accountGoal, baselineOf, leversOf, proposeTargets, type StatedTarget } from "@/lib/strategy/account-strategy";
 import { adSetLoadFailure, renderStrategyPlanEvidence, renderTargetProposalEvidence } from "@/lib/strategy/account-strategy-render";
-import { rulesBrief, type RequestBrief } from "@/lib/agent/request-brief";
+import { rulesBrief, rulesStrategyScope, type RequestBrief } from "@/lib/agent/request-brief";
 import { COMPARISON_FRAMEWORK, COMPARISON_TITLE } from "@/lib/agent/comparison-framework";
 import { renderComparisonEvidence } from "@/lib/comparison/render";
 import { comparisonUserContext } from "@/lib/comparison/user-context";
@@ -2969,7 +2970,7 @@ export async function gatherDiagnoseEvidence(input: {
       const range = strategyPeriod(input.request, input.reportHistory ?? input.history ?? []);
       const rangeDays =
         Math.round((Date.parse(`${range.dateStop}T00:00:00Z`) - Date.parse(`${range.dateStart}T00:00:00Z`)) / 86_400_000) + 1;
-      const snapshot = await withCatalogCategories(
+      const accountSnapshot = await withCatalogCategories(
         input.clientId,
         await provider.getAuditSnapshot(accountId, {
           since: range.dateStart,
@@ -2977,6 +2978,13 @@ export async function gatherDiagnoseEvidence(input: {
           days: rangeDays,
         }),
       );
+      // What the strategy covers, as the operator asked (this message, or the ask a pick answers):
+      // named campaigns narrow every figure, target and move to them; "each campaign" adds a section per campaign.
+      const strategyScope = input.brief?.strategyScope ?? rulesStrategyScope(input.request, input.history ?? []);
+      const scopedCampaigns = strategyScope.campaigns.length
+        ? resolveAuditCampaigns(accountSnapshot.campaigns, { campaignHints: strategyScope.campaigns, activeCampaigns: false })
+        : [];
+      const snapshot = scopedCampaigns.length ? scopeAuditSnapshot(accountSnapshot, scopedCampaigns.map((c) => c.id)) : accountSnapshot;
       const goals = await turnGoals();
       const currentDailySpendCents = snapshot.totals
         ? Math.round(snapshot.totals.spendCents / snapshot.period.days)
@@ -2998,11 +3006,16 @@ export async function gatherDiagnoseEvidence(input: {
 
       // The 12-section strategy's inputs: prior findings for this period (or its own), the profile (from chat, data or defaults; few questions),
       // platform notes and what the app can do. Campaigns the ask names narrow which reports qualify.
-      const scopeBrief = resolveAuditBrief(input.request);
-      const scopedCampaigns =
-        scopeBrief.scope === "campaigns" && scopeBrief.campaignHints.length
-          ? resolveAuditCampaigns(snapshot.campaigns, { campaignHints: scopeBrief.campaignHints, activeCampaigns: false })
-          : [];
+      const accountSpend = accountSnapshot.totals?.spendCents ?? 0;
+      const scopeEvidence = scopedCampaigns.length
+        ? [
+            "### Strategy scope (the operator asked for these campaigns)",
+            `- This strategy covers only: ${scopedCampaigns.map((c) => `${c.name}${accountSpend > 0 ? ` (${Math.round(((c.performance?.spendCents ?? 0) / accountSpend) * 100)}% of the account's spend)` : ""}`).join("; ")}.`,
+            "- Every figure, target and move below is for these campaigns alone. Title the report with the campaign name(s), e.g. \"# <Account> — <Campaign> strategy to <target> by <date>\", and name the scope in section 1.",
+          ].join("\n")
+        : strategyScope.campaigns.length
+          ? `### Strategy scope\n- No campaign matched ${strategyScope.campaigns.map((n) => `"${n}"`).join(", ")}, so this strategy covers the whole account. Say so in section 1.`
+          : null;
       // Saved services answer "what do they sell" before the ad set names do (a failed read just skips them).
       const savedServices = (await activeClientServices(input.clientId).catch(() => [])).map((s) => s.name);
       const strategyInputsEvidence = (scorecard: ReturnType<typeof evaluateCheckpoints>) =>
@@ -3068,12 +3081,23 @@ export async function gatherDiagnoseEvidence(input: {
           marginPct: goals.gross_margin_pct ?? null,
         };
         await input.onProgress?.({ phase: "build_plan", label: target ? "Building the plan…" : "Working out the targets your numbers support…", stepId: "build_plan" });
+        if (scopeEvidence) sections.push(scopeEvidence);
         if (target) {
           sections.push(renderStrategyPlanEvidence({ ...evidenceInput, target, targetSource, defaultWindowDays: 30 }));
+          if (strategyScope.perCampaign) {
+            sections.push(
+              renderCampaignBreakdownEvidence({ snapshot, kind: goal.kind, profit, money: moneyFor(snapshot.account.currency), pick: resolved.pick }),
+            );
+          }
           sections.push(strategyInputsEvidence(scorecard));
           sections.push(["### Strategy framework (write the plan with these headings)", ACCOUNT_STRATEGY_FRAMEWORK].join("\n"));
         } else {
           sections.push(renderTargetProposalEvidence({ ...evidenceInput, options, windowDays: resolved.stated.windowDays }));
+          if (strategyScope.perCampaign) {
+            sections.push(
+              "### Campaign breakdown\n- The operator wants the strategy campaign by campaign: say in one line that the full plan will have a section per campaign once they pick a target.",
+            );
+          }
           sections.push(strategyInputsEvidence(scorecard));
           sections.push(["### Strategy framework (write the proposal with these headings)", STRATEGY_TARGET_PROPOSAL_FRAMEWORK].join("\n"));
           strategyAppendix = strategyTargetClosing(goal.kind, options.length > 0);

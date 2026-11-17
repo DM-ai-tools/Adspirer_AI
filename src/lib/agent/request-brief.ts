@@ -54,9 +54,33 @@ export type RequestBrief = {
    * or null. Read by the model in context; the word patterns only stand in when no model answers.
    */
   strategyPick?: StrategyPick | null;
+  /**
+   * What a strategy covers, as the operator asked for it in this message or when they asked for this
+   * strategy earlier in the chat: named campaigns, and/or one section per campaign.
+   */
+  strategyScope?: StrategyScope;
 };
 
 export type StrategyPick = "safe" | "recommended" | "bold" | "own";
+export type StrategyScope = { campaigns: string[]; perCampaign: boolean };
+
+/** "each", "all campaigns", "every one" describe a breakdown, not a campaign name. */
+const GENERIC_CAMPAIGN_WORDS = /^(?:(?:each|every|all|per|individual|the|my|our)\s*)+(?:campaigns?|ones?)?$|^campaigns?$/i;
+
+/** "for each campaign", "campaign-wise", "per campaign", "every campaign separately", "by campaign". */
+const PER_CAMPAIGN = /\b(?:each|every|per|individual)\s+campaigns?\b|\bcampaign[- ]?(?:wise|by[- ]campaign|level)\b|\bby\s+campaign\b|\bcampaigns?\s+(?:separately|individually|one by one)\b/i;
+
+/** The strategy's scope from the words alone (no model): the ask, or the earlier ask this message answers. */
+export function rulesStrategyScope(request: string, history: AgentHistoryMessage[]): StrategyScope {
+  const asks = [request, ...[...history].reverse().filter((m) => m.role === "user").slice(0, 3).map((m) => m.content)];
+  const strategyAsk = asks.find((t) => /\b(?:strateg\w*|plan)\b/i.test(t)) ?? request;
+  // The audit parser's hints include target and period words ("to 4x ROAS", "in 60 days") and a trailing
+  // "campaign": keep only what reads as a campaign name.
+  const hints = (resolveAuditBrief(strategyAsk).campaignHints ?? [])
+    .map((h) => h.replace(/^(?:the|my|our)\s+/i, "").replace(/\s+campaigns?$/i, "").trim())
+    .filter((h) => h.length >= 2 && !GENERIC_CAMPAIGN_WORDS.test(h) && !/\b\d+(?:\.\d+)?\s*(?:x|×)|\broas\b|\bcp[al]\b|\$\s?\d|\b\d+\s*(?:days?|weeks?|months?)\b|^(?:to|in|by|for)\b/i.test(h));
+  return { campaigns: hints, perCampaign: asks.some((t) => PER_CAMPAIGN.test(t)) };
+}
 
 export const EMPTY_QUEUE: QueueSelection = { requested: false, all: false, refs: [], focus: [], entities: [] };
 
@@ -450,6 +474,25 @@ function hasEarlierReport(history: AgentHistoryMessage[]): boolean {
 }
 
 /** "what does an audit check?" asks about the work; "give me the audit" asks for it. Only the second is overridden. */
+/**
+ * The model's strategy scope, kept honest: a campaign name counts only when the operator typed it (in
+ * this message or an earlier one of theirs); a model cannot add a campaign. With no model scope, the
+ * word patterns stand in.
+ */
+function modelStrategyScope(
+  scope: { campaigns: string[]; perCampaign: boolean } | null,
+  request: string,
+  history: AgentHistoryMessage[],
+): StrategyScope {
+  const rules = rulesStrategyScope(request, history);
+  if (!scope) return rules;
+  const typed = [request, ...history.filter((m) => m.role === "user").map((m) => m.content)].join("\n").replace(/\s+/g, " ").toLowerCase();
+  const campaigns = scope.campaigns
+    .map((n) => n.trim())
+    .filter((n) => n && !GENERIC_CAMPAIGN_WORDS.test(n) && typed.includes(n.replace(/\s+/g, " ").toLowerCase()));
+  return { campaigns: campaigns.length ? campaigns : rules.campaigns, perCampaign: scope.perCampaign || rules.perCampaign };
+}
+
 /** The pick the word patterns can read from a reply to the proposal: an option, else their own target. */
 function rulesPick(request: string): StrategyPick {
   return pickedOption(request) ?? "own";
@@ -543,6 +586,7 @@ export function rulesBrief(request: string, history: AgentHistoryMessage[]): Req
     optimizationAsk,
     source: "rules",
     strategyPick: answersStrategyProposal(request, history) && !asksAQuestion(request) ? rulesPick(request) : null,
+    strategyScope: rulesStrategyScope(request, history),
   };
 }
 
@@ -570,6 +614,11 @@ const modelSchema = z.object({
     .default({ requested: false, all: false, refs: [], focus: [], entities: [], exceptRefs: [], exceptFocus: [] }),
   exclude: nameList.default([]),
   strategyPick: z.enum(["safe", "recommended", "bold", "own"]).nullable().catch(null).default(null),
+  strategyScope: z
+    .object({ campaigns: nameList.catch([]).default([]), perCampaign: z.boolean().catch(false).default(false) })
+    .nullable()
+    .catch(null)
+    .default(null),
 });
 
 const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
@@ -637,5 +686,6 @@ export function parseBriefReply(
     source: "model",
     // A pick only means something while a proposal is waiting for one.
     strategyPick: strategyState(history).open ? data.strategyPick : null,
+    strategyScope: modelStrategyScope(data.strategyScope, request, history),
   };
 }

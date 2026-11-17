@@ -63,7 +63,7 @@ export const SYSTEM = [
   "Intents:",
   ...INTENTS.map((i) => `- ${i}: ${INTENT_GUIDE[i]}`),
   "Also read what the operator wants done, and reply with JSON only, exactly this shape:",
-  '{"intent":"<one of the names above>","mode":"analyse|act","focus":[],"scope":[],"periodStated":false,"optimizationAsk":false,"queue":{"requested":false,"all":false,"refs":[],"focus":[],"entities":[]},"exclude":[],"strategyPick":null}',
+  '{"intent":"<one of the names above>","mode":"analyse|act","focus":[],"scope":[],"periodStated":false,"optimizationAsk":false,"queue":{"requested":false,"all":false,"refs":[],"focus":[],"entities":[]},"exclude":[],"strategyPick":null,"strategyScope":null}',
   '- "mode": "act" ONLY when the operator asks for changes to be made or queued (pause, resume, change a budget, apply, queue, send to Approvals). A question, or asking what to optimise, is "analyse". When unsure, "analyse".',
   '- "focus": any of budget, bids, placements, audiences, creative, schedule, tracking, structure, reactivation, landing_page that the message is about. Empty when it names no area.',
   '- "scope": campaign, ad set or ad names or ids, copied exactly as the operator typed them. Empty when they mean the whole account.',
@@ -71,6 +71,7 @@ export const SYSTEM = [
   '- "optimizationAsk": true when they want optimisation steps, fixes or advice on what to change.',
   '- "queue": only when "mode" is "act". "refs" are proposal numbers they typed (#2 -> 2). "all" is true for "all of these / everything / them". "focus" is only for picking among proposals already shown ("queue the budget changes"); leave it empty for a direct instruction like "pause X" or "set the budget of X to 60". "entities" are the names they want changed.',
   '- "exclude": names the operator said not to touch.',
+  '- "strategyScope": only for strategy. What the strategy should cover, as the operator asked in this message or when they asked for this strategy earlier in the conversation (a pick like "recommended" keeps the scope of the original ask): {"campaigns":[names copied exactly as they typed them],"perCampaign":true when they want it broken down campaign by campaign ("for each campaign", "campaign-wise", "a plan per campaign")}. null for a whole-account strategy with no breakdown.',
   '- "strategyPick": only when the Conversation state says a strategy is waiting for a pick and this message answers it: "safe", "recommended" or "bold" for a proposed option (match their words, or the figures they quote, to the options), "own" when they give their own target instead. Otherwise null.',
 ].join("\n");
 

@@ -70,6 +70,15 @@ const CASES: Case[] = [
   { history: PLANNED, label: "planned", message: "queue STR-002", intent: ["optimize"], pick: null },
 ];
 
+type ScopeCase = { history: AgentHistoryMessage[]; message: string; campaigns: string[]; perCampaign: boolean };
+const SCOPE_CASES: ScopeCase[] = [
+  { history: REPORT_ONLY, message: "give me a strategy for each campaign", campaigns: [], perCampaign: true },
+  { history: REPORT_ONLY, message: "strategy report, broken down campaign by campaign", campaigns: [], perCampaign: true },
+  { history: REPORT_ONLY, message: "build a strategy for the Basket and Retail Display campaign", campaigns: ["Basket and Retail Display"], perCampaign: false },
+  { history: REPORT_ONLY, message: "give me a strategy report", campaigns: [], perCampaign: false },
+  { history: [...REPORT_ONLY, u("give me a strategy for each campaign"), a(PROPOSAL)], message: "recommended", campaigns: [], perCampaign: true },
+];
+
 function loadAiEnv() {
   const env = fs.readFileSync(".env.local", "utf8");
   for (const line of env.split(/\r?\n/)) {
@@ -96,6 +105,31 @@ describe.skipIf(!LIVE)("LIVE: strategy replies are understood in context", () =>
           (c.pick === null ? brief.intent !== "strategy" || c.intent[0] === "strategy" : pick === c.pick) &&
           (c.intent[0] === "strategy" || pick === null);
         const line = `${ok ? "ok  " : "FAIL"} [${c.label}] "${c.message}" -> ${brief.intent}${pick ? ` (${pick})` : ""}  expected ${c.intent.join("|")}${c.pick ? ` (${c.pick})` : ""}  via ${brief.source}`;
+        console.log(line);
+        if (!ok) wrong.push(line);
+      }
+      expect(wrong).toEqual([]);
+    },
+    300_000,
+  );
+
+  it(
+    "reads what the strategy should cover",
+    async () => {
+      loadAiEnv();
+      const { resetConfigCache } = await import("@/lib/config");
+      resetConfigCache();
+      const { classifyRequest } = await import("@/lib/agent/intent-classifier");
+      const wrong: string[] = [];
+      for (const c of SCOPE_CASES) {
+        const brief = await classifyRequest(c.message, c.history, c.history.includes(a(PROPOSAL)) ? PROPOSAL : null);
+        const scope = brief.strategyScope ?? { campaigns: [], perCampaign: false };
+        const ok =
+          brief.intent === "strategy" &&
+          scope.perCampaign === c.perCampaign &&
+          scope.campaigns.length === c.campaigns.length &&
+          c.campaigns.every((n) => scope.campaigns.some((s) => s.toLowerCase().includes(n.toLowerCase())));
+        const line = `${ok ? "ok  " : "FAIL"} "${c.message}" -> ${brief.intent} ${JSON.stringify(scope)}  expected ${JSON.stringify({ campaigns: c.campaigns, perCampaign: c.perCampaign })}`;
         console.log(line);
         if (!ok) wrong.push(line);
       }
