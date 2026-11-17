@@ -166,7 +166,15 @@ export type AuditAd = {
   frequency7d?: number | null;
   /** Meta's quality / engagement / conversion rankings, when reported. */
   rankings?: { quality: string | null; engagement: string | null; conversion: string | null } | null;
+  /** Comparison reports only: the same ad in the comparison window. */
+  previousPerformance?: PeriodPerformance | null;
 };
+
+/** The splits a comparison report reads for both windows. */
+export type BreakdownDimension = "age_gender" | "placement" | "country" | "device";
+
+/** One row of a breakdown; key is e.g. "25-34 · female", "instagram · feed", "AU", "mobile_app". */
+export type BreakdownRow = { key: string; performance: PeriodPerformance };
 
 /**
  * One edit recorded in Meta's account activity history during the audited
@@ -254,7 +262,12 @@ export type MetaAuditSnapshot = {
   /** True when `previousPeriod` is a range the operator named (not the period just before). */
   comparisonNamed?: boolean;
   /** Comparison parts that failed to load (the rest still compare). */
-  comparisonFailures?: Array<"totals" | "campaigns" | "ad sets">;
+  comparisonFailures?: Array<"totals" | "campaigns" | "ad sets" | "ads" | "breakdowns">;
+  /**
+   * Comparison reports only (`comparisonDetail`): account-level splits for both windows.
+   * A null side failed to load.
+   */
+  comparisonBreakdowns?: Array<{ dimension: BreakdownDimension; current: BreakdownRow[] | null; previous: BreakdownRow[] | null }>;
   previousTotals?: PeriodPerformance | null;
   /** Set when no comparison was asked for: nothing before the period was loaded, and nothing failed. */
   comparisonNotRequested?: true;
@@ -527,6 +540,11 @@ export type AuditSnapshotOptions = {
   compareUntil?: string;
   /** Campaign audits: the campaigns in scope, so day-by-day delivery is loaded for their edits first. */
   campaignIds?: string[];
+  /**
+   * Comparison reports: also load ad-level figures and age/placement/country/device splits for both
+   * windows. Default false (normal audits skip these calls). Implies `compare: true`.
+   */
+  comparisonDetail?: boolean;
 };
 
 /** The snapshot without any comparison data, marked as not requested. */
@@ -541,7 +559,9 @@ function withoutComparison(snap: MetaAuditSnapshot): MetaAuditSnapshot {
     comparisonNotRequested: true,
     campaigns: snap.campaigns.map(dropPrevious),
     adSets: snap.adSets.map(dropPrevious),
+    ads: snap.ads.map(dropPrevious),
   };
+  delete out.comparisonBreakdowns;
   delete out.previousPeriod;
   delete out.comparisonNamed;
   delete out.comparisonFailures;
@@ -795,7 +815,8 @@ export async function fetchMetaAuditSnapshot(
   const days = Math.round((Date.parse(`${until}T00:00:00Z`) - Date.parse(`${since}T00:00:00Z`)) / DAY_MS) + 1;
   const timeRange = JSON.stringify({ since, until });
   // No comparison asked for: nothing before the period is fetched.
-  const compare = options.compare !== false;
+  const detail = options.comparisonDetail === true;
+  const compare = detail || options.compare !== false;
   const comparison = comparisonPeriodOf(since, until, options);
   const previousPeriod = { since: comparison.since, until: comparison.until };
   const previousRange = JSON.stringify(previousPeriod);
@@ -813,6 +834,7 @@ export async function fetchMetaAuditSnapshot(
   const [
     pixels, customConversions, audiences, campaigns, adSets, ads, totals, campaignIns, adSetIns, adIns, placements, adSetWeek,
     previousTotals, previousCampaignIns, previousAdSetIns, adWeek, productIns, activity, demographicIns, positionIns, monthlyIns,
+    previousAdIns, previousDemographicIns, previousPositionIns, countryIns, previousCountryIns, deviceIns, previousDeviceIns,
   ] =
     await Promise.all([
       settle("Pixels", warnings, paged(graph, `${id}/adspixels`, {
@@ -900,6 +922,43 @@ export async function fetchMetaAuditSnapshot(
             level: "campaign", time_range: timeRange, time_increment: "monthly", fields: `campaign_id,${insightFields}`, limit: 500,
           }, 4))
         : null,
+      // Comparison reports only: ad-level figures for the comparison window, and the country and device
+      // splits for both windows (the current age/gender and position splits above are reused).
+      detail
+        ? settle(`${comparisonLabel} ad performance`, warnings, paged(graph, `${id}/insights`, {
+            level: "ad", time_range: previousRange, fields: `ad_id,quality_ranking,engagement_rate_ranking,conversion_rate_ranking,video_thruplay_watched_actions,${insightFields}`, sort: "spend_descending", limit: 200,
+          }, 2))
+        : null,
+      detail
+        ? settle(`${comparisonLabel} age and gender breakdown`, warnings, paged(graph, `${id}/insights`, {
+            level: "account", time_range: previousRange, breakdowns: "age,gender", fields: insightFields, limit: 200,
+          }, 2))
+        : null,
+      detail
+        ? settle(`${comparisonLabel} placement position breakdown`, warnings, paged(graph, `${id}/insights`, {
+            level: "account", time_range: previousRange, breakdowns: "publisher_platform,platform_position", fields: insightFields, limit: 200,
+          }, 2))
+        : null,
+      detail
+        ? settle("Country breakdown", warnings, paged(graph, `${id}/insights`, {
+            level: "account", time_range: timeRange, breakdowns: "country", fields: insightFields, limit: 200,
+          }, 2))
+        : null,
+      detail
+        ? settle(`${comparisonLabel} country breakdown`, warnings, paged(graph, `${id}/insights`, {
+            level: "account", time_range: previousRange, breakdowns: "country", fields: insightFields, limit: 200,
+          }, 2))
+        : null,
+      detail
+        ? settle("Device breakdown", warnings, paged(graph, `${id}/insights`, {
+            level: "account", time_range: timeRange, breakdowns: "impression_device", fields: insightFields, limit: 200,
+          }, 2))
+        : null,
+      detail
+        ? settle(`${comparisonLabel} device breakdown`, warnings, paged(graph, `${id}/insights`, {
+            level: "account", time_range: previousRange, breakdowns: "impression_device", fields: insightFields, limit: 200,
+          }, 2))
+        : null,
     ]);
 
   const byKey = (rows: Row[] | null, key: string) => new Map((rows ?? []).map((r) => [String(r[key] ?? ""), r]));
@@ -911,12 +970,40 @@ export async function fetchMetaAuditSnapshot(
   const previousCampaignPerf = byKey(previousCampaignIns, "campaign_id");
   const previousAdSetPerf = byKey(previousAdSetIns, "adset_id");
   // Compare when any part of the comparison window loaded; name the parts that didn't.
-  const comparisonFailures = [
+  const comparisonFailures: NonNullable<MetaAuditSnapshot["comparisonFailures"]> = [
     ...(previousTotals == null ? (["totals"] as const) : []),
     ...(previousCampaignIns == null ? (["campaigns"] as const) : []),
     ...(previousAdSetIns == null ? (["ad sets"] as const) : []),
   ];
   const hasPrevious = compare && comparisonFailures.length < 3;
+  const previousAdPerf = byKey(previousAdIns, "ad_id");
+  const breakdownRows = (rows: Row[] | null, keyOf: (r: Row) => string): BreakdownRow[] | null =>
+    rows == null
+      ? null
+      : rows.flatMap((r) => {
+          const performance = performanceFrom(r);
+          return performance ? [{ key: keyOf(r), performance }] : [];
+        });
+  const ageGenderKey = (r: Row) => `${r.age ?? "unknown"} · ${r.gender ?? "unknown"}`;
+  const placementKey = (r: Row) => `${r.publisher_platform ?? "unknown"} · ${r.platform_position ?? "unknown"}`;
+  const comparisonBreakdowns: NonNullable<MetaAuditSnapshot["comparisonBreakdowns"]> = detail
+    ? [
+        { dimension: "age_gender", current: breakdownRows(demographicIns, ageGenderKey), previous: breakdownRows(previousDemographicIns, ageGenderKey) },
+        { dimension: "placement", current: breakdownRows(positionIns, placementKey), previous: breakdownRows(previousPositionIns, placementKey) },
+        {
+          dimension: "country",
+          current: breakdownRows(countryIns, (r) => String(r.country ?? "unknown")),
+          previous: breakdownRows(previousCountryIns, (r) => String(r.country ?? "unknown")),
+        },
+        {
+          dimension: "device",
+          current: breakdownRows(deviceIns, (r) => String(r.impression_device ?? "unknown")),
+          previous: breakdownRows(previousDeviceIns, (r) => String(r.impression_device ?? "unknown")),
+        },
+      ]
+    : [];
+  if (detail && previousAdIns == null) comparisonFailures.push("ads");
+  if (comparisonBreakdowns.some((d) => d.current == null || d.previous == null)) comparisonFailures.push("breakdowns");
 
   const auditAdSets: AuditAdSet[] = (adSets ?? []).map((a) => {
     const promoted = (a.promoted_object ?? {}) as Row;
@@ -1134,6 +1221,7 @@ export async function fetchMetaAuditSnapshot(
         }
       : {}),
     ...(compare ? {} : { comparisonNotRequested: true as const }),
+    ...(detail ? { comparisonBreakdowns } : {}),
     pixels: auditPixels,
     ...(catalogProducts ? { catalogProducts } : {}),
     customConversions: (customConversions ?? []).map((c) => ({
@@ -1195,6 +1283,7 @@ export async function fetchMetaAuditSnapshot(
             : str(creative.object_type),
         issue: str(issues[0]?.error_summary),
         performance: performanceFrom(adPerf.get(String(a.id))),
+        ...(hasPrevious && detail && previousAdIns != null ? { previousPerformance: performanceFrom(previousAdPerf.get(String(a.id))) } : {}),
         urlTags: str(creative.url_tags),
         linkUrl: str(creative.link_url) ?? extractCreativeDestination(creative).landing_page_url,
         copy: creativeCopy(creative),
@@ -1440,7 +1529,7 @@ export function demoMetaAuditSnapshot(
 ): MetaAuditSnapshot {
   const options: AuditSnapshotOptions = typeof daysOrOptions === "number" ? { days: daysOrOptions } : daysOrOptions;
   const snap = demoSnapshotWithComparison(accountId, accountName, options);
-  return options.compare === false ? withoutComparison(snap) : snap;
+  return options.compare === false && !options.comparisonDetail ? withoutComparison(snap) : snap;
 }
 
 function demoSnapshotWithComparison(
@@ -1502,11 +1591,66 @@ function demoSnapshotWithComparison(
     ...over,
   });
 
+  // Comparison reports: each ad gets a plausible previous-period figure and the four splits are filled.
+  const withDetail = (snap: MetaAuditSnapshot): MetaAuditSnapshot => {
+    if (!options.comparisonDetail) return snap;
+    const ecommerce = accountId === DEMO_CLICKTRENDS_META_ACCOUNT_ID;
+    const rows = (parts: Array<[string, number, number, number, number]>, roas: number | null = null): BreakdownRow[] =>
+      parts.map(([key, spend, results, frequency, ctr]) => ({ key, performance: perf(spend, results, frequency, ctr, roas) }));
+    const split = (
+      dimension: BreakdownDimension,
+      current: Array<[string, number, number, number, number]>,
+      previous: Array<[string, number, number, number, number]>,
+    ) => ({ dimension, current: rows(current, ecommerce ? 2.5 : null), previous: rows(previous, ecommerce ? 2.4 : null) });
+    return {
+      ...snap,
+      ads: snap.ads.map((ad) => {
+        const p = ad.performance;
+        if (!p) return ad;
+        // Alternate up and down so a comparison has movers in both directions.
+        const up = Number(ad.id.replace(/\D/g, "")) % 2 === 0;
+        const factor = up ? 0.85 : 1.12;
+        return {
+          ...ad,
+          previousPerformance: perf(
+            Math.round(p.spendCents * factor),
+            p.results == null ? null : Math.max(1, Math.round(p.results * (up ? 0.8 : 1.15))),
+            Math.max(1, p.frequency * (up ? 0.95 : 1.05)),
+            p.linkCtr * (up ? 0.95 : 1.05),
+            p.roas,
+          ),
+        };
+      }),
+      comparisonBreakdowns: [
+        split(
+          "age_gender",
+          [["25-34 · female", 120_000, 30, 2.2, 1.1], ["35-44 · female", 90_000, 20, 2.4, 0.95], ["35-44 · male", 60_000, 12, 2.6, 0.85]],
+          [["25-34 · female", 100_000, 24, 2.1, 1.12], ["35-44 · female", 95_000, 21, 2.3, 0.98], ["35-44 · male", 50_000, 9, 2.5, 0.9]],
+        ),
+        split(
+          "placement",
+          [["facebook · feed", 160_000, 38, 2.3, 1.0], ["instagram · feed", 100_000, 22, 2.1, 1.1], ["instagram · story", 40_000, 5, 3.0, 0.7]],
+          [["facebook · feed", 150_000, 33, 2.2, 1.0], ["instagram · feed", 80_000, 18, 2.0, 1.15], ["instagram · story", 30_000, 6, 2.8, 0.8]],
+        ),
+        split(
+          "country",
+          [["AU", 240_000, 55, 2.3, 1.0], ["NZ", 40_000, 8, 2.5, 0.9]],
+          [["AU", 210_000, 47, 2.2, 1.05], ["NZ", 35_000, 7, 2.4, 0.95]],
+        ),
+        split(
+          "device",
+          [["mobile_app", 190_000, 41, 2.4, 1.05], ["mobile_web", 60_000, 12, 2.2, 0.9], ["desktop", 30_000, 6, 2.0, 0.85]],
+          [["mobile_app", 170_000, 36, 2.3, 1.1], ["mobile_web", 55_000, 11, 2.1, 0.92], ["desktop", 25_000, 5, 1.9, 0.9]],
+        ),
+      ],
+    };
+  };
+
   if (accountId === DEMO_CLICKTRENDS_META_ACCOUNT_ID) {
     // Ecommerce (bar stools and sofas): one Advantage+ sales campaign, one
     // retargeting campaign, ads linking to the category collections.
     const purchase = { customEventType: "PURCHASE", countries: ["US"] };
-    return {
+    return withDetail({
       account: {
         id: accountId,
         name: accountName,
@@ -1558,10 +1702,10 @@ function demoSnapshotWithComparison(
       warnings: [],
       fetchedAt: new Date().toISOString(),
       demo: true,
-    };
+    });
   }
 
-  return {
+  return withDetail({
     account: {
       id: accountId,
       name: accountName,
@@ -1635,5 +1779,5 @@ function demoSnapshotWithComparison(
     warnings: [],
     fetchedAt: new Date().toISOString(),
     demo: true,
-  };
+  });
 }
