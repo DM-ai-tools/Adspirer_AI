@@ -31,7 +31,7 @@ export const STRATEGY_RULES = `
 - Read "Strategy inputs (findings, profile, platform notes, app capabilities)" first. Cite only the IDs listed under its **Findings**: AUD-### or CMP-### from this chat, or SF-### when it says no audit or comparison covers this period (then say so in one line in section 1). Never invent an ID. When it lists a report as "not used", cite none of that report's IDs and give the reason in section 1.
 - Every action cites at least one finding ID. No orphan advice: an action with no finding behind it is dropped.
 - Expected impact is a directional range with a confidence label (High / Medium / Low), never a guarantee. Give a range only when the evidence has a worked projection for it, copied as written; otherwise write "Impact uncertain". Never work a figure out yourself.
-- Missing inputs: for each item under **Profile missing**, don't guess. Put what you assumed under Assumptions (section 1) and the question under Questions for the client (section 12), and lower the confidence one step for each missing item an action rests on (a missing goal, budget, margin or timeframe also lowers the overall confidence). These are asked in chat; never save them or say they are saved.
+- Ask as little as possible. Items under **Profile from the account's data** and **Profile assumed by default** are assumptions, not questions: list each under Assumptions (section 1) in a few words with its source ("what they sell: basket displays and trolleys (from the ad set names)"), and the client can correct them in chat. Items under **Stated by the operator in chat** use the operator's words. Ask only what is under **Questions for the client**, and never add a question of your own. Lower the confidence one step only for an action that rests on an unanswered question (say which). These are answered in chat; never save them or say they are saved.
 - Respect the caps, constraints and risk appetite under **Profile known**. Don't recommend what the budget or the assets can't support.
 - Account for the **Platform notes**. If advice conflicts with one, say why or drop it.
 - If **Measurement** lists an attribution or tracking edit, flag a MEASUREMENT BREAK and don't read the change across it as performance.
@@ -75,7 +75,7 @@ ${VOICE}
 **Targets I'd set** — the targets table from the evidence (Option | Cost per <unit> | ROAS for sales | By | Rests on), copied exactly, with the dates. Then one or two sentences: which you recommend and why, in terms of this account (e.g. "the waste is in two ad sets you control today, so 30 days is enough"). If the evidence has the client's saved target, say how it compares (met, reachable, beyond what the numbers support).
 - When the targets are **scale** targets, lead with why: the account already makes money (give the break-even line), so the limit is volume, and each option is more results on a bigger budget with a ceiling on cost. When no margin is set, ask them to confirm their gross margin is above the break-even figure.
 - When the evidence says there are no targets (no results recorded), say why in one line and propose the first milestone it names instead.
-**Questions for the client** — one short bullet list, one plain question per item under "Profile missing" in "Strategy inputs" (leave the list out when it says None). They are answered in chat; never say anything is saved.
+**Questions for the client** — only the questions under "Questions for the client" in "Strategy inputs", each in one plain line with its reason in a few words; leave the list out when it says None, and never add a question of your own. They are answered in chat; never say anything is saved.
 - Stop there. Don't write a plan, a timeline or tactics, and don't offer to queue or apply anything. A closing line asking them to pick is added automatically after your text.
 `.trim();
 
@@ -101,7 +101,7 @@ ${SHARED_ANALYSIS_RULES}
 ## Format (exactly these headings, in this order)
 # <Account name> — strategy to <the target> by <date>
 ## 1. Strategy header
-Short labelled lines: **Goal** (the target and date from "The target", and where it came from); **Window** (the data period and the plan's window); **Inputs used** (where the findings come from, the profile items known, the measurement line); **Assumptions** (one bullet per "Profile missing" item you had to assume, else "None"); **Overall confidence** (High / Medium / Low, and why in one line: how many results the numbers rest on, tracking failures, missing inputs). If the target is beyond what the numbers support, say so here and plan to the nearest target the numbers do support, naming both.
+Short labelled lines: **Goal** (the target and date from "The target", and where it came from); **Window** (the data period and the plan's window); **Inputs used** (where the findings come from, the profile items known, the measurement line); **Assumptions** (one short bullet per item under "Profile from the account's data" and "Profile assumed by default", with its source, so the client can correct it; else "None"); **Overall confidence** (High / Medium / Low, and why in one line: how many results the numbers rest on, tracking failures, missing inputs). If the target is beyond what the numbers support, say so here and plan to the nearest target the numbers do support, naming both.
 ## 2. Situation summary
 At most 6 lines: whether the account can get there and why (the verdict, in plain words), what is working, where the money is lost, and the two or three actions that decide it.
 ## 3. Diagnosis
@@ -122,5 +122,5 @@ A table: Week | Look at | On track if | If not — from "On track looks like" an
 ## 11. Risks and dependencies
 Only real ones from the evidence (thin data, tracking, a single ad set carrying the account), each with what would change the plan.
 ## 12. Client checklist
-**Decisions**, **Approvals** (the Type A actions by STR ID) and **Data needed**, as short bullets. Then **Questions for the client:** one plain question per "Profile missing" item (leave it out when that says None).
+**Decisions**, **Approvals** (the Type A actions by STR ID) and **Data needed**, as short bullets. Then **Questions for the client:** only the questions under "Questions for the client" in "Strategy inputs", each with its reason in a few words (leave it out when that says None; never add others).
 `.trim();

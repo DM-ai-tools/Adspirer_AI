@@ -60,7 +60,7 @@ ${SHARED_ANALYSIS_RULES}
 ## Format (exactly these headings, in this order)
 # <Account name> — lead strategy
 ## 1. Strategy header
-Short labelled lines: **Goal** (the leads wanted and the period, or the stated budget with no goal); **Window** (the data period and the plan's period); **Inputs used** (where the findings come from, the profile items known, the measurement line); **Assumptions** (the lead plan's assumptions plus one bullet per "Profile missing" item you had to assume); **Overall confidence** (High / Medium / Low, from the evidence only: how many leads the reference cost per lead rests on, any "weak guide" note, failing tracking checks, missing inputs).
+Short labelled lines: **Goal** (the leads wanted and the period, or the stated budget with no goal); **Window** (the data period and the plan's period); **Inputs used** (where the findings come from, the profile items known, the measurement line); **Assumptions** (the lead plan's assumptions plus one short bullet per item under "Profile from the account's data" and "Profile assumed by default", with its source, so the client can correct it); **Overall confidence** (High / Medium / Low, from the evidence only: how many leads the reference cost per lead rests on, any "weak guide" note, failing tracking checks, missing inputs).
 ## 2. Situation summary
 At most 6 lines answering the question asked. For a lead goal: the recommended daily and period budget (the Expected case) and the range from the Best to the Cautious case. For a budget with no goal: the leads it should bring, as a range. If the evidence has a "Verdict on the stated budget", give it. If it says no budget could be sized, say that plainly and ask for a target cost per lead. Then the last-period spend, leads, cost per lead and daily run-rate, with the previous-period comparison when given.
 ## 3. Diagnosis
@@ -84,5 +84,5 @@ Weekly: spend, leads and cost per lead per campaign against the reference cost p
 ## 11. Risks and dependencies
 Only real ones from the evidence (too few leads for a firm cost per lead, tracking not verified, one campaign carrying the account), each with what would change the plan.
 ## 12. Client checklist
-**Decisions**, **Approvals** (the Type A actions by STR ID) and **Data needed** (for example no target cost per lead, no lead-quality or CRM feedback), as short bullets. Then **Questions for the client:** one plain question per "Profile missing" item (leave it out when that says None).
+**Decisions**, **Approvals** (the Type A actions by STR ID) and **Data needed** (for example no target cost per lead, no lead-quality or CRM feedback), as short bullets. Then **Questions for the client:** only the questions under "Questions for the client" in "Strategy inputs", each with its reason in a few words (leave it out when that says None; never add others). Lower the confidence one step only for an action that rests on an unanswered question.
 `.trim();

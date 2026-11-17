@@ -5,7 +5,6 @@ import { resolveGoals } from "@/lib/clients/goals";
 import {
   appActions,
   ownFindings,
-  profileGaps,
   renderStrategyInputsEvidence,
 } from "@/lib/strategy/strategy-inputs";
 import { PLATFORM_NOTES, PLATFORM_NOTES_VERSION, platformNotes } from "@/lib/strategy/platform-notes";
@@ -64,37 +63,6 @@ describe("appActions", () => {
   });
 });
 
-describe("profileGaps", () => {
-  const hist = [{ role: "user" as const, content: "hello" }];
-  it("lists the standing items, then drops risk appetite when the request covers it", () => {
-    const all = profileGaps(goals, "make a strategy", hist);
-    expect(all.join("|")).toMatch(/risk appetite/i);
-    const some = profileGaps(goals, "we're risk-averse", hist);
-    expect(some.join("|")).not.toMatch(/risk appetite/i);
-  });
-
-  it("lists goal, timeframe, budget and margin when missing and unstated", () => {
-    const all = profileGaps(goals, "plan", []).join("|").toLowerCase();
-    for (const k of ["goal", "timeframe", "budget", "margin"]) expect(all).toContain(k);
-  });
-
-  it("does not list them when goals or chat cover them", () => {
-    const g = resolveGoals({
-      goals_profile: { target_cpa_cents: 2000, daily_account_cap_cents: 10_000, gross_margin_pct: 40 },
-    });
-    const out = profileGaps(g, "in 90 days", []).join("|").toLowerCase();
-    for (const k of ["goal", "timeframe", "budget", "margin"]) expect(out).not.toContain(k);
-  });
-
-  it("reads user messages in history, not assistant ones", () => {
-    const out = profileGaps(goals, "", [
-      { role: "assistant", content: "what about your offer and discount?" },
-      { role: "user", content: "our offer is 20% discount" },
-    ]).join("|").toLowerCase();
-    expect(out).not.toContain("offer");
-  });
-});
-
 describe("renderStrategyInputsEvidence", () => {
   const out = renderStrategyInputsEvidence({ snapshot, goals, scorecard, request: "strategy", history: [], period });
 
@@ -103,7 +71,10 @@ describe("renderStrategyInputsEvidence", () => {
     expect(out).toContain(PLATFORM_NOTES_VERSION);
     for (const n of platformNotes(goals)) expect(out).toContain(n);
     expect(out).toContain("Business type");
-    expect(out).toContain("Profile missing");
+    expect(out).toContain("**Profile from the account's data");
+    expect(out).toContain("**Profile assumed by default");
+    expect(out).toContain("**Questions for the client (ask only these");
+    expect(out).not.toContain("Profile missing");
   });
 
   it("shows capabilities as label — note — guardrail, with no tool ids or setting keys", () => {
@@ -122,7 +93,7 @@ describe("renderStrategyInputsEvidence", () => {
   it("leaves target ROAS and average order value out of Profile known for lead generation", () => {
     const g = resolveGoals({ goals_profile: { business_model: "lead_gen", target_roas: 3, average_value_cents: 5_000, target_cpa_cents: 2_000 } });
     const o = renderStrategyInputsEvidence({ snapshot, goals: g, scorecard, request: "strategy", history: [], period });
-    const known = o.slice(o.indexOf("**Profile known:**"), o.indexOf("**Profile missing"));
+    const known = o.slice(o.indexOf("**Profile known:**"), o.indexOf("**Profile from the account"));
     expect(known).toContain("target cost per result");
     expect(known).not.toContain("target ROAS");
     expect(known).not.toContain("average order value");

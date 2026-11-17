@@ -2994,13 +2994,15 @@ export async function gatherDiagnoseEvidence(input: {
       const leadAsk = isLeadStrategy(goals.business_model ?? (goal.kind === "leads" ? "lead_gen" : undefined), askTexts);
       const leadParsed = !accountPath && leadAsk ? resolveLeadBrief(input.request, input.history) : null;
 
-      // The 12-section strategy's inputs: prior findings for this period (or its own), profile gaps,
+      // The 12-section strategy's inputs: prior findings for this period (or its own), the profile (from chat, data or defaults; few questions),
       // platform notes and what the app can do. Campaigns the ask names narrow which reports qualify.
       const scopeBrief = resolveAuditBrief(input.request);
       const scopedCampaigns =
         scopeBrief.scope === "campaigns" && scopeBrief.campaignHints.length
           ? resolveAuditCampaigns(snapshot.campaigns, { campaignHints: scopeBrief.campaignHints, activeCampaigns: false })
           : [];
+      // Saved services answer "what do they sell" before the ad set names do (a failed read just skips them).
+      const savedServices = (await activeClientServices(input.clientId).catch(() => [])).map((s) => s.name);
       const strategyInputsEvidence = (scorecard: ReturnType<typeof evaluateCheckpoints>) =>
         renderStrategyInputsEvidence({
           snapshot,
@@ -3012,6 +3014,7 @@ export async function gatherDiagnoseEvidence(input: {
           period: { dateStart: range.dateStart, dateStop: range.dateStop },
           scope: scopedCampaigns.length ? { campaignIds: scopedCampaigns.map((c) => c.id) } : undefined,
           money: moneyFor(snapshot.account.currency),
+          services: savedServices,
         });
 
       if (accountPath) {

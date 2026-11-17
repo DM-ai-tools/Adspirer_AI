@@ -7,6 +7,7 @@ import type { AuditScorecard, CheckpointSeverity } from "@/lib/audit/checkpoints
 import type { MetaAuditSnapshot } from "@/lib/audit/meta-audit-data";
 import type { ResolvedGoals } from "@/lib/clients/goals";
 import { PLATFORM_NOTES_VERSION, platformNotes } from "@/lib/strategy/platform-notes";
+import { resolveProfile } from "@/lib/strategy/profile-resolution";
 
 export const NO_PRIOR_REPORT_NOTICE =
   "No audit or comparison in this chat covers this period; findings below come from this strategy's own checks (SF-###)";
@@ -56,27 +57,6 @@ export function ownFindings(scorecard: AuditScorecard): PriorFinding[] {
     }));
 }
 
-const STANDING: Array<{ label: string; re: RegExp }> = [
-  { label: "industry", re: /industry|sector|niche|we sell|we are a/i },
-  { label: "offer", re: /offer|discount|promo|pricing|price/i },
-  { label: "risk appetite", re: /risk|aggressive|conservative|cautious/i },
-  { label: "constraints", re: /constraint|can't|cannot|limit|only/i },
-  { label: "creative assets", re: /creative|video|images|assets|ugc/i },
-  { label: "owners", re: /owner|team|agency|in-house|who will/i },
-  { label: "CRM lead quality", re: /crm|qualified|lead quality|sales team|close rate/i },
-];
-
-/** Business-profile details still unknown; the writer asks for these, it never saves them. */
-export function profileGaps(goals: ResolvedGoals, request: string, history: AgentHistoryMessage[]): string[] {
-  const chat = [request, ...(history ?? []).filter((m) => m.role === "user").map((m) => m.content)].join("\n");
-  const out = STANDING.filter((s) => !s.re.test(chat)).map((s) => s.label);
-  if (goals.target_cpa_cents == null && goals.target_roas == null && !/cpa|cpl|roas|leads|sales/i.test(chat)) out.push("goal");
-  if (!/\bin\s+\d+\s*(?:days?|weeks?|months?)\b|\bby\b/i.test(chat)) out.push("timeframe");
-  if (goals.daily_account_cap_cents == null && goals.monthly_cap_cents == null && !/\$|budget/i.test(chat)) out.push("budget");
-  if (goals.gross_margin_pct == null && !/margin/i.test(chat)) out.push("margin");
-  return out;
-}
-
 export function renderStrategyInputsEvidence(input: {
   snapshot: MetaAuditSnapshot;
   goals: ResolvedGoals;
@@ -88,6 +68,8 @@ export function renderStrategyInputsEvidence(input: {
   period: { dateStart: string; dateStop: string };
   scope?: { campaignIds?: string[] };
   money?: Money;
+  /** The client's saved services or categories: the first answer to "what do they sell". */
+  services?: string[];
 }): string {
   const { snapshot, goals, scorecard, request, history, period } = input;
   const money = input.money ?? defaultMoney;
@@ -125,9 +107,18 @@ export function renderStrategyInputsEvidence(input: {
   lines.push("**Profile known:**");
   lines.push(...(known.length ? known.map((k) => `- ${k}`) : ["- Nothing saved yet."]), "");
 
-  lines.push("**Profile missing (list under Assumptions or Questions for the client; never save these):**");
-  const gaps = profileGaps(goals, request, history);
-  lines.push(...(gaps.length ? gaps.map((g) => `- ${g}`) : ["- None."]), "");
+  // Ask as little as possible: what the chat or the account already answers is stated as an assumption.
+  const profile = resolveProfile({ snapshot, goals, request, history, money, services: input.services });
+  if (profile.stated.length) {
+    lines.push("**Stated by the operator in chat (use their words; don't ask again):**");
+    lines.push(...profile.stated.map((s) => `- ${s}`), "");
+  }
+  lines.push("**Profile from the account's data (list under Assumptions with its source; don't ask):**");
+  lines.push(...(profile.fromData.length ? profile.fromData.map((p) => `- ${p.item}: ${p.value} (from ${p.source})`) : ["- None."]), "");
+  lines.push("**Profile assumed by default (list under Assumptions; don't ask):**");
+  lines.push(...(profile.assumed.length ? profile.assumed.map((p) => `- ${p.item}: ${p.value}`) : ["- None."]), "");
+  lines.push("**Questions for the client (ask only these; never save the answers):**");
+  lines.push(...(profile.ask.length ? profile.ask.map((q) => `- ${q.item}: ${q.question} — why: ${q.why}`) : ["- None."]), "");
 
   lines.push("**Measurement:**");
   const breaks = measurementBreaks(snapshot);

@@ -82,6 +82,18 @@ describe("ACCOUNT_STRATEGY_FRAMEWORK", () => {
   });
 });
 
+describe("asking as little as possible", () => {
+  it.each([
+    ["account", ACCOUNT_STRATEGY_FRAMEWORK],
+    ["lead", LEAD_STRATEGY_FRAMEWORK],
+  ])("the %s strategy states data and defaults as assumptions and asks only the listed questions", (_k, text) => {
+    expect(text).toContain("Profile from the account's data");
+    expect(text).toContain("Profile assumed by default");
+    expect(text).toMatch(/never add (?:a question of your own|others)/);
+    expect(text).not.toContain("Profile missing");
+  });
+});
+
 describe("STRATEGY_TARGET_PROPOSAL_FRAMEWORK", () => {
   it("asks for missing profile items as Questions for the client", () => {
     expect(STRATEGY_TARGET_PROPOSAL_FRAMEWORK).toContain("Questions for the client");
