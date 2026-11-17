@@ -14,7 +14,7 @@ import {
 } from "@/lib/reports/quality";
 import { renderReportHtml } from "@/lib/reports/template";
 import { inferExportTitle } from "@/lib/reports/prepare-export";
-import { looksLikeFullAuditMarkdown } from "@/lib/report/from-markdown";
+import { looksLikeComparisonMarkdown, looksLikeFullAuditMarkdown } from "@/lib/report/from-markdown";
 
 export type ReportFormat = "md" | "docx" | "pdf" | "xlsx";
 
@@ -57,6 +57,7 @@ function polishBody(title: string, body: string) {
 }
 
 function reportSubtitle(body: string): string {
+  if (looksLikeComparisonMarkdown(body)) return "Meta Ads comparison · Prepared by Traffic Radius";
   return looksLikeFullAuditMarkdown(body)
     ? "Full Meta Ads audit · Prepared by Traffic Radius"
     : "Meta Ads report · Prepared by Traffic Radius";

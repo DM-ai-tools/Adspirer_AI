@@ -4,10 +4,22 @@ import {
 } from "@/lib/report/schema";
 import { splitMarkdownTableRow } from "@/lib/reports/table-row";
 
+/** The comparison report's title line: "# Meta Ads Comparison Report — <account name>". */
+const COMPARISON_TITLE_LINE = /^[ \t]*(?:#{1,3}[ \t]*)?\**[ \t]*Meta Ads Comparison Report\b/im;
+
+/**
+ * Whether the text is a period-over-period comparison report. It has its own fourteen sections, so
+ * it is exported as it is written, never through the audit schema (which would drop them).
+ */
+export function looksLikeComparisonMarkdown(text: string): boolean {
+  return COMPARISON_TITLE_LINE.test(text);
+}
+
 /**
  * Detect a full operator-facing audit in chat prose/markdown.
  */
 export function looksLikeFullAuditMarkdown(text: string): boolean {
+  if (looksLikeComparisonMarkdown(text)) return false;
   const t = text.toLowerCase();
   const isAuditTitle =
     /meta ads account audit/.test(t) ||
@@ -135,7 +147,7 @@ export function snapshotTableRows(snapshotSection: string): Array<{ label: strin
   return rows;
 }
 
-function extractAccountName(text: string): string {
+export function extractAccountName(text: string): string {
   const fromAccountLine =
     /(?:^|\n)\s*\*?\*?\s*Account\s*\*?\*?\s*:\s*\*?\*?\s*(.+?)\s*\*?\*?\s*\(\s*act_/i.exec(
       text,
@@ -146,7 +158,7 @@ function extractAccountName(text: string): string {
   }
 
   const fromTitle =
-    /Meta Ads Account Audit\s*[—–-]\s*([^\n*]+)/i.exec(text)?.[1];
+    /Meta Ads (?:Account Audit|Comparison Report)\s*[—–-]\s*([^\n*]+)/i.exec(text)?.[1];
   if (fromTitle) {
     const name = cleanCell(fromTitle);
     if (name && !/^here'?s?\b/i.test(name)) return name;

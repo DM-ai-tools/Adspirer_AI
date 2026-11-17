@@ -1147,7 +1147,7 @@ export function ChatPanel({
                   /\b(executive summary|recommendations|next steps|session report)\b/i.test(
                     parsed?.displayText ?? "",
                   )) ||
-                /\bMeta Ads Account Audit\b/i.test(
+                /\bMeta Ads (?:Account Audit|Comparison Report)\b/i.test(
                   parsed?.displayText ?? message.content,
                 );
               const reportTitle =

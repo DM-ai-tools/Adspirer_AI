@@ -44,6 +44,8 @@ const TOOL_POLICY: Record<string, ToolSafetyClass> = {
   meta_catalog_feeds: "diagnose",
   // Strategy plan engine: reads the snapshot, recommends only.
   strategy_plan: "diagnose",
+  // Period comparison: reads two windows of the snapshot, reports what moved, recommends nothing.
+  comparison_report: "diagnose",
   // Settings typed in the chat: writes the client's own settings (goals,
   // categories) only and never touches Meta, so it is recorded, not blocked.
   update_client_settings: "diagnose",

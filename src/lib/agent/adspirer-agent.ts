@@ -222,6 +222,8 @@ import {
 import { accountGoal, baselineOf, leversOf, proposeTargets, type StatedTarget } from "@/lib/strategy/account-strategy";
 import { adSetLoadFailure, renderStrategyPlanEvidence, renderTargetProposalEvidence } from "@/lib/strategy/account-strategy-render";
 import { rulesBrief, type RequestBrief } from "@/lib/agent/request-brief";
+import { COMPARISON_FRAMEWORK, COMPARISON_TITLE } from "@/lib/agent/comparison-framework";
+import { renderComparisonEvidence } from "@/lib/comparison/render";
 import { resolvePrimaryAccountId } from "@/lib/adspirer/resolve-meta-account";
 import type { ClientService, ConnectedMetaAccount, WorkspaceDocument } from "@/types";
 import type { CreativeDraft } from "@/lib/creatives/drafts";
@@ -933,6 +935,22 @@ export function buildWriterMessages(input: WriterInput): {
           ]
         : [];
 
+  // The comparison report is diagnostic: it starts at its title, reads only the evidence, and queues nothing.
+  const comparisonRules =
+    intent === "comparison"
+      ? evidence.includes("### Comparison unavailable")
+        ? [
+            "- The comparison can't be built: say that plainly with the reason from “Comparison unavailable”, and give no figures for either period.",
+          ]
+        : [
+            `- Write the comparison report with the headings in “Comparison framework”, in order. Start the reply with the title line ("# ${COMPARISON_TITLE} — <account name>"). Nothing before it: no "let me fetch…", no "here is the report".`,
+            "- It is diagnostic only: say what changed, by how much and what the evidence suggests about why. No strategy, no actions, no budget moves, no \"should\".",
+            "- Every figure, status, bridge effect and CMP finding comes from “Comparison evidence” above; quote them exactly and never calculate or estimate one.",
+            "- Everything you need is in the evidence, so write the report without calling tools; use one only if a figure you must quote is missing from it.",
+            "- Do NOT queue execute/optimize tools and do NOT claim you changed Meta.",
+          ]
+      : [];
+
   const strategyBriefIncomplete = evidence.includes("### Strategy brief incomplete");
   const strategyUnavailable = evidence.includes("### Strategy unavailable");
   const strategyReady = evidence.includes("### Strategy inputs");
@@ -1064,6 +1082,7 @@ export function buildWriterMessages(input: WriterInput): {
         ...auditRules,
         ...categoryNoticeRules,
         ...strategyRules,
+        ...comparisonRules,
         ...optimizeRules,
       ]
         .filter(Boolean)
@@ -1432,7 +1451,9 @@ async function runMockAgent(input: {
         ? "Answering…"
         : intent === "strategy"
           ? "Writing strategy…"
-          : "Preparing summary…",
+          : intent === "comparison"
+            ? "Writing comparison…"
+            : "Preparing summary…",
     stepId: "write_report",
   });
 
@@ -1486,6 +1507,36 @@ async function runMockAgent(input: {
     await input.onProgress?.({
       phase: "write_report",
       label: "Writing strategy…",
+      stepId: "write_report",
+      summary,
+      delta: summary,
+    });
+    return {
+      summary,
+      messages: [{ role: "assistant", content: summary }],
+      toolCalls: [],
+      mode: "mock",
+    };
+  }
+
+  // Comparison replies come from the real engine evidence, so DEMO shows the actual report
+  // inputs: the evidence block verbatim, without the writer's framework.
+  if (intent === "comparison" && !input.reportDraft) {
+    const startAt = evidence?.indexOf("### Comparison evidence —") ?? -1;
+    let summary: string;
+    if (evidence && startAt >= 0) {
+      const endAt = evidence.indexOf("### Comparison framework", startAt);
+      summary = evidence.slice(startAt, endAt < 0 ? undefined : endAt).trim();
+    } else {
+      const unavailableAt = evidence?.indexOf("### Comparison unavailable") ?? -1;
+      summary =
+        evidence && unavailableAt >= 0
+          ? evidence.slice(unavailableAt).trim()
+          : "The comparison could not be built: no account data was loaded.";
+    }
+    await input.onProgress?.({
+      phase: "write_report",
+      label: "Writing comparison…",
       stepId: "write_report",
       summary,
       delta: summary,
@@ -2038,6 +2089,7 @@ export async function gatherDiagnoseEvidence(input: {
   let auditLandingTables: string | undefined;
   let strategyBriefIncomplete = false;
   let strategyPlanBuilt = false;
+  let comparisonBuilt = false;
 
   const targetingSubmitted =
     /\badvanced targeting selections\b/i.test(input.request) ||
@@ -3160,6 +3212,120 @@ export async function gatherDiagnoseEvidence(input: {
     }
   }
 
+  // Period-over-period comparison: both windows from the snapshot (with the account-level
+  // splits), scored by the checkpoint engine, rendered as evidence. The writer arranges and
+  // explains it; every figure is computed in code. Diagnostic only: nothing here proposes or
+  // queues an execute tool.
+  if (accountId && intent === "comparison") {
+    await input.onProgress?.({
+      phase: "fetch_overview",
+      label: "Loading both periods…",
+      stepId: "fetch_overview",
+    });
+    try {
+      if (!provider.getAuditSnapshot) {
+        throw new Error("this Meta connection can't load an account snapshot");
+      }
+      const brief = resolveAuditBrief(input.request, input.history ?? []);
+      const dayCount = (a: string, b: string) =>
+        Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86_400_000) + 1;
+      // A named pair of ranges is used as written; one range ("last 14 days") ends on the last whole day;
+      // none at all means the last 14 days.
+      const named = brief.compare && brief.compareStart && brief.compareStop;
+      let since: string;
+      let until: string;
+      if (brief.dateStart && brief.dateStop && named) {
+        since = brief.dateStart;
+        until = brief.dateStop;
+      } else if (brief.dateStart && brief.dateStop) {
+        const whole = completedDaysRange(brief.dateLabel ?? "");
+        const asked = dayCount(brief.dateStart, brief.dateStop);
+        ({ dateStart: since, dateStop: until } =
+          brief.dateLabel && /^last /.test(brief.dateLabel) && whole.days === asked
+            ? whole
+            : { dateStart: brief.dateStart, dateStop: brief.dateStop });
+      } else {
+        const last = completedDaysRange("last 14 days");
+        since = last.dateStart;
+        until = last.dateStop;
+      }
+
+      // Named campaigns narrow the report to them; otherwise the whole account.
+      let campaignIds: string[] | undefined;
+      let scopeNote: string | null = null;
+      if (brief.scope === "campaigns" && (brief.campaignHints.length || brief.activeCampaigns)) {
+        const matched = resolveAuditCampaigns(await provider.listCampaigns(accountId), brief);
+        if (matched.length) campaignIds = matched.map((c) => c.id);
+        else {
+          scopeNote = `- No campaign matched ${brief.campaignHints.map((h) => `"${h}"`).join(", ") || "that request"}, so this report covers the whole account.`;
+        }
+      }
+
+      const accountSnapshot = await provider.getAuditSnapshot(accountId, {
+        since,
+        until,
+        days: dayCount(since, until),
+        compare: true,
+        comparisonDetail: true,
+        ...(named ? { compareSince: brief.compareStart!, compareUntil: brief.compareStop! } : {}),
+        ...(campaignIds ? { campaignIds } : {}),
+      });
+      const snapshot = campaignIds ? scopeAuditSnapshot(accountSnapshot, campaignIds) : accountSnapshot;
+
+      await input.onProgress?.({
+        phase: "pull_insights",
+        label: "Reading what moved between the periods…",
+        stepId: "pull_insights",
+      });
+      const goals = await turnGoals();
+      const scorecard = evaluateCheckpoints(snapshot, { goals });
+      // Only an operator who mentions something that moves results (a sale, a launch, stock) gives the report context to quote.
+      const askText = input.request
+        .replace(/\b(?:last|past|previous|prior)\s+\w+\s+(?:days?|weeks?|months?|years?)\b/gi, " ")
+        .replace(/\b\d{4}-\d{2}-\d{2}\b/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      const userContext = /\b(?:promo\w*|sale|sales|discount\w*|stock|launch\w*|holiday\w*|price|prices|pricing|season\w*)\b/i.test(askText)
+        ? askText
+        : null;
+
+      await input.onProgress?.({
+        phase: "build_plan",
+        label: "Building the comparison…",
+        stepId: "build_plan",
+      });
+      sections.push(
+        renderComparisonEvidence({
+          snapshot,
+          today: new Date().toISOString().slice(0, 10),
+          ...(goals.business_model ? { businessModel: goals.business_model } : {}),
+          scorecard,
+          userContext,
+        }),
+      );
+      if (scopeNote) sections.push(`### Comparison scope\n${scopeNote}`);
+      sections.push(["### Comparison framework (write the report with these headings)", COMPARISON_FRAMEWORK].join("\n"));
+      comparisonBuilt = true;
+      toolCalls.push({
+        name: "comparison_report",
+        args: {
+          account_id: accountId,
+          date_start: since,
+          date_stop: until,
+          ...(named ? { compare_start: brief.compareStart, compare_stop: brief.compareStop } : {}),
+          ...(campaignIds ? { campaign_ids: campaignIds } : {}),
+        },
+        rationale: `Period comparison: ${since} to ${until} against ${named ? `${brief.compareStart} to ${brief.compareStop}` : "the equal window before"} (${scorecard.score}/100 checkpoints)`,
+      });
+    } catch (error) {
+      sections.push(
+        `### Comparison unavailable\n- Could not build the comparison: ${
+          error instanceof Error ? error.message : String(error)
+        }. Say the comparison could not be built and why; never invent figures for either period.`,
+      );
+    }
+  }
+
   // "How much went into bar stools, and what did it return?": spend and return
   // per category from the snapshot. Figures only, no plan or allocation.
   if (accountId && (intent === "general" || intent === "budget")) {
@@ -3985,6 +4151,7 @@ export async function gatherDiagnoseEvidence(input: {
     auditLandingTables,
     strategyBriefIncomplete,
     strategyPlanBuilt,
+    comparisonBuilt,
   };
 }
 

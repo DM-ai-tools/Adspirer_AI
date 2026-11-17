@@ -415,7 +415,7 @@ export function ReportPdfDocument(props: {
 }) {
   const title = glyphSafe(props.title);
   const { eyebrow, name } = splitTitle(title);
-  const kind = /audit/i.test(title) ? "META ADS AUDIT" : "META ADS REPORT";
+  const kind = /audit/i.test(title) ? "META ADS AUDIT" : /comparison/i.test(title) ? "META ADS COMPARISON" : "META ADS REPORT";
   return (
     <Document title={title} author={BRAND.name} creator={BRAND.name} producer={BRAND.name}>
       <Page size="A4" style={s.page}>

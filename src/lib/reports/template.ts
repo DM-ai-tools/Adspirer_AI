@@ -291,7 +291,7 @@ export function renderReportHtml(input: {
 <body>
   <div class="cover-top">
     <img src="${BRAND_LOGO_URL}" alt="Traffic Radius" height="44" />
-    <p class="kind">${/audit/i.test(title) ? "META ADS AUDIT" : "META ADS REPORT"}<span>${escapeHtml(dateLabel)}</span></p>
+    <p class="kind">${/audit/i.test(title) ? "META ADS AUDIT" : /comparison/i.test(title) ? "META ADS COMPARISON" : "META ADS REPORT"}<span>${escapeHtml(dateLabel)}</span></p>
   </div>
   <div class="band">${BRAND_BARS.map((c) => `<span style="background:${c}"></span>`).join("")}</div>
   <div class="cover">

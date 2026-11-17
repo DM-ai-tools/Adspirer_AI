@@ -296,7 +296,7 @@ function bandTable(rows: TableRow[], columnWidths: number[]): Table {
  */
 function cover(title: string, subtitle: string, dateLabel: string, logo: Buffer | null): Table[] {
   const { eyebrow, name } = splitTitle(title);
-  const kind = /audit/i.test(title) ? "META ADS AUDIT" : "META ADS REPORT";
+  const kind = /audit/i.test(title) ? "META ADS AUDIT" : /comparison/i.test(title) ? "META ADS COMPARISON" : "META ADS REPORT";
   const half = Math.floor(CONTENT_TWIP / 2);
   const logoWidth = 240;
   const top = bandTable(
