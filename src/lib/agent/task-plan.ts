@@ -1,6 +1,6 @@
 import { isCreateCampaignAsk } from "@/lib/chat/infer-flow";
 import type { AgentHistoryMessage } from "@/lib/agent/history";
-import { looksLikeAuditBriefReply, parseDateRangeFromText } from "@/lib/agent/audit-brief";
+import { asksForComparison, looksLikeAuditBriefReply, parseDateRangeFromText } from "@/lib/agent/audit-brief";
 import { looksLikeLeadBriefReply } from "@/lib/agent/lead-brief";
 import { looksLikeStrategyBriefReply, STRATEGY_BRIEF_MARKER } from "@/lib/agent/strategy-brief";
 import { pickedOption, STRATEGY_TARGET_MARKER } from "@/lib/agent/account-strategy-brief";
@@ -32,6 +32,8 @@ export type RequestIntent =
   | "copy_approved"
   | "optimize"
   | "strategy"
+  /** A period-over-period comparison report: what changed between two periods and what drove it. */
+  | "comparison"
   | "general"
   /** Asks to act on a report already in the chat ("based on the audit, give me the fixes"). */
   /** Anything specific the fixed intents do not cover (a custom metric table, a weekly breakdown, an Excel with chosen columns): the model plans it and reads the data itself. */
@@ -176,6 +178,29 @@ const NEXT_STEPS_ASK =
 const AUDIT_RERUN_ASK =
   /\b(?:run|do|start|perform|redo|re-?run|another|new|fresh|again|update|refresh|repeat)\b[^.?!\n]{0,30}\baudit/;
 
+/** Wording that makes the comparison of periods the deliverable. */
+const COMPARISON_WORDS =
+  /\b(?:compare|compared|comparison|period[- ]over[- ]period|week[- ]over[- ]week|month[- ]over[- ]month)\b/;
+const COMPARISON_VS = /\b(?:vs\.?|versus)(?!\w)/;
+const COMPARISON_REPORT_WORDS = /\b(?:report|breakdown|write-?up|analysis)\b/;
+const COMPARISON_NOT_WITH_AUDIT = /\baudit|health check|full review\b/;
+const QUESTION_FORM = /\?\s*$|^\s*(?:what|how|why|when|which|who|does|do|did|is|are|was|were)\b/;
+
+/**
+ * A request whose deliverable is the comparison of two periods. An audit that
+ * also asks to compare is still an audit; a single-metric "X vs Y?" question
+ * is answered conversationally.
+ */
+function isComparisonReportAsk(text: string): boolean {
+  if (COMPARISON_NOT_WITH_AUDIT.test(text) || EXPLICIT_AUDIT.test(text)) return false;
+  if (!asksForComparison(text)) return false;
+  if (COMPARISON_WORDS.test(text)) return true;
+  return (
+    COMPARISON_VS.test(text) &&
+    (COMPARISON_REPORT_WORDS.test(text) || !QUESTION_FORM.test(text.trim()))
+  );
+}
+
 export function detectRequestIntent(request: string): RequestIntent {
   const text = request.toLowerCase();
   // The campaign settings card's confirmation is a step of the build; its text
@@ -213,6 +238,9 @@ export function detectRequestIntent(request: string): RequestIntent {
   ) {
     return "strategy";
   }
+  // Period-over-period comparison report, after strategy and before the
+  // audit / general rules. Audit wording keeps it an audit.
+  if (isComparisonReportAsk(text)) return "comparison";
   // Queue / apply optimized changes → Approvals path (before export "send report")
   if (
     /\b(send|queue|submit|put|push|add)\b[\s\S]{0,48}\bapprov/.test(text) ||
@@ -559,6 +587,15 @@ export function planTaskSteps(
         { id: "pull_insights", label: "Pull spend & return by category", state: "pending" },
         { id: "build_plan", label: "Build the plan", state: "pending" },
         { id: "write_report", label: "Write strategy", state: "pending" },
+        { id: "complete", label: "Complete", state: "pending" },
+      ];
+    case "comparison":
+      return [
+        ...base,
+        { id: "fetch_overview", label: "Load both periods", state: "pending" },
+        { id: "pull_insights", label: "Compare performance", state: "pending" },
+        { id: "build_plan", label: "Work out what drove the change", state: "pending" },
+        { id: "write_report", label: "Write comparison", state: "pending" },
         { id: "complete", label: "Complete", state: "pending" },
       ];
     case "list_campaigns":

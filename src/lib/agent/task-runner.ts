@@ -536,6 +536,14 @@ export async function runTask(
         : ["fetch_overview", "pull_insights", "build_plan"].reduce((acc, id) => failStep(acc, id), steps);
     }
 
+    if (intent === "comparison") {
+      // The evidence step did not build a comparison (no account, or a fetch failed):
+      // its steps must not read as done.
+      steps = gathered.comparisonBuilt
+        ? completeStepsThrough(steps, "build_plan")
+        : ["fetch_overview", "pull_insights", "build_plan"].reduce((acc, id) => failStep(acc, id), steps);
+    }
+
     const wantsInlineCreatives =
       intent === "generate_creatives" ||
       mentionsCreativeGeneration(task.goal ?? task.title);

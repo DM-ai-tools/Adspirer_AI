@@ -11,15 +11,17 @@ import {
 } from "@/lib/agent/request-brief";
 
 /** Every intent the classifier may return, with what it means for the router. */
-const INTENT_GUIDE: Record<RequestIntent, string> = {
+export const INTENT_GUIDE: Record<RequestIntent, string> = {
   audit:
-    "Asks to RUN a new (or re-run an) audit / health check / full review of the account or campaigns, or answers the audit's own scope / date / landing-page question. NOT a request to use an audit that is already in the chat.",
+    "Asks to RUN a new (or re-run an) audit / health check / full review of the account or campaigns (including an audit that also asks to compare with a previous period: that stays an audit), or answers the audit's own scope / date / landing-page question. NOT a request to use an audit that is already in the chat.",
   followup:
     "Builds on a report or answer already in the chat and wants something derived from it: optimization steps, what to fix first, which recommendations you can do, explain a finding, prioritise, summarise one part. Needs no new data and must NOT repeat the report.",
   optimize:
     "Wants changes made or queued in Meta: optimize the ads / budget / placements, apply or queue recommendations to Approvals, pause or resume things.",
   strategy:
     "Wants a strategy or plan for the account: an optimisation strategy, a strategy document, a plan to reach a goal (leads, cost per lead or purchase, ROAS, budget), with or without an audit already in the chat. Also answers the strategy's own question: picks a proposed target (safe / recommended / bold, \"go with your pick\") or gives a target, budget or timeframe.",
+  comparison:
+    "Wants a report that compares two periods of the account's performance (last 14 days vs the 14 days before, October vs September, week over week, month over month) and what drove the change. Wins over custom and general when the comparison of periods IS the deliverable. A question about a single metric with \"vs\" (\"what was CPL last week vs the week before?\") is general or custom, not this. An audit request that also asks to compare stays audit.",
   budget: "Asks about or wants to change budgets or bids.",
   list_campaigns: "Asks to list or show campaigns.",
   export: "Wants the conversation itself, or a report already in it, as a downloadable PDF / Word document. Not for new data: if they name metrics, a period or a breakdown to compile, that is custom.",
@@ -30,7 +32,7 @@ const INTENT_GUIDE: Record<RequestIntent, string> = {
   ad_copy: "Wants ad copy, headlines or primary text written.",
   copy_approved: "Chose an approved ad copy variant.",
   custom:
-    "A specific deliverable or analysis the other intents do not exactly cover: named metrics or columns, a date range, a breakdown (per week, per day, per campaign, per placement), a chosen format such as an Excel sheet or table, or a comparison. The data must be fetched fresh and shaped to what they asked. Choose custom over forcing a near-fit such as audit or export.",
+    "A specific deliverable or analysis the other intents do not exactly cover: named metrics or columns, a date range, a breakdown (per week, per day, per campaign, per placement), a chosen format such as an Excel sheet or table, or a comparison of something other than two periods of the account. A question about a single metric with \"vs\" (\"CPL this week vs last\") is custom or general, not the comparison report. The data must be fetched fresh and shaped to what they asked. Choose custom over forcing a near-fit such as audit or export.",
   general:
     "Any other question about the client's ads, spend, results, tracking, analytics (Meta, GA4, Search Console, Google Ads, Shopify) that needs fresh data.",
   chat:
@@ -49,7 +51,7 @@ const ASSISTANT_EXCERPT_CHARS = 700;
 const USER_EXCERPT_CHARS = 500;
 const HISTORY_TURNS = 6;
 
-const SYSTEM = [
+export const SYSTEM = [
   "You route messages in an agency's Meta Ads workspace assistant. Read the operator's latest message IN CONTEXT of the recent conversation and pick what they actually want. Operators phrase things in their own words, with typos and shorthand; judge meaning, never keywords.",
   "Never force a request into the nearest intent. If it asks for something specific (particular metrics, a period, a breakdown, a file format), that is custom, even when it says \"report\". audit and export are only for a plain request to run an audit or to download the conversation.",
   "Key rule: mentioning an earlier report (\"based on the audit\", \"from those findings\") means they want to USE it (followup), not run it again. Choose audit only when they want a new audit run or are answering the audit's own question.",

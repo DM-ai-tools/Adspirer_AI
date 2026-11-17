@@ -63,6 +63,7 @@ const INTENT_SET: Record<RequestIntent, true> = {
   copy_approved: true,
   optimize: true,
   strategy: true,
+  comparison: true,
   general: true,
   custom: true,
   followup: true,

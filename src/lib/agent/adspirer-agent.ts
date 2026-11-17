@@ -1998,6 +1998,8 @@ export async function gatherDiagnoseEvidence(input: {
   strategyBriefIncomplete?: boolean;
   /** True only once the strategy plan engine has produced a plan this turn. */
   strategyPlanBuilt?: boolean;
+  /** True only once the comparison evidence has been built this turn. */
+  comparisonBuilt?: boolean;
 }> {
   const intent = input.intent ?? detectRequestIntent(input.request);
   const preloadedAccounts = input.preloaded?.metaAccounts
