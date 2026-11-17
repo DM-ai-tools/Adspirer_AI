@@ -745,7 +745,7 @@ function writingLabel(input: WriterInput): string {
 const MAX_REPORT_CONTINUATIONS = 2;
 
 /** Output budget: short for Q&A, long for audits / reports. */
-function maxOutputTokensFor(intent: RequestIntent): number {
+export function maxOutputTokensFor(intent: RequestIntent): number {
   // A year-long audit runs past 8000 tokens: the report was cut off mid-sentence, partway through its risks.
   if (REPORT_INTENTS.has(intent) || intent === "custom") return 16_000;
   if (CONVERSATIONAL_INTENTS.has(intent)) return 3000;

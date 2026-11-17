@@ -57,6 +57,7 @@ export const REPORT_INTENTS: ReadonlySet<RequestIntent> = new Set([
   "audit",
   "export",
   "strategy",
+  "comparison",
 ]);
 
 const GREETING_ONLY =
@@ -179,26 +180,28 @@ const AUDIT_RERUN_ASK =
   /\b(?:run|do|start|perform|redo|re-?run|another|new|fresh|again|update|refresh|repeat)\b[^.?!\n]{0,30}\baudit/;
 
 /** Wording that makes the comparison of periods the deliverable. */
-const COMPARISON_WORDS =
-  /\b(?:compare|compared|comparison|period[- ]over[- ]period|week[- ]over[- ]week|month[- ]over[- ]month)\b/;
-const COMPARISON_VS = /\b(?:vs\.?|versus)(?!\w)/;
+const COMPARISON_OVER_WORDS =
+  /\b(?:period[- ]over[- ]period|week[- ]over[- ]week|month[- ]over[- ]month)\b/;
 const COMPARISON_REPORT_WORDS = /\b(?:report|breakdown|write-?up|analysis)\b/;
+const COMPARISON_WHOLE_ACCOUNT =
+  /\b(?:account|performance|overall|results|metrics|numbers|everything|campaigns)\b/;
 const COMPARISON_NOT_WITH_AUDIT = /\baudit|health check|full review\b/;
-const QUESTION_FORM = /\?\s*$|^\s*(?:what|how|why|when|which|who|does|do|did|is|are|was|were)\b/;
+/** One named metric: "how does CPL compare to last month?" is a quick question, not a report. */
+const SINGLE_METRIC =
+  /\b(?:cpl|cpa|cpc|cpm|ctr|roas|aov|spend|cost\s+per\s+\w+|leads?|conversions?|clicks?|impressions?|reach|frequency|revenue|purchases?|sales)\b/;
 
 /**
  * A request whose deliverable is the comparison of two periods. An audit that
- * also asks to compare is still an audit; a single-metric "X vs Y?" question
- * is answered conversationally.
+ * also asks to compare is still an audit; a quick question about one metric
+ * ("what was CPL last week vs the week before?", "cpl vs last month") is
+ * answered conversationally unless it asks for a report or the whole account.
  */
 function isComparisonReportAsk(text: string): boolean {
   if (COMPARISON_NOT_WITH_AUDIT.test(text) || EXPLICIT_AUDIT.test(text)) return false;
   if (!asksForComparison(text)) return false;
-  if (COMPARISON_WORDS.test(text)) return true;
-  return (
-    COMPARISON_VS.test(text) &&
-    (COMPARISON_REPORT_WORDS.test(text) || !QUESTION_FORM.test(text.trim()))
-  );
+  if (COMPARISON_OVER_WORDS.test(text) || COMPARISON_REPORT_WORDS.test(text)) return true;
+  if (SINGLE_METRIC.test(text)) return COMPARISON_WHOLE_ACCOUNT.test(text);
+  return true;
 }
 
 export function detectRequestIntent(request: string): RequestIntent {
@@ -437,7 +440,7 @@ export function detectRequestIntentWithHistory(
   ) {
     return "followup";
   }
-  if (primary !== "general") return primary;
+  if (primary !== "general" && primary !== "comparison") return primary;
 
   // Only a brief that is still open counts. Once a full audit has been
   // delivered (a long reply), a follow-up like "which campaigns are wasting
@@ -460,6 +463,7 @@ export function detectRequestIntentWithHistory(
   if ((assistantAskedAudit || userAskedAudit) && looksLikeAuditBriefReply(request)) {
     return "audit";
   }
+
   // A short answer to the audit's own clarifying question stays on the audit
   // path even if it can't be parsed — the brief then asks again, instead of
   // a generic reply pretending to be an audit without data.
@@ -472,6 +476,11 @@ export function detectRequestIntentWithHistory(
   );
   if (askedForBrief && request.trim().length <= 200 && !/\?\s*$/.test(request.trim())) {
     return "audit";
+  }
+  if (primary === "comparison") {
+    // "last 30 days, and compare with the previous period" answering the audit's own
+    // question is the audit brief, not a comparison report. Otherwise it is the report.
+    return assistantAskedAudit || askedForBrief ? "audit" : primary;
   }
   // "now do 16th to 17th sept" / "16 sept" after an audit → the same audit
   // for the new period. Questions ("what was spend on 16 sept?") stay Q&A.

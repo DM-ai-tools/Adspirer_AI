@@ -94,6 +94,7 @@ const MOVE_ON_INTENTS: ReadonlySet<RequestIntent> = new Set<RequestIntent>([
   "budget",
   "export",
   "strategy",
+  "comparison",
   "create_campaign",
   "generate_creatives",
   "scrape_services",
