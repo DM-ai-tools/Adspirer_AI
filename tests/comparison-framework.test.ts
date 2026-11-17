@@ -46,6 +46,15 @@ describe("COMPARISON_FRAMEWORK", () => {
     expect(COMPARISON_FRAMEWORK).toContain("ID | Finding | Evidence | Confidence | Impact | Next-step bucket");
   });
 
+  it("states the bridge identities as the code computes them", () => {
+    expect(COMPARISON_FRAMEWORK).toContain("purchase value = purchases × AOV");
+    expect(COMPARISON_FRAMEWORK).toContain("cost per result = CPM ÷ (1000 × CTR × CVR)");
+    expect(COMPARISON_FRAMEWORK).toContain("results = (spend ÷ CPM × 1000) × CTR × CVR");
+    expect(COMPARISON_FRAMEWORK).not.toContain("results × average order value");
+    expect(COMPARISON_FRAMEWORK).not.toContain("efficiency");
+    expect(COMPARISON_FRAMEWORK).toContain("link clicks ÷ impressions");
+  });
+
   it("is diagnostic only", () => {
     expect(COMPARISON_FRAMEWORK).not.toMatch(/action plan/i);
     expect(COMPARISON_FRAMEWORK).not.toMatch(/we recommend/i);

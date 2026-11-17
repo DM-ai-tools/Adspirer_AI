@@ -21,7 +21,7 @@ The evidence has these blocks, each headed "####". Use the block named in each s
 - **Windows**: both windows with day counts, same-length flag, maturity.
 - **Settings**: attribution windows, optimisation events, business type, measurement breaks and caveats.
 - **KPI scorecard**: one table (Metric | Current | Previous | Δ | Δ% | Status), plus per-day lines when the windows differ in length.
-- **Bridge**: how each result metric moved from previous to current and the driver effects (volume, efficiency, CPM, CTR, CVR, AOV) that add up to it.
+- **Bridge**: how cost per result, results and purchase value moved from previous to current, and the driver effects that add up to it. The driver labels printed are exactly CPM, CTR, CVR, Volume and AOV (cost per result: CPM, CTR, CVR; results: Volume, CPM, CTR, CVR; purchase value: Volume, AOV, ecom and hybrid only). Each effect is printed as an amount and a "% of the change".
 - **Funnel**, **Entities**, **Creative**, **Breakdown shifts** (headed "Breakdown shifts (whole account)" when the audit was scoped to some campaigns), **Changes**, **Tracking**.
 - **User context**: what the operator said in the request. The only source for section 11.
 - **Failed to load**: parts that could not be read.
@@ -48,7 +48,7 @@ The evidence has these blocks, each headed "####". Use the block named in each s
 - **Points, not paragraphs.** Short bullets or labelled lines. No paragraph longer than two sentences. Lead each bullet with the point in bold, then the numbers.
 - **Tables are for numbers and short statuses only.** Never put sentences in table cells. Two tables may be wide: the KPI scorecard (section 2) and the findings table (section 12). Anything that needs an explanation is a card: a bold title line, then one labelled bullet per field.
 - **Numbers first** ("Cost per purchase $42 vs $31, up 35%"), the reason after. Absolute values go next to every percentage.
-- **Plain business words.** Spell out jargon the first time (CVR = share of clicks that end in a result).
+- **Plain business words.** Spell out jargon the first time (CVR = share of link clicks that end in a result).
 - **Say each thing once.** Explain a problem in full in exactly one place (its card in section 12, or the section that owns it). Elsewhere mention it in a few words and point to its CMP ID.
 - Use ✅ / ⚠️ / ❌ sparingly to mark a verdict, never as decoration.
 - Skip nothing: all 14 sections appear, in order. A section with nothing to report is one line saying so and why.
@@ -64,14 +64,14 @@ Start the reply with the title line below, with the account name filled in. Noth
 - **Business type** (Settings) and which metrics lead because of it.
 - **Maturity**: whether the current window is mature; if not, from which day and why.
 - **Measurement breaks and caveats**: each MEASUREMENT BREAK and caveat from Settings and Tracking, or "None recorded".
-- **Failed to load**: each part listed in Failed to load, or "Nothing failed to load".
+- **Failed to load**: each part Failed to load lists as "failed to load", or "Nothing failed to load". Lines starting "warning:" are not failed parts: list them separately as **Warnings**.
 - **Scope**: when the evidence heading says "(whole account)", state that the breakdowns in section 7 cover the whole account, not only the selected campaigns.
 
 ## 1. Executive summary
 - **Verdict**: one line, using the movement of the headline metrics and their statuses. Not a recommendation.
 - **Top 3 wins**: three bullets, each one number with its absolute values. Fewer if fewer exist; say so.
 - **Top 3 declines**: three bullets in the same form. Report declines as clearly as wins.
-- **Main cause**: one bullet naming the biggest driver from the Bridge, labelled [Observed], [Likely] or [Hypothesis], with its CMP ID.
+- **Main cause**: one bullet naming the biggest driver from the Bridge, labelled [Observed], [Likely] or [Hypothesis], with its CMP ID if a finding covers it, otherwise say none covers it.
 - **Top 3 priorities to investigate**: three bullets, each phrased as what to look into ("Look into why CPM rose 30% on prospecting"), each tied to one or more CMP IDs. These are questions, not actions.
 - Each bullet at most 25 words.
 
@@ -84,7 +84,7 @@ Start the reply with the title line below, with the account name filled in. Noth
 
 ## 3. Driver analysis
 - From the Bridge only. One short block per Bridge metric (cost per result, results, purchase value), only those the Bridge provides.
-- For each: previous -> current, then the effects in the order printed, each with its own amount. Name the largest effect first.
+- For each: previous -> current, then the effects with their own amounts and "% of the change". Name the largest effect first, then the rest in printed order.
 - Say plainly which drivers helped and which hurt, using the metric's actual movement. Label each cause [Observed], [Likely] or [Hypothesis].
 - Where the Bridge says "no material change" or "not available", say that and stop. Do not invent a split.
 
@@ -149,10 +149,13 @@ Start the reply with the title line below, with the account name filled in. Noth
 - If Findings says there are none, write one line saying nothing moved beyond the thresholds.
 
 ## 13. Appendix
-- **Definitions**: each KPI used (spend, results, cost per result, CPM, CTR, CPC, CVR, AOV, ROAS, frequency, reach) in one line, Meta-reported.
+- **Definitions**: each KPI used in one line, Meta-reported: spend, results, cost per result, CPM = spend ÷ impressions × 1000, CTR = link clicks ÷ impressions, CVR = results ÷ link clicks, AOV = purchase value ÷ purchases, CPC, ROAS, frequency, reach. CTR and CVR are link-click based.
 - **Thresholds**: copy the rules from Thresholds (materiality, minimum results, minimum impressions, minimum spend share).
 - **Status rule**: Improved, Declined, Stable (within the materiality threshold) or Low volume, direction-aware.
-- **Bridge method**: state the identities as text only, for example cost per result = (CPM ÷ 1000) ÷ (CTR × CVR); results = impressions × CTR × CVR; purchase value = results × average order value; and that the driver effects add up to the total change. Do not recompute them.
+- **Bridge method**: state the identities as text only; do not recompute them. Drivers are CPM, CTR, CVR, Volume and AOV, and the driver effects add up to the total change.
+  - cost per result = CPM ÷ (1000 × CTR × CVR); drivers CPM, CTR, CVR.
+  - results = (spend ÷ CPM × 1000) × CTR × CVR; drivers Volume (spend), CPM, CTR, CVR.
+  - purchase value = purchases × AOV; drivers Volume (purchases) and AOV; ecom and hybrid accounts only.
 - **Methodology**: both windows, the attribution settings, the like-for-like rule for entities, and that every figure was computed in code from Meta's own rows.
 - **Limitations**: Meta-reported values and view-through attribution, the maturity of the current window, low-volume rows, parts that failed to load, and breakdowns that are whole-account.
 `;
