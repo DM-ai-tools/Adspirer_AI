@@ -46,6 +46,7 @@ import { ImageFormatPicker } from "@/components/creatives/image-format-picker";
 import { parseImageFormat, type ImageFormat } from "@/lib/creatives/formats";
 import { CampaignSettingsCard } from "@/components/ai/campaign-settings-card";
 import { TargetingPickerCard } from "@/components/ai/targeting-picker";
+import { isStopCommand } from "@/lib/agent/turn-stop";
 import type { CampaignSettings } from "@/lib/meta/campaign-rules";
 import type {
   CampaignTargetingSelection,
@@ -591,6 +592,14 @@ function ToolProposalCards({ proposals }: { proposals: ToolProposal[] }) {
   );
 }
 
+/** Settles once `flag` turns false (the reply being written has ended), or after `timeoutMs`. */
+async function waitWhile(flag: { current: boolean }, timeoutMs = 20_000): Promise<void> {
+  const until = Date.now() + timeoutMs;
+  while (flag.current && Date.now() < until) {
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+}
+
 export function ChatPanel({
   messages,
   onSend,
@@ -663,6 +672,11 @@ export function ChatPanel({
   /** True when the user is near the bottom — only then do we follow new messages. */
   const stickToBottomRef = useRef(true);
   const sending = sendingProp ?? sendingLocal;
+  /** Read by the stop-then-send wait, which outlives this render. */
+  const sendingNowRef = useRef(sending);
+  useEffect(() => {
+    sendingNowRef.current = sending;
+  }, [sending]);
   const apiPath = (path: string) =>
     `${apiBase}${path.startsWith("/") ? path : `/${path}`}`;
 
@@ -700,7 +714,19 @@ export function ChatPanel({
   /** Resolves false when nothing was delivered, so the composer keeps the text. */
   async function submit(content: string): Promise<boolean> {
     const trimmed = stripComposerMarkers(content).trim();
-    if (!trimmed || sending || disabled) return false;
+    if (!trimmed || disabled) return false;
+    // Typing while a reply is being written: "stop" only stops it; anything else stops it and is
+    // then sent, read in light of the stopped reply ("continue but for each campaign").
+    if (sending) {
+      if (!onStop) return false;
+      onStop();
+      if (isStopCommand(trimmed)) return true;
+      await waitWhile(sendingNowRef);
+      if (sendingNowRef.current) {
+        toast.error("The reply is still stopping — send your message again in a moment.");
+        return false;
+      }
+    }
     // Sending a message should always jump back to the latest reply.
     stickToBottomRef.current = true;
     setSendingLocal(true);

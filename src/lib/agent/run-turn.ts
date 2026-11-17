@@ -1,6 +1,7 @@
 import { getConfig } from "@/lib/config";
 import { getDemoStore } from "@/lib/demo/store";
-import { runTask } from "@/lib/agent/task-runner";
+import { getTask, runTask } from "@/lib/agent/task-runner";
+import { createStopWatch, stoppedReplyContent, TurnStopped } from "@/lib/agent/turn-stop";
 import { runTaskV2 } from "@/lib/agent/task-runner-v2";
 import { toMessageInsert } from "@/lib/db/live-maps";
 import { toPublicTask } from "@/lib/agent/task-public";
@@ -110,6 +111,8 @@ export async function runAgentTurn(input: {
   emit?: TurnEmit;
   /** How often to persist the in-progress reply. */
   persistEveryMs?: number;
+  /** How often to check whether the operator stopped the reply (tests use 0). */
+  stopCheckEveryMs?: number;
 }): Promise<{ task: Task; message: Message }> {
   const { assistantMessage, emit } = input;
   const persistEveryMs = input.persistEveryMs ?? 400;
@@ -117,9 +120,13 @@ export async function runAgentTurn(input: {
   let lastDeltaSent = 0;
   let lastStatusKey = "";
   const encodeDelta = createDeltaEncoder();
+  // The operator can stop the reply midway (Stop button / "stop"): checked as the text streams.
+  const stop = createStopWatch(input.taskId, getTask, input.stopCheckEveryMs);
 
   try {
     const onProgress: NonNullable<Parameters<typeof runTask>[1]>["onProgress"] = async (event) => {
+      // Unwind the run as soon as the operator stops it; what was written so far is kept below.
+      if (await stop.check()) throw new TurnStopped();
       // The full task (steps, ui) only changes on status transitions.
       // Re-sending it with every token made payloads grow quadratically.
       const statusKey = `${event.phase}|${event.label}|${event.task.status}`;
@@ -201,13 +208,35 @@ export async function runAgentTurn(input: {
       }
     };
 
-    const task = input.useMetaDirect
-      ? await runTaskV2(input.taskId, {
-          metaAccountId: input.metaAccountId,
-          actingUserId: input.actingUserId,
-          onProgress,
-        })
-      : await runTask(input.taskId, { onProgress });
+    let task: Task | null = null;
+    try {
+      task = input.useMetaDirect
+        ? await runTaskV2(input.taskId, {
+            metaAccountId: input.metaAccountId,
+            actingUserId: input.actingUserId,
+            onProgress,
+          })
+        : await runTask(input.taskId, { onProgress });
+    } catch (error) {
+      // A stop can surface as any error (some steps catch and rethrow their own); the flag decides.
+      if (!(error instanceof TurnStopped) && !(await stop.check(true))) throw error;
+    }
+    // Stopped during the run: keep what was written, end it with the marker, and close the reply.
+    // (A stop that lands after the reply finished changes nothing: the reply is complete.)
+    if (stop.stopped) {
+      assistantMessage.content = stoppedReplyContent(assistantMessage.content, assistantMessage.metadata?.liveStatus === true);
+      assistantMessage.metadata = {
+        ...(assistantMessage.metadata ?? {}),
+        taskId: input.taskId,
+        status: "stopped",
+        stopped: true,
+        streaming: false,
+        liveStatus: false,
+      };
+      await saveMessage(assistantMessage, input.taskId);
+      return { task: task ?? (await getTask(input.taskId)), message: assistantMessage };
+    }
+    if (!task) throw new Error("Agent run returned no task");
 
     assistantMessage.content =
       typeof task.agent_state?.summary === "string"

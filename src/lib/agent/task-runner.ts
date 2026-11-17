@@ -25,6 +25,7 @@ import {
 } from "@/lib/agent/reply-format";
 import { buildClientContext } from "@/lib/agent/context-builder";
 import { loadConversationHistory, loadLatestProposal, loadLatestReports } from "@/lib/agent/history";
+import { resumedRequest, stoppedTurn } from "@/lib/agent/turn-stop";
 import {
   buildContextResearch,
   captureTaskLearning,
@@ -304,7 +305,7 @@ export async function runTask(
   const correlationId = newCorrelationId();
   const log = logger.child({ correlationId, taskId, clientId: task.client_id });
 
-  const request = task.goal ?? task.title;
+  let request = task.goal ?? task.title;
   // createTask already planned the steps for this request — reuse them.
   const plannedSteps = Array.isArray(task.agent_state?.steps)
     ? (task.agent_state.steps as TaskStep[])
@@ -418,7 +419,7 @@ export async function runTask(
       // The latest strategy target proposal in full: the classifier reads its options when the history's copy is cut.
       loadLatestProposal(task.conversation_id).catch(() => null),
     ]);
-    const history = historyRaw.filter((m) => {
+    let history = historyRaw.filter((m) => {
       if (m.role === "assistant" && !m.content.trim()) return false;
       return true;
     });
@@ -428,6 +429,17 @@ export async function runTask(
 
     // Fetch Meta evidence BEFORE writing the answer (fixes "fetching…" placeholders).
     let brief = await classifyRequest(request, history, latestProposal);
+    // The operator stopped the last reply and now continues it ("continue", "continue but for each
+    // campaign"): run what it was answering, with their change, as if asked that way. The writer reads
+    // the request from task.goal, so it is set there too.
+    const stopped = brief.resumesStopped ? stoppedTurn(history) : null;
+    if (stopped) {
+      request = resumedRequest(stopped, request);
+      task.goal = request;
+      history = stopped.historyBefore;
+      brief = await classifyRequest(request, history, latestProposal);
+      log.info("request.resumed_after_stop", { intent: brief.intent });
+    }
     // A turn that queues from an earlier numbered list keeps that list's period, scope and areas.
     const storedOffer = brief.queue.requested
       ? await loadLastOptimizeOffer(task.conversation_id, task.id).catch(() => null)

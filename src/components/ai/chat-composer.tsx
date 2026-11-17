@@ -62,7 +62,9 @@ export const ChatComposer = forwardRef<
     el.style.height = `${Math.min(el.scrollHeight, MAX_HEIGHT_PX)}px`;
   }, [value]);
 
-  const canSend = Boolean(value.trim()) && !disabled && !sending;
+  // While a reply is being written, a typed message stops it and is then sent (when stopping is wired).
+  const canSend = Boolean(value.trim()) && !disabled && (!sending || Boolean(onStop));
+  const showStop = Boolean(sending && onStop && !value.trim());
 
   async function send() {
     if (!canSend) return;
@@ -122,11 +124,12 @@ export const ChatComposer = forwardRef<
             }
           }}
         />
-        {sending && onStop ? (
+        {showStop ? (
           <button
             type="button"
             onClick={onStop}
-            title="Stop waiting for this reply"
+            title="Stop the reply (keeps what's written; type “continue” to resume)"
+            aria-label="Stop the reply"
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-secondary text-foreground transition-colors hover:bg-secondary/70"
           >
             <Square className="h-3.5 w-3.5 fill-current" />
@@ -135,10 +138,10 @@ export const ChatComposer = forwardRef<
           <button
             type="submit"
             disabled={!canSend}
-            title="Send (Enter)"
+            title={sending ? "Stop the reply and send this" : "Send (Enter)"}
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-accent text-accent-foreground transition-opacity disabled:opacity-40"
           >
-            {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
+            {sending && !onStop ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
           </button>
         )}
       </div>

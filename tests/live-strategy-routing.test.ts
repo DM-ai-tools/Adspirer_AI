@@ -79,6 +79,22 @@ const SCOPE_CASES: ScopeCase[] = [
   { history: [...REPORT_ONLY, u("give me a strategy for each campaign"), a(PROPOSAL)], message: "recommended", campaigns: [], perCampaign: true },
 ];
 
+const STOPPED = a(
+  "# Bethel Shopfitting World — strategy to 1.3 purchases a day by 1 Jan 2027\n\n## 1. Strategy header\n**Goal:** 1.3 purchases a day\n\n## 2. Situation summary\nThe account is profitable and\n\n_Stopped before the reply finished. Type “continue” to resume, or say what to change._",
+);
+/** The plan was stopped midway; the operator now types. */
+const AFTER_STOP = [...FRESH, u("recommended"), STOPPED];
+type ResumeCase = { message: string; resumes: boolean };
+const RESUME_CASES: ResumeCase[] = [
+  { message: "continue", resumes: true },
+  { message: "ok go on", resumes: true },
+  { message: "continue but break it down for each campaign", resumes: true },
+  { message: "resume, and keep it shorter", resumes: true },
+  { message: "carry on but use the bold target instead", resumes: true },
+  { message: "actually, show me last week's spend by campaign", resumes: false },
+  { message: "how is the account doing today?", resumes: false },
+];
+
 function loadAiEnv() {
   const env = fs.readFileSync(".env.local", "utf8");
   for (const line of env.split(/\r?\n/)) {
@@ -105,6 +121,26 @@ describe.skipIf(!LIVE)("LIVE: strategy replies are understood in context", () =>
           (c.pick === null ? brief.intent !== "strategy" || c.intent[0] === "strategy" : pick === c.pick) &&
           (c.intent[0] === "strategy" || pick === null);
         const line = `${ok ? "ok  " : "FAIL"} [${c.label}] "${c.message}" -> ${brief.intent}${pick ? ` (${pick})` : ""}  expected ${c.intent.join("|")}${c.pick ? ` (${c.pick})` : ""}  via ${brief.source}`;
+        console.log(line);
+        if (!ok) wrong.push(line);
+      }
+      expect(wrong).toEqual([]);
+    },
+    300_000,
+  );
+
+  it(
+    "knows when a message resumes a stopped reply",
+    async () => {
+      loadAiEnv();
+      const { resetConfigCache } = await import("@/lib/config");
+      resetConfigCache();
+      const { classifyRequest } = await import("@/lib/agent/intent-classifier");
+      const wrong: string[] = [];
+      for (const c of RESUME_CASES) {
+        const brief = await classifyRequest(c.message, AFTER_STOP, PROPOSAL);
+        const ok = Boolean(brief.resumesStopped) === c.resumes;
+        const line = `${ok ? "ok  " : "FAIL"} [stopped] "${c.message}" -> resumes=${Boolean(brief.resumesStopped)} intent=${brief.intent}  expected resumes=${c.resumes}`;
         console.log(line);
         if (!ok) wrong.push(line);
       }

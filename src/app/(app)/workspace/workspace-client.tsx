@@ -245,6 +245,8 @@ function WorkspaceInner() {
   const [bootstrapping, setBootstrapping] = useState(false);
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
+  /** The task behind the reply being written, so Stop can end it on the server. */
+  const runningTaskIdRef = useRef<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [statusLabel, setStatusLabel] = useState<string | null>(null);
   // Ad-account info is tagged with the client it was loaded for; anything
@@ -922,6 +924,7 @@ function WorkspaceInner() {
           if (event === "task") {
             const nextTask = payload.task as Task | undefined;
             if (nextTask) setTask(nextTask);
+            if (nextTask) runningTaskIdRef.current = nextTask.id;
             if (
               nextTask &&
               typeof nextTask.agent_state?.statusLabel === "string"
@@ -1081,8 +1084,25 @@ function WorkspaceInner() {
     } finally {
       if (streamAbortRef.current === abort) streamAbortRef.current = null;
       sendingRef.current = false;
+      runningTaskIdRef.current = null;
       setSending(false);
       setStatusLabel(null);
+    }
+  }
+
+  /**
+   * Stops the reply being written. The server keeps what was written so far, marks it stopped and
+   * ends the stream, so the bubble settles on its own; the operator can then continue by typing.
+   */
+  async function stopReply(): Promise<void> {
+    const taskId = runningTaskIdRef.current;
+    if (!taskId) return;
+    setStatusLabel("Stopping…");
+    try {
+      const res = await fetch(apiPath(`/tasks/${taskId}/cancel`), { method: "POST" });
+      if (!res.ok) throw new Error(`Couldn't stop the reply (${res.status})`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Couldn't stop the reply");
     }
   }
 
@@ -1327,6 +1347,7 @@ function WorkspaceInner() {
                   key={conversationId ?? "none"}
                   messages={messages}
                   onSend={sendMessage}
+                  onStop={() => void stopReply()}
                   sending={sending}
                   statusLabel={statusLabel}
                   className="h-full min-h-0"

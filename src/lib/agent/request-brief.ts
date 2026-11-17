@@ -7,6 +7,7 @@ import { wantsQueueApprovals } from "@/lib/agent/optimize-queue";
 import { answersStrategyProposal, detectRequestIntentWithHistory, type RequestIntent } from "@/lib/agent/task-plan";
 import { pickedOption } from "@/lib/agent/account-strategy-brief";
 import { strategyState } from "@/lib/agent/strategy-state";
+import { looksLikeResume, stoppedTurn } from "@/lib/agent/turn-stop";
 
 /**
  * What the operator's message means, as data: what they want (intent), whether
@@ -59,6 +60,8 @@ export type RequestBrief = {
    * strategy earlier in the chat: named campaigns, and/or one section per campaign.
    */
   strategyScope?: StrategyScope;
+  /** The assistant's last reply was stopped midway and this message continues it (with or without a change). */
+  resumesStopped?: boolean;
 };
 
 export type StrategyPick = "safe" | "recommended" | "bold" | "own";
@@ -587,6 +590,7 @@ export function rulesBrief(request: string, history: AgentHistoryMessage[]): Req
     source: "rules",
     strategyPick: answersStrategyProposal(request, history) && !asksAQuestion(request) ? rulesPick(request) : null,
     strategyScope: rulesStrategyScope(request, history),
+    resumesStopped: stoppedTurn(history) != null && looksLikeResume(request),
   };
 }
 
@@ -619,6 +623,7 @@ const modelSchema = z.object({
     .nullable()
     .catch(null)
     .default(null),
+  resumesStopped: z.boolean().catch(false).default(false),
 });
 
 const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
@@ -687,5 +692,7 @@ export function parseBriefReply(
     // A pick only means something while a proposal is waiting for one.
     strategyPick: strategyState(history).open ? data.strategyPick : null,
     strategyScope: modelStrategyScope(data.strategyScope, request, history),
+    // Only meaningful when the last reply really was stopped.
+    resumesStopped: stoppedTurn(history) != null && (data.resumesStopped || looksLikeResume(request)),
   };
 }
