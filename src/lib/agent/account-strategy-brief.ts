@@ -1,6 +1,7 @@
 import { parseDateRangeFromText } from "@/lib/agent/audit-brief";
 import type { AgentHistoryMessage } from "@/lib/agent/history";
 import { parseLeadGoal } from "@/lib/agent/lead-brief";
+import { readReportRange } from "@/lib/analysis/prior-findings";
 import { parseBudgetCents, parseRoasValues, parseTotal } from "@/lib/agent/strategy-brief";
 import type { GoalKind, StatedTarget, TargetOption } from "@/lib/strategy/account-strategy";
 
@@ -148,7 +149,8 @@ export function strategyPeriod(
 ): { dateStart: string; dateStop: string; source: string } {
   const audit = history.findLast((m) => m.role === "assistant" && /^#\s*Meta Ads Account Audit\b/m.test(m.content));
   const periodLine = audit?.content.match(/\*\*Period:?\*\*:?\s*([^\n·]+)/)?.[1];
-  const fromAudit = periodLine ? parseDateRangeFromText(periodLine) : null;
+  // Audits write "2026-10-01 → 2026-10-31 (31 days)"; read it the way prior-findings does.
+  const fromAudit = periodLine ? readReportRange(periodLine) : null;
   if (fromAudit) return { dateStart: fromAudit.dateStart, dateStop: fromAudit.dateStop, source: "the period of the audit in this chat" };
   if (/\b(?:last|past|previous)\s+(?:\d+\s+)?(?:days?|weeks?|months?|year)\b/i.test(request)) {
     const asked = parseDateRangeFromText(request);

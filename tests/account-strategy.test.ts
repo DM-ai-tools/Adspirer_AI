@@ -206,6 +206,13 @@ describe("the period read", () => {
     expect(strategyPeriod("strategy based on this audit", history)).toMatchObject({ dateStart: "2026-10-16", dateStop: "2026-11-14" });
   });
 
+  it("reads Period lines written with an arrow, ISO or natural dates", () => {
+    const at = (period: string) => [{ role: "assistant" as const, content: `# Meta Ads Account Audit — Bethel\n\n**Period:** ${period} · **Scope:** whole account` }];
+    expect(strategyPeriod("strategy", at("2026-10-01 → 2026-10-31 (31 days)"))).toMatchObject({ dateStart: "2026-10-01", dateStop: "2026-10-31" });
+    expect(strategyPeriod("strategy", at("1 Oct 2026 → 31 Oct 2026"))).toMatchObject({ dateStart: "2026-10-01", dateStop: "2026-10-31" });
+    expect(strategyPeriod("strategy", at("2026-10-01 -> 2026-10-31"))).toMatchObject({ dateStart: "2026-10-01", dateStop: "2026-10-31" });
+  });
+
   it("never reads a target window as a data period", () => {
     expect(strategyPeriod("strategy to hit $40 per lead in 45 days", []).source).toMatch(/last 30 days/);
   });

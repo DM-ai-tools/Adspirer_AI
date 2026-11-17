@@ -2962,7 +2962,8 @@ export async function gatherDiagnoseEvidence(input: {
         throw new Error("this Meta connection can't load an account snapshot");
       }
       // The audit's period when the chat has one ("based on this audit"), not always the last 30 days.
-      const range = strategyPeriod(input.request, input.history ?? []);
+      // The full reports when loaded: the truncated history can drop an old audit altogether.
+      const range = strategyPeriod(input.request, input.reportHistory ?? input.history ?? []);
       const rangeDays =
         Math.round((Date.parse(`${range.dateStop}T00:00:00Z`) - Date.parse(`${range.dateStart}T00:00:00Z`)) / 86_400_000) + 1;
       const snapshot = await withCatalogCategories(

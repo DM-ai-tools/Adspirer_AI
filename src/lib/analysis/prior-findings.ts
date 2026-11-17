@@ -10,7 +10,14 @@ type Parsed = { findings: PriorFinding[]; oldNumbering: boolean };
 const AUDIT_TITLE = AUDIT_REPORT_TITLE;
 const COMPARISON_TITLE = COMPARISON_REPORT_TITLE;
 
-/** "2026-10-01 → 2026-10-15" is how reports write ranges; the shared parser wants "to". */
+/**
+ * "2026-10-01 → 2026-10-15" is how reports write ranges; the shared parser wants "to". Shared with
+ * `strategyPeriod`, so the strategy and this parser read a report's period the same way.
+ */
+export function readReportRange(text: string): { dateStart: string; dateStop: string } | null {
+  return readRange(text);
+}
+
 function readRange(text: string): { dateStart: string; dateStop: string } | null {
   try {
     const r = parseDateRangeFromText(text.replace(/\s*(?:→|->|➝)\s*/g, " to "));

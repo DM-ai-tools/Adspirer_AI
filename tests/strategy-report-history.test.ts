@@ -134,8 +134,8 @@ describe("loadLatestReports", () => {
   });
 
   it("the strategy evidence reads findings from reportHistory, not the truncated history", async () => {
-    // strategyPeriod reads "<date> to <date>" on the Period line, so the strategy plans on the audit's period.
-    const audit = longAudit.replace("2026-10-01 → 2026-10-15", "2026-10-01 to 2026-10-15");
+    // The audit's own "→" Period line, for a period older than the last 30 days: the strategy plans on it.
+    const audit = longAudit;
     const history: AgentHistoryMessage[] = [
       { role: "user", content: "audit last month" },
       { role: "assistant", content: truncatePastReply(audit, 6_000) },
@@ -158,5 +158,18 @@ describe("loadLatestReports", () => {
     });
     expect(without.evidence).toContain("not used: no finding IDs could be read");
     expect(without.evidence).toContain(NO_PRIOR_REPORT_NOTICE);
+  });
+
+  it("reads the period from reportHistory when the audit has left the truncated history", async () => {
+    const gathered = await gatherDiagnoseEvidence({
+      clientId: "client_trafficradius",
+      request: "Build me a strategy based on this audit",
+      intent: "strategy",
+      history: [{ role: "user", content: "thanks" }],
+      reportHistory: [{ role: "assistant", content: longAudit }],
+    });
+    expect(gathered.evidence).toContain("- audit of 2026-10-01 → 2026-10-15 used");
+    expect(gathered.evidence).toContain("AUD-002 — Frequency 4.1 on prospecting");
+    expect(gathered.toolCalls.find((c) => c.name === "audit_checkpoints")?.args).toMatchObject({ date_start: "2026-10-01", date_stop: "2026-10-15" });
   });
 });
