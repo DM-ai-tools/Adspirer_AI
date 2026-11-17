@@ -96,6 +96,9 @@ export function hasTarget(t: StatedTarget): boolean {
 export function pickedOption(text: string): TargetOption["key"] | null {
   const t = text.trim().toLowerCase();
   if (!t || t.length > 300) return null;
+  // Naming more than one option ("give me the safe, recommended and bold options") asks to see them, it doesn't pick.
+  const named = [/\b(?:bold|aggressive|ambitious)\b/, /\b(?:safe|conservative|cautious)\b/, /\brecommend\w*\b/].filter((re) => re.test(t)).length;
+  if (named > 1) return null;
   if (/\b(bold|stretch|aggressive|ambitious|option\s*3|third|c\))|^\s*(3|c)\s*\.?\s*$/.test(t)) return "bold";
   if (/\b(safe|conservative|cautious|option\s*1|first|a\))|^\s*(1|a)\s*\.?\s*$/.test(t)) return "safe";
   if (/\b(recommend\w*|realistic|middle|option\s*2|second|b\)|your\s+(pick|call|suggestion)|go\s+(ahead|with\s+(it|that|yours))|sounds\s+good|yes|yep|ok(ay)?|sure|do\s+it|proceed)\b|^\s*(2|b)\s*\.?\s*$/.test(t)) {
@@ -123,9 +126,11 @@ export function resolveStrategyTarget(
   today?: Date,
   /** The model's reading of the operator's answer ("own" = their own target); wins over the word patterns. */
   understoodPick?: TargetOption["key"] | "own" | null,
+  /** Whether an offer is waiting for a pick, from the stored offer; else read from the chat text. */
+  offerOpen?: boolean,
 ): { stated: StatedTarget; pick: TargetOption["key"] | null; answering: boolean } {
   const stated = parseStatedTarget(request, kind, today);
-  const answering = answersTargetProposal(history);
+  const answering = offerOpen ?? answersTargetProposal(history);
   if (hasTarget(stated)) {
     if (stated.windowDays == null && answering) {
       // "45 days" may have been said in the original ask, before the proposal.

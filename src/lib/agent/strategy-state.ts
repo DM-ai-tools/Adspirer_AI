@@ -1,4 +1,5 @@
 import type { AgentHistoryMessage } from "@/lib/agent/history";
+import { offerOptionLines, type StrategyOfferRecord } from "@/lib/agent/strategy-offer";
 
 /**
  * Where a strategy stands in this chat, worked out from the messages rather than from the operator's
@@ -56,7 +57,18 @@ export function proposalOptions(content: string): string[] {
  * @param fullProposal the latest proposal in full, when loaded separately; used for the options when
  *   the history's copy was cut before its table
  */
-export function strategyState(history: AgentHistoryMessage[], fullProposal?: string | null): StrategyState {
+export function strategyState(
+  history: AgentHistoryMessage[],
+  fullProposal?: string | null,
+  /** The offer the turns stored on their tasks; when present it decides, and the text reading is only a fallback. */
+  stored?: StrategyOfferRecord | null,
+): StrategyState {
+  if (stored) {
+    if (stored.status === "closed") return CLOSED;
+    const assistant = history.filter((m) => m.role === "assistant");
+    const at = assistant.findLastIndex((m) => isProposal(m.content));
+    return { open: true, options: offerOptionLines(stored), messagesAgo: at >= 0 ? assistant.length - 1 - at : null };
+  }
   const recent = history.slice(-LOOKBACK_MESSAGES);
   const assistant = recent.map((m, i) => ({ m, i })).filter(({ m }) => m.role === "assistant");
   const proposalAt = assistant.findLast(({ m }) => isProposal(m.content));

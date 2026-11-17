@@ -4,7 +4,7 @@ import { asksForComparison, looksLikeAuditBriefReply, parseDateRangeFromText } f
 import { looksLikeLeadBriefReply } from "@/lib/agent/lead-brief";
 import { looksLikeStrategyBriefReply, STRATEGY_BRIEF_MARKER } from "@/lib/agent/strategy-brief";
 import { pickedOption } from "@/lib/agent/account-strategy-brief";
-import { strategyState } from "@/lib/agent/strategy-state";
+import { strategyState, type StrategyState } from "@/lib/agent/strategy-state";
 
 export type TaskStepState =
   | "pending"
@@ -205,6 +205,10 @@ function isComparisonReportAsk(text: string): boolean {
   return true;
 }
 
+/** Two or more of the option names, or "target / improvement options", or options "to aim for". */
+const STRATEGY_OPTIONS_ASK =
+  /\b(?:safe|recommended|bold)\b[^.?!\n]{0,40}\b(?:safe|recommended|bold)\b|\b(?:target|improvement|strategy)\s+options?\b|\b(?:options?|targets?)\b[^.?!\n]{0,40}\baim\s+for\b/i;
+
 export function detectRequestIntent(request: string): RequestIntent {
   const text = request.toLowerCase();
   // The campaign settings card's confirmation is a step of the build; its text
@@ -242,6 +246,9 @@ export function detectRequestIntent(request: string): RequestIntent {
   ) {
     return "strategy";
   }
+  // Asking for the strategy's target options ("the new safe, recommended and bold options I can aim for",
+  // "what targets could I aim for") is the strategy's target proposal, not a general answer.
+  if (STRATEGY_OPTIONS_ASK.test(text)) return "strategy";
   // Period-over-period comparison report, after strategy and before the
   // audit / general rules. Audit wording keeps it an audit.
   if (isComparisonReportAsk(text)) return "comparison";
@@ -401,9 +408,14 @@ function campaignBuildOpen(recent: AgentHistoryMessage[]): boolean {
  * recent chat (shown, no plan since; not only the last message) and the reply picks an option, gives a
  * target, or gives a window. The model's reading comes first; this stands in when no model answers.
  */
-export function answersStrategyProposal(request: string, history: AgentHistoryMessage[]): boolean {
+export function answersStrategyProposal(
+  request: string,
+  history: AgentHistoryMessage[],
+  /** The stored offer state when known; else read from the chat text. */
+  state: StrategyState = strategyState(history),
+): boolean {
   return Boolean(
-    strategyState(history).open &&
+    state.open &&
       request.trim().length <= 300 &&
       (pickedOption(request) != null ||
         looksLikeStrategyBriefReply(request) ||

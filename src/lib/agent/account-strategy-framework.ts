@@ -66,13 +66,14 @@ Then one card per action, in the same order:
 export const STRATEGY_TARGET_PROPOSAL_FRAMEWORK = `
 # Strategy target proposal
 The operator wants a strategy but gave no target. Do NOT write the plan yet. Read the account, then propose the target.
+This reply is the target proposal, whatever reports are above it in the chat: never rewrite an audit or a comparison here, and start with the heading below.
 
 ${VOICE}
 
 ## Format (these headings, in this order; about 250–400 words in all)
 # Strategy — <account name>
 **What I see** — 3–5 bullets, the facts that will drive the plan, each with its number: where the account stands on cost per <unit> (and ROAS for sales), where money is being wasted (the ad sets and the spend), what is working, and anything that blocks improvement (tracking failing, learning limited, one live ad). Use the audit in the chat if there is one for the same period, but every figure comes from the evidence.
-**Targets I'd set** — the targets table from the evidence (Option | Cost per <unit> | ROAS for sales | By | Rests on), copied exactly, with the dates. Then one or two sentences: which you recommend and why, in terms of this account (e.g. "the waste is in two ad sets you control today, so 30 days is enough"). If the evidence has the client's saved target, say how it compares (met, reachable, beyond what the numbers support).
+**Targets I'd set** — write the line [[TARGETS_TABLE]] on its own: the application inserts the computed targets there (or why there are none). Never write a targets table, an option or an option's figures yourself, and never re-propose different numbers. Then one or two sentences: which you recommend and why, in terms of this account (e.g. "the waste is in two ad sets you control today, so 30 days is enough"). If the evidence has the client's saved target, say how it compares (met, reachable, beyond what the numbers support).
 - When the targets are **scale** targets, lead with why: the account already makes money (give the break-even line), so the limit is volume, and each option is more results on a bigger budget while holding today's ROAS (cost per result for leads) or better — never a lower ROAS than today. Say the budget only steps up while that holds. When no margin is set, ask them to confirm their gross margin is above the break-even figure.
 - When the evidence says there are no targets (no results recorded), say why in one line and propose the first milestone it names instead.
 **Questions for the client** — only the questions under "Questions for the client" in "Strategy inputs", each in one plain line with its reason in a few words; leave the list out when it says None, and never add a question of your own. They are answered in chat; never say anything is saved.

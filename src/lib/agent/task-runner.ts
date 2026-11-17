@@ -26,6 +26,7 @@ import {
 import { buildClientContext } from "@/lib/agent/context-builder";
 import { loadConversationHistory, loadLatestProposal, loadLatestReports } from "@/lib/agent/history";
 import { resumedRequest, stoppedTurn } from "@/lib/agent/turn-stop";
+import { insertTargetsTable, loadStrategyOffer, saveStrategyOffer } from "@/lib/agent/strategy-offer";
 import {
   buildContextResearch,
   captureTaskLearning,
@@ -407,7 +408,7 @@ export async function runTask(
       : loadResearchEvidence(task.client_id);
     researchEvidence?.catch(() => undefined);
 
-    const [context, historyRaw, reportHistory, latestProposal] = await Promise.all([
+    const [context, historyRaw, reportHistory, latestProposal, strategyOffer] = await Promise.all([
       buildClientContext(task.client_id, {
         conversationId: task.conversation_id,
         preloaded: { metaAccounts, documents, selectedCreative },
@@ -418,6 +419,8 @@ export async function runTask(
       loadLatestReports(task.conversation_id).catch(() => []),
       // The latest strategy target proposal in full: the classifier reads its options when the history's copy is cut.
       loadLatestProposal(task.conversation_id).catch(() => null),
+      // The strategy offer stored on earlier turns: whether targets are waiting for a pick, and their exact figures.
+      loadStrategyOffer(task.conversation_id, task.id).catch(() => null),
     ]);
     let history = historyRaw.filter((m) => {
       if (m.role === "assistant" && !m.content.trim()) return false;
@@ -428,7 +431,7 @@ export async function runTask(
     }
 
     // Fetch Meta evidence BEFORE writing the answer (fixes "fetching…" placeholders).
-    let brief = await classifyRequest(request, history, latestProposal);
+    let brief = await classifyRequest(request, history, latestProposal, strategyOffer);
     // The operator stopped the last reply and now continues it ("continue", "continue but for each
     // campaign"): run what it was answering, with their change, as if asked that way. The writer reads
     // the request from task.goal, so it is set there too.
@@ -437,7 +440,7 @@ export async function runTask(
       request = resumedRequest(stopped, request);
       task.goal = request;
       history = stopped.historyBefore;
-      brief = await classifyRequest(request, history, latestProposal);
+      brief = await classifyRequest(request, history, latestProposal, strategyOffer);
       log.info("request.resumed_after_stop", { intent: brief.intent });
     }
     // A turn that queues from an earlier numbered list keeps that list's period, scope and areas.
@@ -501,6 +504,7 @@ export async function runTask(
             conversationId: task.conversation_id,
             history,
             reportHistory,
+            strategyOffer,
             intent,
             brief,
             preloaded: { metaAccounts, documents, selectedCreative },
@@ -668,6 +672,8 @@ export async function runTask(
         ],
       };
     };
+    // What the operator was offered (or that a plan answered it) is stored on this task for the next turn.
+    if (gathered.strategyOfferUpdate) saveStrategyOffer(task, gathered.strategyOfferUpdate);
     if (intent === "optimize") {
       gathered.evidence = [gathered.evidence, renderQueueDecisionEvidence(brief, decideQueue([]))]
         .filter(Boolean)
@@ -725,6 +731,10 @@ export async function runTask(
     // It is shown in chat; downloaded reports leave it out (see stripChatOnlySections).
     if (gathered.auditAppendix && agentResult.summary.trim()) {
       agentResult.summary = `${agentResult.summary.trimEnd()}\n\n${gathered.auditAppendix}`;
+    }
+    // The targets are inserted by code at the writer's marker, so the figures are always the computed ones.
+    if (gathered.strategyTargetsTable != null && agentResult.summary.trim()) {
+      agentResult.summary = insertTargetsTable(agentResult.summary, gathered.strategyTargetsTable);
     }
     // The target proposal's closing line is fixed text, so the next turn always recognises the reply.
     if (gathered.strategyAppendix && agentResult.summary.trim()) {

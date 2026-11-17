@@ -163,15 +163,18 @@ function savedTargetLine(input: StrategyEvidenceInput): string[] {
   return parts.length ? [`- The client's saved target (Goals): ${parts.join(", ")}.`] : [];
 }
 
-/** Evidence for the first turn: the analysis and three targets to choose from. No plan. */
-export function renderTargetProposalEvidence(input: StrategyEvidenceInput & { options: TargetOption[]; windowDays?: number }): string {
+/**
+ * The targets the operator picks from, exactly as computed: the table (or why there is none). The
+ * application inserts it into the reply itself, so the writer can never change, drop or invent a target.
+ */
+export function targetOptionsTable(input: StrategyEvidenceInput & { options: TargetOption[]; windowDays?: number }): string {
   const money = moneyFor(input.snapshot.account.currency);
   const unit = input.goal.unit;
-  const lines = [...header(input), ...baselineLines(input), ...leverLines(input), "", "**Targets this account's numbers support**"];
+  const lines: string[] = [];
   if (adSetLoadFailure(input.snapshot)) {
-    lines.push("- None: the ad sets didn't load, so no target can be set honestly. Say so and ask them to try again in a few minutes.");
+    lines.push("_No targets this time: the ad sets didn't load from Meta, so no target can be set honestly. Try again in a few minutes._");
   } else if (!input.options.length) {
-    lines.push(`- None: without ${unit}s there is no cost to improve on. Propose the first milestone instead (get ${unit}s recorded and at least 10 a week), and what has to change to get there.`);
+    lines.push(`_No targets yet: without ${unit}s there is no cost to improve on. The first milestone is getting ${unit}s recorded, at least 10 a week._`);
   } else if (input.options[0]!.mode === "scale") {
     const sales = input.goal.kind === "sales";
     lines.push(
@@ -195,6 +198,13 @@ export function renderTargetProposalEvidence(input: StrategyEvidenceInput & { op
     );
     if (input.windowDays != null) lines.push(`- The operator asked for ${input.windowDays} days, so every option uses that window.`);
   }
+  return lines.join("\n");
+}
+
+/** Evidence for the first turn: the analysis and three targets to choose from. No plan. */
+export function renderTargetProposalEvidence(input: StrategyEvidenceInput & { options: TargetOption[]; windowDays?: number }): string {
+  const lines = [...header(input), ...baselineLines(input), ...leverLines(input), "", "**Targets this account's numbers support** (inserted into the reply by the application where you write [[TARGETS_TABLE]])"];
+  lines.push(targetOptionsTable(input));
   lines.push(...savedTargetLine(input));
   return lines.join("\n");
 }

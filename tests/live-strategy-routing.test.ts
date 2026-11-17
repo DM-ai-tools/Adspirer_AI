@@ -95,6 +95,33 @@ const RESUME_CASES: ResumeCase[] = [
   { message: "how is the account doing today?", resumes: false },
 ];
 
+/** Black Tie Classic, 17 Nov: the offer was shown, then the chat text no longer showed it (cut short). */
+const BLACK_TIE: AgentHistoryMessage[] = [
+  u("give me comparison report for the last 30 days vs previous 30 days"),
+  a(COMPARISON),
+  u("okay so based on the comparison report what would you suggest are the new safe recommended and bold improvement options"),
+  a("# Comparison Report — Black Tie Classic\n**Current period:** 2026-10-18 → 2026-11-16\n…\n\n[earlier report truncated]"),
+  u("i dont want the comparison report, i want the new safe recommended and bold options for improvement that i can aim for"),
+  a("Here are the three target options based on the live account data…\n\n## Safe — $11.51 per lead\n## Recommended — $11.47 per lead\n## Bold — $10.23 per lead"),
+];
+const BLACK_TIE_OFFER = {
+  status: "open" as const,
+  createdAt: "2026-11-17T14:45:12Z",
+  kind: "leads" as const,
+  options: [
+    { key: "safe" as const, mode: "efficiency" as const, costPerCents: 1_279, roas: null, windowDays: 30, basis: "hold" },
+    { key: "recommended" as const, mode: "efficiency" as const, costPerCents: 1_151, roas: null, windowDays: 45, basis: "10% better" },
+    { key: "bold" as const, mode: "efficiency" as const, costPerCents: 1_023, roas: null, windowDays: 60, basis: "20% better" },
+  ],
+};
+const BLACK_TIE_CASES: Array<{ message: string; intent: string; pick: string | null }> = [
+  { message: "lets go with bold, give me the strategy report", intent: "strategy", pick: "bold" },
+  { message: "lets go with bold, assume 33% become qualified enquires", intent: "strategy", pick: "bold" },
+  { message: "go with Bold, 11 became qualified clients", intent: "strategy", pick: "bold" },
+  { message: "i want the new safe recommended and bold options again", intent: "strategy", pick: null },
+  { message: "the $10.23 one please", intent: "strategy", pick: "bold" },
+];
+
 function loadAiEnv() {
   const env = fs.readFileSync(".env.local", "utf8");
   for (const line of env.split(/\r?\n/)) {
@@ -121,6 +148,27 @@ describe.skipIf(!LIVE)("LIVE: strategy replies are understood in context", () =>
           (c.pick === null ? brief.intent !== "strategy" || c.intent[0] === "strategy" : pick === c.pick) &&
           (c.intent[0] === "strategy" || pick === null);
         const line = `${ok ? "ok  " : "FAIL"} [${c.label}] "${c.message}" -> ${brief.intent}${pick ? ` (${pick})` : ""}  expected ${c.intent.join("|")}${c.pick ? ` (${c.pick})` : ""}  via ${brief.source}`;
+        console.log(line);
+        if (!ok) wrong.push(line);
+      }
+      expect(wrong).toEqual([]);
+    },
+    300_000,
+  );
+
+  it(
+    "understands picks in the Black Tie chat from the stored offer",
+    async () => {
+      loadAiEnv();
+      const { resetConfigCache } = await import("@/lib/config");
+      resetConfigCache();
+      const { classifyRequest } = await import("@/lib/agent/intent-classifier");
+      const wrong: string[] = [];
+      for (const c of BLACK_TIE_CASES) {
+        const brief = await classifyRequest(c.message, BLACK_TIE, null, BLACK_TIE_OFFER);
+        const pick = brief.strategyPick ?? null;
+        const ok = brief.intent === c.intent && pick === c.pick;
+        const line = `${ok ? "ok  " : "FAIL"} [black tie] "${c.message}" -> ${brief.intent}${pick ? ` (${pick})` : ""}  expected ${c.intent}${c.pick ? ` (${c.pick})` : ""}`;
         console.log(line);
         if (!ok) wrong.push(line);
       }

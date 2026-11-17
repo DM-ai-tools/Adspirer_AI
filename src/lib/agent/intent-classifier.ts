@@ -4,6 +4,7 @@ import type { AgentHistoryMessage } from "@/lib/agent/history";
 import type { RequestIntent } from "@/lib/agent/task-plan";
 import { strategyState, strategyStateLines, type StrategyState } from "@/lib/agent/strategy-state";
 import { stoppedTurn } from "@/lib/agent/turn-stop";
+import type { StrategyOfferRecord } from "@/lib/agent/strategy-offer";
 import {
   asksForOptimization,
   normalizeBrief,
@@ -58,7 +59,7 @@ export const SYSTEM = [
   "Never force a request into the nearest intent. If it asks for something specific (particular metrics, a period, a breakdown, a file format), that is custom, even when it says \"report\". audit and export are only for a plain request to run an audit or to download the conversation.",
   "Key rule: mentioning an earlier report (\"based on the audit\", \"from those findings\") means they want to USE it (followup), not run it again. Choose audit only when they want a new audit run or are answering the audit's own question.",
   "Strategy beats followup: asking for a strategy, a strategy report, a plan or the full plan is always strategy, even when audits, comparisons or action lists are already in the chat. followup never produces a strategy.",
-  "Read the Conversation state when it is given. When it says a strategy is in progress and waiting for a pick, the operator's message is most likely their answer, even after other turns in between: choosing an option in any words (\"recommended\", \"the middle one\", \"go for the $90 a day one\", \"yes, do that\", \"lets go with recommended, give me the report\") or giving their own target is strategy. A question about the options (\"why is bold riskier?\", \"what does safe mean?\") is chat, not a pick. Thanks, an acknowledgement or small talk (\"thanks\", \"great\", \"got it\") is chat, not a pick: a pick needs them to choose or say to go ahead.",
+  "Read the Conversation state when it is given. When it says a strategy is in progress and waiting for a pick, the operator's message is most likely their answer, even after other turns in between: choosing an option in any words (\"recommended\", \"the middle one\", \"go for the $90 a day one\", \"yes, do that\", \"lets go with recommended, give me the report\") or giving their own target is strategy. A question about the options (\"why is bold riskier?\", \"what does safe mean?\") is chat, not a pick. Thanks, an acknowledgement or small talk (\"thanks\", \"great\", \"got it\") is chat, not a pick: a pick needs them to choose or say to go ahead. Asking to see options (\"give me the safe, recommended and bold options\", \"what targets could I aim for?\", \"new options please\") is strategy with no pick: it asks for a fresh proposal, even right after a plan.",
   "If the assistant's last message asked the operator a question (scope, dates, goal, budget, an image link), a short reply is most likely the answer to it and stays on that flow.",
   "The workflows (audit, strategy, optimize, export, create_campaign, ad_copy, generate_creatives, scrape_services) run a fixed, heavy process: pick one only when the operator clearly wants that workflow. A question about performance, a \"why\", an opinion, a quick check, or a mix of things is general (needs this client's data) or chat (answered from expertise); those are answered conversationally and can still read any data. Asking what to optimise or fix across the account (or a named campaign) is still optimize, because that flow builds the numbered list of changes they can queue. Asking for a strategy or plan (\"optimisation strategy\", \"strategy to hit 4x\", \"strategy document based on the audit\") is strategy, never followup or optimize.",
   "Intents:",
@@ -168,11 +169,14 @@ export async function classifyRequest(
   history: AgentHistoryMessage[] = [],
   /** The latest target proposal in full, when the history's copy may be cut short. */
   fullProposal?: string | null,
+  /** The strategy offer stored on the chat's tasks: decides whether an offer is waiting for a pick. */
+  storedOffer?: StrategyOfferRecord | null,
 ): Promise<RequestBrief> {
+  const state = strategyState(history, fullProposal, storedOffer);
   let brief: RequestBrief | null = null;
   try {
-    const reply = await askModel(buildClassifierPrompt(request, history, strategyState(history, fullProposal)));
-    brief = reply ? parseBriefReply(reply, request, history) : null;
+    const reply = await askModel(buildClassifierPrompt(request, history, state));
+    brief = reply ? parseBriefReply(reply, request, history, state) : null;
   } catch (error) {
     logger.warn("Intent classifier failed; using keyword fallback", {
       error: error instanceof Error ? error.message : String(error),
@@ -181,8 +185,8 @@ export async function classifyRequest(
   // A model that only named the intent still gets the optimisation-ask check the rules make.
   const base = brief
     ? { ...brief, optimizationAsk: brief.optimizationAsk || asksForOptimization(request) }
-    : rulesBrief(request, history);
-  return normalizeBrief(base, request, history);
+    : rulesBrief(request, history, state);
+  return normalizeBrief(base, request, history, state);
 }
 
 /** The intent alone (callers that do not need the rest of the brief). */

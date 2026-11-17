@@ -6,7 +6,7 @@ import { FOCUS_AREAS, type ChangeKind, type Focus } from "@/lib/agent/optimizati
 import { wantsQueueApprovals } from "@/lib/agent/optimize-queue";
 import { answersStrategyProposal, detectRequestIntentWithHistory, type RequestIntent } from "@/lib/agent/task-plan";
 import { pickedOption } from "@/lib/agent/account-strategy-brief";
-import { strategyState } from "@/lib/agent/strategy-state";
+import { strategyState, type StrategyState } from "@/lib/agent/strategy-state";
 import { looksLikeResume, stoppedTurn } from "@/lib/agent/turn-stop";
 
 /**
@@ -510,6 +510,7 @@ export function normalizeBrief(
   brief: RequestBrief,
   request: string,
   history: AgentHistoryMessage[],
+  state: StrategyState = strategyState(history),
 ): RequestBrief {
   let next = brief;
   // An answer to an open strategy target proposal is the strategy, never a follow-up ("recommended" once
@@ -517,7 +518,7 @@ export function normalizeBrief(
   // catch a plain pick the model missed. A question about the options is still answered as a question.
   const pick =
     next.strategyPick ??
-    (!asksAQuestion(request) && answersStrategyProposal(request, history) ? rulesPick(request) : null);
+    (!asksAQuestion(request) && answersStrategyProposal(request, history, state) ? rulesPick(request) : null);
   if (pick) {
     if (next.intent !== "strategy") {
       logger.warn("request.intent_overridden", { modelIntent: next.intent, intent: "strategy", reason: "answer to the strategy's target proposal", pick });
@@ -558,7 +559,11 @@ export function normalizeBrief(
  * The brief when no model answered: the keyword intent rules plus the same
  * extraction as above. Conservative: anything unclear is `analyse`.
  */
-export function rulesBrief(request: string, history: AgentHistoryMessage[]): RequestBrief {
+export function rulesBrief(
+  request: string,
+  history: AgentHistoryMessage[],
+  state: StrategyState = strategyState(history),
+): RequestBrief {
   let intent = detectRequestIntentWithHistory(request, history);
   // What the operator asks for, without what they ruled out ("queue #1 but not #2").
   const negation = negationOf(request);
@@ -588,7 +593,7 @@ export function rulesBrief(request: string, history: AgentHistoryMessage[]): Req
     queue,
     optimizationAsk,
     source: "rules",
-    strategyPick: answersStrategyProposal(request, history) && !asksAQuestion(request) ? rulesPick(request) : null,
+    strategyPick: answersStrategyProposal(request, history, state) && !asksAQuestion(request) ? rulesPick(request) : null,
     strategyScope: rulesStrategyScope(request, history),
     resumesStopped: stoppedTurn(history) != null && looksLikeResume(request),
   };
@@ -633,6 +638,8 @@ export function parseBriefReply(
   reply: string,
   request: string,
   history: AgentHistoryMessage[],
+  /** Where the strategy stands (the stored offer when known). */
+  state: StrategyState = strategyState(history),
 ): RequestBrief | null {
   const start = reply.indexOf("{");
   const end = reply.lastIndexOf("}");
@@ -690,7 +697,7 @@ export function parseBriefReply(
     optimizationAsk: data.optimizationAsk,
     source: "model",
     // A pick only means something while a proposal is waiting for one.
-    strategyPick: strategyState(history).open ? data.strategyPick : null,
+    strategyPick: state.open ? data.strategyPick : null,
     strategyScope: modelStrategyScope(data.strategyScope, request, history),
     // Only meaningful when the last reply really was stopped.
     resumesStopped: stoppedTurn(history) != null && (data.resumesStopped || looksLikeResume(request)),

@@ -223,8 +223,9 @@ import {
   strategyTargetClosing,
   wantsBudgetPlan,
 } from "@/lib/agent/account-strategy-brief";
-import { accountGoal, baselineOf, leversOf, proposeTargets, type StatedTarget } from "@/lib/strategy/account-strategy";
-import { adSetLoadFailure, renderStrategyPlanEvidence, renderTargetProposalEvidence } from "@/lib/strategy/account-strategy-render";
+import { accountGoal, baselineOf, leversOf, proposeTargets, type GoalKind, type StatedTarget, type TargetOption } from "@/lib/strategy/account-strategy";
+import { adSetLoadFailure, renderStrategyPlanEvidence, renderTargetProposalEvidence, targetOptionsTable } from "@/lib/strategy/account-strategy-render";
+import type { StrategyOfferRecord } from "@/lib/agent/strategy-offer";
 import { rulesBrief, rulesStrategyScope, type RequestBrief } from "@/lib/agent/request-brief";
 import { COMPARISON_FRAMEWORK, COMPARISON_TITLE } from "@/lib/agent/comparison-framework";
 import { renderComparisonEvidence } from "@/lib/comparison/render";
@@ -2022,6 +2023,8 @@ export async function gatherDiagnoseEvidence(input: {
    * findings). The strategy reads prior findings from these; falls back to `history`.
    */
   reportHistory?: AgentHistoryMessage[];
+  /** The strategy offer stored on this chat's tasks: whether one is waiting for a pick, and its exact options. */
+  strategyOffer?: StrategyOfferRecord | null;
   /** Pre-resolved intent (supports audit brief follow-ups). */
   intent?: ReturnType<typeof detectRequestIntent>;
   /** What the operator's message means: mode, focus, scope, period, queue selection. */
@@ -2074,6 +2077,10 @@ export async function gatherDiagnoseEvidence(input: {
   strategyPlanBuilt?: boolean;
   /** True only once the comparison evidence has been built this turn. */
   comparisonBuilt?: boolean;
+  /** What to store about the strategy offer after this turn: a new offer shown, or a plan written (closed). */
+  strategyOfferUpdate?: { status: "open"; kind: GoalKind; options: TargetOption[] } | { status: "closed" };
+  /** The computed targets table, inserted into the proposal at the writer's [[TARGETS_TABLE]] line. */
+  strategyTargetsTable?: string;
 }> {
   const intent = input.intent ?? detectRequestIntent(input.request);
   const preloadedAccounts = input.preloaded?.metaAccounts
@@ -2112,6 +2119,8 @@ export async function gatherDiagnoseEvidence(input: {
   let auditLandingTables: string | undefined;
   let strategyBriefIncomplete = false;
   let strategyPlanBuilt = false;
+  let strategyOfferUpdate: { status: "open"; kind: GoalKind; options: TargetOption[] } | { status: "closed" } | undefined;
+  let strategyTargetsTable: string | undefined;
   let comparisonBuilt = false;
 
   const targetingSubmitted =
@@ -2998,7 +3007,10 @@ export async function gatherDiagnoseEvidence(input: {
       // account whose business type was never set used to be asked for a target ROAS.
       const goal = accountGoal(snapshot, goals.business_model);
       const askTexts = strategyAskTexts(input.request, input.history);
-      const accountPath = answersTargetProposal(input.history ?? []) || !wantsBudgetPlan(askTexts, goal.kind);
+      // Whether an offer is waiting for a pick: the stored offer decides; the chat text only for older chats.
+      const storedOffer = input.strategyOffer ?? null;
+      const offerOpen = storedOffer ? storedOffer.status === "open" : answersTargetProposal(input.history ?? []);
+      const accountPath = offerOpen || !wantsBudgetPlan(askTexts, goal.kind);
 
       // Lead-gen clients plan on leads and cost per lead; ROAS never applies to them.
       const leadAsk = isLeadStrategy(goals.business_model ?? (goal.kind === "leads" ? "lead_gen" : undefined), askTexts);
@@ -3051,11 +3063,15 @@ export async function gatherDiagnoseEvidence(input: {
         // Targets need the ad sets: with them missing, waste and winners are unknown, so none is proposed.
         const options = baseline && levers && !adSetLoadFailure(snapshot) ? proposeTargets(goal.kind, baseline, levers, profit) : [];
         // The model's reading of the operator's answer comes first ("lets go with the middle one").
-        const resolved = resolveStrategyTarget(input.request, input.history ?? [], goal.kind, undefined, input.brief?.strategyPick);
+        const resolved = resolveStrategyTarget(input.request, input.history ?? [], goal.kind, undefined, input.brief?.strategyPick, offerOpen);
         let target: StatedTarget | null = hasTarget(resolved.stated) ? resolved.stated : null;
         let targetSource = "stated by the operator";
         if (!target && resolved.pick) {
-          const picked = options.find((o) => o.key === resolved.pick);
+          // The option the operator saw, exactly: the stored offer's figures, never a fresh recalculation
+          // (it can differ, or fail when Meta is slow). Today's options only when nothing was stored.
+          const picked =
+            (storedOffer?.status === "open" && storedOffer.kind === goal.kind ? storedOffer.options.find((o) => o.key === resolved.pick) : undefined) ??
+            options.find((o) => o.key === resolved.pick);
           if (picked) {
             const windowDays = resolved.stated.windowDays ?? picked.windowDays;
             target = {
@@ -3083,6 +3099,7 @@ export async function gatherDiagnoseEvidence(input: {
         await input.onProgress?.({ phase: "build_plan", label: target ? "Building the plan…" : "Working out the targets your numbers support…", stepId: "build_plan" });
         if (scopeEvidence) sections.push(scopeEvidence);
         if (target) {
+          strategyOfferUpdate = { status: "closed" };
           sections.push(renderStrategyPlanEvidence({ ...evidenceInput, target, targetSource, defaultWindowDays: 30 }));
           if (strategyScope.perCampaign) {
             sections.push(
@@ -3093,6 +3110,8 @@ export async function gatherDiagnoseEvidence(input: {
           sections.push(["### Strategy framework (write the plan with these headings)", ACCOUNT_STRATEGY_FRAMEWORK].join("\n"));
         } else {
           sections.push(renderTargetProposalEvidence({ ...evidenceInput, options, windowDays: resolved.stated.windowDays }));
+          strategyTargetsTable = targetOptionsTable({ ...evidenceInput, options, windowDays: resolved.stated.windowDays });
+          strategyOfferUpdate = { status: "open", kind: goal.kind, options };
           if (strategyScope.perCampaign) {
             sections.push(
               "### Campaign breakdown\n- The operator wants the strategy campaign by campaign: say in one line that the full plan will have a section per campaign once they pick a target.",
@@ -3143,6 +3162,8 @@ export async function gatherDiagnoseEvidence(input: {
           });
           const leadPlan = buildLeadPlan({ snapshot, goals, brief: leadBrief });
           strategyPlanBuilt = true;
+          // A plan answers any open target offer.
+          strategyOfferUpdate = { status: "closed" };
           sections.push(
             renderLeadStrategyEvidence(leadPlan, {
               score: scorecard,
@@ -4232,6 +4253,8 @@ export async function gatherDiagnoseEvidence(input: {
     strategyBriefIncomplete,
     strategyPlanBuilt,
     comparisonBuilt,
+    strategyOfferUpdate,
+    strategyTargetsTable,
   };
 }
 
