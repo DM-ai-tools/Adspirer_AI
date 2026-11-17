@@ -139,11 +139,13 @@ import {
   strategyAskTexts,
 } from "@/lib/agent/strategy-brief";
 import {
+  moneyFor,
   renderAdSetEvidence,
   renderChangesEvidence,
   renderScorecardEvidence,
   renderScorecardMarkdown,
 } from "@/lib/audit/render";
+import { renderStrategyInputsEvidence } from "@/lib/strategy/strategy-inputs";
 import { renderBreakdownEvidence } from "@/lib/audit/breakdowns";
 import { renderMeasurementEvidence } from "@/lib/analysis/measurement";
 import {
@@ -2973,6 +2975,25 @@ export async function gatherDiagnoseEvidence(input: {
       const leadAsk = isLeadStrategy(goals.business_model ?? (goal.kind === "leads" ? "lead_gen" : undefined), askTexts);
       const leadParsed = !accountPath && leadAsk ? resolveLeadBrief(input.request, input.history) : null;
 
+      // The 12-section strategy's inputs: prior findings for this period (or its own), profile gaps,
+      // platform notes and what the app can do. Campaigns the ask names narrow which reports qualify.
+      const scopeBrief = resolveAuditBrief(input.request);
+      const scopedCampaigns =
+        scopeBrief.scope === "campaigns" && scopeBrief.campaignHints.length
+          ? resolveAuditCampaigns(snapshot.campaigns, { campaignHints: scopeBrief.campaignHints, activeCampaigns: false })
+          : [];
+      const strategyInputsEvidence = (scorecard: ReturnType<typeof evaluateCheckpoints>) =>
+        renderStrategyInputsEvidence({
+          snapshot,
+          goals,
+          scorecard,
+          request: input.request,
+          history: input.history ?? [],
+          period: { dateStart: range.dateStart, dateStop: range.dateStop },
+          scope: scopedCampaigns.length ? { campaignIds: scopedCampaigns.map((c) => c.id) } : undefined,
+          money: moneyFor(snapshot.account.currency),
+        });
+
       if (accountPath) {
         await input.onProgress?.({ phase: "pull_insights", label: "Reading where the money works and where it doesn't…", stepId: "pull_insights" });
         const scorecard = evaluateCheckpoints(snapshot, { goals });
@@ -3023,9 +3044,11 @@ export async function gatherDiagnoseEvidence(input: {
         await input.onProgress?.({ phase: "build_plan", label: target ? "Building the plan…" : "Working out the targets your numbers support…", stepId: "build_plan" });
         if (target) {
           sections.push(renderStrategyPlanEvidence({ ...evidenceInput, target, targetSource, defaultWindowDays: 30 }));
+          sections.push(strategyInputsEvidence(scorecard));
           sections.push(["### Strategy framework (write the plan with these headings)", ACCOUNT_STRATEGY_FRAMEWORK].join("\n"));
         } else {
           sections.push(renderTargetProposalEvidence({ ...evidenceInput, options, windowDays: resolved.stated.windowDays }));
+          sections.push(strategyInputsEvidence(scorecard));
           sections.push(["### Strategy framework (write the proposal with these headings)", STRATEGY_TARGET_PROPOSAL_FRAMEWORK].join("\n"));
           strategyAppendix = strategyTargetClosing(goal.kind, options.length > 0);
         }
@@ -3077,6 +3100,7 @@ export async function gatherDiagnoseEvidence(input: {
               warnings: snapshot.warnings,
             }),
           );
+          sections.push(strategyInputsEvidence(scorecard));
           sections.push(
             ["### Strategy framework (write the report with these headings)", LEAD_STRATEGY_FRAMEWORK].join("\n"),
           );

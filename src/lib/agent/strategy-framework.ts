@@ -1,3 +1,6 @@
+import { ACTION_PLAN_FORMAT, STRATEGY_RULES } from "@/lib/agent/account-strategy-framework";
+import { SHARED_ANALYSIS_RULES } from "@/lib/analysis/shared-rules";
+
 /**
  * How the writer turns the plan engine's evidence into the three-level
  * strategy report (where you are / how it compares / the plan). The numbers
@@ -35,9 +38,10 @@ If the evidence has "Channel data", put its notes and warnings (for example "Goo
 `.trim();
 
 /**
- * The same three-level report for lead-generation clients: leads and cost per
+ * The 12-section strategy for lead-generation clients: leads and cost per
  * lead instead of revenue and ROAS. The numbers come from
- * src/lib/strategy/lead-plan.ts via lead-render.ts.
+ * src/lib/strategy/lead-plan.ts via lead-render.ts; the findings, profile
+ * gaps and app capabilities from src/lib/strategy/strategy-inputs.ts.
  */
 export const LEAD_STRATEGY_FRAMEWORK = `
 # Lead strategy report method
@@ -45,20 +49,40 @@ export const LEAD_STRATEGY_FRAMEWORK = `
 This client sells leads, bookings or enquiries. Plan on leads and cost per lead only: never mention ROAS, revenue or return on ad spend, and never ask for a target ROAS.
 Use only numbers from the evidence: budgets, spend, leads, cost per lead, scores and tiers. If a number is not in the evidence, say it is not available. Never estimate one.
 Say "service" (not "category") everywhere you would name an offering.
+Optimise for cost per qualified lead only when the operator supplied CRM or lead-quality figures in the chat; otherwise plan on cost per lead and say lead quality is not measured here.
 This is a recommendation only. Do not queue or execute anything, propose no tool JSON, and do not say anything in Meta was changed.
+The evidence has the lead plan ("Level 1: where you are", "Level 2: how it compares", "Level 3: budget & plan", "Assumptions", "Next step") and "Strategy inputs (findings, profile, platform notes, app capabilities)". Arrange them into the 12 sections below.
 
-## Required report format (these headings, in this order)
-1. **Bottom line**: answer the question asked in two or three sentences. For a lead goal: the leads wanted and the period, the recommended daily and period budget (the Expected case) and the range from the Best to the Cautious case. For a budget with no goal: the leads it should bring, as a range. If the evidence has a "Verdict on the stated budget", give it. If the evidence says no budget could be sized, say that plainly and ask for a target cost per lead. End with one line on how far to trust the numbers, from the evidence only: how many leads the reference cost per lead rests on, any "weak guide" note, failing tracking checks.
-2. **Level 1: where you are**: the last-period spend, leads, cost per lead and daily run-rate, the previous-period comparison when given, and the campaign table with its tiers. Pass on any data warning or the "weak guide" note.
-3. **Level 2: how it compares**: the reference cost per lead and its source, the check against the target cost per lead and any "Check" lines (caps, break-even CPA). Then two routes side by side (a two-column table works):
-   - **External:** what competitors run, from the competitor brief highlights in the client context. If there are none, say so.
-   - **Internal:** the Meta capabilities marked "Not used", each with its reason (for lead clients, instant forms and a cost cap matter most).
-4. **Level 3: the plan**:
-   - The budget table (the cases with their cost per lead, daily and period budgets) and, when given, the projection table for a stated budget.
-   - The campaign allocation table: campaign, tier, cost per lead, now per day, planned per day.
-   - The ramp line, so spend rises in steps rather than in one jump.
-   - The ad strategy, built from the evidence: which campaigns to scale, test or hold and why; lead form versus landing page, given the capabilities in use; the audience and creative approach, with at least 3 new creative concepts a month for each funded service, built from the competitor patterns.
-   - What to track weekly: spend, leads and cost per lead per campaign against the reference cost per lead, plus lead quality (how many leads answer and book), which this tool does not measure.
-5. **What would make this plan better**: the missing data, for example no target cost per lead, too few leads for a firm cost per lead, no lead-quality or CRM feedback, tracking not verified. Take these from the inputs and assumptions.
-6. **One next step**: from the "Next step" section.
+${STRATEGY_RULES}
+
+${SHARED_ANALYSIS_RULES}
+
+## Format (exactly these headings, in this order)
+# <Account name> — lead strategy
+## 1. Strategy header
+Short labelled lines: **Goal** (the leads wanted and the period, or the stated budget with no goal); **Window** (the data period and the plan's period); **Inputs used** (where the findings come from, the profile items known, the measurement line); **Assumptions** (the lead plan's assumptions plus one bullet per "Profile missing" item you had to assume); **Overall confidence** (High / Medium / Low, from the evidence only: how many leads the reference cost per lead rests on, any "weak guide" note, failing tracking checks, missing inputs).
+## 2. Situation summary
+At most 6 lines answering the question asked. For a lead goal: the recommended daily and period budget (the Expected case) and the range from the Best to the Cautious case. For a budget with no goal: the leads it should bring, as a range. If the evidence has a "Verdict on the stated budget", give it. If it says no budget could be sized, say that plainly and ask for a target cost per lead. Then the last-period spend, leads, cost per lead and daily run-rate, with the previous-period comparison when given.
+## 3. Diagnosis
+3–5 constraints holding the leads back, each with its finding IDs, its number and its label ([Observed], [Likely] or [Hypothesis]). Pass on any data warning or the "weak guide" note.
+## 4. Targets and guardrails
+The reference cost per lead and its source, the check against the target cost per lead, and any "Check" lines (caps, break-even CPA). The guardrails: the caps under "Profile known" and the cost per lead each budget step must hold.
+## 5. Strategic pillars
+2–4 pillars, one line each naming the STR IDs under it. Then two routes side by side (a two-column table, a few words a cell):
+- **External:** what competitors run, from the competitor brief highlights in the client context. If there are none, say so.
+- **Internal:** the Meta capabilities marked "Not used", each with its reason (for lead clients, instant forms and a cost cap matter most).
+${ACTION_PLAN_FORMAT}
+The actions come from the lead plan: which campaigns to scale, test or hold and why; lead form versus landing page, given the capabilities in use; the audience approach. STR-001 is the lead plan's "Next step".
+## 7. Budget plan
+The budget table (the cases with their cost per lead, daily and period budgets) and, when given, the projection table for a stated budget. Then the campaign allocation table: campaign, tier, cost per lead, now per day, planned per day. Then the ramp line, so spend rises in steps of 20–30% every 3–4 days rather than in one jump.
+## 8. Creative plan
+At least 3 new creative concepts a month for each funded service, built from the competitor patterns and what the account's best ads show: angles, formats, hooks, and a 3–5 line brief for the creative team.
+## 9. Testing roadmap
+1–3 tests in a table: Hypothesis | Variable | Metric | Min spend and duration | Decision rule, 1–6 words a cell. Each is a [Hypothesis]; spend and duration come from the evidence or read "Not available".
+## 10. Measurement and review cadence
+Weekly: spend, leads and cost per lead per campaign against the reference cost per lead, plus lead quality (how many leads answer and book), which this tool does not measure. Then the re-plan triggers: a measurement break, tracking failing, cost per lead over the limit two checks running.
+## 11. Risks and dependencies
+Only real ones from the evidence (too few leads for a firm cost per lead, tracking not verified, one campaign carrying the account), each with what would change the plan.
+## 12. Client checklist
+**Decisions**, **Approvals** (the Type A actions by STR ID) and **Data needed** (for example no target cost per lead, no lead-quality or CRM feedback), as short bullets. Then **Questions for the client:** one plain question per "Profile missing" item (leave it out when that says None).
 `.trim();
