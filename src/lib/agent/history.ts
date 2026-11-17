@@ -44,6 +44,10 @@ export async function loadConversationHistory(
     if (options?.excludeMessageId && m.id === options.excludeMessageId) {
       return false;
     }
+    // The reply being written right now is saved empty before the agent runs. Sanitizing turns ""
+    // into a stand-in line ("Done — let me know…"), which then reads as the assistant's last message
+    // and hides what was really asked last (a strategy's target proposal, an audit's questions).
+    if (m.role === "assistant" && !(m.content ?? "").trim()) return false;
     return m.role === "user" || m.role === "assistant" || m.role === "system";
   });
 
@@ -79,7 +83,7 @@ export async function loadLatestReports(
 ): Promise<AgentHistoryMessage[]> {
   if (!conversationId) return [];
   const assistant = (await fetchMessages(conversationId))
-    .filter((m) => m.role === "assistant" && m.id !== options?.excludeMessageId)
+    .filter((m) => m.role === "assistant" && m.id !== options?.excludeMessageId && (m.content ?? "").trim())
     .map((m) => sanitizeHistoryContent(m.content ?? ""));
   const picked = new Set<number>();
   for (const title of [AUDIT_REPORT_TITLE, COMPARISON_REPORT_TITLE]) {

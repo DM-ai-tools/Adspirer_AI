@@ -395,6 +395,23 @@ function campaignBuildOpen(recent: AgentHistoryMessage[]): boolean {
   return false;
 }
 
+/**
+ * The operator is answering the strategy's target proposal: the assistant's last message is the
+ * proposal (it carries the marker) and the reply picks an option, gives a target, or gives a window.
+ * Routed to the strategy whatever a model says, so "recommended" never comes back as a follow-up.
+ */
+export function answersStrategyProposal(request: string, history: AgentHistoryMessage[]): boolean {
+  const last = [...history].reverse().find((m) => m.role === "assistant");
+  return Boolean(
+    last?.content.toLowerCase().includes(STRATEGY_TARGET_MARKER) &&
+      request.trim().length <= 300 &&
+      (pickedOption(request) != null ||
+        looksLikeStrategyBriefReply(request) ||
+        looksLikeLeadBriefReply(request) ||
+        /\b\d+\s*(?:days?|weeks?|months?)\b/i.test(request)),
+  );
+}
+
 export function detectRequestIntentWithHistory(
   request: string,
   history: AgentHistoryMessage[] = [],
@@ -408,17 +425,7 @@ export function detectRequestIntentWithHistory(
     return "create_campaign";
   }
   // A reply to the strategy's target proposal: "recommended", "go with your pick", "$40 per lead in 45 days".
-  const lastAssistantReply = [...recent].reverse().find((m) => m.role === "assistant");
-  if (
-    lastAssistantReply?.content.toLowerCase().includes(STRATEGY_TARGET_MARKER) &&
-    request.trim().length <= 300 &&
-    (pickedOption(request) != null ||
-      looksLikeStrategyBriefReply(request) ||
-      looksLikeLeadBriefReply(request) ||
-      /\b\d+\s*(?:days?|weeks?|months?)\b/i.test(request))
-  ) {
-    return "strategy";
-  }
+  if (answersStrategyProposal(request, recent)) return "strategy";
   // A short answer ("$1,200/day, 10x") to the strategy brief's own question.
   // Checked before the early return: "my budget is $900 a day" reads as "budget".
   if (primary === "general" || primary === "budget" || primary === "chat") {

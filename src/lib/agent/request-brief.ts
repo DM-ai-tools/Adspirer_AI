@@ -4,7 +4,7 @@ import type { AgentHistoryMessage } from "@/lib/agent/history";
 import { completedDaysRange, parseDateRangeFromText, resolveAuditBrief } from "@/lib/agent/audit-brief";
 import { FOCUS_AREAS, type ChangeKind, type Focus } from "@/lib/agent/optimization-capabilities";
 import { wantsQueueApprovals } from "@/lib/agent/optimize-queue";
-import { detectRequestIntentWithHistory, type RequestIntent } from "@/lib/agent/task-plan";
+import { answersStrategyProposal, detectRequestIntentWithHistory, type RequestIntent } from "@/lib/agent/task-plan";
 
 /**
  * What the operator's message means, as data: what they want (intent), whether
@@ -452,6 +452,12 @@ export function normalizeBrief(
   history: AgentHistoryMessage[],
 ): RequestBrief {
   let next = brief;
+  // A pick or target in reply to the strategy's target proposal is the strategy, never a follow-up
+  // ("recommended" once came back as an action list). A question about the options is still answered.
+  if (next.intent !== "strategy" && !asksAQuestion(request) && answersStrategyProposal(request, history)) {
+    logger.warn("request.intent_overridden", { modelIntent: next.intent, intent: "strategy", reason: "reply to the strategy's target proposal" });
+    next = { ...next, intent: "strategy", mode: "analyse" };
+  }
   // A conversational route needs a reason: chat answers from expertise, followup builds on a
   // report already in the chat. When the model picks one with no report to build on, and the
   // keyword rules read a plain audit or strategy ask, run that workflow: a fresh chat's "audit the
