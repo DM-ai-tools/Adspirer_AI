@@ -1,6 +1,7 @@
 import { parseDateRangeFromText } from "@/lib/agent/audit-brief";
 import type { AgentHistoryMessage } from "@/lib/agent/history";
 import { parseLeadGoal } from "@/lib/agent/lead-brief";
+import { strategyState } from "@/lib/agent/strategy-state";
 import { readReportRange } from "@/lib/analysis/prior-findings";
 import { parseBudgetCents, parseRoasValues, parseTotal } from "@/lib/agent/strategy-brief";
 import type { GoalKind, StatedTarget, TargetOption } from "@/lib/strategy/account-strategy";
@@ -103,10 +104,12 @@ export function pickedOption(text: string): TargetOption["key"] | null {
   return null;
 }
 
-/** True when the assistant's last message was a target proposal (it carries the marker). */
+/**
+ * True while a target proposal is waiting for a pick: shown in the recent chat and no plan written
+ * since. Not only the assistant's last message: an off-track reply in between must not lose the pick.
+ */
 export function answersTargetProposal(history: AgentHistoryMessage[]): boolean {
-  const last = history.findLast((m) => m.role === "assistant");
-  return Boolean(last && last.content.toLowerCase().includes(STRATEGY_TARGET_MARKER));
+  return strategyState(history).open;
 }
 
 /**
@@ -118,13 +121,15 @@ export function resolveStrategyTarget(
   history: AgentHistoryMessage[],
   kind: GoalKind,
   today?: Date,
+  /** The model's reading of the operator's answer ("own" = their own target); wins over the word patterns. */
+  understoodPick?: TargetOption["key"] | "own" | null,
 ): { stated: StatedTarget; pick: TargetOption["key"] | null; answering: boolean } {
   const stated = parseStatedTarget(request, kind, today);
   const answering = answersTargetProposal(history);
   if (hasTarget(stated)) {
     if (stated.windowDays == null && answering) {
-      // "45 days" may have been said in the original ask.
-      const at = history.findLastIndex((m) => m.role === "assistant");
+      // "45 days" may have been said in the original ask, before the proposal.
+      const at = history.findLastIndex((m) => m.role === "assistant" && /pick a target for the strategy|^#\s*Strategy\s*[—–-]/im.test(m.content));
       const ask = history.slice(0, at).findLast((m) => m.role === "user");
       const window = ask ? parseWindowDays(ask.content, today) : null;
       if (window != null) stated.windowDays = window;
@@ -135,7 +140,8 @@ export function resolveStrategyTarget(
     // A window alone ("strategy for the next 60 days") is kept for the proposal.
     return { stated, pick: null, answering };
   }
-  return { stated, pick: pickedOption(request), answering };
+  const pick = understoodPick && understoodPick !== "own" ? understoodPick : pickedOption(request);
+  return { stated, pick, answering };
 }
 
 /**

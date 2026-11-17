@@ -24,7 +24,7 @@ import {
   GENERIC_FALLBACK_REPLY,
 } from "@/lib/agent/reply-format";
 import { buildClientContext } from "@/lib/agent/context-builder";
-import { loadConversationHistory, loadLatestReports } from "@/lib/agent/history";
+import { loadConversationHistory, loadLatestProposal, loadLatestReports } from "@/lib/agent/history";
 import {
   buildContextResearch,
   captureTaskLearning,
@@ -406,7 +406,7 @@ export async function runTask(
       : loadResearchEvidence(task.client_id);
     researchEvidence?.catch(() => undefined);
 
-    const [context, historyRaw, reportHistory] = await Promise.all([
+    const [context, historyRaw, reportHistory, latestProposal] = await Promise.all([
       buildClientContext(task.client_id, {
         conversationId: task.conversation_id,
         preloaded: { metaAccounts, documents, selectedCreative },
@@ -415,6 +415,8 @@ export async function runTask(
       // Past audits and comparisons in full: the strategy cites their AUD / CMP findings, which the
       // truncated history above cuts off.
       loadLatestReports(task.conversation_id).catch(() => []),
+      // The latest strategy target proposal in full: the classifier reads its options when the history's copy is cut.
+      loadLatestProposal(task.conversation_id).catch(() => null),
     ]);
     const history = historyRaw.filter((m) => {
       if (m.role === "assistant" && !m.content.trim()) return false;
@@ -425,7 +427,7 @@ export async function runTask(
     }
 
     // Fetch Meta evidence BEFORE writing the answer (fixes "fetching…" placeholders).
-    let brief = await classifyRequest(request, history);
+    let brief = await classifyRequest(request, history, latestProposal);
     // A turn that queues from an earlier numbered list keeps that list's period, scope and areas.
     const storedOffer = brief.queue.requested
       ? await loadLastOptimizeOffer(task.conversation_id, task.id).catch(() => null)

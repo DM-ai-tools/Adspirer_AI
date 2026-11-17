@@ -3,7 +3,8 @@ import type { AgentHistoryMessage } from "@/lib/agent/history";
 import { asksForComparison, looksLikeAuditBriefReply, parseDateRangeFromText } from "@/lib/agent/audit-brief";
 import { looksLikeLeadBriefReply } from "@/lib/agent/lead-brief";
 import { looksLikeStrategyBriefReply, STRATEGY_BRIEF_MARKER } from "@/lib/agent/strategy-brief";
-import { pickedOption, STRATEGY_TARGET_MARKER } from "@/lib/agent/account-strategy-brief";
+import { pickedOption } from "@/lib/agent/account-strategy-brief";
+import { strategyState } from "@/lib/agent/strategy-state";
 
 export type TaskStepState =
   | "pending"
@@ -396,14 +397,13 @@ function campaignBuildOpen(recent: AgentHistoryMessage[]): boolean {
 }
 
 /**
- * The operator is answering the strategy's target proposal: the assistant's last message is the
- * proposal (it carries the marker) and the reply picks an option, gives a target, or gives a window.
- * Routed to the strategy whatever a model says, so "recommended" never comes back as a follow-up.
+ * The word-pattern reading of an answer to the strategy's target proposal: a proposal is open in the
+ * recent chat (shown, no plan since; not only the last message) and the reply picks an option, gives a
+ * target, or gives a window. The model's reading comes first; this stands in when no model answers.
  */
 export function answersStrategyProposal(request: string, history: AgentHistoryMessage[]): boolean {
-  const last = [...history].reverse().find((m) => m.role === "assistant");
   return Boolean(
-    last?.content.toLowerCase().includes(STRATEGY_TARGET_MARKER) &&
+    strategyState(history).open &&
       request.trim().length <= 300 &&
       (pickedOption(request) != null ||
         looksLikeStrategyBriefReply(request) ||

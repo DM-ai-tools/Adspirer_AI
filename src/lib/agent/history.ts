@@ -93,6 +93,19 @@ export async function loadLatestReports(
   return [...picked].sort((a, b) => a - b).map((i) => ({ role: "assistant", content: assistant[i] }));
 }
 
+/**
+ * The latest strategy target proposal in full (it carries the "pick a target" line), or null. The
+ * history cuts older replies short, which can drop the proposal's options table; the classifier
+ * reads the options from this copy.
+ */
+export async function loadLatestProposal(conversationId: string | null | undefined): Promise<string | null> {
+  if (!conversationId) return null;
+  const found = (await fetchMessages(conversationId)).findLast(
+    (m) => m.role === "assistant" && (m.content ?? "").toLowerCase().includes("pick a target for the strategy"),
+  );
+  return found ? sanitizeHistoryContent(found.content) : null;
+}
+
 export function truncateHistory(
   messages: AgentHistoryMessage[],
 ): AgentHistoryMessage[] {

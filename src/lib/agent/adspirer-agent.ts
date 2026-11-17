@@ -814,6 +814,8 @@ function conversationTurnRules(intent: RequestIntent): string[] {
         "- If they ask which recommendations you can do: answer per item using \"What can be done, and by whom\". Never list something you can't do as doable.",
         "- Read live data only when a step needs a number the earlier report doesn't have; name the source if you do.",
         "- Recommendations only: no Approvals, no tool JSON, never say Meta was changed. When steps are actionable here, end with one sentence saying they can ask you to queue specific ones.",
+        "- Never show this app's tool names or setting keys (create_ad, update_adset_budget, update_adset_placements): say what the change is (\"I can queue a budget change for this ad set\").",
+        "- Never start by re-interpreting their words (\"Taking X as: …\"). If they asked for a strategy, plan or report, say in one line that the strategy builds it and they can ask for it; do not write a substitute.",
       ];
     case "custom":
       return [
@@ -3035,7 +3037,8 @@ export async function gatherDiagnoseEvidence(input: {
         };
         // Targets need the ad sets: with them missing, waste and winners are unknown, so none is proposed.
         const options = baseline && levers && !adSetLoadFailure(snapshot) ? proposeTargets(goal.kind, baseline, levers, profit) : [];
-        const resolved = resolveStrategyTarget(input.request, input.history ?? [], goal.kind);
+        // The model's reading of the operator's answer comes first ("lets go with the middle one").
+        const resolved = resolveStrategyTarget(input.request, input.history ?? [], goal.kind, undefined, input.brief?.strategyPick);
         let target: StatedTarget | null = hasTarget(resolved.stated) ? resolved.stated : null;
         let targetSource = "stated by the operator";
         if (!target && resolved.pick) {

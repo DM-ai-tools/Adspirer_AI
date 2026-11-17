@@ -5,6 +5,8 @@ import { completedDaysRange, parseDateRangeFromText, resolveAuditBrief } from "@
 import { FOCUS_AREAS, type ChangeKind, type Focus } from "@/lib/agent/optimization-capabilities";
 import { wantsQueueApprovals } from "@/lib/agent/optimize-queue";
 import { answersStrategyProposal, detectRequestIntentWithHistory, type RequestIntent } from "@/lib/agent/task-plan";
+import { pickedOption } from "@/lib/agent/account-strategy-brief";
+import { strategyState } from "@/lib/agent/strategy-state";
 
 /**
  * What the operator's message means, as data: what they want (intent), whether
@@ -47,7 +49,14 @@ export type RequestBrief = {
   /** Wants optimisation steps or advice (drives a live fetch even for a follow-up). */
   optimizationAsk: boolean;
   source: "model" | "rules";
+  /**
+   * The operator's answer to an open strategy target proposal: an option, "own" for their own target,
+   * or null. Read by the model in context; the word patterns only stand in when no model answers.
+   */
+  strategyPick?: StrategyPick | null;
 };
+
+export type StrategyPick = "safe" | "recommended" | "bold" | "own";
 
 export const EMPTY_QUEUE: QueueSelection = { requested: false, all: false, refs: [], focus: [], entities: [] };
 
@@ -441,6 +450,11 @@ function hasEarlierReport(history: AgentHistoryMessage[]): boolean {
 }
 
 /** "what does an audit check?" asks about the work; "give me the audit" asks for it. Only the second is overridden. */
+/** The pick the word patterns can read from a reply to the proposal: an option, else their own target. */
+function rulesPick(request: string): StrategyPick {
+  return pickedOption(request) ?? "own";
+}
+
 function asksAQuestion(request: string): boolean {
   const t = request.trim();
   return /\?\s*$/.test(t) || /^(what|how|why|when|which|who|does|do|is|are|should|explain|tell\s+me\s+(about|what|how))\b/i.test(t);
@@ -452,11 +466,17 @@ export function normalizeBrief(
   history: AgentHistoryMessage[],
 ): RequestBrief {
   let next = brief;
-  // A pick or target in reply to the strategy's target proposal is the strategy, never a follow-up
-  // ("recommended" once came back as an action list). A question about the options is still answered.
-  if (next.intent !== "strategy" && !asksAQuestion(request) && answersStrategyProposal(request, history)) {
-    logger.warn("request.intent_overridden", { modelIntent: next.intent, intent: "strategy", reason: "reply to the strategy's target proposal" });
-    next = { ...next, intent: "strategy", mode: "analyse" };
+  // An answer to an open strategy target proposal is the strategy, never a follow-up ("recommended" once
+  // came back as an action list). The model's reading of the message comes first; the word patterns only
+  // catch a plain pick the model missed. A question about the options is still answered as a question.
+  const pick =
+    next.strategyPick ??
+    (!asksAQuestion(request) && answersStrategyProposal(request, history) ? rulesPick(request) : null);
+  if (pick) {
+    if (next.intent !== "strategy") {
+      logger.warn("request.intent_overridden", { modelIntent: next.intent, intent: "strategy", reason: "answer to the strategy's target proposal", pick });
+    }
+    next = { ...next, intent: "strategy", mode: "analyse", strategyPick: pick };
   }
   // A conversational route needs a reason: chat answers from expertise, followup builds on a
   // report already in the chat. When the model picks one with no report to build on, and the
@@ -522,6 +542,7 @@ export function rulesBrief(request: string, history: AgentHistoryMessage[]): Req
     queue,
     optimizationAsk,
     source: "rules",
+    strategyPick: answersStrategyProposal(request, history) && !asksAQuestion(request) ? rulesPick(request) : null,
   };
 }
 
@@ -548,6 +569,7 @@ const modelSchema = z.object({
     })
     .default({ requested: false, all: false, refs: [], focus: [], entities: [], exceptRefs: [], exceptFocus: [] }),
   exclude: nameList.default([]),
+  strategyPick: z.enum(["safe", "recommended", "bold", "own"]).nullable().catch(null).default(null),
 });
 
 const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
@@ -613,5 +635,7 @@ export function parseBriefReply(
     queue,
     optimizationAsk: data.optimizationAsk,
     source: "model",
+    // A pick only means something while a proposal is waiting for one.
+    strategyPick: strategyState(history).open ? data.strategyPick : null,
   };
 }
