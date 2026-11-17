@@ -3365,10 +3365,10 @@ export async function gatherDiagnoseEvidence(input: {
           account_id: accountId,
           date_start: since,
           date_stop: until,
-          ...(named ? { compare_start: brief.compareStart, compare_stop: brief.compareStop } : {}),
+          ...(compareSince && compareUntil ? { compare_start: compareSince, compare_stop: compareUntil } : {}),
           ...(campaignIds ? { campaign_ids: campaignIds } : {}),
         },
-        rationale: `Period comparison: ${since} to ${until} against ${named ? `${brief.compareStart} to ${brief.compareStop}` : "the equal window before"} (${scorecard.score}/100 checkpoints)`,
+        rationale: `Period comparison: ${since} to ${until} against ${compareSince && compareUntil ? `${compareSince} to ${compareUntil}` : "the equal window before"} (${scorecard.score}/100 checkpoints)`,
       });
     } catch (error) {
       sections.push(

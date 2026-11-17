@@ -131,6 +131,67 @@ describe("resolveProfile — fill from data, default the rest, ask only what cha
     expect(p.stated).toContain("margin");
   });
 
+  it.each([
+    "ROAS fell by a small margin last week, build a strategy",
+    "why is my ROAS low? give me a strategy",
+    "we are a bit worried, strategy please",
+    "I can't see why CPA rose, strategy please",
+    "why are my video ads failing? strategy",
+    "make the margin of error small in the strategy",
+  ])("a passing mention is not an answer: %s", (request) => {
+    const p = resolveProfile({ snapshot: bethel(), goals: noGoals, request, history: [], money });
+    expect(p.ask.map((q) => q.item)).toEqual(["margin"]);
+    expect(p.stated).toEqual([]);
+    // The data-filled answers stay.
+    for (const item of ["what they sell", "constraints", "creative assets", "goal"]) {
+      expect(p.fromData.map((x) => x.item)).toContain(item);
+    }
+  });
+
+  it.each([
+    ["our gross margin is 35%", "margin"],
+    ["we run at a 40% margin", "margin"],
+    ["aim for 5x ROAS", "goal"],
+    ["get CPA down to $45", "goal"],
+    ["we only ship to Australia", "constraints"],
+    ["we sell commercial shopfittings", "what they sell"],
+  ])("a real answer counts as stated: %s", (request, item) => {
+    expect(resolveProfile({ snapshot: bethel(), goals: noGoals, request, history: [], money }).stated).toContain(item);
+  });
+
+  it("asks a lead account about lead quality even when they mention a CRM, until they give a figure", () => {
+    const leads = bethel({
+      totals: perf({ purchases: null, purchaseValueCents: null, roas: null, leads: 40, results: 40, resultLabel: "Leads", costPerResultCents: 3_372 }),
+      campaigns: [{ ...base.campaigns[0], id: "c_1", name: "Leads", objective: "OUTCOME_LEADS", status: "ACTIVE" }],
+    });
+    const g = resolveGoals({ goals_profile: { business_model: "lead_gen" } });
+    expect(resolveProfile({ snapshot: leads, goals: g, request: "we use a CRM, give me a strategy", history: [], money }).ask.map((q) => q.item)).toEqual(["lead quality"]);
+    expect(resolveProfile({ snapshot: leads, goals: g, request: "about 30% of leads become sales", history: [], money }).ask).toEqual([]);
+  });
+
+  it("drops agency prefixes and keeps products that start with a temperature word", () => {
+    const snap = bethel({
+      adSets: [
+        { ...base.adSets[0], id: "z1", name: "TR | Baskets | Broad", campaignId: "c_1", status: "ACTIVE", countries: ["AU"], performance: perf({ spendCents: 50_000 }) },
+        { ...base.adSets[0], id: "z2", name: "Cold Brew Coffee", campaignId: "c_1", status: "ACTIVE", countries: ["AU"], performance: perf({ spendCents: 40_000 }) },
+        { ...base.adSets[0], id: "z3", name: "Warm – Website visitors 30d", campaignId: "c_1", status: "ACTIVE", countries: ["AU"], performance: perf({ spendCents: 30_000 }) },
+      ],
+    });
+    expect(resolveProfile({ snapshot: snap, goals: noGoals, request: "strategy", history: [], money }).fromData.find((x) => x.item === "what they sell")!.value).toBe(
+      "Baskets, Cold Brew Coffee",
+    );
+  });
+
+  it("explains a missing target differently when the numbers failed to load", () => {
+    const p = resolveProfile({ snapshot: bethel({ totals: null }), goals: noGoals, request: "strategy", history: [], money });
+    expect(p.ask.find((q) => q.item === "goal")!.why).toContain("didn't load");
+  });
+
+  it("does not quote a $0.00 order value", () => {
+    const p = resolveProfile({ snapshot: bethel({ totals: perf({ purchaseValueCents: 0 }) }), goals: noGoals, request: "strategy", history: [], money });
+    expect(p.ask[0].why).not.toContain("$0.00");
+  });
+
   it("does not ask for margin when it is saved", () => {
     const g = resolveGoals({ goals_profile: { business_model: "ecommerce", gross_margin_pct: 40 } });
     expect(resolveProfile({ snapshot: bethel(), goals: g, request: "strategy", history: [], money }).ask).toEqual([]);

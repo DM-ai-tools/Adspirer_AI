@@ -27,19 +27,24 @@ type Money = (cents: number) => string;
 
 const MAX_QUESTIONS = 3;
 
-/** What the operator's own words already cover. Checked over the request and their earlier messages only. */
+/**
+ * What the operator's own words already answer. Checked over the request and their earlier messages only.
+ * Each pattern needs an actual answer, not a passing mention: "ROAS fell by a small margin", "why is my
+ * ROAS low?" or "we use a CRM" must not skip the question they look like. A false match is worse than a
+ * miss: it drops a needed question and tells the writer the operator said something they didn't.
+ */
 const STATED: Record<string, RegExp> = {
-  "what they sell": /industry|sector|niche|we sell|we are an? /i,
-  offer: /\boffer|discount|promo/i,
-  "risk appetite": /risk|aggressive|conservative|cautious/i,
-  constraints: /constraint|can'?t|cannot|only (?:in|sell|ship|target)|limit(?:ed)? to/i,
-  "creative assets": /creative|videos?\b|images?\b|assets|ugc/i,
-  owners: /owner|agency|in-house|who will/i,
-  goal: /\b(?:cpa|cpl|roas|cost per (?:purchase|lead|sale|result))\b/i,
-  timeframe: /\bin\s+\d+\s*(?:days?|weeks?|months?)\b|\bby (?:the )?end of\b|\bby (?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i,
-  budget: /budget|\$\s?\d[\d,]*\s*(?:\/|per|a)\s*(?:day|month)/i,
-  margin: /margin/i,
-  "lead quality": /crm|qualified|lead quality|close rate/i,
+  "what they sell": /\b(?:our industry is|we(?:'re| are) an? [\w -]{2,30}(?:company|business|brand|store|shop|clinic|retailer|supplier|agency)|we (?:sell|make|supply|manufacture))\b/i,
+  offer: /\b(?:our|the) offer is\b|\d+\s*%\s*off\b|\bfree (?:shipping|delivery|trial)\b|\bdiscount (?:code|of)\b/i,
+  "risk appetite": /\b(?:risk[- ](?:averse|tolerant|appetite)|(?:be|go|stay|keep it) (?:aggressive|conservative|cautious))\b/i,
+  constraints: /\b(?:can'?t|cannot|don'?t|do not) (?:ship|sell|advertise|target|run|deliver)\b|\bonly (?:ship|sell|deliver|target) (?:to|in)\b/i,
+  "creative assets": /\b(?:we have|we've got|we can (?:make|shoot|supply)|no budget for) (?:new |more |some |any )?(?:creative|videos?|images?|photos?|ugc)\b/i,
+  owners: /\b(?:in-house|our agency|the agency|(?:i|we) (?:approve|own|manage) (?:the )?(?:account|changes|ads))\b/i,
+  goal: /\b(?:cpa|cpl|roas|cost per (?:purchase|lead|sale|result))\b[^.?\n]{0,25}?(?:\$\s?\d|\d+(?:\.\d+)?\s*(?:x|×)\b|\bof \d)|\b\d+(?:\.\d+)?\s*(?:x|×)\s*roas\b|\$\s?\d+(?:\.\d+)?\s*(?:per|a|\/)\s*(?:lead|purchase|sale|order)\b|\b\d+\s+(?:leads|sales|purchases|orders)\s+(?:a|per)\s+(?:day|week|month)\b/i,
+  timeframe: /\b(?:in|within|over the next)\s+\d+\s*(?:days?|weeks?|months?)\b|\bby (?:the )?end of\b|\bby (?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i,
+  budget: /\bbudget (?:is|of|cap|ceiling|limit)\b[^.?\n]{0,20}\d|\$\s?\d[\d,]*\s*(?:\/|per|a)\s*(?:day|month)\b/i,
+  margin: /\bmargins?\b[^.?\n]{0,40}?\d{1,2}(?:\.\d+)?\s*%|\d{1,2}(?:\.\d+)?\s*%\s*(?:gross\s+)?margin/i,
+  "lead quality": /\b\d+\s*(?:%|in \d+|out of \d+)\s*(?:of (?:the |our )?leads?|leads?)\b[^.?\n]{0,40}\b(?:qualif|close|convert|become)|\b(?:close|qualified|qualification) rate\b[^.?\n]{0,20}\d/i,
 };
 
 function statedInChat(request: string, history: AgentHistoryMessage[]): Set<string> {
@@ -51,14 +56,18 @@ const spend = (p: { spendCents: number } | null | undefined) => p?.spendCents ??
 
 /** Ad set name parts that describe the audience or the build, not what is sold. */
 const AUDIENCE_PART =
-  /\b(?:retarget\w*|remarket\w*|prospect\w*|broad|interests?|lookalike|lal|advantage\+?|audiences?|visitors?|engagers?|custom audiences?|cold|warm|dpa|asc|cbo|abo|\d+\s*-\s*\d+|\d+d)\b/i;
+  /\b(?:retarget\w*|remarket\w*|prospect\w*|broad|interests?|lookalike|lal|advantage\+?|audiences?|visitors?|engagers?|custom audiences?|dpa|asc|cbo|abo|\d+\s*-\s*\d+|\d+d (?:visitors|engagers|window))\b/i;
+/** A part that is only a temperature word ("Cold", "Warm") is an audience; "Cold Brew Coffee" is a product. */
+const TEMPERATURE_ONLY = /^(?:cold|warm|hot)(?: audiences?| traffic)?$/i;
+/** A short all-caps first part ("TR", "AU") is an agency prefix or a country, not a product. */
+const PREFIX = /^[A-Z]{1,3}$/;
 
 /** "Implants – Broad AU 30-65" → "Implants"; "Retargeting – Website visitors 30d" → nothing. */
 function productPart(name: string): string | null {
   const parts = name
-    .split(/\s+[–—|-]\s+|:\s+/)
+    .split(/\s*[|–—]\s*|\s+-\s+|:\s+/)
     .map((p) => p.trim())
-    .filter((p) => p && !AUDIENCE_PART.test(p));
+    .filter((p) => p && !AUDIENCE_PART.test(p) && !TEMPERATURE_ONLY.test(p) && !PREFIX.test(p));
   return parts[0] ?? null;
 }
 
@@ -141,7 +150,8 @@ export function resolveProfile(input: {
   }
 
   if (open("constraints")) {
-    const countries = [...new Set([...(goals.allowed_countries ?? []), ...snapshot.adSets.flatMap((a) => a.countries ?? [])])];
+    // Saved countries are already in "Profile known"; this is what the ads actually target.
+    const countries = [...new Set(snapshot.adSets.flatMap((a) => a.countries ?? []))];
     if (countries.length) fromData.push({ item: "constraints", value: `delivery limited to ${countries.join(", ")}`, source: "ad set targeting" });
     else assumed.push({ item: "constraints", value: "none beyond the current targeting", source: "default" });
   }
@@ -162,7 +172,7 @@ export function resolveProfile(input: {
       ask.push({
         item: "goal",
         question: "What should the plan aim for: a cost per result, a ROAS, or a number of results a month?",
-        why: "the account has no results to set a target from",
+        why: totals ? "the account has no results to set a target from" : "the account's numbers didn't load, so no target can be set from them",
       });
     }
   }
@@ -193,20 +203,22 @@ export function resolveProfile(input: {
     });
   }
 
-  // The questions that change the plan. Margin sets break-even ROAS; lead quality decides what a good lead costs.
+  // The questions that change the plan, in priority order: margin sets break-even ROAS; lead quality decides
+  // what a good lead costs; a target only when the account has none to plan from (already in `ask`).
+  const priority: ProfileQuestion[] = [];
   if ((type === "ecom" || type === "hybrid") && open("margin") && goals.gross_margin_pct == null) {
     const aovCents =
-      totals?.purchaseValueCents != null && (totals.purchases ?? 0) > 0
+      totals?.purchaseValueCents != null && totals.purchaseValueCents > 0 && (totals.purchases ?? 0) > 0
         ? Math.round(totals.purchaseValueCents / (totals.purchases as number))
         : goals.average_value_cents ?? null;
-    ask.unshift({
+    priority.push({
       item: "margin",
       question: "What is your gross margin on a typical order?",
       why: `it sets the ROAS at which sales break even${aovCents != null ? `; average order value is ${money(aovCents)}` : ""}`,
     });
   }
   if ((type === "leadgen" || type === "hybrid") && open("lead quality")) {
-    ask.splice(type === "hybrid" ? 1 : 0, 0, {
+    priority.push({
       item: "lead quality",
       question: "Of the leads Meta reports, roughly how many become qualified leads or sales?",
       why: "so the plan aims at qualified leads, not just cheap ones",
@@ -217,6 +229,6 @@ export function resolveProfile(input: {
     stated: [...stated],
     fromData,
     assumed,
-    ask: ask.slice(0, MAX_QUESTIONS),
+    ask: [...priority, ...ask].slice(0, MAX_QUESTIONS),
   };
 }

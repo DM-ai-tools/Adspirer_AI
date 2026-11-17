@@ -26,6 +26,19 @@ describe("endOnLastWholeDay", () => {
     expect(out.previous).toEqual({ since: "2026-10-01", until: "2026-10-17" });
   });
 
+  it("keeps calendar weeks aligned: 'this week vs last week' only trims today", () => {
+    // Tue 17 Nov: this week Mon 16–Tue 17, last week Mon 9–Sun 15.
+    const out = endOnLastWholeDay({ since: "2026-11-16", until: "2026-11-17" }, { since: "2026-11-09", until: "2026-11-15" }, TODAY);
+    expect(out.current).toEqual({ since: "2026-11-16", until: "2026-11-16" });
+    expect(out.previous).toEqual({ since: "2026-11-09", until: "2026-11-15" });
+  });
+
+  it("keeps calendar months aligned: 'this month vs last month' only trims today", () => {
+    const out = endOnLastWholeDay({ since: "2026-11-01", until: "2026-11-17" }, { since: "2026-10-01", until: "2026-10-31" }, TODAY);
+    expect(out.current).toEqual({ since: "2026-11-01", until: "2026-11-16" });
+    expect(out.previous).toEqual({ since: "2026-10-01", until: "2026-10-31" });
+  });
+
   it("pulls the current end back when there is no named previous window", () => {
     expect(endOnLastWholeDay({ since: "2026-11-03", until: "2026-11-17" }, null, TODAY).current).toEqual({
       since: "2026-11-03",
