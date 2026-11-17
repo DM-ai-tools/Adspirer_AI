@@ -59,4 +59,11 @@ describe("COMPARISON_FRAMEWORK", () => {
     expect(COMPARISON_FRAMEWORK).not.toMatch(/action plan/i);
     expect(COMPARISON_FRAMEWORK).not.toMatch(/we recommend/i);
   });
+
+  it("keeps Meta ids and checkpoint codes out of the report, and explains n/a shares and >100% funnel steps", () => {
+    expect(COMPARISON_FRAMEWORK).toContain("Never show Meta ids");
+    expect(COMPARISON_FRAMEWORK).toContain("checkpoint codes");
+    expect(COMPARISON_FRAMEWORK).toContain("offset by other drivers");
+    expect(COMPARISON_FRAMEWORK).toContain("Over 100%");
+  });
 });

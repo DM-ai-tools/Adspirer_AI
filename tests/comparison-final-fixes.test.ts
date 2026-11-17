@@ -74,14 +74,19 @@ describe("bridge: materiality and direction (item 2)", () => {
     const bridge = block(renderComparisonEvidence(input(snap)), "#### Bridge");
     expect(bridge).toContain("- cost per result: $10.00 -> $16.67; drivers: CPM +$5.29 (79% of the change)");
     expect(bridge).toContain("CVR +$1.38 (21% of the change)");
-    expect(bridge).toContain("- results: 100 -> 90; drivers: Volume +38.48 (-385% of the change); CPM -38.48 (385% of the change)");
+    // Drivers that pull against each other get no share: "-385%" reads as an error to a client.
+    expect(bridge).toContain(
+      "- results: 100 -> 90; drivers: Volume +38.48 (offset by other drivers; share n/a); CPM -38.48 (offset by other drivers; share n/a)",
+    );
+    expect(bridge).not.toMatch(/(-\d+|(?<!\d)(?!100%)\d{3,})% of the change/);
 
-    // The finding is the largest effect that moved the same way as the change (never the offsetting Volume).
+    // The finding is the largest effect with a 0–100% share. CPM (-38.48) and Volume (+38.48) cancel out,
+    // so the conversion-rate drop is the whole change; never a "385%" driver.
     const f = bridgeFinding(snap)!;
-    expect(f.title).toBe("CPM drove 385% of the change in results");
-    expect(f.evidence).toBe("results moved 100 -> 90; CPM -38.48 (385% of the change)");
+    expect(f.title).toBe("CVR drove 100% of the change in results");
+    expect(f.evidence).toBe("results moved 100 -> 90; CVR -10 (100% of the change)");
     expect(f.kind).toBe("decline");
-    expect(f.bucket).toBe("Audience");
+    expect(f.bucket).toBe("Investigate");
   });
 
   it("a bridge within the 5% materiality is flat, with no driver split and no finding", () => {
@@ -137,8 +142,17 @@ describe("bridge: materiality and direction (item 2)", () => {
       totals: perf({ spendCents: 130_000, results: 130 }),
       previousTotals: perf(),
     });
-    const a = entitySplit(big).likeForLike.find((e) => e.id === "a")!;
-    expect(a.spendContributionPct).toBeCloseTo(133.33, 1);
+    // "a" moved by more than the net change (133%) and "b" against it (-33%): both shares are n/a.
+    const parts = entitySplit(big).likeForLike;
+    expect(parts.find((e) => e.id === "a")!.spendContributionPct).toBeNull();
+    expect(parts.find((e) => e.id === "b")!.spendContributionPct).toBeNull();
+
+    const within = demo({
+      campaigns: [camp("a", 70_000, 50_000), camp("b", 60_000, 50_000)],
+      totals: perf({ spendCents: 130_000, results: 130 }),
+      previousTotals: perf(),
+    });
+    expect(entitySplit(within).likeForLike.find((e) => e.id === "a")!.spendContributionPct).toBeCloseTo(66.67, 1);
   });
 });
 

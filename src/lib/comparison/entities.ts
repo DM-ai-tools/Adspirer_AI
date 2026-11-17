@@ -69,10 +69,15 @@ function accountDeltas(snap: MetaAuditSnapshot): Deltas {
   return { spend, results: c != null && p != null ? material(c - p, p) : null };
 }
 
+/**
+ * The entity's share of the account's net change, 0–100%. Outside that range the entity moved against
+ * the net change, or by more than it (a stopped campaign larger than the net drop): a "199.7%" or
+ * "−99.7%" share reads as an error to a client, so it is null and the renderer explains why.
+ */
 function pct(delta: number | null, accountDelta: number | null): number | null {
   if (delta == null || accountDelta == null || accountDelta === 0) return null;
   const r = (delta / accountDelta) * 100;
-  return Number.isFinite(r) ? r : null;
+  return Number.isFinite(r) && r >= 0 && r <= 100 ? r : null;
 }
 
 /** Spend share of the account in that window, as a fraction; null when unknown. */

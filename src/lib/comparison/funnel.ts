@@ -52,13 +52,22 @@ function buildSteps(defs: StepDef[], cur: PeriodPerformance | null | undefined, 
     const v = values[i];
     const before = i > 0 ? values[i - 1] : null;
     const noData = v.current == null && v.previous == null;
+    const rateCurrent = before ? rate(v.current, before.current) : null;
+    const ratePrevious = before ? rate(v.previous, before.previous) : null;
+    // More of a later step than the one before it happens when Meta attributes them separately
+    // (a purchase can be credited without a tracked checkout); it is not a conversion rate.
+    const over = [rateCurrent, ratePrevious].some((r) => r != null && r > 100);
     return {
       step: d.step,
       current: v.current,
       previous: v.previous,
-      rateCurrent: before ? rate(v.current, before.current) : null,
-      ratePrevious: before ? rate(v.previous, before.previous) : null,
-      note: noData ? `Not available — Meta returned no ${d.step}` : null,
+      rateCurrent,
+      ratePrevious,
+      note: noData
+        ? `Not available — Meta returned no ${d.step}`
+        : over && i > 0
+          ? `Over 100%: more ${d.step} than ${defs[i - 1].step}; attribution artefact, not a conversion rate`
+          : null,
     };
   });
 }

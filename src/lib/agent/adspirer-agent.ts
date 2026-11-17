@@ -197,6 +197,7 @@ import {
 import { loadDocumentsForContext } from "@/lib/documents/service";
 import { extractCreativeSource } from "@/lib/creatives/source-from-documents";
 import { META_AUDIT_FRAMEWORK } from "@/lib/agent/meta-audit-framework";
+import { endOnLastWholeDay } from "@/lib/comparison/windows-end";
 import {
   GENERIC_FALLBACK_REPLY,
   humanizeAgentReply,
@@ -3292,6 +3293,19 @@ export async function gatherDiagnoseEvidence(input: {
         since = last.dateStart;
         until = last.dateStop;
       }
+      // Today is still in progress: a window ending today (a named "last 30 days vs previous 30 days" pair
+      // is parsed that way) moves back to the last whole day, the previous window with it when they touch.
+      let compareSince = named ? brief.compareStart! : null;
+      let compareUntil = named ? brief.compareStop! : null;
+      {
+        const ended = endOnLastWholeDay(
+          { since, until },
+          compareSince && compareUntil ? { since: compareSince, until: compareUntil } : null,
+          new Date().toISOString().slice(0, 10),
+        );
+        ({ since, until } = ended.current);
+        if (ended.previous) ({ since: compareSince, until: compareUntil } = ended.previous);
+      }
 
       // Named campaigns narrow the report to them; otherwise the whole account.
       let campaignIds: string[] | undefined;
@@ -3310,7 +3324,7 @@ export async function gatherDiagnoseEvidence(input: {
         days: dayCount(since, until),
         compare: true,
         comparisonDetail: true,
-        ...(named ? { compareSince: brief.compareStart!, compareUntil: brief.compareStop! } : {}),
+        ...(compareSince && compareUntil ? { compareSince, compareUntil } : {}),
         ...(campaignIds ? { campaignIds } : {}),
       });
       const snapshot = campaignIds ? scopeAuditSnapshot(accountSnapshot, campaignIds) : accountSnapshot;

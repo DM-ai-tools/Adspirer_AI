@@ -164,8 +164,24 @@ describe("renderComparisonEvidence", () => {
       previousTotals: perf(),
     });
     const bridge = block(renderComparisonEvidence(input(snap)), "#### Bridge");
-    expect(bridge).toMatch(/\(-?\d+% of the change\)/);
+    // Every effect is either a whole 0–100% share or marked as offset; never a decimal or out-of-range share.
+    expect(bridge).toMatch(/\((\d+% of the change|offset by other drivers; share n\/a)\)/);
     expect(bridge).not.toMatch(/\d+\.\d+% of the change/);
+    expect(bridge).not.toMatch(/(-\d+|(?<!\d)(?!100%)\d{3,})% of the change/);
+  });
+
+  it("flags a funnel step over 100% as an attribution artefact", () => {
+    const snap = demo({
+      totals: perf({ initiateCheckout: 19, purchases: 24, addToCart: 158 }),
+      previousTotals: perf({ initiateCheckout: 17, purchases: 13, addToCart: 109 }),
+    });
+    const funnel = block(renderComparisonEvidence(input(snap)), "#### Funnel");
+    expect(funnel).toMatch(/Over 100%: more purchases than initiate checkout; attribution artefact/i);
+  });
+
+  it("explains n/a shares of change under the entity tables", () => {
+    const entities = block(renderComparisonEvidence(input(demo({}))), "#### Entities");
+    expect(entities).toContain("Share of change is n/a when the entity moved against the account's net change");
   });
 });
 

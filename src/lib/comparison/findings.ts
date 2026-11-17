@@ -138,7 +138,10 @@ export function formatBridgeValue(metric: string, v: number, money: Money): stri
 
 export function formatBridgeEffect(metric: string, e: BridgeEffect, money: Money): string {
   const v = metric === "results" ? `${sign(e.value)}${count(Math.abs(e.value))}` : `${sign(e.value)}${money(Math.abs(e.value))}`;
-  return `${e.driver} ${v} (${Math.round(e.shareOfChangePct)}% of the change)`;
+  // A share below 0% or above 100% means drivers pulled against each other; a "205%" share reads as an error.
+  const share = e.shareOfChangePct;
+  if (share < 0 || share > 100) return `${e.driver} ${v} (offset by other drivers; share n/a)`;
+  return `${e.driver} ${v} (${Math.round(share)}% of the change)`;
 }
 
 /** Everything the report computes, without the findings (they are derived from these parts). */
@@ -238,7 +241,7 @@ function largestBridgeEffect(bridges: Bridge[], kpis: KpiRow[], money: Money): D
     const row = kpis.find((r) => r.metric === BRIDGE_KPI[b.metric]);
     if (!row || (row.status !== "Improved" && row.status !== "Declined")) continue;
     for (const e of b.effects) {
-      if (!(e.shareOfChangePct > 0)) continue;
+      if (!(e.shareOfChangePct > 0 && e.shareOfChangePct <= 100)) continue;
       if (!best || e.shareOfChangePct > best.effect.shareOfChangePct) {
         best = { metric: b.metric, previous: b.previous, current: b.current, effect: e };
       }

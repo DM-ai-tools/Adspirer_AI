@@ -165,6 +165,7 @@ function entityGroups(parts: { likeForLike: EntityChange[]; added: EntityChange[
     ...entityTable(parts.added, money),
     "Stopped (spent only in the previous window):",
     ...entityTable(parts.stopped, money),
+    "Share of change is n/a when the entity moved against the account's net change, or by more than it (e.g. a stopped campaign larger than the net drop); compare the spend and results columns instead.",
   ];
 }
 

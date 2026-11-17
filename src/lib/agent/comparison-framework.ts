@@ -44,6 +44,8 @@ The evidence has these blocks, each headed "####". Use the block named in each s
 - **Failed to load.** Say which part failed and that the comparison is incomplete for it. Do not write "not available" for a part that merely failed.
 - Do not blend campaign objectives into one metric. For a hybrid account, write the ecommerce and the lead generation parts separately.
 - Label platform values "Meta-reported". Money is in the account currency shown in the evidence.
+- **No ids or codes for the reader.** Never show Meta ids (long numbers such as 120251133112850505) or checkpoint codes (T2, T4, C6): name the campaign, ad set or ad, and describe the check in words ("Conversions API sending server events"). CMP-### IDs are the only codes in the report.
+- **Shares and rates over 100%.** Where the evidence prints "n/a" for a share of change or "offset by other drivers", write that; never work out a percentage yourself. A funnel step noted "Over 100%" is an attribution artefact: say so in one line, never call it a conversion rate.
 
 ## How to present it (it must scan in seconds)
 - **Points, not paragraphs.** Short bullets or labelled lines. No paragraph longer than two sentences. Lead each bullet with the point in bold, then the numbers.
@@ -133,7 +135,7 @@ Start the reply with the title line below, with the account name filled in. Noth
 - If the history could not be read, say so plainly. Never write that nothing changed unless the evidence says Meta recorded none.
 
 ## 10. Tracking and data quality
-- From Tracking and Settings. List each tracking checkpoint result as printed, then each MEASUREMENT BREAK with its date and what it affects.
+- From Tracking and Settings. List each tracking check by what it checks (no checkpoint codes) with its result, then each MEASUREMENT BREAK with its date and what it affects.
 - State which metrics are affected and that they are not shown as performance changes.
 - Say what is and is not being measured. A pixel "not found" on a page scan is not evidence of broken tracking; only the checkpoints and event counts are.
 - If tracking is unhealthy, say that the comparison figures above carry that doubt.
