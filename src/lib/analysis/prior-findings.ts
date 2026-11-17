@@ -1,7 +1,7 @@
 import { parseDateRangeFromText } from "@/lib/agent/audit-brief";
 import type { AgentHistoryMessage } from "@/lib/agent/history";
 
-export type PriorFinding = { id: string; title: string; evidence: string | null; source: "audit" | "comparison" };
+export type PriorFinding = { id: string; title: string; evidence: string | null; source: "audit" | "comparison" | "strategy" };
 export type PriorReports = { findings: PriorFinding[]; used: string[]; ignored: string[] };
 
 type Kind = "audit" | "comparison";
