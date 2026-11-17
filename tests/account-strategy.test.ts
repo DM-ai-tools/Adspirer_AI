@@ -139,12 +139,39 @@ describe("scale targets for an account that already makes money", () => {
   const noLevers = { otherGoal: [], waste: [], wasteSpendCents: 0, stoppedWaste: [], winners: [], costWithoutWasteCents: 6_300, roasWithoutWaste: 15.5, costWithShiftCents: 6_300, roasWithShift: 15.5, thinData: false };
 
   it("targets volume, not a cheaper sale, when ROAS is far above any plausible break-even", () => {
-    const [safe, rec, bold] = proposeTargets("sales", sales(15.5), noLevers);
-    expect(rec).toMatchObject({ mode: "scale", dailyBudgetCents: 8_800, costPerCents: 7_560, windowDays: 45 });
-    expect(rec!.roas).toBeCloseTo(15.5 / 1.2, 2);
+    const base = sales(15.5);
+    const [safe, rec, bold] = proposeTargets("sales", base, noLevers);
+    // More volume on a bigger budget, never a lower ROAS: safe holds today's, the others improve on it.
+    expect(safe).toMatchObject({ mode: "scale", costPerCents: base.costPerCents, roas: 15.5, windowDays: 30 });
+    expect(rec).toMatchObject({ mode: "scale", dailyBudgetCents: 8_800, costPerCents: Math.round(base.costPerCents! * 0.95), windowDays: 45 });
+    expect(rec!.roas).toBeCloseTo(15.5 / 0.95, 2);
+    expect(bold!.roas).toBeCloseTo(15.5 / 0.9, 2);
     expect(safe!.conversionsPerDay!).toBeLessThan(rec!.conversionsPerDay!);
     expect(rec!.conversionsPerDay!).toBeLessThan(bold!.conversionsPerDay!);
     expect(rec!.basis).toMatch(/gross margin above 7%/);
+    expect(rec!.basis).toMatch(/judgement call/);
+  });
+
+  it("never proposes a ROAS below today's or a cost above today's (Bethel: 16.06× now)", () => {
+    const base = { ...sales(16.06), costPerCents: 5_628, spendPerDayCents: 4_502 };
+    for (const levers of [noLevers, { ...noLevers, costWithoutWasteCents: 5_000, roasWithoutWaste: 18.1, costWithShiftCents: 4_600, roasWithShift: 19.6, wasteSpendCents: 9_000 }]) {
+      const opts = proposeTargets("sales", base, levers);
+      expect(opts.map((o) => o.mode)).toEqual(["scale", "scale", "scale"]);
+      for (const o of opts) {
+        expect(o.roas!).toBeGreaterThanOrEqual(16.06);
+        expect(o.costPerCents!).toBeLessThanOrEqual(5_628);
+      }
+    }
+  });
+
+  it("uses the account's own figures for the improvement when they show one", () => {
+    const base = { ...sales(16.06), costPerCents: 5_628, spendPerDayCents: 4_502 };
+    const levers = { ...noLevers, costWithoutWasteCents: 5_000, roasWithoutWaste: 18.1, costWithShiftCents: 4_600, roasWithShift: 19.6, wasteSpendCents: 9_000 };
+    const [, rec, bold] = proposeTargets("sales", base, levers);
+    expect(rec!.costPerCents).toBe(5_000);
+    expect(rec!.basis).toMatch(/from the account's own figures \(the waste stopped\)/);
+    expect(bold!.costPerCents).toBe(4_600);
+    expect(bold!.basis).toMatch(/waste budget moved to the best ad sets/);
   });
 
   it("stays on efficiency when the client's own break-even leaves little room", () => {

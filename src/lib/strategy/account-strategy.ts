@@ -334,32 +334,57 @@ export function scaleRoom(kind: GoalKind, baseline: Baseline, profit: ProfitCont
 }
 
 /** Budget multiple, the cost rise allowed for it, and the days it takes, per scale option. */
-const SCALE_STEPS: Record<TargetOption["key"], { budget: number; costRise: number; days: number }> = {
-  safe: { budget: 1.5, costRise: 0.1, days: 30 },
-  recommended: { budget: 2, costRise: 0.2, days: 45 },
-  bold: { budget: 3, costRise: 0.35, days: 60 },
+/**
+ * Scale targets grow volume and never give back efficiency: every option holds today's ROAS / cost per
+ * result or better, and the budget only steps up while that holds. `lift` is the improvement aimed for
+ * when the account's own data (waste to cut, winners to shift to) doesn't show a bigger one.
+ */
+const SCALE_STEPS: Record<TargetOption["key"], { budget: number; lift: number; days: number }> = {
+  safe: { budget: 1.5, lift: 0, days: 30 },
+  recommended: { budget: 2, lift: 0.05, days: 45 },
+  bold: { budget: 3, lift: 0.1, days: 60 },
 };
 
-function scaleTargets(kind: GoalKind, baseline: Baseline, profit: ProfitContext, why: string): TargetOption[] {
+function scaleTargets(kind: GoalKind, baseline: Baseline, levers: Levers | null, profit: ProfitContext, why: string): TargetOption[] {
   const cost = baseline.costPerCents!;
+  // The improvement the account's own figures support: what it costs once the waste stops (recommended),
+  // and once that budget moves to the winners (bold). Never worse than today.
+  const fromData: Record<TargetOption["key"], number | null> = {
+    safe: null,
+    recommended: levers?.costWithoutWasteCents != null && levers.costWithoutWasteCents < cost ? levers.costWithoutWasteCents : null,
+    bold:
+      levers?.costWithShiftCents != null && levers.costWithShiftCents < cost
+        ? Math.min(levers.costWithShiftCents, levers.costWithoutWasteCents ?? Infinity)
+        : levers?.costWithoutWasteCents != null && levers.costWithoutWasteCents < cost
+          ? levers.costWithoutWasteCents
+          : null,
+  };
   return (Object.keys(SCALE_STEPS) as Array<TargetOption["key"]>).map((key) => {
     const step = SCALE_STEPS[key];
-    let rise = step.costRise;
-    // Never let the ceiling cross the client's own limit.
-    const limit = profit.targetCostCents ?? profit.breakEvenCostCents ?? null;
-    if (limit != null) rise = Math.min(rise, Math.max(0, limit / cost - 1));
-    if (kind === "sales" && baseline.roas != null && profit.breakEvenRoas) rise = Math.min(rise, Math.max(0, baseline.roas / (profit.breakEvenRoas * 1.2) - 1));
+    const judged = Math.round(cost * (1 - step.lift));
+    const data = fromData[key];
+    // The better of what the data shows and the step's own aim; never above today's cost.
+    let ceiling = Math.min(cost, data != null ? Math.min(data, judged) : judged);
+    const limit = profit.targetCostCents ?? null;
+    if (limit != null) ceiling = Math.min(ceiling, limit);
     const budget = Math.round(baseline.spendPerDayCents * step.budget);
-    const ceiling = Math.round(cost * (1 + rise));
+    const improvement = 1 - ceiling / cost;
+    const aim =
+      key === "safe" || improvement <= 0
+        ? `today's ${kind === "sales" ? "ROAS" : "cost per result"} held`
+        : data != null && ceiling <= data
+          ? `${Math.round(improvement * 100)}% better than today, from the account's own figures (${key === "recommended" ? "the waste stopped" : "the waste budget moved to the best ad sets"})`
+          : `${Math.round(improvement * 100)}% better than today; a judgement call resting on the plan's fixes (tracking, creative, placements), not on a measured lever`;
     return {
       key,
       mode: "scale" as const,
       costPerCents: ceiling,
-      roas: kind === "sales" && baseline.roas != null ? round2(baseline.roas / (1 + rise)) : null,
+      // Same order value: ROAS rises as cost per purchase falls.
+      roas: kind === "sales" && baseline.roas != null ? round2(baseline.roas * (cost / ceiling)) : null,
       conversionsPerDay: Math.round((budget / ceiling) * 10) / 10,
       dailyBudgetCents: budget,
       windowDays: step.days,
-      basis: `budget ×${step.budget} in 20–30% steps, allowing cost per result to rise ${Math.round(rise * 100)}% as it grows; ${why}`,
+      basis: `budget ×${step.budget} in 20–30% steps, each step only while ${aim}; ${why}`,
     };
   });
 }
@@ -380,7 +405,7 @@ export function proposeTargets(kind: GoalKind, baseline: Baseline, levers: Lever
   // An account that already makes money comfortably is limited by volume: target more results, not cheaper ones.
   // Waste still gets cut in the plan; it just isn't the headline.
   const room = scaleRoom(kind, baseline, profit);
-  if (room.scale && room.why) return scaleTargets(kind, baseline, profit, room.why);
+  if (room.scale && room.why) return scaleTargets(kind, baseline, levers, profit, room.why);
   const roas = baseline.roas;
   const hasWaste = levers.wasteSpendCents > 0 && levers.costWithoutWasteCents != null && levers.costWithoutWasteCents < cost * 0.97;
   if (!hasWaste) {

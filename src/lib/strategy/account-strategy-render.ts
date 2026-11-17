@@ -175,7 +175,7 @@ export function renderTargetProposalEvidence(input: StrategyEvidenceInput & { op
   } else if (input.options[0]!.mode === "scale") {
     const sales = input.goal.kind === "sales";
     lines.push(
-      `- This account already makes money comfortably, so the limit is volume, not cost: these are **scale** targets (more ${unit}s on a bigger budget, with a ceiling on what each may cost). Cutting any waste still belongs in the plan.`,
+      `- This account already makes money comfortably, so the limit is volume: these are **scale** targets — more ${unit}s on a bigger budget while holding today's ${sales ? "ROAS" : `cost per ${unit}`} or better (safe holds it; recommended and bold improve on it). The budget only steps up while the target holds; if it slips, the climb pauses. Cutting any waste still belongs in the plan.`,
       `| Option | ${unit}s/day (now ${input.baseline!.conversionsPerDay.toFixed(1)}) | Budget/day (now ${money(input.baseline!.spendPerDayCents)}) | Max cost per ${unit} |${sales ? " Min ROAS |" : ""} By (days) | Rests on |`,
       `|---|---|---|---|${sales ? "---|" : ""}---|---|`,
       ...input.options.map((o) => {
@@ -220,7 +220,7 @@ export function renderStrategyPlanEvidence(
     const perDay = target.volume != null ? target.volume / windowDays : null;
     lines.push(
       `- **Scale target** (${input.targetSource}): ${perDay != null ? `${perDay.toFixed(1)} ${unit}s/day (now ${b.conversionsPerDay.toFixed(1)}), ${target.volume} in ${windowDays} days` : "more volume"} by ${addDays(input.today, windowDays)}, on ${money(target.scale.dailyBudgetCents)}/day (now ${money(b.spendPerDayCents)}/day, ${pct(b.spendPerDayCents, target.scale.dailyBudgetCents)}).`,
-      `- Limits while scaling: cost per ${unit} stays under ${target.costPerCents != null ? money(target.costPerCents) : "n/a"}${goal.kind === "sales" && target.roas != null ? ` and ROAS above ${x(target.roas)}` : ""}. These are ceilings, not costs to reach: today's cost per ${unit} is ${b.costPerCents != null ? money(b.costPerCents) : "n/a"}.`,
+      `- Limits while scaling: cost per ${unit} at or under ${target.costPerCents != null ? money(target.costPerCents) : "n/a"}${goal.kind === "sales" && target.roas != null ? ` and ROAS at or above ${x(target.roas)}` : ""} (today: ${b.costPerCents != null ? money(b.costPerCents) : "n/a"}${goal.kind === "sales" && b.roas != null ? `, ${x(b.roas)}` : ""}). The target is never worse than today: the plan scales volume without giving back efficiency.`,
       `- The budget gets there in 20–30% steps every 3–4 days, each step only when the last 3–4 days stayed under the limit. Give the steps with dates.`,
       `- On track looks like: ${unit}s per day rising each week while cost per ${unit} stays under the limit; if a step breaks the limit, hold the budget for a week, and fix creative before the next step.`,
     );
