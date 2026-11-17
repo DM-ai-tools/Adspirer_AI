@@ -54,8 +54,6 @@ export type ComparisonParts = {
   caveats: string[];
 };
 
-/** Below this relative move a bridge has no meaningful split (the log shares blow up). */
-export const BRIDGE_TINY_CHANGE = 0.001;
 /** At most this many measurement breaks become findings; the rest stay in the Tracking block. */
 const MAX_BREAK_FINDINGS = 5;
 
@@ -107,18 +105,31 @@ function statusCell(row: KpiRow): string {
   return row.measurementBreak ? `${row.status} (measurement break - not a performance change)` : row.status;
 }
 
-/** One markdown table row: Metric | Current | Previous | Δ | Δ% | Status. */
-export function formatKpiRow(row: KpiRow, money: Money): string {
-  return `| ${row.metric} | ${formatKpiValue(row.metric, row.current, money)} | ${formatKpiValue(row.metric, row.previous, money)} | ${formatKpiDelta(row.metric, row.delta, money)} | ${formatPctChange(row.deltaPct)} | ${statusCell(row)} |`;
+/**
+ * One markdown table row: Metric | Current | Previous | Δ | Δ% | Status. When the previous window
+ * delivered nothing, its value and the change read "n/a" (a zero baseline is not a comparison).
+ * `label` replaces the metric name in the first cell only (formatting still follows the metric).
+ */
+export function formatKpiRow(row: KpiRow, money: Money, options: { noPreviousDelivery?: boolean; label?: string } = {}): string {
+  const name = options.label ?? row.metric;
+  const current = formatKpiValue(row.metric, row.current, money);
+  if (options.noPreviousDelivery) {
+    return `| ${name} | ${current} | n/a (no previous delivery) | n/a | n/a | ${statusCell(row)} |`;
+  }
+  return `| ${name} | ${current} | ${formatKpiValue(row.metric, row.previous, money)} | ${formatKpiDelta(row.metric, row.delta, money)} | ${formatPctChange(row.deltaPct)} | ${statusCell(row)} |`;
 }
 
 export function formatCount(v: number | null | undefined): string {
   return v == null || !Number.isFinite(v) ? "n/a" : count(v);
 }
 
-/** True when a bridge metric barely moved, so its shares mean nothing. */
+/**
+ * True when a bridge metric moved by the materiality threshold or less: a tiny move makes the
+ * log shares blow up (results 100 -> 101 with spend +30% printed "Volume 2637% of the change").
+ */
 export function bridgeIsFlat(previous: number, current: number): boolean {
-  return previous === 0 ? current === 0 : Math.abs(current - previous) / Math.abs(previous) < BRIDGE_TINY_CHANGE;
+  if (previous === 0) return current === 0;
+  return (Math.abs(current - previous) / Math.abs(previous)) * 100 <= COMPARISON_THRESHOLDS.materialityPct;
 }
 
 export function formatBridgeValue(metric: string, v: number, money: Money): string {
@@ -180,16 +191,55 @@ function byAbsChangeDesc(a: KpiRow, b: KpiRow): number {
 
 type Draft = Omit<ComparisonFinding, "id">;
 
+/**
+ * "CPM rose 30.0% (worse)", "Cost per result fell 12.0% (better)": the metric's own movement,
+ * then the verdict. Spend is judged by what it bought, so its title says what results did.
+ */
+function kpiTitle(row: KpiRow, kpis: KpiRow[]): string {
+  const delta = row.delta ?? 0;
+  const moved = delta > 0 ? "rose" : "fell";
+  const size = row.deltaPct != null && Number.isFinite(row.deltaPct) ? ` ${Math.abs(row.deltaPct).toFixed(1)}%` : "";
+  const verdict = row.status === "Improved" ? "better" : "worse";
+  if (row.metric !== "Spend") return `${row.metric} ${moved}${size} (${verdict})`;
+  const results = kpis.find((r) => r.metric === "Results");
+  // Same reading as the Spend status: none before and some now is an unbounded rise.
+  const r =
+    results?.current == null || results.previous == null
+      ? null
+      : results.previous === 0
+        ? results.current > 0 ? Number.POSITIVE_INFINITY : 0
+        : ((results.current - results.previous) / Math.abs(results.previous)) * 100;
+  let how: string;
+  if (r == null) how = "with results unknown";
+  else if (delta > 0) how = row.status === "Improved" ? "and results rose as much or more" : r < 0 ? "while results fell" : "while results rose less";
+  else how = row.status === "Improved" ? (r >= 0 ? "while results held or rose" : "while results fell less") : "while results fell more";
+  return `Spend ${moved}${size} ${how} (${verdict})`;
+}
+
 function kpiEvidence(row: KpiRow, money: Money, extra: string): string {
   return `${row.metric}: ${formatKpiValue(row.metric, row.previous, money)} -> ${formatKpiValue(row.metric, row.current, money)} (${formatPctChange(row.deltaPct)})${extra}`;
 }
 
-function largestBridgeEffect(bridges: Bridge[], money: Money): Draft | null {
+/** The KPI row each bridge explains; a bridge only becomes a finding when that row moved. */
+const BRIDGE_KPI: Record<string, string> = {
+  "cost per result": "Cost per result",
+  results: "Results",
+  "purchase value": "Purchase value",
+};
+
+/**
+ * The largest driver effect that moved the same way as the metric (an offsetting effect is never
+ * "what drove" the change), taken only from bridges whose KPI row is Improved or Declined.
+ */
+function largestBridgeEffect(bridges: Bridge[], kpis: KpiRow[], money: Money): Draft | null {
   let best: { metric: "cost per result" | "results" | "purchase value"; previous: number; current: number; effect: BridgeEffect } | null = null;
   for (const b of bridges) {
     if (!("effects" in b) || bridgeIsFlat(b.previous, b.current)) continue;
+    const row = kpis.find((r) => r.metric === BRIDGE_KPI[b.metric]);
+    if (!row || (row.status !== "Improved" && row.status !== "Declined")) continue;
     for (const e of b.effects) {
-      if (!best || Math.abs(e.shareOfChangePct) > Math.abs(best.effect.shareOfChangePct)) {
+      if (!(e.shareOfChangePct > 0)) continue;
+      if (!best || e.shareOfChangePct > best.effect.shareOfChangePct) {
         best = { metric: b.metric, previous: b.previous, current: b.current, effect: e };
       }
     }
@@ -218,7 +268,7 @@ function stoppedAtLeast5Pct(parts: ComparisonParts, snapshot: MetaAuditSnapshot,
       const spend = e.previous?.spendCents ?? 0;
       return {
         title: `Stopped ${e.level}: ${e.name}`,
-        evidence: `${e.level} ${e.name} (${e.id}) spent ${money(spend)} in the previous window (${((spend / previousSpend) * 100).toFixed(1)}% of account spend) and nothing in the current window`,
+        evidence: `${e.level} ${e.name} spent ${money(spend)} in the previous window (${((spend / previousSpend) * 100).toFixed(1)}% of account spend) and nothing in the current window`,
         kind: "structure" as const,
         bucket: "Budget" as const,
       };
@@ -245,7 +295,8 @@ function draftsFrom(input: ComparisonInput, parts: ComparisonParts): Draft[] {
   for (const c of scorecard.checkpoints) {
     if (c.category !== "Tracking & measurement" || c.status !== "fail") continue;
     drafts.push({
-      title: `${c.id} ${c.title}`,
+      // Title only: the reader never sees checkpoint codes.
+      title: c.title,
       evidence: c.evidence,
       kind: "tracking",
       bucket: "Fix tracking",
@@ -256,7 +307,7 @@ function draftsFrom(input: ComparisonInput, parts: ComparisonParts): Draft[] {
   const declined = parts.kpis.filter((r) => r.status === "Declined").sort(byAbsChangeDesc);
   for (const r of declined) {
     drafts.push({
-      title: `${r.metric} declined (${formatPctChange(r.deltaPct)})`,
+      title: kpiTitle(r, parts.kpis),
       evidence: kpiEvidence(r, money, r.measurementBreak ? "; moved around a measurement break, so part of this may be counting, not performance" : ""),
       kind: "decline",
       bucket: r.measurementBreak ? "Investigate" : (KPI_BUCKET[r.metric] ?? "Investigate"),
@@ -264,7 +315,7 @@ function draftsFrom(input: ComparisonInput, parts: ComparisonParts): Draft[] {
   }
 
   // 4. Largest bridge effect.
-  const bridge = largestBridgeEffect(parts.bridges, money);
+  const bridge = largestBridgeEffect(parts.bridges, parts.kpis, money);
   if (bridge) drafts.push(bridge);
 
   // 5. Stopped entities holding at least 5% of previous spend.
@@ -274,7 +325,7 @@ function draftsFrom(input: ComparisonInput, parts: ComparisonParts): Draft[] {
   for (const f of parts.creative.fatigue) {
     drafts.push({
       title: `Creative fatigue: ${f.name}`,
-      evidence: `Ad ${f.name} (${f.adId}): Link CTR ${f.ctrPrevious.toFixed(2)}% -> ${f.ctrCurrent.toFixed(2)}% while 7-day frequency is ${f.frequency7d.toFixed(2)}`,
+      evidence: `Ad ${f.name}: Link CTR ${f.ctrPrevious.toFixed(2)}% -> ${f.ctrCurrent.toFixed(2)}% while 7-day frequency is ${f.frequency7d.toFixed(2)}`,
       kind: "decline",
       bucket: "Creative",
     });
@@ -284,7 +335,7 @@ function draftsFrom(input: ComparisonInput, parts: ComparisonParts): Draft[] {
   const improved = parts.kpis.filter((r) => r.status === "Improved").sort(byAbsChangeDesc);
   for (const r of improved) {
     drafts.push({
-      title: `${r.metric} improved (${formatPctChange(r.deltaPct)})`,
+      title: kpiTitle(r, parts.kpis),
       evidence: kpiEvidence(r, money, r.measurementBreak ? "; moved around a measurement break" : ""),
       kind: "win",
       bucket: "Hold",

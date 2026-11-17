@@ -226,6 +226,7 @@ import { adSetLoadFailure, renderStrategyPlanEvidence, renderTargetProposalEvide
 import { rulesBrief, type RequestBrief } from "@/lib/agent/request-brief";
 import { COMPARISON_FRAMEWORK, COMPARISON_TITLE } from "@/lib/agent/comparison-framework";
 import { renderComparisonEvidence } from "@/lib/comparison/render";
+import { comparisonUserContext } from "@/lib/comparison/user-context";
 import { resolvePrimaryAccountId } from "@/lib/adspirer/resolve-meta-account";
 import type { ClientService, ConnectedMetaAccount, WorkspaceDocument } from "@/types";
 import type { CreativeDraft } from "@/lib/creatives/drafts";
@@ -938,17 +939,23 @@ export function buildWriterMessages(input: WriterInput): {
         : [];
 
   // The comparison report is diagnostic: it starts at its title, reads only the evidence, and queues nothing.
+  // No comparison evidence (no Meta account mapped, Meta access failed, the snapshot failed) is the
+  // same as "unavailable": a short plain answer, never an empty 14-section shell.
   const comparisonRules =
     intent === "comparison"
-      ? evidence.includes("### Comparison unavailable")
+      ? evidence.includes("### Comparison unavailable") || !evidence.includes("### Comparison evidence —")
         ? [
-            "- The comparison can't be built: say that plainly with the reason from “Comparison unavailable”, and give no figures for either period.",
+            "- The comparison can't be built: say that plainly in two or three sentences with the reason the evidence gives (“Comparison unavailable”, no Meta account mapped to this client, or Meta access failed) and what would fix it. Write no report title and no sections, and give no figures for either period.",
+            "- Do NOT queue execute/optimize tools and do NOT claim you changed Meta.",
           ]
         : [
             `- Write the comparison report with the headings in “Comparison framework”, in order. Start the reply with the title line ("# ${COMPARISON_TITLE} — <account name>"). Nothing before it: no "let me fetch…", no "here is the report".`,
             "- It is diagnostic only: say what changed, by how much and what the evidence suggests about why. No strategy, no actions, no budget moves, no \"should\".",
             "- Every figure, status, bridge effect and CMP finding comes from “Comparison evidence” above; quote them exactly and never calculate or estimate one.",
-            "- Everything you need is in the evidence, so write the report without calling tools; use one only if a figure you must quote is missing from it.",
+            "- Everything you need is in the evidence: write the report from it alone, without calling tools.",
+            ...(evidence.includes("### Comparison scope")
+              ? ["- The evidence has a “Comparison scope” note: no campaign matched the names asked for, so the report covers the whole account. Say so in section 0, naming the names that did not match."]
+              : []),
             "- Do NOT queue execute/optimize tools and do NOT claim you changed Meta.",
           ]
       : [];
@@ -3314,15 +3321,8 @@ export async function gatherDiagnoseEvidence(input: {
       });
       const goals = await turnGoals();
       const scorecard = evaluateCheckpoints(snapshot, { goals });
-      // Only an operator who mentions something that moves results (a sale, a launch, stock) gives the report context to quote.
-      const askText = input.request
-        .replace(/\b(?:last|past|previous|prior)\s+\w+\s+(?:days?|weeks?|months?|years?)\b/gi, " ")
-        .replace(/\b\d{4}-\d{2}-\d{2}\b/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
-      const userContext = /\b(?:promo\w*|sale|sales|discount\w*|stock|launch\w*|holiday\w*|price|prices|pricing|season\w*)\b/i.test(askText)
-        ? askText
-        : null;
+      // Only what the operator said about the business (ran a sale, a launch, stock, a price change) is context to quote.
+      const userContext = comparisonUserContext(input.request);
 
       await input.onProgress?.({
         phase: "build_plan",

@@ -22,7 +22,7 @@ export const SHARED_ANALYSIS_RULES = `SHARED RULES (apply to every report)
 export type BusinessType = "ecom" | "leadgen" | "hybrid";
 
 /** Campaign objectives grouped the way the report never blends them. */
-function objectiveGroup(objective: string): string {
+export function objectiveGroup(objective: string): string {
   const o = objective.toUpperCase();
   if (o === "OUTCOME_SALES" || o === "CONVERSIONS" || o === "PRODUCT_CATALOG_SALES") return "sales";
   if (o === "OUTCOME_LEADS" || o === "LEAD_GENERATION") return "leads";

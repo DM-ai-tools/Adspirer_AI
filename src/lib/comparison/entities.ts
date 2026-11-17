@@ -10,7 +10,7 @@ export type EntityChange = {
   objective: string | null;
   current: PeriodPerformance | null;
   previous: PeriodPerformance | null;
-  /** This entity's spend change ÷ the account's spend change × 100; null when the account change is 0 or unknown. */
+  /** This entity's spend change ÷ the account's spend change × 100; null when the account change is under the materiality threshold or unknown. */
   spendContributionPct: number | null;
   resultsContributionPct: number | null;
   lowVolume: boolean;
@@ -50,14 +50,23 @@ function delivered(p: PeriodPerformance | null | undefined): p is PeriodPerforma
   return spendOf(p) > 0;
 }
 
+/**
+ * The account's change, or null when it moved less than the materiality threshold: a share of a
+ * near-zero change is noise (a campaign "carrying 900% of the change").
+ */
+function material(delta: number, previous: number): number | null {
+  if (previous <= 0) return delta === 0 ? null : delta;
+  return (Math.abs(delta) / previous) * 100 < COMPARISON_THRESHOLDS.materialityPct ? null : delta;
+}
+
 function accountDeltas(snap: MetaAuditSnapshot): Deltas {
   const cur = snap.totals;
   const prev = snap.previousTotals;
   if (!cur || !prev) return { spend: null, results: null };
-  const spend = spendOf(cur) - spendOf(prev);
+  const spend = material(spendOf(cur) - spendOf(prev), spendOf(prev));
   const c = finite(cur.results);
   const p = finite(prev.results);
-  return { spend, results: c != null && p != null ? c - p : null };
+  return { spend, results: c != null && p != null ? material(c - p, p) : null };
 }
 
 function pct(delta: number | null, accountDelta: number | null): number | null {

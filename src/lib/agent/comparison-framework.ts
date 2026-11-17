@@ -18,8 +18,9 @@ ${SHARED_ANALYSIS_RULES}
 
 ## Where the facts come from
 The evidence has these blocks, each headed "####". Use the block named in each section below and nothing else.
-- **Windows**: both windows with day counts, same-length flag, maturity.
+- **Windows**: the exact Current, Previous and Scope lines, the same-length flag and maturity.
 - **Settings**: attribution windows, optimisation events, business type, measurement breaks and caveats.
+- **Objective mix**: each objective group's share of current spend (Sales, Leads, Other), and whether Results and Cost per result are "all objectives combined".
 - **KPI scorecard**: one table (Metric | Current | Previous | Δ | Δ% | Status), plus per-day lines when the windows differ in length.
 - **Bridge**: how cost per result, results and purchase value moved from previous to current, and the driver effects that add up to it. The driver labels printed are exactly CPM, CTR, CVR, Volume and AOV (cost per result: CPM, CTR, CVR; results: Volume, CPM, CTR, CVR; purchase value: Volume, AOV, ecom and hybrid only). Each effect is printed as an amount and a "% of the change".
 - **Funnel**, **Entities**, **Creative**, **Breakdown shifts** (headed "Breakdown shifts (whole account)" when the audit was scoped to some campaigns), **Changes**, **Tracking**.
@@ -63,10 +64,11 @@ Start the reply with the title line below, with the account name filled in. Noth
 - **Windows**: say whether the two windows are the same length, and if not, that per-day figures are used.
 - **Attribution and events**: the attribution windows and the conversion / optimisation events used (Settings), labelled Meta-reported.
 - **Business type** (Settings) and which metrics lead because of it.
+- **Objective mix**: each group's share of current spend, as printed. When the evidence says the results are "all objectives combined", say plainly that Results and Cost per result mix objectives, and never present the blended cost per result as one objective's (for example, as the cost per lead).
 - **Maturity**: whether the current window is mature; if not, from which day and why.
 - **Measurement breaks and caveats**: each MEASUREMENT BREAK and caveat from Settings and Tracking, or "None recorded".
 - **Failed to load**: each part Failed to load lists as "failed to load", or "Nothing failed to load". Lines starting "warning:" are not failed parts: list them separately as **Warnings**.
-- An exact scope line: "- **Scope:** whole account" when the report covers the whole account, or "- **Scope:** campaigns: <names>" when it covers selected campaigns. When the evidence heading says "(whole account)" for the breakdowns, add after it that the breakdowns in section 7 cover the whole account, not only the selected campaigns.
+- An exact scope line, copied from the Windows block: "- **Scope:** whole account" when the report covers the whole account, or "- **Scope:** campaigns: <names>" when it covers selected campaigns. When the evidence has a "Comparison scope" note (no campaign matched the names asked for), say so here in one line: which names did not match and that the report covers the whole account. When the evidence heading says "(whole account)" for the breakdowns, add after it that the breakdowns in section 7 cover the whole account, not only the selected campaigns.
 
 ## 1. Executive summary
 - **Verdict**: one line, using the movement of the headline metrics and their statuses. Not a recommendation.
@@ -85,6 +87,7 @@ Start the reply with the title line below, with the account name filled in. Noth
 
 ## 3. Driver analysis
 - From the Bridge only. One short block per Bridge metric (cost per result, results, purchase value), only those the Bridge provides.
+- When a Bridge line says "(all objectives combined)", open the section by saying the results mix objectives (the shares from Objective mix), so the cost per result and its drivers are a blend, not any one objective's performance.
 - For each: previous -> current, then the effects with their own amounts and "% of the change". Name the largest effect first, then the rest in printed order.
 - Say plainly which drivers helped and which hurt, using the metric's actual movement. Label each cause [Observed], [Likely] or [Hypothesis].
 - Where the Bridge says "no material change" or "not available", say that and stop. Do not invent a split.

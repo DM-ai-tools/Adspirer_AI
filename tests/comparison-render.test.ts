@@ -217,7 +217,7 @@ describe("comparisonFindings", () => {
       totals: perf({ spendCents: 100_000, results: 60, costPerResultCents: 1667, cpmCents: 2600, linkCtr: 1.1 }),
       previousTotals: perf(),
     });
-    const f = comparisonFindings(input(snap)).filter((x) => x.kind === "decline" && /declined/.test(x.title));
+    const f = comparisonFindings(input(snap)).filter((x) => x.kind === "decline" && /\(worse\)$/.test(x.title));
     expect(f.length).toBeGreaterThan(1);
     const pcts = f.map((x) => Math.abs(Number(/(-?\d+(?:\.\d)?)%/.exec(x.title)?.[1] ?? 0)));
     expect(pcts).toEqual([...pcts].sort((a, b) => b - a));

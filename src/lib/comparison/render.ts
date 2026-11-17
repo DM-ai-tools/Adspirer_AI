@@ -13,6 +13,7 @@ import {
   type ComparisonInput,
 } from "./findings";
 import type { EntityChange } from "./entities";
+import { SINGLE_OBJECTIVE_SHARE, objectiveMix, type ObjectiveGroup, type ObjectiveMix } from "./objectives";
 import { COMPARISON_THRESHOLDS } from "./thresholds";
 
 export { buildComparison } from "./findings";
@@ -23,10 +24,13 @@ const cell = (text: string | null | undefined) => escapeTableCell(text ?? "");
 const pct2 = (v: number | null) => (v == null || !Number.isFinite(v) ? "n/a" : `${v.toFixed(2)}%`);
 const pct1 = (v: number | null) => (v == null || !Number.isFinite(v) ? "n/a" : `${v.toFixed(1)}%`);
 
-function windowsBlock(w: ReturnType<typeof buildComparison>["windows"]): string[] {
+/** The exact lines section 0 copies (and later reports read the period and scope from). */
+function windowsBlock(w: ReturnType<typeof buildComparison>["windows"], snap: MetaAuditSnapshot): string[] {
+  const scoped = snap.scope?.campaigns ?? [];
   const lines = [
-    `- Current: ${w.current.since} to ${w.current.until} (${w.current.days} days)`,
-    `- Previous: ${w.previous.since} to ${w.previous.until} (${w.previous.days} days)`,
+    `- **Current:** ${w.current.since} → ${w.current.until} (${w.current.days} days)`,
+    `- **Previous:** ${w.previous.since} → ${w.previous.until} (${w.previous.days} days)`,
+    scoped.length ? `- **Scope:** campaigns: ${scoped.map((c) => c.name).join(", ")}` : "- **Scope:** whole account",
   ];
   lines.push(
     w.equalLength
@@ -55,13 +59,23 @@ function settingsBlock(snap: MetaAuditSnapshot, type: string, breaks: number, ca
   ];
 }
 
-function kpiBlock(c: ReturnType<typeof buildComparison>, money: (n: number) => string, currencyNote: string): string[] {
+const COMBINED = "all objectives combined";
+/** KPI rows and bridges whose results add up different objectives' results when the mix is blended. */
+const RESULT_KPIS = new Set(["Results", "Cost per result"]);
+
+function kpiBlock(c: ReturnType<typeof buildComparison>, snap: MetaAuditSnapshot, money: (n: number) => string, blended: boolean): string[] {
   if (c.kpis.length === 0) return ["- No KPI rows: no totals were loaded for either window."];
+  const noPreviousDelivery = !snap.previousTotals || !(snap.previousTotals.spendCents > 0);
   const lines = [
     "| Metric | Current | Previous | Δ | Δ% | Status |",
     "| --- | --- | --- | --- | --- | --- |",
-    ...c.kpis.map((r) => formatKpiRow(r, money)),
-    `Money is in ${currencyNote}. "n/a" means a side or the baseline is missing: do not quote a % for it. "${LOW_VOLUME}" rows are too small to judge: never call them a trend.`,
+    ...c.kpis.map((r) =>
+      formatKpiRow(r, money, {
+        noPreviousDelivery,
+        ...(blended && RESULT_KPIS.has(r.metric) ? { label: `${r.metric} (${COMBINED})` } : {}),
+      }),
+    ),
+    `Money is in ${snap.account.currency}. "n/a" means a side or the baseline is missing: do not quote a % for it. "${LOW_VOLUME}" rows are too small to judge: never call them a trend.`,
   ];
   if (!c.windows.equalLength) {
     lines.push("Per day (the windows differ in length):");
@@ -73,17 +87,18 @@ function kpiBlock(c: ReturnType<typeof buildComparison>, money: (n: number) => s
   return lines;
 }
 
-function bridgeBlock(snap: MetaAuditSnapshot, c: ReturnType<typeof buildComparison>, money: (n: number) => string): string[] {
+function bridgeBlock(snap: MetaAuditSnapshot, c: ReturnType<typeof buildComparison>, money: (n: number) => string, blended: boolean): string[] {
   if (!snap.totals || !snap.previousTotals) {
     return [`- Bridge not available: ${!snap.totals ? "current" : "previous"} account totals did not load.`];
   }
   const lines: string[] = [];
   for (const b of c.bridges) {
+    const name = blended && (b.metric === "cost per result" || b.metric === "results") ? `${b.metric} (${COMBINED})` : b.metric;
     if ("unavailable" in b) {
-      lines.push(`- ${b.metric}: not available - missing ${b.unavailable}`);
+      lines.push(`- ${name}: not available - missing ${b.unavailable}`);
       continue;
     }
-    const head = `- ${b.metric}: ${formatBridgeValue(b.metric, b.previous, money)} -> ${formatBridgeValue(b.metric, b.current, money)}`;
+    const head = `- ${name}: ${formatBridgeValue(b.metric, b.previous, money)} -> ${formatBridgeValue(b.metric, b.current, money)}`;
     if (bridgeIsFlat(b.previous, b.current)) {
       lines.push(`${head}; no material change (no driver split)`);
       continue;
@@ -91,6 +106,19 @@ function bridgeBlock(snap: MetaAuditSnapshot, c: ReturnType<typeof buildComparis
     lines.push(`${head}; drivers: ${b.effects.map((e) => formatBridgeEffect(b.metric, e, money)).join("; ")}`);
   }
   if (c.bridges.length === 0) lines.push("- No bridge was computed.");
+  return lines;
+}
+
+const GROUP_LABEL: Record<ObjectiveGroup, string> = { sales: "Sales", leads: "Leads", other: "Other" };
+
+function objectiveMixBlock(mix: ObjectiveMix | null): string[] {
+  if (!mix) return ["- No campaign spent in the current window, so the objective mix is not known."];
+  const lines = mix.shares.map((s) => `- ${GROUP_LABEL[s.group]}: ${pct1(s.sharePct)} of current spend`);
+  lines.push(
+    mix.blended
+      ? `- No objective carries ${SINGLE_OBJECTIVE_SHARE * 100}% or more of current spend: Results and Cost per result (and their bridges) add up different objectives' results (${COMBINED}). They are not one objective's performance.`
+      : `- One objective carries ${SINGLE_OBJECTIVE_SHARE * 100}% or more of current spend: Results and Cost per result are mostly that objective's.`,
+  );
   return lines;
 }
 
@@ -116,7 +144,7 @@ function entityTable(list: EntityChange[], money: (n: number) => string): string
     "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ...list.map(
       (e) =>
-        `| ${e.level} | ${cell(e.name)} (${cell(e.id)}) | ${spend(e.current)} | ${spend(e.previous)} | ${res(e.current)} | ${res(e.previous)} | ${pct1(e.spendContributionPct)} | ${pct1(e.resultsContributionPct)} | ${e.lowVolume ? LOW_VOLUME : ""} |`,
+        `| ${e.level} | ${cell(e.name)} | ${spend(e.current)} | ${spend(e.previous)} | ${res(e.current)} | ${res(e.previous)} | ${pct1(e.spendContributionPct)} | ${pct1(e.resultsContributionPct)} | ${e.lowVolume ? LOW_VOLUME : ""} |`,
     ),
   ];
 }
@@ -202,16 +230,19 @@ export function renderComparisonEvidence(input: ComparisonInput): string {
   const money = moneyFor(snap.account.currency);
   const ads = splitAds(c.creative.ads);
   const scoped = Boolean(snap.scope);
+  const mix = objectiveMix(snap);
+  const blended = Boolean(mix?.blended);
 
   const section = (title: string, body: string[]) => [`#### ${title}`, ...body, ""];
 
   return [
     `### Comparison evidence — ${snap.account.name}`,
     "",
-    ...section("Windows", windowsBlock(c.windows)),
+    ...section("Windows", windowsBlock(c.windows, snap)),
     ...section("Settings", settingsBlock(snap, c.type, c.breaks.length, c.caveats)),
-    ...section("KPI scorecard", kpiBlock(c, money, snap.account.currency)),
-    ...section("Bridge", bridgeBlock(snap, c, money)),
+    ...section("Objective mix", objectiveMixBlock(mix)),
+    ...section("KPI scorecard", kpiBlock(c, snap, money, blended)),
+    ...section("Bridge", bridgeBlock(snap, c, money, blended)),
     ...section("Funnel", funnelBlock(c)),
     ...section("Entities", [
       ...entityGroups(c.entities, money),
