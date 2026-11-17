@@ -40,10 +40,10 @@ const STATED: Record<string, RegExp> = {
   constraints: /\b(?:can'?t|cannot|don'?t|do not) (?:ship|sell|advertise|target|run|deliver)\b|\bonly (?:ship|sell|deliver|target) (?:to|in)\b/i,
   "creative assets": /\b(?:we have|we've got|we can (?:make|shoot|supply)|no budget for) (?:new |more |some |any )?(?:creative|videos?|images?|photos?|ugc)\b/i,
   owners: /\b(?:in-house|our agency|the agency|(?:i|we) (?:approve|own|manage) (?:the )?(?:account|changes|ads))\b/i,
-  goal: /\b(?:cpa|cpl|roas|cost per (?:purchase|lead|sale|result))\b[^.?\n]{0,25}?(?:\$\s?\d|\d+(?:\.\d+)?\s*(?:x|×)\b|\bof \d)|\b\d+(?:\.\d+)?\s*(?:x|×)\s*roas\b|\$\s?\d+(?:\.\d+)?\s*(?:per|a|\/)\s*(?:lead|purchase|sale|order)\b|\b\d+\s+(?:leads|sales|purchases|orders)\s+(?:a|per)\s+(?:day|week|month)\b/i,
-  timeframe: /\b(?:in|within|over the next)\s+\d+\s*(?:days?|weeks?|months?)\b|\bby (?:the )?end of\b|\bby (?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i,
+  goal: /\b(?:cpa|cpl|roas|cost per (?:purchase|lead|sale|result))\b[^.?\n]{0,25}?(?:\$\s?\d|\d+(?:\.\d+)?\s*(?:x|×)\b|\bof \d)|\btarget (?:roas|cpa|cpl)\s*(?:of\s*)?\$?\s?\d|\b\d+(?:\.\d+)?\s*(?:x|×)\s*roas\b|\$\s?\d+(?:\.\d+)?\s*(?:per|a|\/)\s*(?:lead|purchase|sale|order)\b|\b\d+\s+(?:leads|sales|purchases|orders)\s+(?:a|per)\s+(?:day|week|month)\b/i,
+  timeframe: /\b(?:in|within|over)\s+(?:the\s+)?(?:next\s+)?\d+\s*(?:days?|weeks?|months?)\b|\bby (?:the )?end of\b|\bby (?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i,
   budget: /\bbudget (?:is|of|cap|ceiling|limit)\b[^.?\n]{0,20}\d|\$\s?\d[\d,]*\s*(?:\/|per|a)\s*(?:day|month)\b/i,
-  margin: /\bmargins?\b[^.?\n]{0,40}?\d{1,2}(?:\.\d+)?\s*%|\d{1,2}(?:\.\d+)?\s*%\s*(?:gross\s+)?margin/i,
+  margin: /\bmargins?\b[^.?\n]{0,40}?\d{1,2}(?:\.\d+)?\s*(?:%|per\s?cent)|\d{1,2}(?:\.\d+)?\s*(?:%|per\s?cent)\s*(?:gross\s+)?margin/i,
   "lead quality": /\b\d+\s*(?:%|in \d+|out of \d+)\s*(?:of (?:the |our )?leads?|leads?)\b[^.?\n]{0,40}\b(?:qualif|close|convert|become)|\b(?:close|qualified|qualification) rate\b[^.?\n]{0,20}\d/i,
 };
 

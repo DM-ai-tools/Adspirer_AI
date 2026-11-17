@@ -155,6 +155,15 @@ describe("resolveProfile — fill from data, default the rest, ask only what cha
     ["get CPA down to $45", "goal"],
     ["we only ship to Australia", "constraints"],
     ["we sell commercial shopfittings", "what they sell"],
+    ["margin is around 30 percent", "margin"],
+    ["target ROAS 4", "goal"],
+    ["4x roas", "goal"],
+    ["CPL under $50", "goal"],
+    ["in the next 60 days", "timeframe"],
+    ["budget is $50 a day", "budget"],
+    ["we're happy to be aggressive", "risk appetite"],
+    ["we have new videos ready", "creative assets"],
+    ["we're an ecommerce store selling shop fittings", "what they sell"],
   ])("a real answer counts as stated: %s", (request, item) => {
     expect(resolveProfile({ snapshot: bethel(), goals: noGoals, request, history: [], money }).stated).toContain(item);
   });
@@ -167,6 +176,18 @@ describe("resolveProfile — fill from data, default the rest, ask only what cha
     const g = resolveGoals({ goals_profile: { business_model: "lead_gen" } });
     expect(resolveProfile({ snapshot: leads, goals: g, request: "we use a CRM, give me a strategy", history: [], money }).ask.map((q) => q.item)).toEqual(["lead quality"]);
     expect(resolveProfile({ snapshot: leads, goals: g, request: "about 30% of leads become sales", history: [], money }).ask).toEqual([]);
+  });
+
+  it("keeps hyphenated product names whole", () => {
+    const snap = bethel({
+      adSets: [
+        { ...base.adSets[0], id: "h1", name: "Anti-Theft Hooks - Broad", campaignId: "c_1", status: "ACTIVE", countries: ["AU"], performance: perf({ spendCents: 50_000 }) },
+        { ...base.adSets[0], id: "h2", name: "TR | T-Shirts", campaignId: "c_1", status: "ACTIVE", countries: ["AU"], performance: perf({ spendCents: 40_000 }) },
+      ],
+    });
+    expect(resolveProfile({ snapshot: snap, goals: noGoals, request: "strategy", history: [], money }).fromData.find((x) => x.item === "what they sell")!.value).toBe(
+      "Anti-Theft Hooks, T-Shirts",
+    );
   });
 
   it("drops agency prefixes and keeps products that start with a temperature word", () => {
