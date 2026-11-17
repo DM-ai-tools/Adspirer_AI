@@ -1,5 +1,5 @@
 import { parseDateRangeFromText } from "@/lib/agent/audit-brief";
-import type { AgentHistoryMessage } from "@/lib/agent/history";
+import { AUDIT_REPORT_TITLE, COMPARISON_REPORT_TITLE, type AgentHistoryMessage } from "@/lib/agent/history";
 
 export type PriorFinding = { id: string; title: string; evidence: string | null; source: "audit" | "comparison" | "strategy" };
 export type PriorReports = { findings: PriorFinding[]; used: string[]; ignored: string[] };
@@ -7,8 +7,8 @@ export type PriorReports = { findings: PriorFinding[]; used: string[]; ignored: 
 type Kind = "audit" | "comparison";
 type Parsed = { findings: PriorFinding[]; oldNumbering: boolean };
 
-const AUDIT_TITLE = /^#\s*Meta Ads Account Audit\b/m;
-const COMPARISON_TITLE = /^#\s*Meta Ads Comparison Report\b/m;
+const AUDIT_TITLE = AUDIT_REPORT_TITLE;
+const COMPARISON_TITLE = COMPARISON_REPORT_TITLE;
 
 /** "2026-10-01 → 2026-10-15" is how reports write ranges; the shared parser wants "to". */
 function readRange(text: string): { dateStart: string; dateStop: string } | null {
@@ -101,9 +101,10 @@ function parseComparison(text: string): Parsed {
   const findings: PriorFinding[] = [];
   const section12 = text.match(/^##\s*12\.[^\n]*\n([\s\S]*?)(?=^##\s*13\.|(?![\s\S]))/m)?.[1] ?? text;
   for (const line of section12.split("\n")) {
-    if (!/^\s*\|\s*(CMP-\d{3})\s*\|/.test(line)) continue;
+    if (!/^\s*\|\s*(?:\*\*)?\s*CMP-\d{3}\s*(?:\*\*)?\s*\|/.test(line)) continue;
     const cells = line.trim().replace(/^\|/, "").replace(/\|\s*$/, "").split(/(?<!\\)\|/).map((c) => c.replace(/\\\|/g, "|").trim());
-    const [id, title, evidence] = cells;
+    const [idCell, title, evidence] = cells;
+    const id = idCell.replace(/\*/g, "").trim();
     if (!title) continue;
     findings.push({ id, title, evidence: evidence || null, source: "comparison" });
   }
@@ -150,6 +151,10 @@ export function priorFindings(
       const reportScoped = kind === "audit" ? auditIsCampaignScoped(text) : comparisonIsCampaignScoped(text);
       if (reportScoped && !strategyScoped) {
         out.ignored.push(`${label} not used: covers specific campaigns, the strategy covers the whole account`);
+        continue;
+      }
+      if (parsed.findings.length === 0) {
+        out.ignored.push(`${label} not used: no finding IDs could be read`);
         continue;
       }
       out.findings.push(...parsed.findings);

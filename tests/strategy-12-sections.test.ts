@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { ACCOUNT_STRATEGY_FRAMEWORK, STRATEGY_TARGET_PROPOSAL_FRAMEWORK } from "@/lib/agent/account-strategy-framework";
 import { LEAD_STRATEGY_FRAMEWORK, STRATEGY_FRAMEWORK } from "@/lib/agent/strategy-framework";
-import { gatherDiagnoseEvidence } from "@/lib/agent/adspirer-agent";
+import { gatherDiagnoseEvidence, runAdspirerAgent } from "@/lib/agent/adspirer-agent";
+import { createTask } from "@/lib/agent/task-runner";
 import { resetDemoStore } from "@/lib/demo/store";
 
 const HEADINGS = [
@@ -55,6 +56,15 @@ describe.each([
   });
 });
 
+describe("ACCOUNT_STRATEGY_FRAMEWORK voice", () => {
+  it("never invites a closing offer to queue, and allows only STR and finding IDs in headings", () => {
+    expect(ACCOUNT_STRATEGY_FRAMEWORK).not.toMatch(/offering to queue/i);
+    expect(ACCOUNT_STRATEGY_FRAMEWORK).toContain("nothing in Meta is changed and nothing is queued");
+    expect(ACCOUNT_STRATEGY_FRAMEWORK).toContain("The only ids allowed there are STR-### and the finding IDs (AUD-###, CMP-###, SF-###)");
+    expect(STRATEGY_TARGET_PROPOSAL_FRAMEWORK).not.toMatch(/offering to queue/i);
+  });
+});
+
 describe("LEAD_STRATEGY_FRAMEWORK", () => {
   it("still forbids ROAS and keeps the lead rules", () => {
     expect(LEAD_STRATEGY_FRAMEWORK).toMatch(/never mention ROAS, revenue or return on ad spend/);
@@ -104,6 +114,17 @@ describe("strategy inputs in the DEMO evidence", () => {
     const gathered = await gatherDiagnoseEvidence({ clientId: "client_trafficradius", request: "Build me a strategy", intent: "strategy" });
     expect(gathered.toolCalls.find((c) => c.name === "strategy_plan")?.args).toMatchObject({ stage: "target_proposal" });
     expect(gathered.evidence).toContain("### Strategy inputs (findings");
+  });
+
+  it("the DEMO reply leaves out the strategy inputs block", async () => {
+    const ask = "strategy to hit $40 per lead in 45 days";
+    const task = await createTask({ clientId: "client_trafficradius", createdBy: "profile_operator_demo", title: ask, goal: ask });
+    const gathered = await gatherDiagnoseEvidence({ clientId: "client_trafficradius", request: ask, intent: "strategy" });
+    expect(gathered.evidence).toContain("### Strategy inputs (findings");
+    const result = await runAdspirerAgent({ task, clientContext: "", toolEvidence: gathered.evidence, intent: "strategy" });
+    expect(result.summary).toContain("## Strategy (demo)");
+    expect(result.summary).not.toContain("### Strategy inputs (findings");
+    expect(result.summary).not.toContain("App capabilities");
   });
 
   it("lead strategy gets the inputs block before the framework", async () => {

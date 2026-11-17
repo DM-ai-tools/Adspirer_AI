@@ -64,6 +64,31 @@ export async function loadConversationHistory(
   );
 }
 
+/** Report titles, as the audit and comparison writers start their replies (prior-findings reads the same). */
+export const AUDIT_REPORT_TITLE = /^#\s*Meta Ads Account Audit\b/m;
+export const COMPARISON_REPORT_TITLE = /^#\s*Meta Ads Comparison Report\b/m;
+
+/**
+ * The latest audit and the latest comparison report in the chat, in full (sanitized, never
+ * truncated), oldest first. `loadConversationHistory` cuts past replies to a few thousand
+ * characters, which drops the AUD-### cards and the CMP-### table a strategy must cite.
+ */
+export async function loadLatestReports(
+  conversationId: string | null | undefined,
+  options?: { excludeMessageId?: string },
+): Promise<AgentHistoryMessage[]> {
+  if (!conversationId) return [];
+  const assistant = (await fetchMessages(conversationId))
+    .filter((m) => m.role === "assistant" && m.id !== options?.excludeMessageId)
+    .map((m) => sanitizeHistoryContent(m.content ?? ""));
+  const picked = new Set<number>();
+  for (const title of [AUDIT_REPORT_TITLE, COMPARISON_REPORT_TITLE]) {
+    const index = assistant.findLastIndex((content) => title.test(content));
+    if (index >= 0) picked.add(index);
+  }
+  return [...picked].sort((a, b) => a - b).map((i) => ({ role: "assistant", content: assistant[i] }));
+}
+
 export function truncateHistory(
   messages: AgentHistoryMessage[],
 ): AgentHistoryMessage[] {

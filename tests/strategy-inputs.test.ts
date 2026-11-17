@@ -46,7 +46,8 @@ describe("appActions", () => {
     expect(tools).not.toContain("request_feed_refresh");
     const budget = a.find((x) => x.tool === "update_adset_budget")!;
     expect(budget.guardrail).toContain("20%");
-    expect(budget.guardrail).toContain("max_budget_change_pct");
+    expect(budget.guardrail).not.toContain("max_budget_change_pct");
+    expect(budget.note).toBe("Ad sets that hold their own daily budget.");
     expect(budget.guardrail).toContain("500.00 per day");
     expect(budget.guardrail).toContain("12000.00 per month");
   });
@@ -101,9 +102,34 @@ describe("renderStrategyInputsEvidence", () => {
     expect(out).toContain("### Strategy inputs (findings, profile, platform notes, app capabilities)");
     expect(out).toContain(PLATFORM_NOTES_VERSION);
     for (const n of platformNotes(goals)) expect(out).toContain(n);
-    expect(out).toContain("update_adset_budget");
     expect(out).toContain("Business type");
     expect(out).toContain("Profile missing");
+  });
+
+  it("shows capabilities as label — note — guardrail, with no tool ids or setting keys", () => {
+    const caps = out.slice(out.indexOf("**App capabilities"));
+    for (const a of appActions(goals)) {
+      expect(caps).toContain(`- ${a.label} — ${a.note} — ${a.guardrail}`);
+      expect(caps).not.toContain(a.tool);
+    }
+    expect(caps).not.toContain("max_budget_change_pct");
+    expect(caps).toContain("created PAUSED");
+    expect(caps).toContain("Needs a video from the client");
+    expect(caps).toContain("never the only live ad in its ad set");
+    expect(caps).toContain("Meta restarts learning after a bid change");
+  });
+
+  it("leaves target ROAS and average order value out of Profile known for lead generation", () => {
+    const g = resolveGoals({ goals_profile: { business_model: "lead_gen", target_roas: 3, average_value_cents: 5_000, target_cpa_cents: 2_000 } });
+    const o = renderStrategyInputsEvidence({ snapshot, goals: g, scorecard, request: "strategy", history: [], period });
+    const known = o.slice(o.indexOf("**Profile known:**"), o.indexOf("**Profile missing"));
+    expect(known).toContain("target cost per result");
+    expect(known).not.toContain("target ROAS");
+    expect(known).not.toContain("average order value");
+    const ecom = resolveGoals({ goals_profile: { business_model: "ecommerce", target_roas: 3, average_value_cents: 5_000 } });
+    const e = renderStrategyInputsEvidence({ snapshot, goals: ecom, scorecard, request: "strategy", history: [], period });
+    expect(e).toContain("target ROAS: 3");
+    expect(e).toContain("average order value");
   });
 
   it("uses SF findings and the notice when no prior report covers the period", () => {

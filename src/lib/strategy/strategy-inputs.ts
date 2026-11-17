@@ -14,11 +14,12 @@ export const NO_PRIOR_REPORT_NOTICE =
 type Money = (cents: number) => string;
 const defaultMoney: Money = (c) => (c / 100).toFixed(2);
 
-export type AppAction = { capabilityId: string; label: string; tool: string; guardrail: string };
+/** `tool` is for code only; the writer never sees it (the reader never sees tool names or setting keys). */
+export type AppAction = { capabilityId: string; label: string; tool: string; note: string; guardrail: string };
 
 /** What this app can do through Approvals (Type A), with the limits the client's goals set. */
 export function appActions(goals: ResolvedGoals, money: Money = defaultMoney): AppAction[] {
-  const limits: string[] = [`budget changes at most ±${goals.max_budget_change_pct}% per step (max_budget_change_pct)`];
+  const limits: string[] = [`budget changes at most ±${goals.max_budget_change_pct}% per step`];
   if (goals.daily_account_cap_cents != null) limits.push(`account daily cap ${money(goals.daily_account_cap_cents)} per day`);
   if (goals.monthly_cap_cents != null) limits.push(`monthly cap ${money(goals.monthly_cap_cents)} per month`);
   const budgetGuardrail = limits.join("; ");
@@ -26,6 +27,7 @@ export function appActions(goals: ResolvedGoals, money: Money = defaultMoney): A
     capabilityId: c.id,
     label: c.label,
     tool: c.tool as string,
+    note: c.note,
     guardrail: c.focus === "budget" && /budget/.test(c.id) ? budgetGuardrail : "queued in Approvals; an admin approves",
   }));
 }
@@ -81,16 +83,19 @@ export function renderStrategyInputsEvidence(input: {
   scorecard: AuditScorecard;
   request: string;
   history: AgentHistoryMessage[];
+  /** The latest audit and comparison replies in full; `history` truncates them past their findings. */
+  reports?: AgentHistoryMessage[];
   period: { dateStart: string; dateStop: string };
   scope?: { campaignIds?: string[] };
   money?: Money;
 }): string {
   const { snapshot, goals, scorecard, request, history, period } = input;
   const money = input.money ?? defaultMoney;
-  const prior = priorFindings(history, period, input.scope ?? {});
+  const prior = priorFindings(input.reports ?? history, period, input.scope ?? {});
   const lines: string[] = ["### Strategy inputs (findings, profile, platform notes, app capabilities)", ""];
 
-  lines.push(`**Business type:** ${businessTypeOf(snapshot, goals.business_model)}`, "");
+  const businessType = businessTypeOf(snapshot, goals.business_model);
+  lines.push(`**Business type:** ${businessType}`, "");
 
   lines.push("**Findings (cite these IDs):**");
   for (const u of prior.used) lines.push(`- ${u}`);
@@ -107,8 +112,11 @@ export function renderStrategyInputsEvidence(input: {
   const known: string[] = [];
   if (goals.business_model) known.push(`business model: ${goals.business_model}`);
   if (goals.target_cpa_cents != null) known.push(`target cost per result: ${money(goals.target_cpa_cents)}`);
-  if (goals.target_roas != null) known.push(`target ROAS: ${goals.target_roas}`);
-  if (goals.average_value_cents != null) known.push(`average order value: ${money(goals.average_value_cents)}`);
+  // Lead generation never plans on ROAS or order value, so they are not offered to the writer.
+  if (businessType !== "leadgen") {
+    if (goals.target_roas != null) known.push(`target ROAS: ${goals.target_roas}`);
+    if (goals.average_value_cents != null) known.push(`average order value: ${money(goals.average_value_cents)}`);
+  }
   if (goals.gross_margin_pct != null) known.push(`gross margin: ${goals.gross_margin_pct}%`);
   if (goals.daily_account_cap_cents != null) known.push(`account daily cap: ${money(goals.daily_account_cap_cents)} per day`);
   if (goals.monthly_cap_cents != null) known.push(`monthly cap: ${money(goals.monthly_cap_cents)} per month`);
@@ -134,6 +142,6 @@ export function renderStrategyInputsEvidence(input: {
   lines.push("");
 
   lines.push("**App capabilities (Type A, done here through Approvals):**");
-  for (const a of appActions(goals, money)) lines.push(`- ${a.label} (${a.tool}) — ${a.guardrail}`);
+  for (const a of appActions(goals, money)) lines.push(`- ${a.label} — ${a.note} — ${a.guardrail}`);
   return lines.join("\n");
 }

@@ -15,9 +15,9 @@ const VOICE = `
 - Use the account's unit word (lead, purchase, or the result named in the evidence). For an account that isn't a sales account, never mention ROAS, revenue or return on ad spend.
 - Don't recommend what the evidence shows is already in place, and don't repeat a fact in two sections.
 - Never show the reader tool names, API fields, checkpoint codes (T4, C6, B1) or code formatting: say what the thing is ("the Conversions API isn't sending server events").
-- No ids in headings or move titles: name the campaign or ad set. Before saying where freed budget goes, check in the evidence whether the budget is set on the campaign or on the ad set, and say what has to be moved by hand.
+- No Meta ids in headings or move titles: name the campaign or ad set. The only ids allowed there are STR-### and the finding IDs (AUD-###, CMP-###, SF-###). Before saying where freed budget goes, check in the evidence whether the budget is set on the campaign or on the ad set, and say what has to be moved by hand.
 - Only state what the evidence says. "No saved audience" means broad OR interest-based: never call an ad set broad unless the evidence says it has no interests.
-- This is a recommendation only: nothing in Meta is changed. You may end the plan with one line offering to queue the first moves in Approvals.
+- This is a recommendation only: nothing in Meta is changed and nothing is queued. Don't add a closing offer to queue anything; the Type A cards already say they can be queued by asking to optimise.
 `.trim();
 
 /**
@@ -44,7 +44,7 @@ export const STRATEGY_RULES = `
 - Type A actions give the exact change as before → after (the before is the current value from the evidence, e.g. the ad set's daily budget or status), a guardrail (from that capability's line under App capabilities: budget step size, caps) and a rollback (the reverse change).
 - Timing = Now 0-7d | Next 8-30d | Later 31-90d. Effort = Low | Medium | High.
 - Advice only: nothing in Meta is changed and nothing is queued. Never offer to "queue STR-###".
-- Never show the reader tool names, API fields or setting keys. The App capabilities list shows them only so you know what is Type A; the reader sees "raise the daily budget", never the tool. STR-### and finding IDs are the only ids that may appear in headings.
+- Never show the reader tool names, API fields or setting keys. Each App capabilities line is the capability, what to know about it (created PAUSED, needs a video from the client, restarts learning) and its guardrail; carry that note into the card. The reader sees "raise the daily budget", never a tool. STR-### and finding IDs are the only ids that may appear in headings.
 - Keep table cells to a few words (the report is printed); reasons go in the cards and bullets.
 `.trim();
 

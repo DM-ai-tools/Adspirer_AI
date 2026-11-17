@@ -24,7 +24,7 @@ import {
   GENERIC_FALLBACK_REPLY,
 } from "@/lib/agent/reply-format";
 import { buildClientContext } from "@/lib/agent/context-builder";
-import { loadConversationHistory } from "@/lib/agent/history";
+import { loadConversationHistory, loadLatestReports } from "@/lib/agent/history";
 import {
   buildContextResearch,
   captureTaskLearning,
@@ -406,12 +406,15 @@ export async function runTask(
       : loadResearchEvidence(task.client_id);
     researchEvidence?.catch(() => undefined);
 
-    const [context, historyRaw] = await Promise.all([
+    const [context, historyRaw, reportHistory] = await Promise.all([
       buildClientContext(task.client_id, {
         conversationId: task.conversation_id,
         preloaded: { metaAccounts, documents, selectedCreative },
       }),
       loadConversationHistory(task.conversation_id),
+      // Past audits and comparisons in full: the strategy cites their AUD / CMP findings, which the
+      // truncated history above cuts off.
+      loadLatestReports(task.conversation_id).catch(() => []),
     ]);
     const history = historyRaw.filter((m) => {
       if (m.role === "assistant" && !m.content.trim()) return false;
@@ -483,6 +486,7 @@ export async function runTask(
             request,
             conversationId: task.conversation_id,
             history,
+            reportHistory,
             intent,
             brief,
             preloaded: { metaAccounts, documents, selectedCreative },

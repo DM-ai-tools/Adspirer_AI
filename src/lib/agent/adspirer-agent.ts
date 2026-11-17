@@ -1467,11 +1467,17 @@ async function runMockAgent(input: {
   if (intent === "strategy" && !input.reportDraft) {
     const inputsAt = evidence?.indexOf("### Strategy inputs") ?? -1;
     const accountAt = evidence?.indexOf("### Account strategy —") ?? -1;
+    // The demo body stops at the writer-only blocks: the findings/profile inputs and the framework.
+    const bodyEnd = (text: string, from: number) => {
+      const ends = ["### Strategy inputs (findings", "### Strategy framework"]
+        .map((h) => text.indexOf(h, from + 1))
+        .filter((i) => i > from);
+      return ends.length ? Math.min(...ends) : undefined;
+    };
     let summary: string;
     if (evidence && accountAt >= 0) {
       // The account strategy's worked figures (targets or the plan's gap), notices first.
-      const frameworkAt = evidence.indexOf("### Strategy framework", accountAt);
-      const body = evidence.slice(accountAt, frameworkAt < 0 ? undefined : frameworkAt).trim();
+      const body = evidence.slice(accountAt, bodyEnd(evidence, accountAt)).trim();
       const notice = categoryNoticeLine(evidence);
       const settingsLines = settingsNoticeLines(evidence);
       summary = [
@@ -1484,8 +1490,7 @@ async function runMockAgent(input: {
         "This is a recommendation only — nothing in Meta has changed.",
       ].join("\n");
     } else if (evidence && inputsAt >= 0) {
-      const frameworkAt = evidence.indexOf("### Strategy framework", inputsAt);
-      const body = evidence.slice(inputsAt, frameworkAt < 0 ? undefined : frameworkAt).trim();
+      const body = evidence.slice(inputsAt, bodyEnd(evidence, inputsAt)).trim();
       const notice = categoryNoticeLine(evidence);
       const settingsLines = settingsNoticeLines(evidence);
       summary = [
@@ -2001,6 +2006,11 @@ export async function gatherDiagnoseEvidence(input: {
   request: string;
   conversationId?: string | null;
   history?: AgentHistoryMessage[];
+  /**
+   * The latest audit and comparison replies in full (`history` cuts them before their AUD / CMP
+   * findings). The strategy reads prior findings from these; falls back to `history`.
+   */
+  reportHistory?: AgentHistoryMessage[];
   /** Pre-resolved intent (supports audit brief follow-ups). */
   intent?: ReturnType<typeof detectRequestIntent>;
   /** What the operator's message means: mode, focus, scope, period, queue selection. */
@@ -2989,6 +2999,7 @@ export async function gatherDiagnoseEvidence(input: {
           scorecard,
           request: input.request,
           history: input.history ?? [],
+          reports: input.reportHistory ?? input.history ?? [],
           period: { dateStart: range.dateStart, dateStop: range.dateStop },
           scope: scopedCampaigns.length ? { campaignIds: scopedCampaigns.map((c) => c.id) } : undefined,
           money: moneyFor(snapshot.account.currency),
