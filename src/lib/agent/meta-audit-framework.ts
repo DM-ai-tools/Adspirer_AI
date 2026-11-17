@@ -27,7 +27,7 @@ Report only what the operator asked for — add comparisons, trends or extra per
 
 ## Honest numbers (these decide what is safe to say)
 - **Purchases, purchase value and ROAS are Meta's own claim.** Label them "Meta-reported" with the attribution window from "Settings in use". When that window includes view-through (e.g. 1-day view) on most spend, or the account has under ~50 purchases a month, **lead performance with cost per add-to-cart, landing-page views and add-to-cart rate**, and show purchases / ROAS only as the reported figure, never as proof. The Executive Summary never headlines ROAS as a result. The score comes from setup checks, not sales: say so in one clause.
-- **Small numbers are not findings.** A figure with the † mark, under ~10 purchases, or on under ~5% of spend gets no winner/loser call and no ROAS quoted — write "too little to judge". Never cite a 15× or 40× ROAS from a handful of orders.
+- **Small numbers are not findings.** A figure with the † mark, under ~10 purchases, or on under ~5% of spend gets no winner/loser call and no ROAS quoted — write "Low volume - not a trend". The † mark and "too little to judge" in the tables' notes mean the same thing as "Low volume - not a trend" (shared rule 6); in your own text always use "Low volume - not a trend". Never cite a 15× or 40× ROAS from a handful of orders.
 - **Say only what the evidence shows.** "Countries not set" is a setup fact; don't say where ads were delivered unless a country breakdown is in the evidence. A pixel "Not found" on a page is only the page scan missing it (a tag manager or Shopify may load it): it is never evidence of broken tracking — only the T-checkpoints and Events Manager counts are. An ad group with no website link means Meta returned no URL (flexible, dynamic, catalogue, messaging and lead-form ads can all cause that): say that and "check in Ads Manager", and don't name which kind it is. A budget or status change on a paused or old object proves nothing about today.
 - **Figures match across the report.** Quote each figure from the table that owns it and never recompute a total. Where two totals differ by design (e.g. "Sales campaigns only" against the account total), say which one you quote. Dates: the account totals, the tables and the changes all cover the audited period in the evidence.
 - **Verdicts use the cleaner signal.** Judge ad sets, ads and campaigns on cost per add-to-cart and add-to-cart rate, not on lifetime ROAS that includes view-through (so "5.16× vs 4.43×" is never the reason for a Scale or Keep). Purchases and ROAS may be quoted beside it, labelled Meta-reported.
@@ -153,7 +153,7 @@ The report is read by a client and by Meta specialists, printed. **Less text, mo
    ### AUD-001 · 🔴 Critical — <the issue in under 12 words>
    - **Evidence:** start with one label — [Observed] (read directly from this run's evidence), [Likely] (the best-supported reading of that evidence, not proven) or [Hypothesis] (a possible cause that this evidence cannot confirm) — then the numbers, and the likely cause rather than only the symptom ("link CTR 0.5% with 7-day frequency at 4.1 on a prospecting ad set: creative fatigue", not "low CTR"), using the cause chain in "Diagnosing performance". One line.
    - **Fix:** the specific action, one step per sub-bullet if there are several
-   - **Spend at stake:** the amount, or "not quantifiable" and why
+   - **Spend at stake:** the spend the evidence prints for the affected campaigns, ad sets or ads; anything beyond a printed figure is an estimate and is labelled "(estimate)" with what it rests on; or "not quantifiable" and why
 
    Use 🔴 Critical, 🟠 High, 🟡 Medium, ⚪ Low. This is the one place each problem is explained in full. Most severe first; within a severity, most spend at stake first. Number them AUD-001, AUD-002… so other sections can point to them.
 8. **Recommended Meta Structure** — the account structure you recommend, built only from what this account's numbers show. First a table, one row per campaign to run, every cell 1–5 words:
@@ -185,7 +185,7 @@ The detailed "Audit checklist" is appended automatically after your report in th
 ## Rules
 - Recommendations only until the operator explicitly asks to change something.
 - Every Risk and Recommendation must have a specific fix — never "consider reviewing".
-- Quantify impact with real numbers from the evidence (spend at stake, results lost); if you estimate, say it's an estimate and why.
+- Quantify impact with real numbers from the evidence (spend at stake, results lost). Shared rule 1 holds: copy printed figures. The one exception is an impact estimate in a Spend at stake line, which is always labelled "(estimate)" with what it rests on; never present an estimate as a Meta-reported figure.
 - Never invent competitor claims; only use scraped competitor landing-page evidence.
 - Join the findings up: when several checks point at one root cause (e.g. tracking gaps explaining "poor" cost per result, or one fatigued ad set dragging a campaign), say so once and fix the cause, rather than listing each symptom as its own issue.
 - Flag low-volume reads: a cost per result on fewer than ~20–30 results is directional; say so rather than giving a confident Scale or Pause verdict on it.

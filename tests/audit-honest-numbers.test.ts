@@ -65,6 +65,14 @@ describe("the audit method on honest numbers", () => {
     expect(META_AUDIT_FRAMEWORK).toMatch(/don't say where ads were delivered/);
   });
 
+  it("uses one low-volume wording and labels spend-at-stake estimates (matches the shared rules)", () => {
+    expect(META_AUDIT_FRAMEWORK).toContain('The † mark and "too little to judge" in the tables\' notes mean the same thing as "Low volume - not a trend"');
+    expect(META_AUDIT_FRAMEWORK).toContain('in your own text always use "Low volume - not a trend"');
+    expect(META_AUDIT_FRAMEWORK).not.toContain('— write "too little to judge"');
+    expect(META_AUDIT_FRAMEWORK).toMatch(/Spend at stake:\*\* [^\n]*labelled "\(estimate\)"/);
+    expect(META_AUDIT_FRAMEWORK).not.toContain("if you estimate, say it's an estimate and why");
+  });
+
   it("keeps the report short and dates a change by the edit, not the launch", () => {
     expect(META_AUDIT_FRAMEWORK).toMatch(/Length limits/);
     expect(META_AUDIT_FRAMEWORK).toMatch(/date of the edit itself/);
