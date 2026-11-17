@@ -80,8 +80,10 @@ export function asKpis(block: Table): Extract<ReportBlock, { type: "kpis" }> | n
 
 // ------------------------------------------------------------------ cards
 
-const RISK = /^R(\d+)\s*[·.:\-–—]?\s*(?:(Critical|High|Medium|Low)\b)?\s*[—–\-:·]*\s*(.*)$/i;
+const RISK = /^(R\d+|(?:AUD|CMP|SF)-\d{3})\s*[·.:\-–—]?\s*(?:(Critical|High|Medium|Low)\b)?\s*[—–\-:·]*\s*(.*)$/i;
 const ACTION = /^(\d{1,2})[.)]\s+(.+)$/;
+/** Strategy action headings: "STR-002. Title" or "STR-002 · Title". */
+const STRATEGY_ACTION = /^(STR-\d{3})\s*(?:[.)]|[·—–-])\s*(.+)$/i;
 const LABELLED = /^([A-Z][A-Za-z /&()'+-]{1,28}):\s*(.*)$/;
 
 /** Split "**Evidence:** text" into a label and its value; null for a plain bullet. */
@@ -173,8 +175,10 @@ function cardFrom(heading: string, list: List): Extract<ReportBlock, { type: "ca
   if (!fields.length || fields.length < notes.length) return null;
   const risk = RISK.exec(heading);
   if (risk) {
-    return { type: "card", tone: toneOfSeverity(risk[2]), tag: `R${risk[1]}${risk[2] ? ` · ${risk[2][0]!.toUpperCase()}${risk[2].slice(1).toLowerCase()}` : ""}`, title: risk[3]!.trim() || heading, fields, notes };
+    return { type: "card", tone: toneOfSeverity(risk[2]), tag: `${risk[1]!.toUpperCase()}${risk[2] ? ` · ${risk[2][0]!.toUpperCase()}${risk[2].slice(1).toLowerCase()}` : ""}`, title: risk[3]!.trim() || heading, fields, notes };
   }
+  const strategy = STRATEGY_ACTION.exec(heading);
+  if (strategy) return { type: "card", tone: "action", tag: strategy[1]!.toUpperCase(), title: strategy[2]!.trim(), fields, notes };
   const action = ACTION.exec(heading);
   if (action) return { type: "card", tone: "action", tag: action[1]!, title: action[2]!.trim(), fields, notes };
   return { type: "card", tone: verdictTone(fields), tag: null, title: heading, fields, notes };
@@ -208,7 +212,7 @@ export function presentBlocks(blocks: ReportBlock[]): ReportBlock[] {
     const block = blocks[i]!;
     const next = blocks[i + 1];
 
-    if (block.type === "heading" && block.level === 3 && next?.type === "list" && (RISK.test(block.text) || ACTION.test(block.text))) {
+    if (block.type === "heading" && block.level === 3 && next?.type === "list" && (RISK.test(block.text) || ACTION.test(block.text) || STRATEGY_ACTION.test(block.text))) {
       const card = cardFrom(block.text, next);
       if (card) {
         out.push(card);

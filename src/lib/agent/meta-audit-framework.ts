@@ -1,3 +1,5 @@
+import { SHARED_ANALYSIS_RULES } from "@/lib/analysis/shared-rules";
+
 /**
  * Meta Ads audit method for the writer. Built on three specialist playbooks:
  *  - Tracking & measurement: bad tracking is worse than none — it actively
@@ -21,7 +23,7 @@ Report only what the operator asked for — add comparisons, trends or extra per
 - **Only what this account's data shows.** A finding exists because a number, status or setting in the evidence is wrong — not because a typical audit would mention it. If an area is fine, it is a one-line strength or nothing; never pad a section to fill the format, and never raise a hygiene point (unused pixels, idle audiences, naming, archiving) unless it is actually hurting delivery or tracking here.
 - **Every claim traces to this run's evidence.** If a number, name, date or cause isn't in the evidence, don't state it. A likely cause is a hypothesis: say what in the data points to it and what to check, and don't present it as fact.
 - **Never reason from budget × days.** Budgets change mid-period, so spend that doesn't match the current budget is not an anomaly you can call out from arithmetic. Check the change history; if an edit explains it, say so, and if nothing does, say it is unexplained.
-- **Say each thing once.** Every problem is written out in full in exactly one place — Risks & Issues — with its evidence and fix. Everywhere else, mention it only as far as that section needs, in a few words, and point to it ("R1"). Concretely: the Executive Summary names the biggest issues in one line each and doesn't explain mechanisms; Tracking says what is and isn't being measured and points to the risk; ad set verdicts give their own numbers and a verdict and point to the risk rather than repeating its cause; Landing Pages is a short table of what is specific to each page; Recommendations are actions with impact, effort and timing and don't re-argue the evidence; Next Steps puts the same actions in the order to do them, with who and how to confirm each, and points to R / recommendation numbers instead of repeating them. A reader who reads the report top to bottom should never meet the same explanation twice. The strongest thing working gets one Executive Summary bullet with its number. Number the issues in the Risks table (R1, R2…) so other sections can point to them.
+- **Say each thing once.** Every problem is written out in full in exactly one place — Risks & Issues — with its evidence and fix. Everywhere else, mention it only as far as that section needs, in a few words, and point to it ("AUD-001"). Concretely: the Executive Summary names the biggest issues in one line each and doesn't explain mechanisms; Tracking says what is and isn't being measured and points to the risk; ad set verdicts give their own numbers and a verdict and point to the risk rather than repeating its cause; Landing Pages is a short table of what is specific to each page; Recommendations are actions with impact, effort and timing and don't re-argue the evidence; Next Steps puts the same actions in the order to do them, with who and how to confirm each, and points to AUD-### finding and recommendation numbers instead of repeating them. A reader who reads the report top to bottom should never meet the same explanation twice. The strongest thing working gets one Executive Summary bullet with its number. Give each issue in Risks & Issues an ID (AUD-001, AUD-002…) so other sections can point to them.
 
 ## Honest numbers (these decide what is safe to say)
 - **Purchases, purchase value and ROAS are Meta's own claim.** Label them "Meta-reported" with the attribution window from "Settings in use". When that window includes view-through (e.g. 1-day view) on most spend, or the account has under ~50 purchases a month, **lead performance with cost per add-to-cart, landing-page views and add-to-cart rate**, and show purchases / ROAS only as the reported figure, never as proof. The Executive Summary never headlines ROAS as a result. The score comes from setup checks, not sales: say so in one clause.
@@ -30,7 +32,7 @@ Report only what the operator asked for — add comparisons, trends or extra per
 - **Figures match across the report.** Quote each figure from the table that owns it and never recompute a total. Where two totals differ by design (e.g. "Sales campaigns only" against the account total), say which one you quote. Dates: the account totals, the tables and the changes all cover the audited period in the evidence.
 - **Verdicts use the cleaner signal.** Judge ad sets, ads and campaigns on cost per add-to-cart and add-to-cart rate, not on lifetime ROAS that includes view-through (so "5.16× vs 4.43×" is never the reason for a Scale or Keep). Purchases and ROAS may be quoted beside it, labelled Meta-reported.
 - **One cause per problem, the same everywhere.** When two causes compete (e.g. 5,560 out-of-stock products against a 20× frequency on a 2,500-person audience), name the one with the bigger measured effect as primary and the other as secondary, and say it that way in every section. Catalogue health is a cause only when "Learning links" say likely contributor; give no "$ at stake" for it unless the evidence computes one.
-- **Check your pointers.** Every "see R#" must point to a risk whose card is about that issue; label each risk by the object its own evidence is about (a Traffic campaign is not an Awareness issue). One figure has one value everywhere: where Meta gives two (an ad set's frequency and an ad's), say which you quote.
+- **Check your pointers.** Every "see AUD-###" must point to a risk whose card is about that issue; label each risk by the object its own evidence is about (a Traffic campaign is not an Awareness issue). One figure has one value everywhere: where Meta gives two (an ad set's frequency and an ad's), say which you quote.
 - **Catalogue opportunities** that flag every product (e.g. "image quality" on all of them) are one low-priority line, or left out.
 
 ## How to present it (the reader is a client and Meta specialists — it must scan in seconds)
@@ -140,7 +142,7 @@ The report is read by a client and by Meta specialists, printed. **Less text, mo
      - **Verdict:** ✅ Justified / ❌ Wrong call / ⚠️ Inconclusive — one sentence with the figures behind it, net of the rest of the account
      - **What to do:** only for ❌ — the one-line fix (e.g. restore the budget, re-test the creative on a fresh ad set)
 3. **Performance Breakdown** — write the heading, then the line [[PERFORMANCE_TABLES]] on its own. The application replaces that line with the computed tables (month by month when the period spans several months, campaigns with their type and audience, audience types, ad formats, offer vs no offer, landing page type, placements, age and gender), each with a one-line "Read". **Never write those tables yourself.** Then a "### Summary" sub-heading with 3–6 one-line bullets, one per table that shows a real difference, each as "**<winner> vs <other>:** <metric> <a> vs <b>, <share of spend>" with the figures copied from the "Performance tables" evidence (cost per add to cart and add-to-cart rate are a leading signal, never a stand-in for sales). Close with a **Used / Not used in the audited period** pair of bullets built from "Settings in use": what the account ran (build type, bid strategy, optimisation goal, attribution window, placements) and what it never ran (Advantage+ sales campaigns, ROAS or cost goals, add-to-cart optimisation, a test of page type). If Advantage+ sales campaigns were not used, that is the main test to recommend. A split that shows nothing is left out.
-4. **Tracking & Measurement** — at most four bullets (✅ measured / ❌ not measured / ⚠️ weak), from the T-checkpoints. Where a tracking problem is also a risk, point to it ("see R1"). If tracking is sound, say so in one line.
+4. **Tracking & Measurement** — at most four bullets (✅ measured / ❌ not measured / ⚠️ weak), from the T-checkpoints. Where a tracking problem is also a risk, point to it ("see AUD-001"). If tracking is sound, say so in one line.
 5. **Ad Sets** — for each audited campaign, a "### Ad sets in <campaign name>" sub-section (no IDs in that heading):
    - table (these 9 columns only, so it fits a printed page): Ad set | Status | Learning | Spend | Results | Cost per result | CTR | Freq (7d) | Live ads
    - one verdict per ad set — **Scale / Keep / Fix / Pause** for a live one, **Reactivate (if …) / Keep paused** for one that is already paused (never "Pause" for something already off) — as a bullet: "**<ad set name>** — <verdict>: <reason in under 15 words, with its numbers>", then the setup gaps (no exclusions, restricted placements, learning limited) in a few words. Point to a risk instead of re-explaining it. Mention a trend against the comparison period only when the evidence has comparison lines.
@@ -148,12 +150,12 @@ The report is read by a client and by Meta specialists, printed. **Less text, mo
 6. **Landing Pages** — write the heading, then the line [[LANDING_PAGE_TABLES]] on its own. The application replaces it with every landing page that took spend in the period (ads, spend, share, link CTR and every funnel figure the account has, per page), then the checks for each page analysed (score, message match, mobile load time, PageSpeed, form fields, Meta pixel, UTMs kept through redirects, trust, call to action). **Never write those tables yourself.** Then one bullet per page with a problem: "**<page>** — <the problem, with its figure>: <the specific fix>". When most spend went to ads with no website link (messaging, call or lead-form ads), say so in one bullet and what that means for measuring results. A problem big enough to be a risk is written out in Risks and pointed to from here.
 7. **Risks & Issues** — a one-line index first (e.g. "2 Critical · 3 High · 1 Medium"), then **one card per issue**, each opened by a ### heading, not a table:
 
-   ### R1 · 🔴 Critical — <the issue in under 12 words>
-   - **Evidence:** the numbers, and the likely cause rather than only the symptom ("link CTR 0.5% with 7-day frequency at 4.1 on a prospecting ad set: creative fatigue", not "low CTR"), using the cause chain in "Diagnosing performance". One line.
+   ### AUD-001 · 🔴 Critical — <the issue in under 12 words>
+   - **Evidence:** start with one label — [Observed] (read directly from this run's evidence), [Likely] (the best-supported reading of that evidence, not proven) or [Hypothesis] (a possible cause that this evidence cannot confirm) — then the numbers, and the likely cause rather than only the symptom ("link CTR 0.5% with 7-day frequency at 4.1 on a prospecting ad set: creative fatigue", not "low CTR"), using the cause chain in "Diagnosing performance". One line.
    - **Fix:** the specific action, one step per sub-bullet if there are several
    - **Spend at stake:** the amount, or "not quantifiable" and why
 
-   Use 🔴 Critical, 🟠 High, 🟡 Medium, ⚪ Low. This is the one place each problem is explained in full. Most severe first; within a severity, most spend at stake first. Number them R1, R2… so other sections can point to them.
+   Use 🔴 Critical, 🟠 High, 🟡 Medium, ⚪ Low. This is the one place each problem is explained in full. Most severe first; within a severity, most spend at stake first. Number them AUD-001, AUD-002… so other sections can point to them.
 8. **Recommended Meta Structure** — the account structure you recommend, built only from what this account's numbers show. First a table, one row per campaign to run, every cell 1–5 words:
 
    | Layer | Campaign | Audience | Budget share | Daily budget | Creative focus |
@@ -161,7 +163,7 @@ The report is read by a client and by Meta specialists, printed. **Less text, mo
    Layer is Prospecting, Retargeting or Retention (or Testing). Budget share is a % of the current spend, adding up to 100%, and add a **Daily budget** column in the account currency from the current daily budgets of the active campaigns in the evidence (state the total you assumed). Then at most three bullets: which current campaigns become which row (merge, keep, pause), the exclusions between layers, and the one thing that decides whether the structure is working (the metric and its target). Keep what already works; change only what the evidence argues for.
 9. **Prioritised Recommendations** — one card per action, each opened by a ### numbered heading, not a table:
 
-   ### 1. <the action, under 12 words> (fixes R1)
+   ### 1. <the action, under 12 words> (fixes AUD-001)
    - **Expected impact:** …
    - **Effort:** Low / Medium / High · **When:** Week 1 / Weeks 2–3 / Month 2+
 
@@ -170,13 +172,13 @@ The report is read by a client and by Meta specialists, printed. **Less text, mo
    Actions only: don't restate the evidence from Risks, and don't list two actions for the same fix.
 10. **Next Steps** — the order to work in, so the account owner can start on Monday. Recommendations only, no changes made. Write the heading, then one line saying what comes first and why (under 25 words, the biggest risk and its spend), then **3–5 numbered steps**, each a card in this shape:
 
-   ### 1. <the action, under 12 words> (R1 · Recommendation 2)
+   ### 1. <the action, under 12 words> (AUD-001 · Recommendation 2)
    - **Who:** Developer / Traffic Radius / Client / Meta support
    - **When:** Day 1–2 / Week 1 / Weeks 2–3 / Month 2+
    - **How:** the concrete way to do it, one or two short bullets (where to click or what to ask for)
    - **Done when:** the check that proves it worked, with the figure or status to look for
 
-   Leave out any field you have nothing concrete for rather than writing a dash. Step 1 is the single highest-impact action; tracking comes before anything that touches budgets or creative. Point to the R number and the recommendation number it comes from instead of repeating their evidence. Then two short lines of their own, written as paragraphs and not bullets: **Hold off on:** the changes to leave alone until step 1 is confirmed, and **Review on:** the date (about 2 weeks out) and the one metric to re-read.
+   Leave out any field you have nothing concrete for rather than writing a dash. Step 1 is the single highest-impact action; tracking comes before anything that touches budgets or creative. Point to the AUD-### number and the recommendation number it comes from instead of repeating their evidence. Then two short lines of their own, written as paragraphs and not bullets: **Hold off on:** the changes to leave alone until step 1 is confirmed, and **Review on:** the date (about 2 weeks out) and the one metric to re-read.
 
 The detailed "Audit checklist" is appended automatically after your report in the chat — don't reproduce it. It is not part of the downloaded report, so never point the reader to it ("see the checklist"); a failed checkpoint that matters is a risk card.
 
@@ -189,4 +191,6 @@ The detailed "Audit checklist" is appended automatically after your report in th
 - Flag low-volume reads: a cost per result on fewer than ~20–30 results is directional; say so rather than giving a confident Scale or Pause verdict on it.
 - Recommendations follow the sensible order: tracking, then offer and landing page, then creative, then audience, then bidding and budget. Budget increases go in steps of about 20–30% every 3–4 days.
 - Work out the findings before you start writing: the Executive Summary comes first in the report but must state the real biggest issue and the money behind it, matching the Risks table.
+
+${SHARED_ANALYSIS_RULES}
 `.trim();

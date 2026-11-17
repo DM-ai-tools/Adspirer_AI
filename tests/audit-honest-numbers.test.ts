@@ -84,7 +84,7 @@ describe("the second review's findings", () => {
 
   it("names one cause per problem, checks its pointers and gives already-paused ad sets a fitting verdict", () => {
     expect(META_AUDIT_FRAMEWORK).toMatch(/One cause per problem/);
-    expect(META_AUDIT_FRAMEWORK).toMatch(/Every "see R#" must point to a risk/);
+    expect(META_AUDIT_FRAMEWORK).toMatch(/Every "see AUD-###" must point to a risk/);
     expect(META_AUDIT_FRAMEWORK).toMatch(/Reactivate \(if …\) \/ Keep paused/);
   });
 

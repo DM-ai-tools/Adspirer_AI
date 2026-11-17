@@ -145,6 +145,7 @@ import {
   renderScorecardMarkdown,
 } from "@/lib/audit/render";
 import { renderBreakdownEvidence } from "@/lib/audit/breakdowns";
+import { renderMeasurementEvidence } from "@/lib/analysis/measurement";
 import {
   LANDING_PAGE_TABLES_MARKER,
   PERFORMANCE_TABLES_MARKER,
@@ -2748,6 +2749,7 @@ export async function gatherDiagnoseEvidence(input: {
               sections.push(renderScorecardEvidence(scorecard, snapshot));
               sections.push(renderAdSetEvidence(snapshot));
               sections.push(renderChangesEvidence(snapshot));
+              sections.push(renderMeasurementEvidence(snapshot));
               sections.push(renderBreakdownEvidence(snapshot));
               auditTables = renderPerformanceTables(snapshot);
               // Landing pages by spend: analyse the pages that took the most spend and were not analysed above (up to 8 in all).
@@ -2815,7 +2817,7 @@ export async function gatherDiagnoseEvidence(input: {
               "- Lead with Fail checkpoints from the scorecard (most severe, most spend at stake first); never contradict a checkpoint result.",
               "- Quantify spend and call out what is working vs what needs improvement.",
               "- Report only problems this evidence actually shows — no generic best-practice findings, no padding. Every number, name and cause must trace to this run's evidence; where it doesn't, say \"not verified\".",
-              "- Write each problem out once, in Risks & Issues (numbered R1, R2…); other sections mention it briefly and point to it. The same explanation must not appear twice.",
+              "- Write each problem out once, in Risks & Issues (numbered AUD-001, AUD-002…); other sections mention it briefly and point to it. The same explanation must not appear twice.",
               "- Cover the edits made in the audited period under \"### Changes during this period\" (inside Account Snapshot): the verdict tally, then one card per meaningful change (date, who, schedule, numbers that day, before → after, and a ✅ Justified / ❌ Wrong call / ⚠️ Inconclusive verdict with the figures behind it). Judge only from the \"Numbers around each edit\" evidence. If the change history could not be read, say so; never say nothing changed.",
               "- **Layout:** write in short bullets, never paragraphs of more than two sentences. Tables only for numbers/dates/short statuses; Risks & Issues and Prioritised Recommendations are cards (a bold title line then labelled bullets), not tables — text in table cells is unreadable in the exported PDF.",
               "- **Performance Breakdown (section 3):** write the heading, the line [[PERFORMANCE_TABLES]] alone, then the Summary bullets. The tables are inserted for you from the “Performance tables” evidence — never write them, and copy any figure you quote exactly.",

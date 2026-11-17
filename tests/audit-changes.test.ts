@@ -320,6 +320,19 @@ describe("findRepeatedFigures", () => {
     ].join("\n");
     expect(findRepeatedFigures(once)).toEqual([]);
   });
+
+  it("treats AUD-### finding ids the same way", async () => {
+    const { findRepeatedFigures } = await import("@/lib/audit/repeat-check");
+    const once = [
+      "## 1. Executive Summary",
+      "The biggest leak is tracking — see AUD-001.",
+      "## 6. Risks & Issues",
+      "| AUD-001 | Attribution break | $103.99 spent, 0 results | fix |",
+      "## 8. Prioritised Recommendations",
+      "| 1 | Fix the pixel on the thank-you page (fixes AUD-001) | High | Medium | This week |",
+    ].join("\n");
+    expect(findRepeatedFigures(once)).toEqual([]);
+  });
 });
 
 describe("ad set product set", () => {

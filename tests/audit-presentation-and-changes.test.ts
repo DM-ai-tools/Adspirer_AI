@@ -151,3 +151,35 @@ describe("change evidence", () => {
     expect(caution).toContain("under 20 results in a window");
   });
 });
+
+describe("finding ids, evidence labels and shared rules", () => {
+  const cardsOf = (md: string) => presentBlocks(parseMarkdownToBlocks(md)).filter((b) => b.type === "card");
+
+  it("turns an AUD-### risk heading into a risk card tagged with its id and severity", () => {
+    const cards = cardsOf("### AUD-003 · 🟠 High — Learning limited on 4 ad sets\n- **Evidence:** [Observed] 4 of 6 ad sets learning limited\n- **Fix:** consolidate\n");
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({ tone: "high", tag: "AUD-003 · High", title: "Learning limited on 4 ad sets" });
+  });
+
+  it("accepts CMP and SF ids and still accepts the old R1 form", () => {
+    const body = "\n- **Evidence:** x\n- **Fix:** y\n";
+    expect(cardsOf(`### CMP-012 · 🔴 Critical — Spend moved${body}`)[0]).toMatchObject({ tone: "critical", tag: "CMP-012 · Critical", title: "Spend moved" });
+    expect(cardsOf(`### SF-001 · 🟡 Medium — Gap${body}`)[0]).toMatchObject({ tone: "medium", tag: "SF-001 · Medium", title: "Gap" });
+    expect(cardsOf(`### R1 · 🔴 Critical — Old heading${body}`)[0]).toMatchObject({ tone: "critical", tag: "R1 · Critical", title: "Old heading" });
+  });
+
+  it("turns STR-### action headings into action cards", () => {
+    const body = "\n- **Expected impact:** less waste\n- **Effort:** Low\n";
+    expect(cardsOf(`### STR-002. Pause Broad 30-65${body}`)[0]).toMatchObject({ tone: "action", tag: "STR-002", title: "Pause Broad 30-65" });
+    expect(cardsOf(`### STR-002 · Pause Broad 30-65${body}`)[0]).toMatchObject({ tone: "action", tag: "STR-002", title: "Pause Broad 30-65" });
+  });
+
+  it("the audit method uses AUD ids, evidence labels and the shared rules, with no R1 left", () => {
+    expect(META_AUDIT_FRAMEWORK).toContain("AUD-001");
+    expect(META_AUDIT_FRAMEWORK).toContain("[Observed]");
+    expect(META_AUDIT_FRAMEWORK).toContain("[Likely]");
+    expect(META_AUDIT_FRAMEWORK).toContain("[Hypothesis]");
+    expect(META_AUDIT_FRAMEWORK).not.toMatch(/\bR[1-9]\b/);
+    expect(META_AUDIT_FRAMEWORK).toContain("SHARED RULES");
+  });
+});

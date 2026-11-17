@@ -370,6 +370,28 @@ describe("downloaded reports", () => {
     }
   }, 60_000);
 
+  it("prints AUD-### risks and STR-### actions as tagged cards", () => {
+    const md = [
+      "### AUD-001 · 🔴 Critical — Catalogue retargeting costs 3× the account",
+      "- **Evidence:** [Observed] A$12 per add to cart against A$4",
+      "- **Fix:** fold it into warm",
+      "",
+      "### 1. Fold catalogue retargeting into warm (fixes AUD-001)",
+      "- **Expected impact:** ~A$1,200 a quarter.",
+      "- **Effort:** Low",
+      "",
+      "### STR-001 · Move 20% of budget to prospecting",
+      "- **Expected impact:** more reach",
+      "- **Effort:** Low",
+    ].join("\n");
+    const cards = presentBlocks(parseMarkdownToBlocks(md)).filter((b) => b.type === "card");
+    expect(cards.map((c) => c.type === "card" && [c.tone, c.tag, c.title])).toEqual([
+      ["critical", "AUD-001 · Critical", "Catalogue retargeting costs 3× the account"],
+      ["action", "1", "Fold catalogue retargeting into warm (fixes AUD-001)"],
+      ["action", "STR-001", "Move 20% of budget to prospecting"],
+    ]);
+  });
+
   it("print key figures as tiles, risks, actions and changes as cards, reads as highlights and totals as totals", () => {
     const blocks = presentBlocks(parseMarkdownToBlocks(stripChatOnlySections(AUDIT)));
     const kpis = blocks.find((b) => b.type === "kpis");
