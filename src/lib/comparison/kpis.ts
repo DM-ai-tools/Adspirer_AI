@@ -170,8 +170,8 @@ function basisCount(def: Def, p: PeriodPerformance): number | null {
 }
 
 function isLowVolume(def: Def, cur: PeriodPerformance | null, prev: PeriodPerformance | null): boolean {
-  // Nothing was spent before: no baseline for any row.
-  if (prev && prev.spendCents === 0) return true;
+  // No baseline (previous totals failed to load, or nothing was spent): no row can be compared.
+  if (!prev || prev.spendCents === 0) return true;
   if (def.basis === "none") return false;
   const min = def.basis === "impressions" ? COMPARISON_THRESHOLDS.minImpressions : COMPARISON_THRESHOLDS.minResults;
   const c = cur ? basisCount(def, cur) : null;
@@ -203,12 +203,14 @@ export function kpiRows(
 
     const delta = current != null && previous != null ? current - previous : null;
     const deltaPct = pct(current, previous);
-    const lowVolume = isLowVolume(def, cur, prev);
+    // A side missing (not equal values) means there is nothing to compare: never "Stable".
+    const lowVolume = isLowVolume(def, cur, prev) || delta == null;
 
     let status: KpiStatus;
     if (lowVolume) {
       status = "Low volume";
     } else if (delta == null || delta === 0) {
+      // delta == null is unreachable here (lowVolume above); kept for the type narrowing.
       status = "Stable";
     } else if (deltaPct != null && Math.abs(deltaPct) <= materialityPct) {
       status = "Stable";

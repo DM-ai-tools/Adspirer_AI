@@ -148,6 +148,37 @@ describe("kpiRows", () => {
     expect(rows.every((r) => r.status === "Low volume")).toBe(true);
   });
 
+  it("calls every row Low volume when the previous totals did not load", () => {
+    const s = snap({ purchases: 50, leads: 50, purchaseValueCents: 500_000 }, null);
+    for (const t of ["ecom", "leadgen", "hybrid"] as const) {
+      const rows = kpiRows(s, eq(), t, []);
+      expect(rows.length).toBeGreaterThan(0);
+      for (const r of rows) {
+        expect(r.status, r.metric).toBe("Low volume");
+        expect(r.lowVolume, r.metric).toBe(true);
+        expect(r.previous, r.metric).toBeNull();
+        expect(r.delta, r.metric).toBeNull();
+        expect(r.deltaPct, r.metric).toBeNull();
+        for (const v of [r.current, r.perDayCurrent, r.perDayPrevious]) {
+          expect(v === null || Number.isFinite(v), r.metric).toBe(true);
+        }
+      }
+    }
+    const undef = { ...s, previousTotals: undefined } as MetaAuditSnapshot;
+    expect(kpiRows(undef, eq(), "leadgen", []).every((r) => r.status === "Low volume")).toBe(true);
+  });
+
+  it("calls a row Low volume (not Stable) when only its previous value is missing", () => {
+    const s = snap({ landingPageViews: 400, linkClicks: 700 }, { landingPageViews: null });
+    const rows = kpiRows(s, eq(), "leadgen", []);
+    const lpv = row(rows, "Landing page views");
+    expect(lpv.previous).toBeNull();
+    expect(lpv.status).toBe("Low volume");
+    expect(lpv.lowVolume).toBe(true);
+    // A row with both sides present is still judged normally.
+    expect(row(rows, "Link clicks").status).toBe("Improved");
+  });
+
   it("fills per-day figures when the windows differ in length", () => {
     const s = snap({ spendCents: 300_000 }, { spendCents: 200_000 }, { prevSince: "2026-09-11", prevUntil: "2026-09-30" });
     const w = windowsOf(s, TODAY);
