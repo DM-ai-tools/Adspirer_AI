@@ -26,33 +26,60 @@ function auditPeriod(text: string): { dateStart: string; dateStop: string } | nu
   return line ? readRange(line) : null;
 }
 
-/** Comparison period: the "Current:" line of section 0 (before the next heading), up to ";" or "Previous". */
-function comparisonPeriod(text: string): { dateStart: string; dateStop: string } | null {
-  const section0 = text.match(/^##\s*0\.[^\n]*\n([\s\S]*?)(?=^##\s|\s*$(?![\s\S]))/m)?.[1] ?? "";
-  const line = section0.match(/\bCurrent(?:\s+window)?\s*\**\s*:\**\s*([^\n]+)/i)?.[1];
-  if (!line) return null;
-  return readRange(line.split(/;|\bPrevious\b|\bvs\.?\b/i)[0]);
+/** Section 0 of a comparison report (up to the next "## " heading). */
+function section0(text: string): string {
+  return text.match(/^##\s*0\.[^\n]*\n([\s\S]*?)(?=^##\s|\s*$(?![\s\S]))/m)?.[1] ?? "";
 }
 
 /**
- * Campaign-scoped = the header says so. Audit: a "Scope:" value or "Campaigns:" line naming
- * selected / specific campaigns, or "campaign audit" wording. Comparison: the section-0 "Scope" line
- * (written only when the run covered some campaigns). Anything undeterminable is whole-account.
+ * Comparison period: the first date range after the word "current" in section 0, with or without
+ * colon or bold ("- **Current:** 2026-10-01 → 2026-10-15", "**Windows**: current 1 Oct to 15 Oct (15
+ * days); previous …"), read up to ";" or "previous". Failing that, the first ISO date range in
+ * section 0 (natural dates are only trusted after "current").
+ */
+function comparisonPeriod(text: string): { dateStart: string; dateStop: string } | null {
+  const body = section0(text);
+  for (const line of body.split("\n")) {
+    const after = line.match(/\bcurrent\b\s*(?:window)?\s*\**\s*:?\s*\**\s*([^\n]*)/i)?.[1];
+    if (!after) continue;
+    const range = readRange(after.split(/;|\bprevious\b|\bvs\.?\b|\bcompar/i)[0]);
+    if (range) return range;
+  }
+  for (const line of body.split("\n")) {
+    if (!/\b20\d{2}-\d{2}-\d{2}\b/.test(line)) continue;
+    const range = readRange(line.split(/;|\bprevious\b/i)[0]);
+    if (range) return range;
+  }
+  return null;
+}
+
+/**
+ * Campaign-scoped = a Scope line says so. The writers are told to open with "**Scope:** whole
+ * account" or "**Scope:** campaigns: <names>" (audit: on the Period line; comparison: in section 0);
+ * the application's own "Entire ad account" / "Selected campaigns" wording is read too. A value
+ * starting "whole" / "entire" is whole-account; one starting "campaign(s)" or naming selected /
+ * specific campaigns is campaign-scoped. With no Scope line at all the report is whole-account,
+ * unless its header says "campaign audit" (or has a "Campaigns:" line).
  */
 const SCOPED_WORDING = /\b(?:selected|specific|chosen|named)\s+campaigns?\b|\bcampaign\s+audit\b|\bonly\s+(?:the\s+)?(?:selected\s+)?campaigns?\b|\bnot\s+only\b/i;
 
+function scopeValueIsCampaigns(scope: string): boolean {
+  if (/^\W*(?:entire|whole)\b/i.test(scope)) return false;
+  if (/^\W*campaigns?\b/i.test(scope)) return true;
+  return SCOPED_WORDING.test(scope) || (!/\b(?:entire|whole|all)\b/i.test(scope) && /\bcampaigns?\b/i.test(scope));
+}
+
 function auditIsCampaignScoped(text: string): boolean {
   const header = text.slice(0, 2_000);
-  const scope = header.match(/\*\*Scope:?\*\*:?\s*([^\n]+)/)?.[1] ?? "";
-  if (scope) return SCOPED_WORDING.test(scope) || (!/\b(?:entire|whole|all)\b/i.test(scope) && /\bcampaigns?\b/i.test(scope));
+  const scope = header.match(/\*\*Scope:?\*\*:?\s*([^\n]+)/)?.[1];
+  if (scope) return scopeValueIsCampaigns(scope);
   return /^\s*[-*]?\s*\**Campaigns?:\**\s*\S/m.test(header) || /\bcampaign\s+audit\b/i.test(header);
 }
 
 function comparisonIsCampaignScoped(text: string): boolean {
-  const section0 = text.match(/^##\s*0\.[^\n]*\n([\s\S]*?)(?=^##\s|\s*$(?![\s\S]))/m)?.[1] ?? "";
-  const scope = section0.match(/\*\*Scope\*\*\s*:?\s*([^\n]+)/i)?.[1] ?? section0.match(/^\s*[-*]?\s*Scope\s*:\s*([^\n]+)/im)?.[1] ?? "";
-  if (!scope) return false;
-  return SCOPED_WORDING.test(scope) || (!/\b(?:entire|whole|all)\b/i.test(scope) && /\bcampaigns?\b/i.test(scope));
+  const body = section0(text);
+  const scope = body.match(/\*\*Scope:?\*\*\s*:?\s*([^\n]+)/i)?.[1] ?? body.match(/^\s*[-*]?\s*Scope\s*:\s*([^\n]+)/im)?.[1];
+  return scope ? scopeValueIsCampaigns(scope) : false;
 }
 
 function parseAudit(text: string): Parsed {

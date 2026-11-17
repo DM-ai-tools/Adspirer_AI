@@ -59,13 +59,14 @@ Start the reply with the title line below, with the account name filled in. Noth
 # Meta Ads Comparison Report — <account name>
 
 ## 0. Report header and data integrity
-- **Windows**: current and previous, each with dates and number of days; say whether they are the same length, and if not, that per-day figures are used.
+- Two exact lines first, copied from the evidence's Windows block: "- **Current:** YYYY-MM-DD → YYYY-MM-DD (N days)" and "- **Previous:** YYYY-MM-DD → YYYY-MM-DD (N days)". Later reports read the period from them.
+- **Windows**: say whether the two windows are the same length, and if not, that per-day figures are used.
 - **Attribution and events**: the attribution windows and the conversion / optimisation events used (Settings), labelled Meta-reported.
 - **Business type** (Settings) and which metrics lead because of it.
 - **Maturity**: whether the current window is mature; if not, from which day and why.
 - **Measurement breaks and caveats**: each MEASUREMENT BREAK and caveat from Settings and Tracking, or "None recorded".
 - **Failed to load**: each part Failed to load lists as "failed to load", or "Nothing failed to load". Lines starting "warning:" are not failed parts: list them separately as **Warnings**.
-- **Scope**: when the evidence heading says "(whole account)", state that the breakdowns in section 7 cover the whole account, not only the selected campaigns.
+- An exact scope line: "- **Scope:** whole account" when the report covers the whole account, or "- **Scope:** campaigns: <names>" when it covers selected campaigns. When the evidence heading says "(whole account)" for the breakdowns, add after it that the breakdowns in section 7 cover the whole account, not only the selected campaigns.
 
 ## 1. Executive summary
 - **Verdict**: one line, using the movement of the headline metrics and their statuses. Not a recommendation.
