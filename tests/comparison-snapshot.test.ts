@@ -3,7 +3,7 @@ import { demoMetaAuditSnapshot, fetchMetaAuditSnapshot } from "@/lib/audit/meta-
 
 type Params = Record<string, unknown>;
 
-function fakeGraph(options: { failPreviousCountry?: boolean; failCurrentAge?: boolean; failPreviousAds?: boolean } = {}) {
+function fakeGraph(options: { failPreviousCountry?: boolean; failCurrentAge?: boolean; failPreviousAds?: boolean; failPreviousCore?: boolean } = {}) {
   const calls: Array<{ path: string; params: Params }> = [];
   const insight = (extra: Params, spend: string, leads: string) => ({
     ...extra,
@@ -29,6 +29,7 @@ function fakeGraph(options: { failPreviousCountry?: boolean; failCurrentAge?: bo
         return { data: [{ id: "ad1", name: "Ad one", adset_id: "a1", campaign_id: "c1", effective_status: "ACTIVE" }] } as T;
       }
       if (path !== "act_1/insights") return { data: [] } as T;
+      if (previous && options.failPreviousCore && !params.breakdowns && params.level !== "ad") throw new Error("core failed");
       const breakdowns = params.breakdowns as string | undefined;
       if (breakdowns === "age,gender") {
         if (previous === false && options.failCurrentAge) throw new Error("age failed");
@@ -132,6 +133,22 @@ describe("comparison-only snapshot data", () => {
     const snap = await fetchMetaAuditSnapshot(graph, "act_1", { ...range, comparisonDetail: true });
     expect(snap.comparisonFailures).toContain("ads");
     expect(snap.ads[0]!.previousPerformance).toBeUndefined();
+  });
+
+  it("keeps previousPeriod and lists every failure when all core previous parts fail", async () => {
+    const { graph } = fakeGraph({ failPreviousCore: true, failPreviousAds: true });
+    const snap = await fetchMetaAuditSnapshot(graph, "act_1", { ...range, comparisonDetail: true });
+    expect(snap.previousPeriod).toEqual({ since: "2026-10-17", until: "2026-10-18" });
+    expect(snap.comparisonFailures).toEqual(expect.arrayContaining(["totals", "campaigns", "ad sets", "ads"]));
+    expect(snap.previousTotals).toBeNull();
+    expect(snap.comparisonBreakdowns).toHaveLength(4);
+  });
+
+  it("without comparisonDetail, all-core failure still drops the comparison as before", async () => {
+    const { graph } = fakeGraph({ failPreviousCore: true });
+    const snap = await fetchMetaAuditSnapshot(graph, "act_1", range);
+    expect(snap.previousPeriod).toBeUndefined();
+    expect(snap.comparisonFailures).toBeUndefined();
   });
 
   it("demo snapshot with comparisonDetail has ad previous figures and four dimensions", () => {

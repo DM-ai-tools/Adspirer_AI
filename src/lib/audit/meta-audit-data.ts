@@ -1212,7 +1212,8 @@ export async function fetchMetaAuditSnapshot(
     },
     period: { days, since, until },
     totals: performanceFrom(totals?.data?.[0]),
-    ...(hasPrevious
+    // Detail reports always say which comparison parts failed, even when every core part did.
+    ...(hasPrevious || detail
       ? {
           previousPeriod,
           ...(comparison.named ? { comparisonNamed: true } : {}),
