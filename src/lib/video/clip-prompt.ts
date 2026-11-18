@@ -3,7 +3,7 @@ import { actionRuleFor, classifyStyle, clipVisual, isStillAction, liveCamera, MO
 import { CLEAN_ENDING_RULE, CLEAN_ENDING_RULE_NO_PERSON, CLEAN_FOOTAGE_RULE, footageOnly, graphicReference, stripGraphicPhrases } from "@/lib/video/clean-mode";
 import type { VideoScene, VideoScript } from "@/lib/video/script";
 import type { PlanCharacter, PlanEnvironment, SceneBrief } from "@/lib/video/pipeline-types";
-import { accentFor, characterOfVoice, languageReminder, languageRule, liveAction, liveFraming, reconcileVoicesWithCast } from "@/lib/video/prompt-guards";
+import { accentFor, characterOfVoice, dropAimlessPointer, languageReminder, languageRule, liveAction, liveFraming, onlyInShotLine, PLAIN_SURFACES_RULE, pointingLine, presentFromFirstFrame, reconcileVoicesWithCast, SAY_ONCE_RULE, sceneCharacterIds, showPointedAt } from "@/lib/video/prompt-guards";
 
 export { accentFor };
 
@@ -165,6 +165,10 @@ function filmed(text: string): string {
     .trim();
 }
 
+/** "marcus" is Marcus, "business_owner" is Business Owner. */
+const titleOf = (c: PlanCharacter) => c.id.replace(/[_-]+/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
+const flatName = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
 /** Mentions in the prompt of the same person across clips ("Video 1") only make sense when that person also speaks here. */
 export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
   const { scenes, refs } = input;
@@ -182,7 +186,8 @@ export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
   const imageLabels: Array<{ label: string; text: string }> = [];
   for (const id of refs.characterIds) {
     const c = input.characters.find((x) => x.id === id);
-    if (c) imageLabels.push({ label: `person:${id}`, text: `is ${clean(c.role || "the person")}: keep this exact person, face, hair and clothes wherever they appear. Use it for who they are only; ignore its plain backdrop and light, and place them in each shot's own setting.` });
+    // Two people can share a role ("Presenter"): the picture is named by who they are, so the voices and shots point at the right one.
+    if (c) imageLabels.push({ label: `person:${id}`, text: `is ${input.characters.some((o) => o.id !== c.id && flatName(o.role ?? "") === flatName(c.role ?? "")) ? `${titleOf(c)} (${clean(c.role || "the person")})` : clean(c.role || "the person")}: keep this exact person, face, hair and clothes wherever they appear. Use it for who they are only; ignore its plain backdrop and light, and place them in each shot's own setting.` });
   }
   for (const id of refs.environmentIds) {
     const e = input.environments.find((x) => x.id === id);
@@ -240,13 +245,28 @@ export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
     offset += s.seconds;
     // A field that had to be dropped from a clean prompt (it described a graphic) is replaced by a plain description, never left as a gap.
     const or = (text: string, fallback: string) => clean(text).replace(/[.\s]+$/, "") || fallback;
-    const parts = [
-      `${range}: Shot ${s.number}. ${liveFraming(or(s.framing, "Medium shot"))} of ${or(s.subject, s.characterId ? "the person" : "the scene")} in ${or(s.setting, "the same place")}. Action: ${liveAction(or(s.action, s.characterId ? "the person moves naturally, shifting their weight and glancing around" : "the scene plays out with natural movement"))}.`,
-      // A camera written as static is made to move here: a locked-off frame is what makes a clip read as a slide.
-      `Camera: ${liveCamera(clean(s.camera))}. Light: ${or(s.lighting, "the natural light of this place and time of day")}.`,
-      movementLine(Boolean(s.characterId), isStillAction(s.action ?? "")),
-    ];
     const say = input.spoken[s.number];
+    const onCameraWho = say?.parts?.length ? [...new Set(say.parts.filter((p) => p.onCamera).map((p) => p.who))] : [];
+    const speaksOnCamera = Boolean(say?.text.trim()) && (say?.speaker === "on_camera" || onCameraWho.length > 0);
+    // Someone who speaks from the shot's first second is already in it: an entrance would leave a voice over an empty set.
+    const settle = (t: string) => (speaksOnCamera ? presentFromFirstFrame(t) : t);
+    const action = liveAction(settle(or(s.action, s.characterId ? "the person moves naturally, shifting their weight and glancing around" : "the scene plays out with natural movement")));
+    // What is pointed at has to be in the picture: a close-up is widened to show it, and a pointer with no target is put down.
+    const framing = showPointedAt(liveFraming(or(s.framing, "Medium shot")), action);
+    const inShot = input.characters.filter((c) => sceneCharacterIds(input.characters, s, onCameraWho).includes(c.id));
+    const parts = [
+      `${range}: Shot ${s.number}. ${framing} of ${or(s.subject, s.characterId ? "the person" : "the scene")} in ${or(s.setting, "the same place")}. Action: ${action}.`,
+      // A camera written as static is made to move here: a locked-off frame is what makes a clip read as a slide.
+      `Camera: ${dropAimlessPointer(liveCamera(settle(clean(s.camera))))}. Light: ${or(s.lighting, "the natural light of this place and time of day")}.`,
+      movementLine(Boolean(s.characterId), isStillAction(s.action ?? "")),
+      onlyInShotLine(inShot, people),
+      pointingLine(action),
+    ].filter((l): l is string => Boolean(l));
+    if (speaksOnCamera) {
+      const names = onCameraWho.length ? onCameraWho : inShot.map(titleOf);
+      const who = names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)} are` : names.length === 1 ? `${names[0]} is` : "The speaker is";
+      parts.push(`${who} in frame, facing the camera with a clearly visible mouth, from the very first frame of this shot until the line ends; a voice is never heard over an empty frame.`);
+    }
     if (say?.parts?.length) {
       // Several voices: who says each line, in order, and only the person speaking on camera moves their lips.
       for (const part of say.parts) parts.push(`${part.who}, ${part.onCamera ? "on camera" : "off camera"}, says: "${part.text.split(/\s+/).join(" ").trim()}"`);
@@ -271,8 +291,10 @@ export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
   const rules = [
     isClean ? CLEAN_FOOTAGE_RULE : "Do not draw any subtitles, captions, on-screen text, numbers, charts, logos, brand names, buttons or watermarks anywhere in the frame; the real ones are added afterwards.",
     TEXT_FREE_RULE,
+    PLAIN_SURFACES_RULE,
     actionRuleFor(input.style),
     MOTION_RULE,
+    ...(talks ? [SAY_ONCE_RULE] : []),
     "No background music; natural room sound and the speaker's voice only.",
     "Cut cleanly between shots. Keep the same person, clothes and colour grade for the shots they share; a new place may have its own light.",
     // The last shot decides who is looked at: an empty room is not asked to look at the camera.

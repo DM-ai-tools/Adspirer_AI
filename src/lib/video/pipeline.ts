@@ -307,7 +307,7 @@ export async function reviewDownloadedClip(project: VideoProject, plan: Generati
     if (expectsSpeech) {
       const actual = base.checks.find((c) => /length|duration/i.test(c.name))?.detail.match(/([\d.]+)s/)?.[1];
       const seconds = actual ? Number(actual) : clip.seconds;
-      const spoke = compareSpokenToExpected(speech, asr, windowsInClip(briefs, clip.seconds, seconds), languageFor(project.inputs.locale).language);
+      const spoke = compareSpokenToExpected(speech, asr, windowsInClip(briefs, clip.seconds, seconds), languageFor(project.inputs.locale).language, project.brand?.manifest?.name?.value ? [project.brand.manifest.name.value] : []);
       findings.push(...spoke.findings);
       checks.push(...spoke.checks);
       if (!asr) limitations.push("Speech was not transcribed (no OPENAI_API_KEY or the call failed), so what was said could not be checked against the script.");

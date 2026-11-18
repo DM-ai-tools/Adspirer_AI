@@ -64,20 +64,25 @@ const norm = (s: string) =>
 
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/** The names a character goes by in the plan's own text: its id and its role, with "the" dropped. */
-function nameKeys(c: PlanCharacter): string[] {
-  const keys = [norm(c.id), norm(c.role), norm((c.role ?? "").split(/[,(:–—-]/)[0])];
-  return [...new Set(keys.filter((k) => k.length >= 3))];
+/**
+ * The names a character goes by in the plan's own text: its id, and its role with "the" dropped. A role that
+ * several characters share ("Presenter" for both presenters of a weather broadcast) names none of them, so it is
+ * not a name: otherwise every scene that says "the presenter" would be filmed with both.
+ */
+function nameKeys(c: PlanCharacter, all: PlanCharacter[]): string[] {
+  const roleKeys = [norm(c.role), norm((c.role ?? "").split(/[,(:–—-]/)[0])].filter((k) => k.length >= 3);
+  const shared = (k: string) => all.some((o) => o.id !== c.id && [norm(o.role), norm((o.role ?? "").split(/[,(:–—-]/)[0])].includes(k));
+  return [...new Set([norm(c.id), ...roleKeys.filter((k) => !shared(k))].filter((k) => k.length >= 3))];
 }
 
-const mentionedIn = (text: string, c: PlanCharacter) => {
+const mentionedIn = (text: string, c: PlanCharacter, all: PlanCharacter[]) => {
   const flat = ` ${norm(text)} `;
-  return nameKeys(c).some((k) => new RegExp(`\\b${escape(k)}\\b`).test(flat));
+  return nameKeys(c, all).some((k) => new RegExp(`\\b${escape(k)}\\b`).test(flat));
 };
 
 /** The character a voice belongs to ("new arrival" is the voice of the character New Arrival), or null. */
 export function characterOfVoice(characters: PlanCharacter[], who: string): PlanCharacter | null {
-  return characters.find((c) => mentionedIn(who, c)) ?? null;
+  return characters.find((c) => mentionedIn(who, c, characters)) ?? null;
 }
 
 const EMPTY_SHOT = /\b(empty|deserted|vacant|nobody|no one)\b/i;
@@ -94,7 +99,7 @@ export function sceneCharacterIds(characters: PlanCharacter[], brief: Pick<Scene
   const text = [brief.subject, brief.framing, brief.action, brief.setting].filter(Boolean).join(" . ");
   // A shot of an empty place shows no one, even when the place is where a person just was.
   if (!brief.characterId && !onCameraSpeakers.length && EMPTY_SHOT.test(brief.subject ?? "")) return [];
-  for (const c of characters) if (mentionedIn(text, c)) out.add(c.id);
+  for (const c of characters) if (mentionedIn(text, c, characters)) out.add(c.id);
   for (const who of onCameraSpeakers) {
     const c = characterOfVoice(characters, who);
     if (c) out.add(c.id);
@@ -151,11 +156,28 @@ export function liveFraming(framing: string): string {
 const CAMERA_HOLDS = /\b(?:the )?camera (?:holds?|lingers?|rests?|stays?|remains?|stares?) (on|at|over)\b/i;
 
 /**
+ * A pointer raised and lowered with nothing to point at is waved at the air, which reads as a glitch. The gesture is
+ * dropped; a pointer is only ever used on a named thing (see pointingLine).
+ */
+export function dropAimlessPointer(text: string): string {
+  const tail = String.raw`(?:,? then lowers? it| and (?:then )?lowers? it| and lowering it)?(?: (?:for emphasis|as (?:he|she|they) (?:speaks?|talks?|delivers? (?:the|his|her|their) lines?)))?`;
+  return text
+    .replace(new RegExp(String.raw`\b(?:raises?|raising|lifts?|lifting) (?:and (?:then )?lower(?:s|ing)? )?(?:the|his|her|their) (?:wooden )?pointer(?: slightly)?${tail}`, "gi"), "with the pointer lowered at their side")
+    .replace(/\s+,/g, ",");
+}
+
+/**
  * An action that leaves the video model nothing to move. A camera that "holds on" something becomes one that
  * drifts across it with the light and dust moving; a person who "sits perfectly still" keeps breathing and shifting.
  */
 export function liveAction(action: string): string {
-  const flat = action.replace(/\s+/g, " ").trim();
+  let flat = dropAimlessPointer(
+    action
+      .replace(/\s+/g, " ")
+      .trim()
+      // "delivers his lines without blinking or moving": a face told not to move does not move its mouth either.
+      .replace(/\bwithout (?:blinking or moving|moving or blinking|moving|blinking)\b/gi, "with only small, natural movements"),
+  );
   if (!flat || !isStillAction(flat)) return flat;
   if (CAMERA_HOLDS.test(flat)) {
     const out = flat.replace(CAMERA_HOLDS, "The camera drifts slowly across");
@@ -163,6 +185,52 @@ export function liveAction(action: string): string {
   }
   return `${flat.replace(/[.\s]+$/, "")}, never frozen: breathing, shifting their weight, small natural movements`;
 }
+
+// ------------------------------------------------------------------ who is in the shot, who is pointing at what
+
+/** "Only Dean is in frame in this shot": said when the clip has several people and this shot has fewer, so no one else wanders in. */
+export function onlyInShotLine(inShot: PlanCharacter[], everyone: PlanCharacter[]): string | null {
+  if (everyone.length < 2 || !inShot.length || inShot.length >= everyone.length) return null;
+  const names = inShot.map((c) => c.id.replace(/[_-]+/g, " ").replace(/\b\w/g, (m) => m.toUpperCase()));
+  const list = names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)} are` : `${names[0]} is`;
+  return `Only ${list} in frame in this shot; no other person appears, not even in the background.`;
+}
+
+const POINTS = /\b(?:points?|pointing|taps?|tapping|touch(?:es|ing)? (?:it|the|a|an|his|her)|gestures? (?:to|towards?|at)|indicates?|pointer)\b/i;
+
+/** What a shot that points at something must show: the tip on the target, the target in frame, the eyes on it. */
+export function pointingLine(action: string): string | null {
+  if (!POINTS.test(action) || /pointer lowered at their side/i.test(action) && !/\b(?:taps?|points?|tapping|pointing|gestures?)\b/i.test(action)) return null;
+  return "Pointing: the tip of the pointer (or the finger) lands exactly on the thing named in the action, which is fully in frame, large and in focus; the person looks at it as they point, then turns back to the camera. Never point at empty space or at something out of frame.";
+}
+
+const CLOSE = /\b(?:extreme )?(?:medium )?close[- ]?up\b/i;
+
+/** A close-up cannot show what is pointed at: the shot is widened to a medium shot so the target is in it. */
+export function showPointedAt(framing: string, action: string): string {
+  const flat = framing.replace(/\s+/g, " ").trim();
+  if (!POINTS.test(dropAimlessPointer(action)) || !CLOSE.test(flat)) return flat;
+  return flat.replace(/\b(?:extreme )?(?:medium )?close[- ]?up\b/i, "Medium shot").replace(/^medium shot/, "Medium shot");
+}
+
+/**
+ * Someone whose line starts with the shot must already be in it: a person who "walks in" while speaking leaves the
+ * first seconds as an empty set with a voice and no mouth. The entrance is taken out; the shot starts with them in place.
+ */
+export function presentFromFirstFrame(text: string): string {
+  const side = String.raw`(?: from (?:the )?(?:left|right)(?: edge)?(?: of (?:the )?frame)?)?`;
+  return text
+    .replace(new RegExp(String.raw`\b(walks|strides|steps|moves|comes|rolls) in(?:to (?:the )?(?:frame|shot))?(?: (?:calmly|slowly|quickly))?${side}`, "gi"), "stands in frame")
+    .replace(new RegExp(String.raw`\benters(?: the (?:frame|shot))?${side}`, "gi"), "is already in frame");
+}
+
+/** A line spoken once, at a natural pace: the video model otherwise pads a short line by saying part of it again. */
+export const SAY_ONCE_RULE =
+  "Each quoted line is spoken exactly once, at a natural unhurried pace, with no repeated word or phrase, no stutter and no echo; after a line ends, that speaker is silent until the next quoted line.";
+
+/** The charts, maps and boards a video model fills with invented lettering. */
+export const PLAIN_SURFACES_RULE =
+  "Any chart, map, board, screen or sign in a shot is a plain picture with no lines, markings, arrows, symbols, labels, letters or numbers on it: only colour, clouds, light and texture.";
 
 // ------------------------------------------------------------------ the check before the money is spent
 

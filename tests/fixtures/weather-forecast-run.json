@@ -1,0 +1,719 @@
+{
+ "characters": [
+  {
+   "id": "marcus",
+   "role": "Presenter",
+   "description": "Male, mid-40s, wearing a dark suit, presenting with a deadpan expression and wooden pointer."
+  },
+  {
+   "id": "dean",
+   "role": "Presenter",
+   "description": "Male, early 30s, calm demeanor, slightly bored expression, presenting information."
+  }
+ ],
+ "environments": [
+  {
+   "id": "weather_studio",
+   "description": "A TV weather studio with a deep blue backlit map wall, warm overhead broadcast lighting, creating a slightly oversaturated visual effect.",
+   "sceneNumbers": [
+    1,
+    2,
+    3,
+    4
+   ]
+  },
+  {
+   "id": "clear_sky_studio",
+   "description": "A continuation of the TV weather studio but focusing on a clear blue sky chart, maintaining the warm lighting but with a more serene atmosphere.",
+   "sceneNumbers": [
+    5,
+    6,
+    7
+   ]
+  }
+ ],
+ "briefs": [
+  {
+   "exit": {
+    "condition": ""
+   },
+   "entry": {
+    "mode": "cut",
+    "condition": ""
+   },
+   "risks": [
+    "The storm map may not visually convey the seriousness of the situation.",
+    "Marcus may struggle to maintain a deadpan expression."
+   ],
+   "style": "Cinematic, polished, slightly humorous tone with serious delivery.",
+   "action": "Marcus taps the center of the storm with his wooden pointer, shaking his head slowly in disapproval.",
+   "camera": "Slow push-in towards the storm mass as Marcus gestures",
+   "number": 1,
+   "framing": "Medium wide shot, eye-level",
+   "purpose": "Introduce the problem of wasted ad spend through a weather metaphor.",
+   "seconds": 5,
+   "setting": "Weather studio with a swirling storm mass behind him",
+   "subject": "Marcus, the presenter",
+   "lighting": "Warm overhead broadcast lighting with a deep blue backdrop, slightly oversaturated.",
+   "overlays": [],
+   "narration": "Your Google ad account is generating a significant weather event.",
+   "acceptance": [
+    "Check that the storm map is clearly visible and impactful in the frame.",
+    "Ensure Marcus's expression remains serious and engaged.",
+    "No text, numbers, logos or graphics are visible anywhere in the frame"
+   ],
+   "transition": {
+    "kind": "cut",
+    "rationale": "To shift focus to the next revelation without unnecessary pause."
+   },
+   "characterId": "marcus",
+   "editingNotes": [],
+   "durationBasis": "based on the narration and action",
+   "environmentId": "weather_studio",
+   "requiredAssets": [],
+   "screenTreatment": "none",
+   "informationAdded": "Establishes the seriousness of the issue with a striking visual of the storm map."
+  },
+  {
+   "exit": {
+    "condition": ""
+   },
+   "entry": {
+    "mode": "continue_previous",
+    "condition": ""
+   },
+   "risks": [
+    "The small green patch may not be clearly visible enough to convey its significance.",
+    "Marcus may lose focus during the transition."
+   ],
+   "style": "Cinematic and humorous while maintaining seriousness.",
+   "action": "Marcus gestures towards a tiny green patch in the storm mass with his pointer and looks back at the camera.",
+   "camera": "Slight push in towards the green patch as Marcus gestures, then settling as he turns back",
+   "number": 2,
+   "framing": "Medium wide shot, eye-level",
+   "purpose": "Highlight the small success within the chaos, indicating buyer intent.",
+   "seconds": 9,
+   "setting": "Weather studio with the storm map still visible",
+   "subject": "Marcus, the presenter",
+   "lighting": "Consistent warm overhead lighting, slightly oversaturated.",
+   "overlays": [],
+   "narration": "There is a small patch of actual Google Ads buyer intent in here and it is doing its best. The rest is noise.",
+   "acceptance": [
+    "Ensure the green patch is clearly shown and distinct from the storm.",
+    "Confirm Marcus maintains a serious demeanor throughout.",
+    "No text, numbers, logos or graphics are visible anywhere in the frame"
+   ],
+   "transition": {
+    "kind": "cut",
+    "rationale": "To maintain the momentum and urgency of the message."
+   },
+   "characterId": "marcus",
+   "editingNotes": [],
+   "durationBasis": "based on the narration and action",
+   "environmentId": "weather_studio",
+   "requiredAssets": [],
+   "screenTreatment": "none",
+   "informationAdded": "Shows the contrast between the chaos and the small area of success, emphasizing the challenge businesses face."
+  },
+  {
+   "exit": {
+    "condition": ""
+   },
+   "entry": {
+    "mode": "cut",
+    "condition": ""
+   },
+   "risks": [
+    "Marcus may struggle to maintain his composure during delivery.",
+    "Lighting might not convey the seriousness needed for this scene."
+   ],
+   "style": "Cinematic and serious with a hint of parody through delivery.",
+   "action": "Marcus maintains a stoic expression, delivering his lines without blinking or moving.",
+   "camera": "Slow push-in towards Marcus's face as he speaks, building intensity",
+   "number": 3,
+   "framing": "Medium close-up, eye-level",
+   "purpose": "Dramatize the wasted ad spend and agency inefficiencies.",
+   "seconds": 8,
+   "setting": "Weather studio with storm map behind him",
+   "subject": "Marcus, the presenter",
+   "lighting": "Warm, slightly dimmed to create a more serious atmosphere.",
+   "overlays": [],
+   "narration": "Monday. Wasted spend. Every other day after that. Wasted spend. And on the weekend your agency says they're optimising.",
+   "acceptance": [
+    "Review the intensity of Marcus's performance to ensure it fits the tone of the scene.",
+    "Check that the lighting creates the intended serious mood.",
+    "No text, numbers, logos or graphics are visible anywhere in the frame"
+   ],
+   "transition": {
+    "kind": "cut",
+    "rationale": "To create a sharp contrast for the upcoming pause."
+   },
+   "characterId": "marcus",
+   "editingNotes": [],
+   "durationBasis": "based on the narration and action",
+   "environmentId": "weather_studio",
+   "requiredAssets": [],
+   "screenTreatment": "none",
+   "informationAdded": "Emphasizes the frustration of ongoing wasted spend, showcasing the absurdity of the situation."
+  },
+  {
+   "exit": {
+    "condition": ""
+   },
+   "entry": {
+    "mode": "cut",
+    "condition": ""
+   },
+   "risks": [
+    "Marcus may not convey the intended weight of the silence.",
+    "The silence might feel awkward instead of impactful."
+   ],
+   "style": "Cinematic with a focus on dramatic silence and expression.",
+   "action": "Marcus nods slowly, maintaining eye contact with the camera for a beat.",
+   "camera": "Slow drift towards Marcus's face, emphasizing his serious expression",
+   "number": 4,
+   "framing": "Close-up on Marcus's face, eye-level",
+   "purpose": "Create a moment of dramatic silence to emphasize the seriousness of the situation.",
+   "seconds": 2,
+   "setting": "Weather studio with storm map behind him",
+   "subject": "Marcus, the presenter",
+   "lighting": "Warm studio hum, maintaining the previous lighting conditions.",
+   "overlays": [],
+   "narration": "",
+   "acceptance": [
+    "Check that the silence feels naturally dramatic and not forced.",
+    "Ensure Marcus's expression conveys seriousness.",
+    "No text, numbers, logos or graphics are visible anywhere in the frame"
+   ],
+   "transition": {
+    "kind": "cut",
+    "rationale": "To shift to the introduction of the solution."
+   },
+   "characterId": "marcus",
+   "editingNotes": [],
+   "durationBasis": "based on the action",
+   "environmentId": "weather_studio",
+   "requiredAssets": [],
+   "screenTreatment": "none",
+   "informationAdded": "Provides a moment of reflection and heightens the tension before the solution is introduced."
+  },
+  {
+   "exit": {
+    "condition": ""
+   },
+   "entry": {
+    "mode": "cut",
+    "condition": ""
+   },
+   "risks": [
+    "Dean may struggle to maintain the calm demeanor needed for the delivery.",
+    "The transition from storm to clear sky may not feel smooth."
+   ],
+   "style": "Cinematic with a polished, positive vibe.",
+   "action": "Dean calmly rolls the storm map aside, revealing the clear-sky chart.",
+   "camera": "Slow track as Dean enters from the right, rolling the map aside and centering himself in front of the new chart",
+   "number": 5,
+   "framing": "Medium wide shot, eye-level",
+   "purpose": "Introduce the solution to the problems presented earlier, shifting to a positive tone.",
+   "seconds": 6,
+   "setting": "Clear sky studio with a clean, pale blue chart behind him",
+   "subject": "Dean, the presenter",
+   "lighting": "Warm lighting remains but feels more uplifting against the clear background.",
+   "overlays": [],
+   "narration": "New system moving in. Wasted spend eliminated. Campaigns rebuilt around intent. Growth becomes predictable.",
+   "acceptance": [
+    "Ensure Dean maintains a calm expression throughout the delivery.",
+    "Check that the transition from storm map to clear sky feels seamless.",
+    "No text, numbers, logos or graphics are visible anywhere in the frame"
+   ],
+   "transition": {
+    "kind": "cut",
+    "rationale": "To emphasize the clear shift from chaos to clarity."
+   },
+   "characterId": "dean",
+   "editingNotes": [],
+   "durationBasis": "based on the narration and action",
+   "environmentId": "clear_sky_studio",
+   "requiredAssets": [],
+   "screenTreatment": "none",
+   "informationAdded": "Shows the transition from chaos to clarity, highlighting the effectiveness of Traffic Radius."
+  },
+  {
+   "exit": {
+    "condition": ""
+   },
+   "entry": {
+    "mode": "cut",
+    "condition": ""
+   },
+   "risks": [
+    "Marcus may not convey the authority needed during this key moment.",
+    "The lighting may not feel uplifting enough to match the positive message."
+   ],
+   "style": "Cinematic and authoritative, reinforcing the brand's credibility.",
+   "action": "Marcus pauses, looking towards the clear-sky map before facing the camera with a serious expression.",
+   "camera": "Slow push-in as Marcus prepares to deliver the line, building anticipation",
+   "number": 6,
+   "framing": "Medium close-up on Marcus, eye-level",
+   "purpose": "Establish credibility by highlighting Traffic Radius' success.",
+   "seconds": 7,
+   "setting": "Clear sky studio, standing in front of the chart",
+   "subject": "Marcus, the presenter",
+   "lighting": "Warm and inviting, with an uplifting atmosphere.",
+   "overlays": [],
+   "narration": "Traffic Radius has done this for over fifteen hundred Australian businesses. $120 million in tracked revenue.",
+   "acceptance": [
+    "Check that Marcus's expression conveys authority and confidence.",
+    "Ensure the lighting feels warm and inviting.",
+    "No text, numbers, logos or graphics are visible anywhere in the frame"
+   ],
+   "transition": {
+    "kind": "cut",
+    "rationale": "To maintain the flow and urgency of the message."
+   },
+   "characterId": "marcus",
+   "editingNotes": [],
+   "durationBasis": "based on the narration and action",
+   "environmentId": "clear_sky_studio",
+   "requiredAssets": [],
+   "screenTreatment": "none",
+   "informationAdded": "Conveys authority and trust in the service provided by Traffic Radius."
+  },
+  {
+   "exit": {
+    "condition": ""
+   },
+   "entry": {
+    "mode": "cut",
+    "condition": ""
+   },
+   "risks": [
+    "Marcus may not maintain the engaging tone needed for the call to action.",
+    "The lighting may not feel consistent with the positive tone established."
+   ],
+   "style": "Cinematic and direct with an engaging tone.",
+   "action": "Marcus maintains eye contact with the camera, raising and lowering the pointer as he speaks.",
+   "camera": "Slow push-in as Marcus raises the pointer slightly, then lowers it for emphasis",
+   "number": 7,
+   "framing": "Medium close-up on Marcus, eye-level",
+   "purpose": "Call to action for the viewer to engage with Traffic Radius, reinforcing the solution.",
+   "seconds": 11,
+   "setting": "Clear sky studio with the blue chart behind him",
+   "subject": "Marcus, the presenter",
+   "lighting": "Remains warm and inviting, supportive of the positive message.",
+   "overlays": [],
+   "narration": "If your account is bleeding spend and your agency has no answers, book a free Google Ads strategy call with Traffic Radius today. The skies can clear.",
+   "acceptance": [
+    "Ensure Marcus's expression feels engaging and hopeful throughout the call to action.",
+    "Check that the lighting remains warm and inviting.",
+    "No text, numbers, logos or graphics are visible anywhere in the frame"
+   ],
+   "transition": {
+    "kind": "cut",
+    "rationale": "To close the message sharply and effectively."
+   },
+   "characterId": "marcus",
+   "editingNotes": [],
+   "durationBasis": "based on the narration and action",
+   "environmentId": "clear_sky_studio",
+   "requiredAssets": [],
+   "screenTreatment": "none",
+   "informationAdded": "Provides a clear next step for the viewer and a sense of hope for improvement."
+  }
+ ],
+ "style": "Cinematic with presenter — two presenters in a warm, slightly oversaturated TV weather studio, played completely straight as a deadpan parody broadcast",
+ "scenes": [
+  {
+   "number": 1,
+   "speaker": "on_camera",
+   "line": "Your Google ad account is generating a significant weather event.",
+   "lines": [
+    {
+     "text": "Your Google ad account is generating a significant weather event.",
+     "voiceId": "marcus",
+     "onCamera": true
+    }
+   ]
+  },
+  {
+   "number": 2,
+   "speaker": "on_camera",
+   "line": "There is a small patch of actual Google Ads buyer intent in here and it is doing its best. The rest is noise.",
+   "lines": [
+    {
+     "text": "There is a small patch of actual Google Ads buyer intent in here and it is doing its best. The rest is noise.",
+     "voiceId": "marcus",
+     "onCamera": true
+    }
+   ]
+  },
+  {
+   "number": 3,
+   "speaker": "on_camera",
+   "line": "Monday. Wasted spend. Every other day after that. Wasted spend. And on the weekend your agency says they're optimising.",
+   "lines": [
+    {
+     "text": "Monday. Wasted spend. Every other day after that. Wasted spend. And on the weekend your agency says they're optimising.",
+     "voiceId": "marcus",
+     "onCamera": true
+    }
+   ]
+  },
+  {
+   "number": 4,
+   "speaker": "none",
+   "line": "",
+   "lines": []
+  },
+  {
+   "number": 5,
+   "speaker": "on_camera",
+   "line": "New system moving in. Wasted spend eliminated. Campaigns rebuilt around intent. Growth becomes predictable.",
+   "lines": [
+    {
+     "text": "New system moving in. Wasted spend eliminated. Campaigns rebuilt around intent. Growth becomes predictable.",
+     "voiceId": "dean",
+     "onCamera": true
+    }
+   ]
+  },
+  {
+   "number": 6,
+   "speaker": "on_camera",
+   "line": "Traffic Radius has done this for over fifteen hundred Australian businesses. $120 million in tracked revenue.",
+   "lines": [
+    {
+     "text": "Traffic Radius has done this for over fifteen hundred Australian businesses. $120 million in tracked revenue.",
+     "voiceId": "marcus",
+     "onCamera": true
+    }
+   ]
+  },
+  {
+   "number": 7,
+   "speaker": "on_camera",
+   "line": "If your account is bleeding spend and your agency has no answers, book a free Google Ads strategy call with Traffic Radius today. The skies can clear.",
+   "lines": [
+    {
+     "text": "If your account is bleeding spend and your agency has no answers, book a free Google Ads strategy call with Traffic Radius today. The skies can clear.",
+     "voiceId": "marcus",
+     "onCamera": true
+    }
+   ]
+  }
+ ],
+ "voices": [
+  {
+   "id": "marcus",
+   "who": "Marcus",
+   "description": "Male, mid-40s, deep broadcaster baritone, clipped Australian accent, completely deadpan delivery with no trace of irony — every absurd line is delivered as though it is the gravest news of the week"
+  },
+  {
+   "id": "dean",
+   "who": "Dean",
+   "description": "Male, early 30s, calm and matter-of-fact, same broadcast register as Marcus but slightly slower and almost bored — like replacing a storm map with a clear sky is the most routine thing imaginable"
+  }
+ ],
+ "clip2Words": [
+  {
+   "word": "New",
+   "start": -0.28,
+   "end": 0.4
+  },
+  {
+   "word": "system",
+   "start": 0.4,
+   "end": 0.68
+  },
+  {
+   "word": "moving",
+   "start": 0.68,
+   "end": 0.96
+  },
+  {
+   "word": "in",
+   "start": 0.96,
+   "end": 1.4
+  },
+  {
+   "word": "wasted",
+   "start": 1.98,
+   "end": 2
+  },
+  {
+   "word": "spend",
+   "start": 2,
+   "end": 2.34
+  },
+  {
+   "word": "eliminated",
+   "start": 2.34,
+   "end": 2.84
+  },
+  {
+   "word": "campaigns",
+   "start": 3.48,
+   "end": 3.7
+  },
+  {
+   "word": "rebuilt",
+   "start": 3.7,
+   "end": 4.1
+  },
+  {
+   "word": "around",
+   "start": 4.1,
+   "end": 4.42
+  },
+  {
+   "word": "intent",
+   "start": 4.42,
+   "end": 4.72
+  },
+  {
+   "word": "growth",
+   "start": 4.72,
+   "end": 5.36
+  },
+  {
+   "word": "becomes",
+   "start": 5.36,
+   "end": 5.7
+  },
+  {
+   "word": "predictable",
+   "start": 5.7,
+   "end": 6.18
+  },
+  {
+   "word": "Traffic",
+   "start": 7.66,
+   "end": 7.68
+  },
+  {
+   "word": "Radius",
+   "start": 7.68,
+   "end": 8
+  },
+  {
+   "word": "has",
+   "start": 8,
+   "end": 8.26
+  },
+  {
+   "word": "done",
+   "start": 8.26,
+   "end": 8.42
+  },
+  {
+   "word": "this",
+   "start": 8.42,
+   "end": 8.6
+  },
+  {
+   "word": "for",
+   "start": 8.6,
+   "end": 8.76
+  },
+  {
+   "word": "over",
+   "start": 8.76,
+   "end": 8.94
+  },
+  {
+   "word": "1",
+   "start": 8.94,
+   "end": 9.3
+  },
+  {
+   "word": "500",
+   "start": 9.3,
+   "end": 9.42
+  },
+  {
+   "word": "Australian",
+   "start": 9.42,
+   "end": 10.02
+  },
+  {
+   "word": "businesses",
+   "start": 10.02,
+   "end": 10.46
+  },
+  {
+   "word": "120",
+   "start": 10.94,
+   "end": 11.46
+  },
+  {
+   "word": "million",
+   "start": 11.46,
+   "end": 11.74
+  },
+  {
+   "word": "in",
+   "start": 11.74,
+   "end": 12.28
+  },
+  {
+   "word": "tracked",
+   "start": 12.28,
+   "end": 12.54
+  },
+  {
+   "word": "revenue",
+   "start": 12.54,
+   "end": 12.72
+  },
+  {
+   "word": "If",
+   "start": 12.88,
+   "end": 12.92
+  },
+  {
+   "word": "your",
+   "start": 12.92,
+   "end": 13.14
+  },
+  {
+   "word": "account",
+   "start": 13.14,
+   "end": 13.4
+  },
+  {
+   "word": "is",
+   "start": 13.4,
+   "end": 13.86
+  },
+  {
+   "word": "bleeding",
+   "start": 13.86,
+   "end": 13.86
+  },
+  {
+   "word": "spend",
+   "start": 13.86,
+   "end": 14.24
+  },
+  {
+   "word": "is",
+   "start": 14.76,
+   "end": 14.92
+  },
+  {
+   "word": "bleeding",
+   "start": 14.92,
+   "end": 15.14
+  },
+  {
+   "word": "spend",
+   "start": 15.14,
+   "end": 15.6
+  },
+  {
+   "word": "and",
+   "start": 16,
+   "end": 16.14
+  },
+  {
+   "word": "your",
+   "start": 16.14,
+   "end": 16.38
+  },
+  {
+   "word": "agency",
+   "start": 16.38,
+   "end": 16.6
+  },
+  {
+   "word": "has",
+   "start": 16.6,
+   "end": 16.9
+  },
+  {
+   "word": "no",
+   "start": 16.9,
+   "end": 17.22
+  },
+  {
+   "word": "answers",
+   "start": 17.22,
+   "end": 17.62
+  },
+  {
+   "word": "book",
+   "start": 18.28,
+   "end": 18.36
+  },
+  {
+   "word": "a",
+   "start": 18.36,
+   "end": 18.58
+  },
+  {
+   "word": "free",
+   "start": 18.58,
+   "end": 18.72
+  },
+  {
+   "word": "Google",
+   "start": 18.72,
+   "end": 19
+  },
+  {
+   "word": "Ads",
+   "start": 19,
+   "end": 19.18
+  },
+  {
+   "word": "strategy",
+   "start": 19.18,
+   "end": 19.56
+  },
+  {
+   "word": "call",
+   "start": 19.56,
+   "end": 19.82
+  },
+  {
+   "word": "with",
+   "start": 19.82,
+   "end": 20.26
+  },
+  {
+   "word": "Traffic",
+   "start": 20.26,
+   "end": 20.28
+  },
+  {
+   "word": "Radio",
+   "start": 20.28,
+   "end": 20.54
+  },
+  {
+   "word": "today",
+   "start": 20.54,
+   "end": 20.86
+  },
+  {
+   "word": "The",
+   "start": 21,
+   "end": 21.14
+  },
+  {
+   "word": "skies",
+   "start": 21.14,
+   "end": 21.32
+  },
+  {
+   "word": "can",
+   "start": 21.32,
+   "end": 21.62
+  },
+  {
+   "word": "clear",
+   "start": 21.62,
+   "end": 21.8
+  }
+ ]
+}

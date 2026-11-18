@@ -553,6 +553,27 @@ export const LOW_COVERAGE = 0.75;
 export const CRITICAL_COVERAGE = 0.35;
 
 /**
+ * A phrase the voice said twice in a row that the script does not repeat ("is bleeding spend is bleeding spend").
+ * Longest phrase first; a single repeated word counts only when it is a real word, and nothing counts that the
+ * script itself repeats ("no, no, no way").
+ */
+export function repeatedPhrase(heard: string[], expected: string[]): string | null {
+  const script = ` ${expected.join(" ")} `;
+  for (let n = 4; n >= 1; n -= 1) {
+    for (let i = 0; i + 2 * n <= heard.length; i += 1) {
+      const a = heard.slice(i, i + n);
+      const b = heard.slice(i + n, i + 2 * n);
+      if (a.join(" ") !== b.join(" ")) continue;
+      const phrase = a.join(" ");
+      if (n === 1 && phrase.length < 4) continue;
+      if (script.includes(` ${phrase} ${phrase} `)) continue;
+      return phrase;
+    }
+  }
+  return null;
+}
+
+/**
  * Compare what each scene was MEANT to say (the spoken text) with what the transcript heard inside its
  * window: missing words, added words, a clipped first or last word. Terms whose pronunciation is a
  * guess always get a minor "pronunciation_unverified" finding, because a transcript that matches is
@@ -564,6 +585,8 @@ export function compareSpokenToExpected(
   windows: Array<{ number: number; start: number; end: number }>,
   /** The language the script is written in: named in the correction when the clip was spoken in another. */
   language = "English",
+  /** The brand's name: it must be said exactly ("Traffic Radius", never "Traffic Radio"). */
+  brandNames: string[] = [],
 ): { checks: QaCheckResult[]; findings: QaFinding[]; transcript: string } {
   const checks: QaCheckResult[] = [];
   const findings: QaFinding[] = [];
@@ -608,6 +631,7 @@ export function compareSpokenToExpected(
     for (const line of speech) checks.push({ name: `speech_scene_${line.sceneNumber}`, ok: false, detail: `Spoken in ${heardLanguage}, not ${language}.`, severity: "critical" });
     return { checks, findings, transcript };
   }
+  const brandWords = [...new Set(brandNames.flatMap((n) => spokenTokens(n)).filter((w) => w.length >= 5))];
   for (const line of speech) {
     const win = windows.find((w) => w.number === line.sceneNumber);
     const expected = spokenTokens(line.spoken);
@@ -664,6 +688,37 @@ export function compareSpokenToExpected(
         evidence: `Extra words heard: ${extras.slice(0, 8).map((h) => h.norm).join(" ")}.`,
         atSeconds: win.start,
         correction: `${say}: the voice must say only the quoted line. Add "no other words, no ad-libs" to the prompt.`,
+        source: "asr",
+      });
+    }
+    const repeated = repeatedPhrase(inside.map((h) => h.norm), expected);
+    if (repeated) {
+      ok = false;
+      findings.push({
+        code: "speech_repeated_words",
+        severity: "major",
+        category: "speech",
+        message: `${say}: the voice repeated "${repeated}".`,
+        evidence: `Heard: "${heardText}". "${repeated}" was said twice in a row; the script says it once.`,
+        atSeconds: win.start,
+        correction: `${say}: say the line exactly once, word for word, with no repeated word or phrase, and stay silent after it ends. Keep the line short enough for the shot so the voice is not tempted to fill the time.`,
+        source: "asr",
+      });
+    }
+    for (const word of brandWords) {
+      if (!expected.includes(word)) continue;
+      if (inside.some((h) => h.norm === word)) continue;
+      const near = inside.find((h) => h.norm !== word && h.norm.length >= 4 && editDistance(h.norm, word, 2) <= 2);
+      if (!near) continue;
+      ok = false;
+      findings.push({
+        code: "speech_brand_misheard",
+        severity: "major",
+        category: "speech",
+        message: `${say}: the brand name "${brandNames.join(" ")}" was not said right: "${word}" came out as "${near.norm}".`,
+        evidence: `Expected "${line.spoken}". Heard "${near.norm}" at ${fixed(near.start)}s where the brand name "${word}" belongs.`,
+        atSeconds: near.start,
+        correction: `${say}: the brand name must be said exactly as written, "${brandNames.join(" ")}", every syllable. Quote the line as written and keep the name unbroken.`,
         source: "asr",
       });
     }
