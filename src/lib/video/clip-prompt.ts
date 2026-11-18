@@ -183,11 +183,12 @@ export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
   const isLastClip = input.clipNumber >= input.clipCount;
 
   // Assets are named by type and attach order: "Image 1", "Image 2", "Video 1".
-  const imageLabels: Array<{ label: string; text: string }> = [];
+  const imageLabels: Array<{ label: string; text: string; defines?: string }> = [];
   for (const id of refs.characterIds) {
     const c = input.characters.find((x) => x.id === id);
     // Two people can share a role ("Presenter"): the picture is named by who they are, so the voices and shots point at the right one.
-    if (c) imageLabels.push({ label: `person:${id}`, text: `is ${input.characters.some((o) => o.id !== c.id && flatName(o.role ?? "") === flatName(c.role ?? "")) ? `${titleOf(c)} (${clean(c.role || "the person")})` : clean(c.role || "the person")}: keep this exact person, face, hair and clothes wherever they appear. Use it for who they are only; ignore its plain backdrop and light, and place them in each shot's own setting.` });
+    // The subject is defined the way the Seedance guide asks ("Define the person in Image 1 as ..."), by one label used every time.
+    if (c) imageLabels.push({ label: `person:${id}`, defines: input.characters.some((o) => o.id !== c.id && flatName(o.role ?? "") === flatName(c.role ?? "")) ? `${titleOf(c)} (${clean(c.role || "the person")})` : clean(c.role || "the person"), text: "keep this exact person, face, hair and clothes wherever they appear. Use it for who they are only; ignore its plain backdrop and light, and place them in each shot's own setting." });
   }
   for (const id of refs.environmentIds) {
     const e = input.environments.find((x) => x.id === id);
@@ -200,7 +201,7 @@ export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
         : { label: "previous", text: "is where the previous shot ended: this clip opens on the same framing, the same person and the same light." },
     );
   }
-  const assetLines = imageLabels.map((l, i) => `Image ${i + 1} ${l.text}`);
+  const assetLines = imageLabels.map((l, i) => (l.defines ? `Define the person in Image ${i + 1} as ${l.defines}: ${l.text}` : `Image ${i + 1} ${l.text}`));
   if (refs.previousVideo) {
     assetLines.push(
       "Video 1 is an earlier clip of this same ad and is the VOICE REFERENCE: every word spoken in this clip, on camera or off, is in exactly the voice heard in Video 1, with the same timbre, pitch, accent, pace, loudness and microphone sound, as if recorded in the same session. Where the same person appears, they also keep the face from Video 1. Do not copy Video 1's shots, framing or action.",
@@ -228,7 +229,7 @@ export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
     return at >= 0 ? ` (the voice of the person in Image ${at + 1})` : "";
   };
   const constant = [
-    ...people.map((c) => `Person (${c.id}): ${clean(c.description)}.`),
+    ...people.map((c) => `Person (${c.id}): ${clean(c.description).replace(/[.\s]+$/, "")}.`),
     !people.length ? "No person appears on camera in this clip; keep the look of every shot consistent." : null,
     talks ? languageRule(input.locale) : null,
     talks && several
@@ -239,10 +240,16 @@ export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
     "Hands, faces and objects are anatomically correct and undistorted; faces stay stable with no morphing, glowing marks or flicker.",
   ].filter((l): l is string => Boolean(l));
 
-  let offset = 0;
+  // A person is named the same way every time, with the picture that shows them ("Founder (Image 1)"), as the Seedance guide asks.
+  const tagged = (who: string, owner: PlanCharacter | undefined) => {
+    const at = owner ? imageLabels.findIndex((l) => l.label === `person:${owner.id}`) : -1;
+    return at >= 0 ? `${who} (Image ${at + 1})` : who;
+  };
+  // Words to be said go in braces, the form the guide uses for dialogue; a brace inside the words themselves is dropped.
+  const braced = (t: string) => `{${t.split(/\s+/).join(" ").replace(/[{}]/g, "").trim()}}`;
   const shots = scenes.map((s) => {
-    const range = `${offset}s-${offset + s.seconds}s`;
-    offset += s.seconds;
+    // The length is a pace, not a hard cut: the guide warns that forced time ranges give unstable results.
+    const range = `Shot ${s.number} (about ${s.seconds} seconds)`;
     // A field that had to be dropped from a clean prompt (it described a graphic) is replaced by a plain description, never left as a gap.
     const or = (text: string, fallback: string) => clean(text).replace(/[.\s]+$/, "") || fallback;
     const say = input.spoken[s.number];
@@ -254,10 +261,11 @@ export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
     // What is pointed at has to be in the picture: a close-up is widened to show it, and a pointer with no target is put down.
     const framing = showPointedAt(liveFraming(or(s.framing, "Medium shot")), action);
     const inShot = input.characters.filter((c) => sceneCharacterIds(input.characters, s, onCameraWho).includes(c.id));
+    // In the order the guide gives: the camera, then who is where and what they do, then the light; sound and speech follow.
     const parts = [
-      `${range}: Shot ${s.number}. ${framing} of ${or(s.subject, s.characterId ? "the person" : "the scene")} in ${or(s.setting, "the same place")}. Action: ${action}.`,
       // A camera written as static is made to move here: a locked-off frame is what makes a clip read as a slide.
-      `Camera: ${dropAimlessPointer(liveCamera(settle(clean(s.camera))))}. Light: ${or(s.lighting, "the natural light of this place and time of day")}.`,
+      `${range}. Camera: ${framing}, ${dropAimlessPointer(liveCamera(settle(clean(s.camera))))}.`,
+      `Subject and place: ${or(s.subject, s.characterId ? "the person" : "the scene")} in ${or(s.setting, "the same place")}. Action: ${action}. Light: ${or(s.lighting, "the natural light of this place and time of day")}.`,
       movementLine(Boolean(s.characterId), isStillAction(s.action ?? "")),
       onlyInShotLine(inShot, people),
       pointingLine(action),
@@ -269,12 +277,14 @@ export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
     }
     if (say?.parts?.length) {
       // Several voices: who says each line, in order, and only the person speaking on camera moves their lips.
-      for (const part of say.parts) parts.push(`${part.who}, ${part.onCamera ? "on camera" : "off camera"}, says: "${part.text.split(/\s+/).join(" ").trim()}"`);
+      for (const part of say.parts) parts.push(`${tagged(part.who, characterOfVoice(input.characters, part.who) ?? undefined)}, ${part.onCamera ? "on camera" : "off camera"}, says ${braced(part.text)}`);
       if (s.characterId) parts.push(say.parts.some((p) => p.onCamera) ? "Only the person speaking on camera moves their lips, and only while they speak." : "The person's mouth stays closed and relaxed while the voices speak, with natural breathing and small head movements.");
     } else if (say && say.text.trim()) {
-      const who = say.speaker === "on_camera" ? "The person on camera says, in real time" : "A voice off camera says";
+      // One person in frame who speaks is named and tied to their picture; otherwise it is the person on camera or a voice off camera.
+      const solo = say.speaker === "on_camera" && inShot.length === 1 ? inShot[0] : undefined;
+      const who = say.speaker === "on_camera" ? (solo ? `${tagged(titleOf(solo), solo)}, on camera, says in real time` : "The person on camera says, in real time") : "A voice off camera says";
       // The spoken words are passed on exactly: they are speech, and are never filtered as if they described the picture.
-      parts.push(`${who}: "${say.text.split(/\s+/).join(" ").trim()}"`);
+      parts.push(`${who} ${braced(say.text)}`);
       if (say.speaker !== "on_camera" && s.characterId) parts.push("The person's mouth stays closed and relaxed while the voice speaks, with natural breathing and small head movements.");
     } else {
       parts.push("No one speaks." + (s.characterId ? " The person's mouth stays closed and relaxed." : ""));
@@ -283,7 +293,11 @@ export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
       parts.push("A graphic is added over this shot afterwards: keep that part of the frame calm and uncluttered, with no readable screens, charts or text drawn anywhere.");
     }
     // Only checks about the filmed footage are shown to the video model: one that names an overlay would be drawn into the picture.
-    const musts = (isClean ? footageOnly(s.acceptance) : s.acceptance).slice(0, 3).map(clean).filter(Boolean);
+    // The plan's acceptance checks are written for a reviewer ("Check that...", "Ensure..."): to the video model they are stated as what the shot shows, and a check that only repeats the constraints is left out.
+    const musts = (isClean ? footageOnly(s.acceptance) : s.acceptance)
+      .map((m) => clean(m).replace(/^(?:check|ensure|verify|confirm|make sure)\s+(?:that\s+)?/i, "").replace(/[.\s]+$/, ""))
+      .filter((m) => m && !/^no (?:readable )?text, numbers, logos/i.test(m))
+      .slice(0, 3);
     if (musts.length) parts.push(`This shot must show: ${musts.join("; ")}.`);
     return parts.join(" ");
   });
@@ -295,7 +309,9 @@ export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
     actionRuleFor(input.style),
     MOTION_RULE,
     ...(talks ? [SAY_ONCE_RULE] : []),
-    "No background music; natural room sound and the speaker's voice only.",
+    "Audio: (no background music); natural room sound and the speakers' voices only.",
+    // The guide's own fix for duplicated people: each one appears once, as in their picture.
+    ...(people.length ? ["Each person appears exactly once in the frame and looks exactly like their reference picture. No duplicate avatars, no twin or repeated copies of anyone, and nobody who is not described."] : []),
     "Cut cleanly between shots. Keep the same person, clothes and colour grade for the shots they share; a new place may have its own light.",
     // The last shot decides who is looked at: an empty room is not asked to look at the camera.
     ...(isClean && isLastClip ? [scenes[scenes.length - 1].characterId ? CLEAN_ENDING_RULE : CLEAN_ENDING_RULE_NO_PERSON] : []),
@@ -306,8 +322,9 @@ export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
     ...assetLines,
     `${style}, production-quality live-action vertical video${isClean ? "" : " for a Meta ad"}, shot by a film crew with a moving camera, ${total} seconds, clip ${input.clipNumber} of ${input.clipCount}.`,
     ...constant,
-    "Shot list:",
+    "Storyboard (shots in the order they happen, each one continuous):",
     ...shots,
+    "Constraints:",
     ...rules,
     ...fixes,
     ...(talks ? [languageReminder(input.locale)] : []),

@@ -213,7 +213,7 @@ describe("the planned clip prompt", () => {
     expect(text).toContain("a loading dock");
     expect(text).toContain("Over twelve million dollars.");
     expect(text).not.toContain("$12M+");
-    expect(text).toContain("Image 1 is the host");
+    expect(text).toContain("Define the person in Image 1 as the host");
     expect(text).toContain("her face stays steady");
   });
   it("keeps a silent scene's mouth closed and leaves room for a composited graphic", () => {

@@ -126,3 +126,44 @@ describe("reading the operator's own concept", () => {
     expect(c.id).toMatch(/^concept_own_/);
   });
 });
+
+describe("reading any text as the operator's concept", () => {
+  const LONG = Array.from({ length: 11 }, (_, i) => `Scene ${i + 1}: Beat number ${i + 1} of the story happens here, with its own action and its own line.`).join("\n\n");
+
+  it("accepts a concept with more beats, people and places than the old limits and keeps it to what the system can hold", async () => {
+    const { conceptFromText } = await import("@/lib/video/fit-to-model");
+    const generate = async () => ({
+      title: "Long", format: "mini film", logline: "A long story.", hook: "Opening", whyItWorks: "w", brandLink: "b", look: "l", seconds: 60,
+      beats: Array.from({ length: 11 }, (_, i) => ({ text: `Beat ${i + 1}`, seconds: 5 })),
+      cast: ["a", "b", "c", "d", "e", "f", "g", "h"], settings: ["1", "2", "3", "4", "5", "6", "7"],
+      voices: [{ id: "a", who: "a", description: "d" }, { id: "b", who: "b", description: "d" }, { id: "c", who: "c", description: "d" }, { id: "d", who: "d", description: "d" }, { id: "e", who: "e", description: "d" }],
+    });
+    const c = await conceptFromText(LONG, { targetSeconds: 60, deps: { generate } });
+    expect(c.beats.length).toBeLessThanOrEqual(8);
+    // merging beats keeps the story and its total length
+    expect(c.beats.reduce((t, b) => t + b.seconds, 0)).toBeGreaterThanOrEqual(55);
+    expect(c.beats.map((b) => b.text).join(" ")).toContain("Beat 11");
+    expect(c.cast.length).toBeLessThanOrEqual(6);
+    expect(c.voices.length).toBeLessThanOrEqual(4);
+  });
+
+  it("still reads the text when the model cannot", async () => {
+    const { conceptFromText } = await import("@/lib/video/fit-to-model");
+    const generate = async () => {
+      throw new Error("No object generated: response did not match schema.");
+    };
+    const c = await conceptFromText(LONG, { targetSeconds: 40, deps: { generate } });
+    expect(c.beats.length).toBeGreaterThanOrEqual(2);
+    expect(c.beats.length).toBeLessThanOrEqual(8);
+    expect(c.beats.map((b) => b.text).join(" ")).toContain("Beat number 11");
+    expect(c.voices.length).toBeGreaterThanOrEqual(1);
+    expect(c.id).toMatch(/^concept_own_/);
+  });
+
+  it("reads a single sentence as a concept", async () => {
+    const { conceptFromText } = await import("@/lib/video/fit-to-model");
+    const c = await conceptFromText("A goldfish runs a shop.", { targetSeconds: 20, deps: { generate: async () => { throw new Error("down"); } } });
+    expect(c.beats.length).toBeGreaterThanOrEqual(2);
+    expect(c.logline).toMatch(/goldfish/);
+  });
+});

@@ -185,7 +185,7 @@ describe("the clip prompt", () => {
     expect(clip2).toMatch(/Dean is in frame[^.]*from the very first frame/);
   });
   it("the first shot of clip 2 no longer has Dean entering", () => {
-    const shot5 = clip2.split("\n").find((l) => l.includes("Shot 5."))!;
+    const shot5 = clip2.split("\n").find((l) => l.includes("Shot 5 ("))!;
     expect(shot5).not.toMatch(/\benters\b/i);
   });
   it("every line is said exactly once", () => {
@@ -193,11 +193,11 @@ describe("the clip prompt", () => {
     expect(clip2).toContain(SAY_ONCE_RULE);
   });
   it("a shot that taps the map says where the tip lands", () => {
-    const shot1 = clip1.split("\n").find((l) => l.includes("Shot 1."))!;
+    const shot1 = clip1.split("\n").find((l) => l.includes("Shot 1 ("))!;
     expect(shot1).toMatch(/Pointing:/);
   });
   it("shot 7 no longer raises a pointer at nothing", () => {
-    const shot7 = clip2.split("\n").find((l) => l.includes("Shot 7."))!;
+    const shot7 = clip2.split("\n").find((l) => l.includes("Shot 7 ("))!;
     expect(shot7).not.toMatch(/raising and lowering the pointer/i);
   });
   it("a board or chart in the shot has no markings", () => {
@@ -207,7 +207,7 @@ describe("the clip prompt", () => {
     expect(isStillAction(liveAction(brief(3).action))).toBe(false);
   });
   it("shot 3 is not told to stand without moving", () => {
-    const shot3 = clip1.split("\n").find((l) => l.includes("Shot 3."))!;
+    const shot3 = clip1.split("\n").find((l) => l.includes("Shot 3 ("))!;
     expect(shot3).not.toMatch(/without blinking or moving/i);
   });
   it("one-sided helper: nothing to say when the clip has one person", () => {

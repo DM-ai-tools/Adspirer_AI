@@ -148,8 +148,8 @@ describe("the clip prompt with several voices", () => {
     const p = buildPlannedClipPrompt(promptInput());
     expect(p).toContain("Video 1 is the VOICE REFERENCE for the narrator");
     expect(p).toContain("Video 2 is the VOICE REFERENCE for Maya");
-    expect(p).toMatch(/Maya, on camera, says: "Found you\."/);
-    expect(p).toMatch(/the narrator, off camera, says: "Book online\."/);
+    expect(p).toMatch(/Maya[^\n]*, on camera, says \{Found you\.\}/);
+    expect(p).toMatch(/the narrator, off camera, says \{Book online\.\}/);
     expect(p).toContain("gravelly trailer voice");
     expect(p).not.toContain("The same single voice speaks every line");
   });

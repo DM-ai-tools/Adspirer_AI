@@ -28,7 +28,7 @@ const bodySchema = z.object({
   /** What the operator wants, in their words (a different direction, a different delivery). Optional. */
   instruction: z.string().max(1500).nullish(),
   /** For "retime": the new length in seconds. */
-  seconds: z.number().int().min(15).max(60).nullish(),
+  seconds: z.number().int().min(15).max(120).nullish(),
   /** The script as it stands on screen, including edits not saved yet: scenes the operator changed are kept as they are. */
   draft: z
     .object({

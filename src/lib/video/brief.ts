@@ -195,7 +195,7 @@ export function writeContextFor(project: VideoProject, creative: CreativeBrief, 
   return {
     creative,
     brief,
-    targetSeconds: Math.min(Math.max(Math.round(brief.targetSeconds), 15), 60),
+    targetSeconds: Math.min(Math.max(Math.round(brief.targetSeconds), 15), MAX_SECONDS),
     wordsPerSecond: resolveWordsPerSecond(project.inputs.speechRate),
     assetIds: brief.images.map((i) => i.id),
     claims: brief.claims ?? [],
@@ -424,7 +424,7 @@ export async function moreConcepts(projectId: string, feedback: string | null): 
     const shown = project.brand.shownConcepts ?? [];
     const avoid = [...shown, ...(await conceptHistory(project.client_id, projectId))];
     const brief = storedBrief(project);
-    const planned = await planConcepts(creative, { targetSeconds: Math.min(Math.max(Math.round(brief.targetSeconds), 15), 60), direction: brief.direction ?? null, avoid, feedback });
+    const planned = await planConcepts(creative, { targetSeconds: Math.min(Math.max(Math.round(brief.targetSeconds), 15), MAX_SECONDS), direction: brief.direction ?? null, avoid, feedback });
     await updateProject(projectId, {
       brand: { ...project.brand, concepts: planned.concepts, shownConcepts: [...shown, ...planned.concepts.map((c) => c.logline)], conceptLimitation: planned.limitation },
       status: "concepts_ready",
@@ -459,14 +459,23 @@ async function writeFromUploadedScript(input: { project: VideoProject; brief: Vi
 
   await stage("understanding");
   const split = await structureUploadedScript(scriptText, ctx);
-  let script = assembleUploaded({ structured: split.structured, lines: split.lines, restoredScenes: split.restoredScenes, removedScenes: split.removedScenes, addedScenes: split.addedScenes, unused: split.unused, assetIds: ctx.assetIds });
+  const notes = split.usedRules ? ["The scenes were split by the script's own labels because the language model could not read this script. The words are exactly yours, but the pictures, camera and sound are only what your script says, so check each scene before making the video."] : [];
+  let script = assembleUploaded({ structured: split.structured, lines: split.lines, restoredScenes: split.restoredScenes, removedScenes: split.removedScenes, addedScenes: split.addedScenes, unused: split.unused, assetIds: ctx.assetIds, warnings: notes });
   // The type the operator chose decides the look, whatever the reader inferred from the script.
   const chosenStyle = styleForType(project.inputs.videoType);
   if (chosenStyle) script = { ...script, style: chosenStyle };
 
   await stage("writing");
+  // A step beyond reading the script never throws the whole script away: the script stands and the operator is told.
   script = { ...script, adCopy: await adCopyForUploaded({ script, provided: project.inputs.adCopyText?.trim() || null, ctx }) };
-  if (project.inputs.changeRequest?.trim()) script = await applyChangeRequest(script, project.inputs.changeRequest.trim(), ctx);
+  if (project.inputs.changeRequest?.trim()) {
+    try {
+      script = await applyChangeRequest(script, project.inputs.changeRequest.trim(), ctx);
+    } catch (error) {
+      logger.warn("An uploaded script's change request could not be applied", { projectId: project.id, error: error instanceof Error ? error.message : String(error) });
+      script = { ...script, warnings: [...script.warnings, "Your change request could not be applied automatically, so the script is as you wrote it. Edit the scenes you wanted changed, or ask for the change again."] };
+    }
+  }
 
   await stage("verifying");
   // The script's own numbers and claims are the operator's: they count as facts.

@@ -1,0 +1,285 @@
+{
+ "title": "Traffic Radius — The Resignation",
+ "angle_name": "Founder quits his own agency's job",
+ "pain": "Business owners are doing all the strategic work themselves while paying an agency that just sends reports.",
+ "structure": "Comedic workplace drama building to brand reveal",
+ "style": "Ultra-realistic cinematic commercial, Australian corporate setting, natural handheld moments",
+ "character": "Founder: Australian male, 38–45, charcoal casual blazer over cream shirt, dark circles under eyes, expressive face, slightly dishevelled hair, exhausted but intense manner. HR Manager: Australian female, 38–45, charcoal business blazer, light blouse, reading glasses, authoritative posture. Agency Rep: Australian male, 30–40, dark suit and tie, polished and self-assured, gradually wilting.",
+ "setting": "Premium Australian corporate office: glass-walled meeting room, timber meeting table, warm overhead lighting with natural light from floor-to-ceiling windows; flashbacks cut to dim home offices and a kitchen table at night.",
+ "hook_alternatives": [
+  "Close-up of a cardboard box slamming onto a boardroom table, coffee rippling in a nearby mug, nobody yet in frame",
+  "Extreme close-up of a founder's hand scrawling 'Google Ads strategy' in a notebook at midnight, clock on the wall reading 12:04",
+  "Wide shot of an empty agency chair at a lit meeting table, a thick printed report sitting unopened in the centre"
+ ],
+ "scenes": [
+  {
+   "line": "I quit! Two years of doing my marketing agency's job!",
+   "speaker": "on_camera",
+   "visual": "Wide cinematic shot of a premium glass-walled Australian corporate meeting room. The founder, charcoal blazer over cream shirt, storms through the glass door carrying a cardboard box loaded with a laptop, printed reports and charging cables. He drops the box heavily onto the timber table. The HR manager looks up from her laptop, startled. The founder leans forward, jaw tight, delivering his line directly at her.",
+   "camera": "Start wide to capture the full room and entry; follow the founder with a handheld push; cut sharply to a low-angle close-up of the box hitting the table; rapid push-in to the founder's angry face",
+   "keywords": [
+    "quit",
+    "agency's job"
+   ],
+   "stat": null,
+   "asset_id": null,
+   "sound": "Loud thud of the box on timber, short silence, then subtle dramatic underscore begins low",
+   "seconds": 5
+  },
+  {
+   "line": "Sorry — you work for your agency?",
+   "speaker": "on_camera",
+   "visual": "Tight close-up of the HR manager's face as she slowly lowers her reading glasses, brow furrowed in genuine confusion, the glass wall of the meeting room softly blurred behind her.",
+   "camera": "Tight close-up, slight upward angle on the HR manager, static then a slow rack focus to sharpen her expression",
+   "keywords": [
+    "work for your agency"
+   ],
+   "stat": null,
+   "asset_id": null,
+   "sound": "Restrained comedic pause, paper shuffling off-screen",
+   "seconds": 3
+  },
+  {
+   "line": "No! I pay them! My Google Ads spend keeps climbing, but revenue doesn't!",
+   "speaker": "on_camera",
+   "visual": "Reverse close-up of the founder pointing at himself, then slamming printed advertising invoices and reports onto the timber table. The agency representative is visible as a blurred figure at the far end of the table, shifting uncomfortably in his seat.",
+   "camera": "Reverse close-up on the founder; quick tilt down to the invoices hitting the table; brief wide insert showing the agency rep in the background",
+   "keywords": [
+    "Google Ads spend",
+    "revenue"
+   ],
+   "stat": null,
+   "asset_id": null,
+   "sound": "Paper slap on table, brief comedic pause, underscore tightens",
+   "seconds": 5
+  },
+  {
+   "line": "Who builds the growth strategy?",
+   "speaker": "on_camera",
+   "visual": "The HR manager sits upright, leaning slightly forward like a corporate investigator, reading glasses in hand, the timber table between her and the founder.",
+   "camera": "Tight close-up on the HR manager, slight push-in as she speaks, warm overhead light catching her blazer",
+   "keywords": [
+    "growth strategy"
+   ],
+   "stat": null,
+   "asset_id": null,
+   "sound": "Short percussive beat punctuates the question",
+   "seconds": 3
+  },
+  {
+   "line": "Me.",
+   "speaker": "on_camera",
+   "visual": "Flashback cut: the founder alone in a dim private office, charcoal blazer on the back of his chair, leaning over a desk covered in printed performance reports, typing a growth strategy on his laptop, the only light a desk lamp casting warm shadows.",
+   "camera": "Medium close-up on the founder's tired face in the flashback office, slight handheld drift, then cut back to the meeting room for a quick close-up of him pointing at himself",
+   "keywords": [
+    "Me"
+   ],
+   "stat": null,
+   "asset_id": null,
+   "sound": "Single percussive beat, music intensity nudges up",
+   "seconds": 3
+  },
+  {
+   "line": "Who plans the campaigns?",
+   "speaker": "on_camera",
+   "visual": "Back in the meeting room: the HR manager tilts her head, pen tapping the table, expression shifting from confusion to disbelief.",
+   "camera": "Rapid close-up on the HR manager, static frame, natural light from the window edging her face",
+   "keywords": [
+    "plans the campaigns"
+   ],
+   "stat": null,
+   "asset_id": null,
+   "sound": "Short percussive beat",
+   "seconds": 3
+  },
+  {
+   "line": "Me!",
+   "speaker": "on_camera",
+   "visual": "Flashback cut: the founder at his work desk, surrounded by printed product images, a budget spreadsheet face-down beside his keyboard, rubbing his temple while reviewing campaign notes on a notepad.",
+   "camera": "Medium close-up on the founder's hands and face in the flashback, handheld, warm desk-lamp light; cut back to meeting room close-up of him jabbing his chest",
+   "keywords": [
+    "Me"
+   ],
+   "stat": null,
+   "asset_id": null,
+   "sound": "Percussive beat, music builds another notch",
+   "seconds": 3
+  },
+  {
+   "line": "Who writes the creative briefs?",
+   "speaker": "on_camera",
+   "visual": "Meeting room: the HR manager stands slightly from her chair, both palms flat on the table, pressing the interrogation harder, reading glasses now fully off.",
+   "camera": "Low-angle close-up on the HR manager, slight upward tilt to emphasise authority, shallow depth of field",
+   "keywords": [
+    "creative briefs"
+   ],
+   "stat": null,
+   "asset_id": null,
+   "sound": "Short percussive beat, music tension rising",
+   "seconds": 3
+  },
+  {
+   "line": "Me! Midnight! Sundays!",
+   "speaker": "on_camera",
+   "visual": "Flashback cut: the founder at a kitchen table late at night, room dimly lit by a single overhead pendant, an unfinished mug of coffee beside scattered notebooks, writing creative brief instructions by hand, eyes heavy with exhaustion. Return to meeting room: dramatic zoom into the founder's face as he delivers the final word, visibly at breaking point.",
+   "camera": "Flashback: medium close-up on the founder's hand writing, then tilt up to his exhausted face; cut back to meeting room with a dramatic fast zoom into his eyes",
+   "keywords": [
+    "Midnight",
+    "Sundays"
+   ],
+   "stat": null,
+   "asset_id": null,
+   "sound": "Three sharp percussive beats on each word, music peaks then holds",
+   "seconds": 5
+  },
+  {
+   "line": "We manage his account.",
+   "speaker": "on_camera",
+   "visual": "The agency representative is revealed clearly for the first time: polished dark suit and tie, open laptop in front of him, sitting comfortably at the far end of the timber table. He speaks with practised confidence, one hand resting on his laptop lid.",
+   "camera": "Medium shot of the agency representative, eye-level, slight push-in as he speaks, soft background bokeh of the glass office wall",
+   "keywords": [
+    "manage his account"
+   ],
+   "stat": null,
+   "asset_id": null,
+   "sound": "Music briefly pauses before the HR manager responds",
+   "seconds": 4
+  },
+  {
+   "line": "Manage? He's running your entire marketing department!",
+   "speaker": "on_camera",
+   "visual": "The HR manager turns sharply toward the agency representative, gesturing with an open hand toward the founder who stands beside the pile of invoices and reports on the table, arms out in exasperation.",
+   "camera": "Abrupt reverse close-up on the HR manager, then a quick reaction shot of the exhausted founder, then a tight close-up of the agency rep beginning to loosen his tie",
+   "keywords": [
+    "running your entire marketing department"
+   ],
+   "stat": null,
+   "asset_id": null,
+   "sound": "Underscore resumes with added tension, subtle comedic undertone",
+   "seconds": 4
+  },
+  {
+   "line": "We send monthly reports.",
+   "speaker": "on_camera",
+   "visual": "The agency representative turns his laptop screen toward the HR manager, revealing a glossy report interface filled with charts and graphs. He gestures toward it with quiet confidence, as if presenting a gift.",
+   "camera": "Over-the-shoulder shot from behind the HR manager looking toward the agency rep and his laptop, then cut to a close-up of his self-assured expression",
+   "keywords": [
+    "monthly reports"
+   ],
+   "stat": null,
+   "asset_id": null,
+   "sound": "Quiet printer whir begins in the background",
+   "seconds": 3
+  },
+  {
+   "line": "So he does the thinking, and you send a PDF?",
+   "speaker": "on_camera",
+   "visual": "The HR manager stares at the laptop with a completely unimpressed expression, one eyebrow raised, arms folded. In the corner of the room a printer hums and spits out another long report, curling onto the floor.",
+   "camera": "Close-up of the HR manager's deadpan face; short insert of the printer producing a curling report; back to a medium shot of the frustrated founder holding invoices",
+   "keywords": [
+    "thinking",
+    "PDF"
+   ],
+   "stat": null,
+   "asset_id": null,
+   "sound": "Understated comedic music sting, printer whir continues",
+   "seconds": 4
+  },
+  {
+   "line": "Exactly! And nobody can tell me what's actually working!",
+   "speaker": "on_camera",
+   "visual": "The founder steps forward, holding up a fistful of invoices toward the agency representative, his expression a mix of exhaustion and vindication.",
+   "camera": "Medium close-up on the founder, slight handheld shake to convey energy, warm overhead light, agency rep visible and uncomfortable in the background",
+   "keywords": [
+    "nobody can tell me",
+    "actually working"
+   ],
+   "stat": null,
+   "asset_id": null,
+   "sound": "Comedic music pauses on the final word for emphasis",
+   "seconds": 4
+  },
+  {
+   "line": "That's not a growth partner. That's an expensive inbox.",
+   "speaker": "on_camera",
+   "visual": "The HR manager leans forward slowly, both hands on the table, eyes fixed on the agency representative. She delivers the line with calm, measured certainty, not raising her voice.",
+   "camera": "Slow cinematic push-in on the HR manager's face, shallow depth of field, warm side-light from the window",
+   "keywords": [
+    "growth partner",
+    "expensive inbox"
+   ],
+   "stat": null,
+   "asset_id": null,
+   "sound": "Background music stops completely to let the line land in silence",
+   "seconds": 4
+  },
+  {
+   "line": "Bit harsh.",
+   "speaker": "on_camera",
+   "visual": "The agency representative sits back slightly, mouth open, unable to form a rebuttal. The founder nods slowly in silent agreement beside the pile of documents.",
+   "camera": "Static close-up of the agency representative's offended but deflated expression; quick reaction shot of the founder nodding",
+   "keywords": [
+    "harsh"
+   ],
+   "stat": null,
+   "asset_id": null,
+   "sound": "A single low comedic note, then silence",
+   "seconds": 3
+  },
+  {
+   "line": "Harsh? I run an online shop. I wrote my own Google Ads strategy last night!",
+   "speaker": "on_camera",
+   "visual": "The HR manager suddenly loses her composure: she pulls off her reading glasses and slams a personal notebook onto the table, open to handwritten marketing plans. Flashback cut: the same HR manager at home in casual clothes, sitting at a kitchen bench at night, reviewing campaign performance on a laptop, looking drained.",
+   "camera": "Dramatic close-up of the HR manager; rapid cut to the home flashback in a medium shot with dim warm kitchen light; back to the meeting room",
+   "keywords": [
+    "Google Ads strategy",
+    "last night"
+   ],
+   "stat": null,
+   "asset_id": null,
+   "sound": "Dramatic musical rise, slightly exaggerated for comedic effect",
+   "seconds": 5
+  },
+  {
+   "line": "You too?",
+   "speaker": "on_camera",
+   "visual": "The founder stares at the HR manager in stunned disbelief, mouth slightly open, the cardboard box still on the table between them.",
+   "camera": "Sudden zoom into the founder's wide-eyed expression, handheld, tight close-up",
+   "keywords": [
+    "You too"
+   ],
+   "stat": null,
+   "asset_id": null,
+   "sound": "Musical rise holds, comedic pause",
+   "seconds": 3
+  },
+  {
+   "line": "Move over. I'm quitting with you!",
+   "speaker": "on_camera",
+   "visual": "The HR manager stands abruptly, unclips her employee name badge and drops it onto the timber table with a sharp click. She grabs the founder's cardboard box. The founder breaks into a relieved smile. Both stride out of the glass meeting room together. The agency representative remains alone at the table, holding his monthly report. He looks down at it slowly, then looks directly into the camera with an awkward expression. The glass door swings shut.",
+   "camera": "Wide shot as both characters rise; tracking shot following them to the door; static shot of the agency rep alone at the table; final cinematic close-up of the glass door swinging shut",
+   "keywords": [
+    "quitting with you"
+   ],
+   "stat": null,
+   "asset_id": null,
+   "sound": "Comedic music reaches its peak, then cuts abruptly the moment the door closes",
+   "seconds": 7
+  },
+  {
+   "line": "Your business needs a growth partner, not another job. Traffic Radius. Book your free strategy call and find out what's holding back your growth.",
+   "speaker": "voiceover",
+   "visual": "Hold on the closed glass meeting room door for a beat. Cut to a polished modern Australian digital marketing office: a focused team gathered around a large table reviewing campaign performance together, pointing at printed briefs, discussing creative ideas with energy. Then transition to a matte charcoal background with subtle blue and green lighting accents. The official Traffic Radius logo appears centred on screen, white rounded background and tagline preserved exactly as supplied, held clearly while the voiceover finishes.",
+   "camera": "Static hold on the door; handheld cinematic cuts through the agency office; slow push-in to the logo on the charcoal background",
+   "keywords": [
+    "growth partner",
+    "Traffic Radius",
+    "free strategy call"
+   ],
+   "stat": null,
+   "asset_id": null,
+   "sound": "Soundtrack shifts from comedic to a confident uplifting Australian instrumental at low volume under the voiceover; ends with a clean musical resolution",
+   "seconds": 12
+  }
+ ]
+}

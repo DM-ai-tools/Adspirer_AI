@@ -398,22 +398,22 @@ describe("what the video model is asked for", () => {
     const prompt = promptFor(legacyBrief(), true);
     expect(prompt).not.toMatch(/overlay|composit|inset|legible|img_LQK0hUfl|Book Your Free Audit|budget leaking|26\.5M|Sales Revenue|proof asset|graphic is added|added afterwards|for a Meta ad/i);
     // The shot itself asks for no dashboard or asset (the word survives only in the rule that forbids them).
-    expect(prompt.split(/\n/).find((l) => l.startsWith("0s-6s"))).not.toMatch(/dashboard|asset|screen/i);
+    expect(prompt.split(/\n/).find((l) => l.startsWith("Shot "))).not.toMatch(/dashboard|asset|screen/i);
     expect(prompt).toContain("Presenter's open hand is held steady");
     expect(prompt).toContain(CLEAN_FOOTAGE_RULE);
     // A field that had to be dropped is replaced by a plain description, never left as a gap.
     expect(prompt).not.toMatch(/ of {2}| of \.| in \.|Action: \./);
-    expect(prompt).toMatch(/Shot 3\. .+ of the person in Lighter consultation-style corner/);
+    expect(prompt).toMatch(/Shot 3 \(about \d+ seconds\)\..+Subject and place: the person in Lighter consultation-style corner/);
   });
 
   it("the spoken line is passed on exactly, once, as speech, and never as something to display", () => {
     const prompt = promptFor(legacyBrief(), true);
-    const line = 'says, in real time: "In the results, that process delivered twenty six point five million in conversion value."';
+    const line = "says in real time {In the results, that process delivered twenty six point five million in conversion value.}";
     expect(prompt.split(line)).toHaveLength(2);
     expect(prompt).toMatch(/The spoken words are heard, never shown/);
     // A line that happens to contain a word like "logo" or "caption" is still spoken in full.
     const spoken = buildPlannedClipPrompt({ ...baseInput(), spoken: { 3: { text: "Your logo and your caption both matter.", speaker: "on_camera" } } });
-    expect(spoken).toContain('"Your logo and your caption both matter."');
+    expect(spoken).toContain("{Your logo and your caption both matter.}");
   });
 
   it("ends the last clip on a natural close, and only the last clip", () => {

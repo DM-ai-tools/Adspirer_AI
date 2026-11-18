@@ -40,7 +40,7 @@ const payloadSchema = z.object({
   mode: z.enum(["write", "upload"]).default("write"),
   scriptText: z.string().max(40_000).optional(),
   /** The operator's own concept for the video (with or without a script). */
-  conceptText: z.string().max(6000).optional(),
+  conceptText: z.string().max(40_000).optional(),
   adCopyText: z.string().max(4000).optional(),
   /** What to change in the uploaded script. Empty means nothing. */
   changeRequest: z.string().max(2000).optional(),

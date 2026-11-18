@@ -14,7 +14,7 @@ import { languageFor, sceneCharacterIds } from "@/lib/video/prompt-guards";
 import { planCreative, redesignScene, type PlanInput } from "@/lib/video/scene-plan";
 import { correctionLines, createVisionReviewer, decideClip, redesignReasons, reviewClip } from "@/lib/video/clip-qa";
 import { estimateClipUsd, SEEDANCE_SPECS, splitIntoClips, type SeedanceModelKey, type VideoResolution } from "@/lib/video/seedance";
-import { adaptToMissingSources, unsourcedFigures, type FigureAdjustment, type VideoScript } from "@/lib/video/script";
+import { adaptToMissingSources, MAX_SECONDS, unsourcedFigures, type FigureAdjustment, type VideoScript } from "@/lib/video/script";
 import { withTimes } from "@/lib/video/overlays";
 import { videoDirection } from "@/lib/video/video-types";
 import { resolveFinishing, type VideoMode } from "@/lib/video/clean-mode";
@@ -105,7 +105,7 @@ export function planInputFor(project: VideoProject, script: VideoScript, manifes
     assets: project.assets.map((a) => ({ id: a.id, name: a.name, summary: a.analysis?.summary ?? a.caption, stats: a.analysis?.stats ?? [] })),
     claims: effectiveClaims(project.brand),
     capabilities,
-    maxSeconds: 60,
+    maxSeconds: MAX_SECONDS,
   };
 }
 

@@ -205,10 +205,10 @@ export async function reviseVersion(project: VideoProject, input: ReviseInput, d
   const others = scripts.filter((s) => s.id !== found.id);
   const write = deps.write ?? writeScriptForAngle;
 
-  let seconds = Math.min(Math.max(Math.round(project.inputs.targetSeconds), 15), 60);
+  let seconds = Math.min(Math.max(Math.round(project.inputs.targetSeconds), 15), MAX_SECONDS);
   if (input.action === "retime") {
     if (!input.seconds) throw new Error("Say how long it should be.");
-    seconds = Math.min(Math.max(Math.round(input.seconds), 15), 60);
+    seconds = Math.min(Math.max(Math.round(input.seconds), 15), MAX_SECONDS);
   }
   const brief: VideoBrief = { ...storedBrief(project), targetSeconds: seconds };
   const ctx: WriteContext = writeContextFor(project, creative, brief);

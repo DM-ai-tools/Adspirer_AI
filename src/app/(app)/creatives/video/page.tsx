@@ -1976,7 +1976,7 @@ function VideoInner() {
                     <p className="mb-1 text-[11px] font-medium">
                       Target length: <span className="text-foreground">{seconds}s</span> <span className="font-normal text-muted">(a guide: each scene runs as long as its words take, up to 60s)</span>
                     </p>
-                    <input type="range" min={15} max={60} step={1} value={seconds} onChange={(e) => setSeconds(Number(e.target.value))} className="w-full" />
+                    <input type="range" min={15} max={120} step={1} value={seconds} onChange={(e) => setSeconds(Number(e.target.value))} className="w-full" />
                   </div>
                   ) : null}
                   {mode === "write" && videoType === "auto" ? (
@@ -2148,9 +2148,9 @@ function VideoInner() {
                           <Input className="font-medium" value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} />
                         </Field>
                       </div>
-                      <p className={cn("text-sm font-medium tabular-nums", draftTotal > 60 || draftTotal < 15 ? "text-destructive" : "text-foreground")}>
+                      <p className={cn("text-sm font-medium tabular-nums", draftTotal > 120 || draftTotal < 15 ? "text-destructive" : "text-foreground")}>
                         {draftTotal}s total{" "}
-                        <span className="text-xs font-normal text-muted">{draftTotal >= 30 && draftTotal <= 40 ? "(ideal range)" : draftTotal > 60 ? "(over the 60s limit)" : draftTotal < 30 ? "(a little short)" : ""}</span>
+                        <span className="text-xs font-normal text-muted">{draftTotal >= 30 && draftTotal <= 40 ? "(ideal range)" : draftTotal > 120 ? "(over the 120s limit)" : draftTotal < 30 ? "(a little short)" : ""}</span>
                       </p>
                     </div>
 
@@ -2344,7 +2344,7 @@ function VideoInner() {
 
                     <ChangeBox onBusy={setChanging} draft={{ title: draft.title, scenes: draft.scenes.map((sc) => ({ ...sc, seconds: Number(sc.seconds) || 2 })), adCopy: draft.adCopy }} projectId={view.id} scriptId={draft.id} canUndo={Boolean(draft.previousVersion)} changeNote={draft.changeNote ?? null} onChanged={(r) => void afterChange(draft.id, r)} />
 
-                    <Button onClick={() => void confirm()} disabled={confirming || changing || draftTotal > 60 || draftTotal < 15}>
+                    <Button onClick={() => void confirm()} disabled={confirming || changing || draftTotal > 120 || draftTotal < 15}>
                       {confirming ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
                       {view?.chosenScript?.id === draft.id ? "Confirm the changes" : "Confirm this script"}
                     </Button>

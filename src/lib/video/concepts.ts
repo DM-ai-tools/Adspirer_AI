@@ -21,7 +21,7 @@ import type { ConceptScores, CreativeBrief, VideoConcept } from "@/lib/video/scr
 export const CONCEPT_COUNT = 3;
 /** How many candidates are invented per round (more than are shown: the weak and the similar are dropped). */
 export const CONCEPT_CANDIDATES = 8;
-export const MAX_VIDEO_SECONDS = 60;
+export const MAX_VIDEO_SECONDS = 120;
 export const MAX_VOICES = 3;
 export const MAX_CAST = 3;
 export const MAX_SETTINGS = 4;

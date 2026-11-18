@@ -15,7 +15,6 @@ import { withModelFallback } from "@/lib/video/model-fallback";
 import { textRisk } from "@/lib/video/visual-rules";
 import { MAX_SCENE_SECONDS, retime, sceneSeconds, splitLongLine } from "@/lib/video/timing";
 import { splitLongScenes } from "@/lib/video/script-writer";
-import { conceptSchema } from "@/lib/video/concepts";
 import type { VideoScene, VideoScript } from "@/lib/video/script";
 import type { VideoConcept } from "@/lib/video/script-types";
 
@@ -109,19 +108,123 @@ export async function fitToModel(script: VideoScript, opts: { maxSeconds: number
   return { script: { ...fitted, adaptations }, adaptations };
 }
 
-/** Read the operator's own concept into the shape the writer works from. Their words are the source. */
+/** The concept the model is asked for: no size limits, because the limits are applied afterwards by `normaliseConcept` instead of rejecting a good answer. */
+const readConceptSchema = z.object({
+  title: z.string().describe("2-5 words, the concept's own name"),
+  format: z.string().describe("The format in your own words, e.g. 'faux movie trailer', 'sitcom scene'"),
+  logline: z.string().describe("The whole idea in one sentence"),
+  hook: z.string().describe("Exactly what the viewer sees and hears in the first 2 seconds"),
+  beats: z.array(z.object({ text: z.string().describe("What happens, in plain words, including any lines spoken"), seconds: z.number().describe("Roughly how long it runs, at most 15") })).describe("The story beat by beat, in order"),
+  whyItWorks: z.string(),
+  brandLink: z.string().describe("How the story lands on the brand's message"),
+  look: z.string().describe("Mood, light, camera style, colour"),
+  cast: z.array(z.string()).describe("Who appears, each in a few words"),
+  settings: z.array(z.string()).describe("Where it happens"),
+  voices: z.array(z.object({ id: z.string(), who: z.string(), description: z.string().describe("gender, rough age, timbre, accent, pace, energy") })).describe("Every voice that speaks"),
+  seconds: z.number().describe("Planned length in seconds"),
+});
+
+const MAX_BEATS = 8;
+const text = (v: unknown, fallback = ""): string => (typeof v === "string" && v.trim() ? v.trim() : fallback);
+
+/** Put a reading of the operator's concept in the shape the writer needs, merging and trimming instead of failing. Pure. */
+export function normaliseConcept(raw: unknown, targetSeconds: number): Omit<VideoConcept, "id"> {
+  const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  let beats = (Array.isArray(r.beats) ? r.beats : [])
+    .filter((b): b is Record<string, unknown> => Boolean(b) && typeof b === "object")
+    .map((b) => ({ text: text(b.text), seconds: Number.isFinite(Number(b.seconds)) && Number(b.seconds) > 0 ? Number(b.seconds) : 4 }))
+    .filter((b) => b.text);
+  // More beats than the system can plan: the two shortest neighbours become one, so the whole story stays.
+  while (beats.length > MAX_BEATS) {
+    let at = 0;
+    let least = Infinity;
+    for (let i = 0; i < beats.length - 1; i += 1) {
+      const together = beats[i]!.seconds + beats[i + 1]!.seconds;
+      if (together < least) {
+        least = together;
+        at = i;
+      }
+    }
+    beats = [...beats.slice(0, at), { text: `${beats[at]!.text} Then: ${beats[at + 1]!.text}`, seconds: least }, ...beats.slice(at + 2)];
+  }
+  const list = (v: unknown, max: number) => (Array.isArray(v) ? v : []).map((x) => text(x)).filter(Boolean).slice(0, max);
+  const voices = (Array.isArray(r.voices) ? r.voices : [])
+    .filter((v): v is Record<string, unknown> => Boolean(v) && typeof v === "object")
+    .map((v, i) => ({ id: text(v.id, `voice${i + 1}`), who: text(v.who, "narrator"), description: text(v.description, "Natural, clear, confident") }))
+    .slice(0, 4);
+  const title = text(r.title, "Your concept");
+  return {
+    title,
+    format: text(r.format, "Your own format"),
+    logline: text(r.logline, title),
+    hook: text(r.hook, beats[0]?.text ?? title),
+    beats,
+    whyItWorks: text(r.whyItWorks, "It is the operator's own idea."),
+    brandLink: text(r.brandLink),
+    look: text(r.look, "As the concept describes"),
+    cast: list(r.cast, 6),
+    settings: list(r.settings, 6),
+    voices: voices.length ? voices : [{ id: "narrator", who: "narrator", description: "Natural, confident, warm" }],
+    seconds: Number.isFinite(Number(r.seconds)) && Number(r.seconds) > 0 ? Number(r.seconds) : targetSeconds,
+  };
+}
+
+/** Read a concept with no model: its paragraphs (or sentences) are the beats, in order. Pure. */
+export function conceptByRules(source: string, targetSeconds: number): Omit<VideoConcept, "id"> {
+  const clean = source.trim();
+  let parts = clean.split(/\n\s*\n/).map((p) => p.replace(/\s+/g, " ").trim()).filter(Boolean);
+  if (parts.length < 2) parts = clean.split(/(?<=[.!?])\s+/).map((p) => p.trim()).filter(Boolean);
+  if (parts.length < 2) parts = [clean.replace(/\s+/g, " "), "The story lands on the brand and its next step"];
+  const each = Math.min(MAX_SCENE_SECONDS, Math.max(2, Math.round(targetSeconds / Math.max(parts.length, 1))));
+  const first = clean.split(/(?<=[.!?])\s+|\n/)[0]!.trim();
+  return normaliseConcept(
+    {
+      title: first.length <= 60 ? first.replace(/[.!?]+$/, "") : "Your concept",
+      format: "Your own concept",
+      logline: first.slice(0, 240),
+      hook: parts[0]!.slice(0, 240),
+      beats: parts.map((t) => ({ text: t.slice(0, 600), seconds: each })),
+      whyItWorks: "It is the operator's own idea.",
+      brandLink: "",
+      look: "As the concept describes",
+      cast: [],
+      settings: [],
+      voices: [],
+      seconds: targetSeconds,
+    },
+    targetSeconds,
+  );
+}
+
+/** Read the operator's own concept into the shape the writer works from. Their words are the source, and any text is accepted. */
 export async function conceptFromText(text: string, ctx: { targetSeconds: number; deps?: { generate?: (prompt: string) => Promise<unknown> } }): Promise<VideoConcept> {
   const prompt = [
     "The operator wrote their own concept for a video ad. Read it into the fields below WITHOUT changing the idea: keep their premise, story, characters, places, tone and any lines they wrote. Fill in only what they left out, in the spirit of their idea.",
-    `Plan about ${ctx.targetSeconds} seconds unless they said otherwise. No beat longer than ${MAX_SCENE_SECONDS} seconds (split longer ones). At most 3 speaking voices. Characters are invented people, never real or famous ones.`,
+    `Plan about ${ctx.targetSeconds} seconds unless they said otherwise. At most 8 beats (group neighbouring moments into one beat if there are more). No beat longer than ${MAX_SCENE_SECONDS} seconds (split longer ones). At most 3 speaking voices. Characters are invented people, never real or famous ones.`,
     "",
     "THE OPERATOR'S CONCEPT:",
     text.trim(),
   ].join("\n");
-  const raw = ctx.deps?.generate
-    ? await ctx.deps.generate(prompt)
-    : await withModelFallback(async (model) => (await generateObject({ model, schema: conceptSchema, temperature: 0.2, prompt })).object);
-  const parsed = conceptSchema.parse(raw);
+  const ask = async (): Promise<unknown> => {
+    if (ctx.deps?.generate) return ctx.deps.generate(prompt);
+    let problem: string | null = null;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await withModelFallback(async (model) => (await generateObject({ model, schema: readConceptSchema, temperature: 0.2, maxOutputTokens: 8000, prompt: problem ? `${prompt}\n\nYour last answer was rejected because it did not fit the required shape (${problem}). Answer again in the required shape.` : prompt })).object);
+      } catch (error) {
+        const e = error as { name?: string; message?: string; cause?: { message?: string } };
+        if (attempt >= 1 || !(e?.name === "AI_NoObjectGeneratedError" || /did not match schema|no object generated/i.test(e?.message ?? ""))) throw error;
+        problem = String(e.cause?.message ?? e.message ?? "").replace(/\s+/g, " ").slice(-400);
+      }
+    }
+  };
+  let parsed: Omit<VideoConcept, "id">;
+  try {
+    parsed = normaliseConcept(await ask(), ctx.targetSeconds);
+    if (parsed.beats.length < 2) throw new Error("The reply had fewer than two beats.");
+  } catch {
+    // Whatever was typed is still read, from its own paragraphs, so nothing fails.
+    parsed = conceptByRules(text, ctx.targetSeconds);
+  }
   return { ...parsed, id: `concept_own_${Date.now().toString(36)}`, beats: parsed.beats.flatMap((b) => (b.seconds > MAX_SCENE_SECONDS ? [{ ...b, seconds: MAX_SCENE_SECONDS }, { text: `${b.text} (continued)`, seconds: Math.max(2, b.seconds - MAX_SCENE_SECONDS) }] : [b])) };
 }
-

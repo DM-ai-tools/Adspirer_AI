@@ -66,7 +66,7 @@ const input = (scenes: SceneBrief[], over: Partial<PlannedClipPromptInput> = {})
 
 describe("the prompt sent to the video model", () => {
   const prompt = buildPlannedClipPrompt(input([brief()]));
-  const shotLine = prompt.split("\n").find((l) => l.includes("Shot 1."))!;
+  const shotLine = prompt.split("\n").find((l) => l.includes("Shot 1 ("))!;
 
   it("never tells the model the camera is static", () => {
     expect(shotLine).not.toMatch(STATIC_CAMERA);
@@ -91,7 +91,7 @@ describe("the prompt sent to the video model", () => {
 
   it("describes movement of the scene when nobody is in the shot", () => {
     const p = buildPlannedClipPrompt(input([brief({ characterId: null, action: "Steam rises from a mug" })], { refs: { characterIds: [], environmentIds: ["e"], previousFrame: false, previousVideo: false } }));
-    const line = p.split("\n").find((l) => l.includes("Shot 1."))!;
+    const line = p.split("\n").find((l) => l.includes("Shot 1 ("))!;
     expect(line).toMatch(/Movement: something in the frame/i);
   });
 

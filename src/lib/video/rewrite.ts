@@ -84,7 +84,7 @@ const copySchema = z.object({
   primary_text: z.string().describe("70 to 130 words. Line 1: a standalone hook under 125 characters. Then 2 to 3 short paragraphs, then the next step in plain words."),
   headline: z.string().describe("Under 40 characters"),
   description: z.string().describe("Under 30 characters"),
-  cta: z.enum(CTA_VALUES),
+  cta: z.string().describe(`One of: ${CTA_VALUES.join(", ")}`),
 });
 
 /** Rewrite the ad copy to fix what was found and/or what the operator asked for. */
@@ -109,5 +109,7 @@ export async function rewriteAdCopy(input: { script: VideoScript; feedback?: str
       .filter(Boolean)
       .join("\n"),
   });
-  return { primaryText: object.primary_text, headline: object.headline, description: object.description, cta: object.cta };
+  // A button the model names that is not one of the platform's is replaced, not refused.
+  const cta = (CTA_VALUES.find((c) => c.toLowerCase() === object.cta.trim().toLowerCase()) ?? "Learn More") as VideoScript["adCopy"]["cta"];
+  return { primaryText: object.primary_text, headline: object.headline, description: object.description, cta };
 }

@@ -11,11 +11,21 @@ export type SpokenBlock = {
   speaker: "voiceover" | "on_camera";
   /** The script's own visual direction that follows this line, if it gives one. */
   visual: string | null;
+  /** Who says it, when the script names them ("Founder", "HR Manager"). */
+  name?: string | null;
+  /** The first and last line of the script (0-based) this block occupies, its label included. */
+  startLine?: number;
+  endLine?: number;
 };
+
+/** Whether a line of the script opens a spoken part ("VO:", "Dialogue — Founder:", `HR Manager: "..."`). */
+export function startsSpokenPart(lines: string[], i: number): boolean {
+  return startOf(lines, i) !== null;
+}
 
 const SPOKEN_LABEL = /^\s*(?:[-*•]\s*)?(VO|V\.O\.|VOICE[ -]?OVER|NARRATOR|NARRATION|PRESENTER|SPEAKER|HOST|DIALOGUE|ON[ -]?CAMERA|CREATOR|FOUNDER)\s*[:\-–—]\s*(.*)$/i;
 /** Any other "Label:" line (Visual Direction, Text Overlay, Uploaded Asset Placeholder ...) ends a spoken block. */
-const ANY_LABEL = /^\s*(?:[-*•]\s*)?[A-Za-z][A-Za-z0-9 /&()'.-]{1,45}:(\s|$)/;
+const ANY_LABEL = /^\s*(?:[-*•]\s*)?[A-Za-z][A-Za-z0-9 /&()'.–—-]{1,45}:(\s|$)/;
 const VISUAL_LABEL = /^\s*(?:[-*•]\s*)?(?:VISUAL(?: DIRECTION)?|VISUALS|B-?ROLL|SHOT|SCENE)\s*[:\-–—]\s*(.*)$/i;
 /** Labels of the other things a script puts beside its spoken line: these end a visual direction. */
 const OTHER_LABEL = /^\s*(?:[-*•]\s*)?(?:TEXT OVERLAY|ON[- ]?SCREEN(?: TEXT)?|SUPER|CAPTION|UPLOADED ASSET|AI VISUAL|ASSET|PLACEHOLDER|SOUND|MUSIC|SFX|AUDIO|CAMERA|TRANSITION)\b/i;
@@ -26,41 +36,97 @@ function unquote(text: string): string {
   return text.trim().replace(/^[“”"‘’']+/, "").replace(/[“”"‘’']+$/, "").trim();
 }
 
-const isVoice = (label: string) => /^(VO|V\.O\.|VOICE|NARRAT)/i.test(label.replace(/\s/g, ""));
+const isVoice = (label: string) => /^(VO|V\.O\.|VOICE|NARRAT|ANNOUNCER)/i.test(label.replace(/\s/g, ""));
+
+/** Words a "Label:" can have when it is a direction or a heading and not a person speaking. */
+const DIRECTION_NAME =
+  /^(?:visuals?(?: direction)?|camera(?: direction)?|acting(?: direction)?|sound|music|sfx|audio|text overlay|on[- ]?screen(?: text)?|super|caption|transition|note|notes|title|scene|shot|flashback(?: [a-z])?|setting|location|cast|characters?|style|cinematography|production|important production requirements|voiceover and audio|overall storytelling flow|reveal|logo|asset|uploaded asset|ai visual|placeholder)\b/i;
+/** A speaker's name: a short label, not a sentence. */
+const NAME = /^[A-Za-z][A-Za-z .'&/()-]{0,40}$/;
+const OPENS_QUOTE = /^[“"‘]/;
+const CLOSES_QUOTE = /[”"’][.!?]?\s*$/;
+
+type Start = { name: string | null; speaker: "voiceover" | "on_camera"; rest: string };
+
+/** Whether this line begins a spoken part, and who says it. The next non-empty line is looked at for "Name:" followed by the words on their own line. */
+function startOf(lines: string[], i: number): Start | null {
+  const line = lines[i]!;
+  const known = SPOKEN_LABEL.exec(line);
+  if (known) {
+    const rest = known[2]!.trim();
+    // "Dialogue — Founder: ..." names who speaks.
+    const named = /^dialogue$/i.test(known[1]!.trim()) ? /^([A-Za-z][A-Za-z .'&/()-]{0,40}):\s*(.*)$/.exec(rest) : null;
+    if (named) return { name: named[1]!.trim(), speaker: isVoice(named[1]!) ? "voiceover" : "on_camera", rest: named[2]!.trim() };
+    return { name: /^(narrat|vo|v\.o|voice)/i.test(known[1]!.replace(/\s/g, "")) ? null : known[1]!.trim(), speaker: isVoice(known[1]!) ? "voiceover" : "on_camera", rest };
+  }
+  // "Closing voiceover:", "Opening voiceover:", "Final VO:"
+  const framed = /^\s*(?:[-*•]\s*)?(?:closing|opening|final|end|intro|outro)\s+(?:voice[ -]?over|vo|v\.o\.|narration)\s*[:\-–—]\s*(.*)$/i.exec(line);
+  if (framed) return { name: null, speaker: "voiceover", rest: framed[1]!.trim() };
+  // "Dialogue — HR Manager:" with the words below
+  const dialogue = /^\s*(?:[-*•]\s*)?dialogue\s*[—–-]\s*([^:]{1,40}):\s*(.*)$/i.exec(line);
+  if (dialogue) return { name: dialogue[1]!.trim(), speaker: isVoice(dialogue[1]!) ? "voiceover" : "on_camera", rest: dialogue[2]!.trim() };
+  // "HR Manager: "words"" or "HR Manager:" with a quoted line next
+  const named = /^\s*(?:[-*•]\s*)?([^:]{1,41}):\s*(.*)$/.exec(line);
+  if (named && NAME.test(named[1]!.trim()) && !DIRECTION_NAME.test(named[1]!.trim())) {
+    const rest = named[2]!.trim();
+    let next = "";
+    for (let k = i + 1; k < lines.length; k += 1) {
+      if (lines[k]!.trim()) {
+        next = lines[k]!.trim();
+        break;
+      }
+    }
+    if (OPENS_QUOTE.test(rest) || (!rest && OPENS_QUOTE.test(next))) {
+      const name = named[1]!.trim();
+      return { name, speaker: isVoice(name) ? "voiceover" : "on_camera", rest };
+    }
+  }
+  return null;
+}
 
 /** The labelled spoken blocks of a script, in order. */
 export function spokenBlocks(script: string): SpokenBlock[] {
   const lines = script.split(/\r?\n/);
   const blocks: SpokenBlock[] = [];
   for (let i = 0; i < lines.length; i += 1) {
-    const m = SPOKEN_LABEL.exec(lines[i]!);
+    const m = startOf(lines, i);
     if (!m) continue;
-    const parts = [m[2]!.trim()];
+    const parts = [m.rest];
     let j = i + 1;
-    // The block continues over plain lines until a blank line, a header or another label.
-    for (; j < lines.length; j += 1) {
+    // Words in quotes end where the quote closes; unquoted words continue over plain lines until a blank line, a header or another label.
+    let closed = OPENS_QUOTE.test(m.rest) && CLOSES_QUOTE.test(m.rest) && m.rest.length > 1;
+    for (; j < lines.length && !closed; j += 1) {
       const next = lines[j]!;
-      if (!next.trim() || SECTION_HEADER.test(next) || ANY_LABEL.test(next)) break;
+      if (!next.trim()) {
+        // a quoted line may follow a blank line after its label
+        if (!parts.some(Boolean) && lines.slice(j + 1).find((l) => l.trim())?.trim().match(OPENS_QUOTE)) continue;
+        break;
+      }
+      if (SECTION_HEADER.test(next) || ANY_LABEL.test(next) || startOf(lines, j)) break;
       parts.push(next.trim());
+      if (OPENS_QUOTE.test(parts.filter(Boolean)[0] ?? "") && CLOSES_QUOTE.test(next.trim())) {
+        j += 1;
+        break;
+      }
     }
     const text = unquote(parts.filter(Boolean).join(" "));
     // The script's own visual direction for this beat: the "Visual Direction:" that follows, up to the next block.
     let visual: string | null = null;
     for (let k = j; k < lines.length && k < j + 12; k += 1) {
-      if (SPOKEN_LABEL.test(lines[k]!) || SECTION_HEADER.test(lines[k]!)) break;
+      if (startOf(lines, k) || SECTION_HEADER.test(lines[k]!)) break;
       const v = VISUAL_LABEL.exec(lines[k]!);
       if (v) {
         const body = [v[1]!.trim()];
         for (let q = k + 1; q < lines.length; q += 1) {
           const l = lines[q]!;
-          if (!l.trim() || SPOKEN_LABEL.test(l) || SECTION_HEADER.test(l) || OTHER_LABEL.test(l) || VISUAL_LABEL.test(l)) break;
+          if (!l.trim() || startOf(lines, q) || SECTION_HEADER.test(l) || OTHER_LABEL.test(l) || VISUAL_LABEL.test(l)) break;
           body.push(l.replace(/^\s*[-*•]\s*/, "").trim());
         }
         visual = body.filter(Boolean).join("; ").slice(0, 400) || null;
         break;
       }
     }
-    if (text.split(/\s+/).filter(Boolean).length >= 2) blocks.push({ text, speaker: isVoice(m[1]!) ? "voiceover" : "on_camera", visual });
+    if (text.split(/\s+/).filter(Boolean).length >= 1 && text.replace(/[^\p{L}\p{N}]/gu, "").length >= 2) blocks.push({ text, speaker: m.speaker, visual, name: m.name, startLine: i, endLine: j - 1 });
     i = j - 1;
   }
   return blocks;

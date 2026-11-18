@@ -84,7 +84,7 @@ async function setStage(projectId: string, current: FinalVideo, stage: string): 
 }
 
 /** How long the closing card is shown: long enough to read what is on it, within the overall budget. */
-export function endCardSecondsFor(wordCount: number, joinedSeconds: number, maxTotal = 60): number {
+export function endCardSecondsFor(wordCount: number, joinedSeconds: number, maxTotal = 120): number {
   const wanted = Math.min(Math.max(1.6 + wordCount * 0.3, END_CARD_SECONDS + 0.3), 4.5);
   const room = maxTotal - joinedSeconds;
   return Math.round(Math.max(Math.min(wanted, room), 2) * 10) / 10;
@@ -354,7 +354,7 @@ export async function assembleVideo(projectId: string, options: FinishingInput =
     const expected = actual.reduce((t, s) => t + s, 0) + endCardSeconds;
     const checks: QaCheck[] = [
       { name: "Length", ok: Math.abs(info.seconds - expected) <= 1, detail: `${info.seconds.toFixed(1)}s (expected about ${expected.toFixed(1)}s)` },
-      { name: "Within 60 seconds", ok: info.seconds <= 60, detail: `${info.seconds.toFixed(1)}s` },
+      { name: "Within 120 seconds", ok: info.seconds <= 120, detail: `${info.seconds.toFixed(1)}s` },
       { name: "Size", ok: info.width === W && info.height === H, detail: `${info.width}x${info.height} (wanted ${W}x${H})` },
       { name: "Sound present and not too quiet", ok: info.hasAudio && qa.meanVolumeDb !== null && qa.meanVolumeDb > -40, detail: qa.meanVolumeDb !== null ? `${qa.meanVolumeDb} dB average` : "no audio found" },
       { name: "No black frames", ok: qa.blackSeconds < 0.5, detail: `${qa.blackSeconds}s of black` },

@@ -59,7 +59,7 @@ const MAX_ATTEMPTS = 2;
 const fresh = (iso: string | null | undefined, now = Date.now()) => Boolean(iso) && now - Date.parse(iso!) < FRESH_MS;
 
 /** The longest a video can be, as the planner is told. */
-export const MAX_VIDEO_SECONDS = 60;
+export const MAX_VIDEO_SECONDS = 120;
 
 /**
  * Length problems no planner can fix, found before Generate: the words take longer to say than a video

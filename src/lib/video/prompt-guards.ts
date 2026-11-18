@@ -43,12 +43,12 @@ export function languageFor(locale: string): { language: string; accent: string 
 export function languageRule(locale: string): string {
   const { language, accent } = languageFor(locale);
   const others = language === "English" ? "Chinese or any other language" : "any other language";
-  return `Language: every spoken word, on camera or off, is in ${language}${accent ? ` with ${accent}` : ""}. The quoted lines are the exact words: say each one in ${language}, word for word, never translated and never in ${others}.`;
+  return `Language: every spoken word, on camera or off, is in ${language}${accent ? ` with ${accent}` : ""}. The lines in braces { } are the exact words: say each one in ${language}, word for word, never translated and never in ${others}.`;
 }
 
 /** The last line before the clip ends: the language, said a second time where the model reads last. */
 export function languageReminder(locale: string): string {
-  return `All speech in this clip is ${languageFor(locale).language}, word for word as quoted.`;
+  return `All speech in this clip is ${languageFor(locale).language}, word for word as written in the braces.`;
 }
 
 // ------------------------------------------------------------------ people
@@ -226,7 +226,7 @@ export function presentFromFirstFrame(text: string): string {
 
 /** A line spoken once, at a natural pace: the video model otherwise pads a short line by saying part of it again. */
 export const SAY_ONCE_RULE =
-  "Each quoted line is spoken exactly once, at a natural unhurried pace, with no repeated word or phrase, no stutter and no echo; after a line ends, that speaker is silent until the next quoted line.";
+  "Each line in braces is spoken exactly once, at a natural unhurried pace, with no repeated word or phrase, no stutter and no echo; after a line ends, that speaker is silent until the next line in braces.";
 
 /** The charts, maps and boards a video model fills with invented lettering. */
 export const PLAIN_SURFACES_RULE =
@@ -255,10 +255,10 @@ export function lintClipPrompt(input: PromptCheck): string[] {
     if (!input.attachedPeople.includes(id)) problems.push(`"${id}" appears in this clip but no reference picture of them is attached, so the model would invent a new face.`);
   }
   for (const line of input.prompt.split("\n")) {
-    const m = line.match(/^\d+s-\d+s: Shot (\d+)\./);
+    const m = line.match(/^Shot (\d+) \(about \d+ seconds?\)\./);
     if (!m) continue;
     const cut = line.indexOf("Light:");
-    const filmed = (cut > 0 ? line.slice(0, cut) : line).replace(/"[^"]*"/g, "");
+    const filmed = (cut > 0 ? line.slice(0, cut) : line).replace(/"[^"]*"/g, "").replace(/\{[^}]*\}/g, "");
     if (STATIC_CAMERA.test(filmed) || /\bcamera (?:holds?|lingers?) on\b/i.test(filmed)) problems.push(`Shot ${m[1]} is written with a static camera or a held frame, which comes out as frozen footage.`);
     if (!/Movement:/.test(line)) problems.push(`Shot ${m[1]} has no movement line.`);
   }

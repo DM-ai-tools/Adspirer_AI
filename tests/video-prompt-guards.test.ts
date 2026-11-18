@@ -152,7 +152,7 @@ describe("the prompt for clip 2", () => {
     ...over,
   });
   const prompt = buildPlannedClipPrompt(input());
-  const shots = prompt.split("\n").filter((l) => /^\d+s-\d+s: Shot/.test(l));
+  const shots = prompt.split("\n").filter((l) => /^Shot \d+ \(about \d+ seconds?\)/.test(l));
 
   it("says the speech is English, near the top and again at the end", () => {
     const lines = prompt.split("\n");
@@ -164,7 +164,7 @@ describe("the prompt for clip 2", () => {
 
   it("shows and describes all three people, each with a picture", () => {
     for (const id of ["business_owner", "translator", "new_arrival"]) expect(prompt).toMatch(new RegExp(`Person \\(${id}\\)`));
-    expect(prompt).toMatch(/Image \d is New Arrival/);
+    expect(prompt).toMatch(/Define the person in Image \d as New Arrival/);
   });
 
   it("ties each voice to the person it belongs to and keeps a man's voice male", () => {

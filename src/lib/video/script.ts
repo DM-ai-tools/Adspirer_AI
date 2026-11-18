@@ -8,7 +8,8 @@ import { sourceClaims, type ClaimUse } from "@/lib/video/claims";
 
 /** Ideal length range for the ad, in seconds, and the hard cap. */
 export const IDEAL_SECONDS = { min: 30, max: 40 } as const;
-export const MAX_SECONDS = 60;
+/** The longest a video can be: two minutes. */
+export const MAX_SECONDS = 120;
 export const DEFAULT_SECONDS = 35;
 /** English ad voiceover runs about 2.5 words a second; faster than this is hard to follow and to lip-sync. */
 export const MAX_WORDS_PER_SECOND = 3.0;

@@ -138,7 +138,7 @@ describe("checked before Generate", () => {
     const { scriptTimingProblem } = await import("@/lib/video/generation");
     const words = (n: number) => Array.from({ length: n }, () => "word").join(" ");
     expect(scriptTimingProblem(script([scene(1, words(30)), scene(2, words(30))]))).toBeNull();
-    expect(scriptTimingProblem(script([scene(1, words(60)), scene(2, words(60)), scene(3, words(60))]))).toMatch(/over the 60s maximum/);
+    expect(scriptTimingProblem(script([1, 2, 3, 4, 5, 6].map((n) => scene(n, words(60)))))).toMatch(/over the 120s maximum/);
     expect(scriptTimingProblem(script([scene(1, words(90))]))).toMatch(/Scene 1 needs about 34s, longer than the 30s one clip can run/);
   });
 });
