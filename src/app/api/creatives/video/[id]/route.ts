@@ -10,7 +10,7 @@ import { brandView } from "@/lib/video/brand-view";
 import { logoState } from "@/lib/video/brand-resolve";
 import { assetCautions, purposeOf } from "@/lib/video/assets";
 import { splitLabel } from "@/lib/video/evidence";
-import { confirmScript } from "@/lib/video/script-actions";
+import { confirmPatch, deleteGenerationFiles, freshScriptsPatch } from "@/lib/video/script-actions";
 import { pickMainStat } from "@/lib/video/required-stats";
 import { previewPlan } from "@/lib/video/plan-view";
 import { runAfterResponse } from "@/lib/api/background";
@@ -109,8 +109,9 @@ export async function PATCH(request: Request, ctx: Ctx) {
   return withApiHandler(async () => {
     const project = await load(ctx);
     const body = await parseBody(request, confirmSchema);
-    const { chosen, brand } = confirmScript(project, body);
-    const updated = await updateProject(project.id, { chosen_script: chosen, status: "confirmed", ...(brand !== project.brand ? { brand } : {}) });
+    // A script made earlier left its plan and clips behind: they are not this script's, so confirming it starts the video clean.
+    const updated = await updateProject(project.id, confirmPatch(project, body));
+    await deleteGenerationFiles(project);
     return jsonOk(await view(updated));
   });
 }
@@ -130,7 +131,8 @@ export async function DELETE(_request: Request, ctx: Ctx) {
 export async function POST(_request: Request, ctx: Ctx) {
   return withApiHandler(async () => {
     const project = await load(ctx);
-    await updateProject(project.id, { status: "writing", error: null, scripts: null, chosen_script: null });
+    await updateProject(project.id, freshScriptsPatch(project));
+    await deleteGenerationFiles(project);
     runAfterResponse("video-scripts", () => writeProjectScripts(project.id));
     return jsonOk({ ok: true });
   });

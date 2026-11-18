@@ -5,6 +5,7 @@ import { getProject, updateProject } from "@/lib/video/projects";
 import { writeProjectScripts } from "@/lib/video/brief";
 import { editBriefDefaults } from "@/lib/video/creative-brief";
 import { initialProgress } from "@/lib/video/progress";
+import { deleteGenerationFiles, freshScriptsPatch } from "@/lib/video/script-actions";
 import { runAfterResponse } from "@/lib/api/background";
 import { jsonOk, parseBody, withApiHandler } from "@/lib/api/response";
 
@@ -55,7 +56,8 @@ export async function POST(request: Request, ctx: Ctx) {
     };
 
     if (body.rewrite) {
-      await updateProject(project.id, { inputs, status: "writing", error: null, scripts: null, chosen_script: null, progress: initialProgress() });
+      await updateProject(project.id, { inputs, ...freshScriptsPatch(project), progress: initialProgress() });
+      await deleteGenerationFiles(project);
       runAfterResponse("video-scripts", () => writeProjectScripts(project.id));
       return jsonOk({ rewriting: true });
     }

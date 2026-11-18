@@ -1,3 +1,4 @@
+import { getObjectStorage } from "@/lib/storage/r2";
 import { effectiveClaims } from "@/lib/video/claims";
 import { planAngles } from "@/lib/video/angles";
 import { operatorClaims, writeContextFor } from "@/lib/video/brief";
@@ -135,6 +136,38 @@ export function confirmScript(project: VideoProject, body: ConfirmInput): { chos
   edited.warnings = [...splitNote, ...checkScript(edited, { corpus, assetIds: project.assets.map((a) => a.id), target: cursor, claims })];
   const chosen = { ...withSpeech(edited, project.inputs.speechRate, original.speech?.requestedSeconds ?? project.inputs.targetSeconds), warnings: edited.warnings };
   return { chosen, brand };
+}
+
+/**
+ * The plan, the clips and the finished video belong to the script they were made from. When that script is replaced
+ * (new scripts written, or another one confirmed) they go too: kept, they show the old script's scenes and clips under
+ * the new script's name, and the next step would carry on from the old plan.
+ */
+export function staleGenerationPatch(project: Pick<VideoProject, "plan" | "clips" | "final">): Partial<VideoProject> {
+  return project.plan || project.clips || project.final ? { plan: null, clips: null, final: null } : {};
+}
+
+/** Every file saved for a video that was made: each clip, the finished video, its review copy and its subtitles. */
+export function generationFiles(project: Pick<VideoProject, "clips" | "final">): string[] {
+  const keys = [...(project.clips ?? []).map((c) => c.videoKey), project.final?.key, project.final?.reviewKey, project.final?.subtitles?.srtKey, project.final?.subtitles?.vttKey];
+  return [...new Set(keys.filter((k): k is string => Boolean(k)))];
+}
+
+/** Remove the saved files of a video that no longer belongs to any script. A file that cannot be removed is left; it never blocks the change. */
+export async function deleteGenerationFiles(project: Pick<VideoProject, "clips" | "final">): Promise<void> {
+  const storage = getObjectStorage();
+  await Promise.all(generationFiles(project).map((key) => storage.delete(key).catch(() => undefined)));
+}
+
+/** Everything confirming a script changes: the script, the status, the brand when a typed figure was added, and the old video, which is gone. */
+export function confirmPatch(project: VideoProject, body: ConfirmInput): Partial<VideoProject> {
+  const { chosen, brand } = confirmScript(project, body);
+  return { chosen_script: chosen, status: "confirmed", ...(brand !== project.brand ? { brand } : {}), ...staleGenerationPatch(project) };
+}
+
+/** Writing a fresh set of scripts starts the video over: no script, no plan, no clips. */
+export function freshScriptsPatch(project: Pick<VideoProject, "plan" | "clips" | "final">): Partial<VideoProject> {
+  return { status: "writing", error: null, scripts: null, chosen_script: null, ...staleGenerationPatch(project) };
 }
 
 /**
