@@ -321,7 +321,10 @@ export type TaskResult = {
   error: { code: string; message: string } | null;
 };
 
-export async function arkRequest<T>(apiKey: string, path: string, init: RequestInit = {}): Promise<T> {
+/** Most ModelArk calls answer in a second or two; an image can take two minutes, so a caller can ask to wait longer. */
+export const DEFAULT_ARK_TIMEOUT_MS = 60_000;
+
+export async function arkRequest<T>(apiKey: string, path: string, init: RequestInit = {}, options: { timeoutMs?: number } = {}): Promise<T> {
   const config = getConfig();
   const url = `${config.ARK_BASE_URL.replace(/\/$/, "")}${path}`;
   let lastError: Error | null = null;
@@ -330,7 +333,7 @@ export async function arkRequest<T>(apiKey: string, path: string, init: RequestI
     const response = await fetch(url, {
       ...init,
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}`, ...(init.headers ?? {}) },
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(options.timeoutMs ?? DEFAULT_ARK_TIMEOUT_MS),
     });
     const text = await response.text();
     let body: unknown = null;

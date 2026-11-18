@@ -1,8 +1,11 @@
 import { mmss } from "@/lib/video/overlays";
-import { actionRuleFor, classifyStyle, clipVisual, REALISM_RULE, STYLE_LOOKS, TEXT_FREE_RULE, wantsRealism } from "@/lib/video/visual-rules";
-import { CLEAN_ENDING_RULE, CLEAN_FOOTAGE_RULE, footageOnly, graphicReference, stripGraphicPhrases } from "@/lib/video/clean-mode";
+import { actionRuleFor, classifyStyle, clipVisual, isStillAction, liveCamera, MOTION_RULE, movementLine, REALISM_RULE, STYLE_LOOKS, TEXT_FREE_RULE, wantsRealism } from "@/lib/video/visual-rules";
+import { CLEAN_ENDING_RULE, CLEAN_ENDING_RULE_NO_PERSON, CLEAN_FOOTAGE_RULE, footageOnly, graphicReference, stripGraphicPhrases } from "@/lib/video/clean-mode";
 import type { VideoScene, VideoScript } from "@/lib/video/script";
 import type { PlanCharacter, PlanEnvironment, SceneBrief } from "@/lib/video/pipeline-types";
+import { accentFor, characterOfVoice, languageReminder, languageRule, liveAction, liveFraming, reconcileVoicesWithCast } from "@/lib/video/prompt-guards";
+
+export { accentFor };
 
 /**
  * The prompt for one clip, built the way the Seedance prompt guides ask for: assets named by type
@@ -24,24 +27,13 @@ export type ClipPromptInput = {
   graphicSceneNumbers: number[];
 };
 
-const ACCENT: Record<string, string> = {
-  "en-au": "an Australian English accent",
-  "en-us": "an American English accent",
-  "en-gb": "a British English accent",
-  "en-nz": "a New Zealand English accent",
-};
-
-export function accentFor(locale: string): string {
-  return ACCENT[locale.toLowerCase()] ?? "a natural accent";
-}
-
 function shot(scene: VideoScene, offset: number, graphic: boolean, hasPresenter: boolean, hasCharacter: boolean): string {
   const start = offset;
   const end = offset + scene.seconds;
   const range = `${start}s-${end}s`;
   // A shot that is mainly a screen is filmed as the person's reaction: the model would draw the screen's words as nonsense.
   const visual = clipVisual(scene.visual, hasCharacter, graphic).text;
-  const parts = [`${range}: Shot ${scene.number}. ${visual}`, `Camera: ${scene.camera.replace(/\s+/g, " ").trim()}.`];
+  const parts = [`${range}: Shot ${scene.number}. ${visual}`, `Camera: ${liveCamera(scene.camera)}.`, movementLine(hasCharacter || hasPresenter, isStillAction(visual))];
   if (scene.line) {
     const who =
       scene.speaker === "on_camera"
@@ -81,11 +73,12 @@ export function buildClipPrompt(input: ClipPromptInput): string {
 
   const hasPresenter = refs.presenter;
   const talks = scenes.some((s) => s.line);
-  const summary = `${script.style}, realistic live-action vertical video for a Meta ad, ${total} seconds, clip ${input.clipNumber} of ${input.clipCount}.`;
+  const summary = `${script.style}, production-quality live-action vertical video for a Meta ad, shot by a film crew with a moving camera, ${total} seconds, clip ${input.clipNumber} of ${input.clipCount}.`;
 
   const constant = [
     script.character ? `Presenter: ${script.character}.` : "No presenter appears; keep the look of every shot consistent.",
     `Setting: ${script.setting}.`,
+    talks ? languageRule(locale) : null,
     talks && script.character ? `Voice: the presenter's voice is the same in every shot, natural and conversational, with ${accentFor(locale)}, speaking at an easy pace.` : null,
     `Look: ${STYLE_LOOKS[classifyStyle(script.style)]}`,
     "Hands, faces and objects are anatomically correct and undistorted.",
@@ -102,6 +95,7 @@ export function buildClipPrompt(input: ClipPromptInput): string {
     "Do not draw any subtitles, captions, on-screen text, numbers, charts, logos, brand names or watermarks anywhere in the frame; they are added afterwards.",
     TEXT_FREE_RULE,
     actionRuleFor(script.style),
+    MOTION_RULE,
     "No background music; natural room sound and the speaker's voice only.",
     "Cut cleanly between shots. Keep the same person, clothes, room and colour grade throughout. Speech and mouth movement stay in sync.",
   ];
@@ -113,7 +107,7 @@ export function buildClipPrompt(input: ClipPromptInput): string {
     "Shot list:",
     ...shots,
     ...rules,
-    input.clipNumber < input.clipCount ? `The clip is ${total} seconds long and ends at ${mmss(total)} mid-action, with the presenter in frame, so the next clip can follow it.` : `The clip is ${total} seconds long and ends at ${mmss(total)} on a settled final moment.`,
+    input.clipNumber < input.clipCount ? `The clip is ${total} seconds long and ends at ${mmss(total)} mid-action, with the presenter in frame, so the next clip can follow it.` : `The clip is ${total} seconds long and ends at ${mmss(total)} on a calm moment that is still alive: people breathing and moving a little, the light and the camera still drifting, never a held pose or a frozen frame.`,
   ].join("\n");
 }
 
@@ -174,6 +168,8 @@ function filmed(text: string): string {
 /** Mentions in the prompt of the same person across clips ("Video 1") only make sense when that person also speaks here. */
 export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
   const { scenes, refs } = input;
+  // A voice described as one gender for a person shown as the other is made to match the person on screen.
+  const castVoices = input.voices?.length ? reconcileVoicesWithCast(input.voices, input.characters) : input.voices;
   if (!scenes.length) throw new Error("A clip needs at least one scene.");
   const total = scenes.reduce((t, s) => t + s.seconds, 0);
   const isClean = Boolean(input.clean);
@@ -206,24 +202,32 @@ export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
     );
   }
 
-  const several = Boolean(input.voices?.length);
-  for (const v of input.voices ?? []) {
+  const several = Boolean(castVoices?.length);
+  for (const v of castVoices ?? []) {
     if (v.videoRef === null) continue;
     assetLines.push(
       `Video ${v.videoRef} is the VOICE REFERENCE for ${v.who}: every line ${v.who} says in this clip is in exactly the voice heard in Video ${v.videoRef}, with the same timbre, pitch, accent, pace and microphone sound. Use it only for the voice: do not copy its shots, framing or action.`,
     );
   }
 
-  const used = new Set(scenes.map((s) => s.characterId).filter((id): id is string => Boolean(id)));
+  // Everyone whose picture is attached is described too: a person who appears in a shot is never left to the model's imagination.
+  const used = new Set([...scenes.map((s) => s.characterId).filter((id): id is string => Boolean(id)), ...refs.characterIds]);
   const people = input.characters.filter((c) => used.has(c.id));
   // Any speech, on camera or off, gets the same fixed voice description: the voice is what the viewer notices changing first.
   const talks = scenes.some((s) => input.spoken[s.number]?.text.trim());
   const voice = input.voice?.trim() || `a natural, conversational adult voice with ${accentFor(input.locale)}, mid pitch, an easy steady pace`;
+  // A voice that belongs to a person on screen says so, so the model gives that voice to that face and not to another.
+  const voiceOwner = (who: string) => {
+    const owner = characterOfVoice(input.characters, who);
+    const at = owner ? imageLabels.findIndex((l) => l.label === `person:${owner.id}`) : -1;
+    return at >= 0 ? ` (the voice of the person in Image ${at + 1})` : "";
+  };
   const constant = [
     ...people.map((c) => `Person (${c.id}): ${clean(c.description)}.`),
     !people.length ? "No person appears on camera in this clip; keep the look of every shot consistent." : null,
+    talks ? languageRule(input.locale) : null,
     talks && several
-      ? `Voices (each one identical in every clip of this ad, and never swapped between speakers): ${input.voices!.map((v) => `${v.who}: ${v.description.replace(/[.\s]+$/, "") || `a natural adult voice with ${accentFor(input.locale)}`}`).join("; ")}. Every word is said clearly and completely, by the speaker named for it.`
+      ? `Voices (each one identical in every clip of this ad, and never swapped between speakers): ${castVoices!.map((v) => `${v.who}: ${v.description.replace(/[.\s]+$/, "") || `a natural adult voice with ${accentFor(input.locale)}`}${voiceOwner(v.who)}`).join("; ")}. Every word is said clearly and completely, by the speaker named for it.`
       : null,
     talks && !several ? `Voice (identical in every clip of this ad): ${voice.replace(/[.\s]+$/, "")}. The same single voice speaks every line, saying every word clearly and completely, with the same close, clean microphone sound and no change in tone, pitch or accent between shots.` : null,
     `Look: ${style}. ${wantsRealism(input.style) ? REALISM_RULE : "Real skin texture, natural light, believable materials."}`,
@@ -237,19 +241,21 @@ export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
     // A field that had to be dropped from a clean prompt (it described a graphic) is replaced by a plain description, never left as a gap.
     const or = (text: string, fallback: string) => clean(text).replace(/[.\s]+$/, "") || fallback;
     const parts = [
-      `${range}: Shot ${s.number}. ${or(s.framing, "Medium shot")} of ${or(s.subject, s.characterId ? "the person" : "the scene")} in ${or(s.setting, "the same place")}. Action: ${or(s.action, s.characterId ? "the person holds a natural, relaxed posture" : "the scene plays out naturally")}.`,
-      `Camera: ${or(s.camera, "steady, eye level")}. Light: ${or(s.lighting, "the natural light of this place and time of day")}.`,
+      `${range}: Shot ${s.number}. ${liveFraming(or(s.framing, "Medium shot"))} of ${or(s.subject, s.characterId ? "the person" : "the scene")} in ${or(s.setting, "the same place")}. Action: ${liveAction(or(s.action, s.characterId ? "the person moves naturally, shifting their weight and glancing around" : "the scene plays out with natural movement"))}.`,
+      // A camera written as static is made to move here: a locked-off frame is what makes a clip read as a slide.
+      `Camera: ${liveCamera(clean(s.camera))}. Light: ${or(s.lighting, "the natural light of this place and time of day")}.`,
+      movementLine(Boolean(s.characterId), isStillAction(s.action ?? "")),
     ];
     const say = input.spoken[s.number];
     if (say?.parts?.length) {
       // Several voices: who says each line, in order, and only the person speaking on camera moves their lips.
       for (const part of say.parts) parts.push(`${part.who}, ${part.onCamera ? "on camera" : "off camera"}, says: "${part.text.split(/\s+/).join(" ").trim()}"`);
-      if (s.characterId) parts.push(say.parts.some((p) => p.onCamera) ? "Only the person speaking on camera moves their lips, and only while they speak." : "The person's mouth stays closed and still while the voices speak.");
+      if (s.characterId) parts.push(say.parts.some((p) => p.onCamera) ? "Only the person speaking on camera moves their lips, and only while they speak." : "The person's mouth stays closed and relaxed while the voices speak, with natural breathing and small head movements.");
     } else if (say && say.text.trim()) {
       const who = say.speaker === "on_camera" ? "The person on camera says, in real time" : "A voice off camera says";
       // The spoken words are passed on exactly: they are speech, and are never filtered as if they described the picture.
       parts.push(`${who}: "${say.text.split(/\s+/).join(" ").trim()}"`);
-      if (say.speaker !== "on_camera" && s.characterId) parts.push("The person's mouth stays closed and still while the voice speaks.");
+      if (say.speaker !== "on_camera" && s.characterId) parts.push("The person's mouth stays closed and relaxed while the voice speaks, with natural breathing and small head movements.");
     } else {
       parts.push("No one speaks." + (s.characterId ? " The person's mouth stays closed and relaxed." : ""));
     }
@@ -266,20 +272,23 @@ export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
     isClean ? CLEAN_FOOTAGE_RULE : "Do not draw any subtitles, captions, on-screen text, numbers, charts, logos, brand names, buttons or watermarks anywhere in the frame; the real ones are added afterwards.",
     TEXT_FREE_RULE,
     actionRuleFor(input.style),
+    MOTION_RULE,
     "No background music; natural room sound and the speaker's voice only.",
     "Cut cleanly between shots. Keep the same person, clothes and colour grade for the shots they share; a new place may have its own light.",
-    ...(isClean && isLastClip ? [CLEAN_ENDING_RULE] : []),
+    // The last shot decides who is looked at: an empty room is not asked to look at the camera.
+    ...(isClean && isLastClip ? [scenes[scenes.length - 1].characterId ? CLEAN_ENDING_RULE : CLEAN_ENDING_RULE_NO_PERSON] : []),
   ];
   const fixes = input.corrections.length ? ["Fix these problems from the previous attempt:", ...input.corrections.map((c) => `- ${c.split(/\s+/).join(" ").trim()}`)] : [];
 
   return [
     ...assetLines,
-    `${style}, realistic live-action vertical video${isClean ? "" : " for a Meta ad"}, ${total} seconds, clip ${input.clipNumber} of ${input.clipCount}.`,
+    `${style}, production-quality live-action vertical video${isClean ? "" : " for a Meta ad"}, shot by a film crew with a moving camera, ${total} seconds, clip ${input.clipNumber} of ${input.clipCount}.`,
     ...constant,
     "Shot list:",
     ...shots,
     ...rules,
     ...fixes,
-    input.nextContinues ? `The clip is ${total} seconds long and ends at ${mmss(total)} mid-action so the next clip can follow it.` : `The clip is ${total} seconds long and ends at ${mmss(total)} on a settled moment.`,
+    ...(talks ? [languageReminder(input.locale)] : []),
+    input.nextContinues ? `The clip is ${total} seconds long and ends at ${mmss(total)} mid-action so the next clip can follow it.` : `The clip is ${total} seconds long and ends at ${mmss(total)} on a calm moment that is still alive: people breathing and moving a little, the light and the camera still drifting, never a held pose or a frozen frame.`,
   ].join("\n");
 }

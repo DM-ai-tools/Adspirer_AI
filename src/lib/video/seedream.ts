@@ -9,6 +9,9 @@ import { arkCredentials, arkRequest, type SeedanceModelKey } from "@/lib/video/s
  */
 export const SEEDREAM_MODEL = "dola-seedream-5-0-pro-260628";
 
+/** The image model can take two minutes for one picture; the old 60s limit cut every call off while the server still finished (and billed) it. */
+export const REFERENCE_IMAGE_TIMEOUT_MS = 220_000;
+
 export type ReferenceKind = "presenter" | "location";
 
 export function referencePrompt(kind: ReferenceKind, description: string): string {
@@ -26,10 +29,15 @@ export function referencePrompt(kind: ReferenceKind, description: string): strin
  */
 export async function createReferenceImage(model: SeedanceModelKey, kind: ReferenceKind, description: string): Promise<{ url: string }> {
   const { apiKey } = arkCredentials(model);
-  const res = await arkRequest<{ data?: Array<{ url?: string }> }>(apiKey, "/images/generations", {
-    method: "POST",
-    body: JSON.stringify({ model: SEEDREAM_MODEL, prompt: referencePrompt(kind, description), size: "2K", output_format: "png", watermark: false }),
-  });
+  // Measured live: a 2K PNG took 121s, a 1K JPEG 27s. The person keeps full size (the face is what must stay the same);
+  // a place only fixes layout and light, so it is made smaller and quicker.
+  const spec = kind === "presenter" ? { size: "2K", output_format: "png" } : { size: "1K", output_format: "jpeg" };
+  const res = await arkRequest<{ data?: Array<{ url?: string }> }>(
+    apiKey,
+    "/images/generations",
+    { method: "POST", body: JSON.stringify({ model: SEEDREAM_MODEL, prompt: referencePrompt(kind, description), ...spec, watermark: false }) },
+    { timeoutMs: REFERENCE_IMAGE_TIMEOUT_MS },
+  );
   const url = res?.data?.[0]?.url;
   if (!url) throw new Error("The image model returned no image address.");
   return { url };

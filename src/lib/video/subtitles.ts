@@ -10,6 +10,7 @@
  */
 import { fillGaps, type AsrWord, type TimedWord } from "@/lib/video/captions";
 import { numberToWords } from "@/lib/video/pronunciation";
+import { wrongLanguageHeard } from "@/lib/video/prompt-guards";
 import type { QaCheckResult, QaFinding, SpeechLine } from "@/lib/video/pipeline-types";
 
 // ------------------------------------------------------------------ tokens
@@ -561,6 +562,8 @@ export function compareSpokenToExpected(
   speech: SpeechLine[],
   asr: AsrWord[] | null,
   windows: Array<{ number: number; start: number; end: number }>,
+  /** The language the script is written in: named in the correction when the clip was spoken in another. */
+  language = "English",
 ): { checks: QaCheckResult[]; findings: QaFinding[]; transcript: string } {
   const checks: QaCheckResult[] = [];
   const findings: QaFinding[] = [];
@@ -587,6 +590,24 @@ export function compareSpokenToExpected(
 
   const transcript = asr.map((w) => w.word.trim()).filter(Boolean).join(" ");
   checks.push({ name: "speech_transcription", ok: true, detail: `Transcribed ${asr.length} words.` });
+  // The video model may speak another language than the script's (Mandarin, for an English script). Every line then
+  // fails the word match, which reads as "line missing"; the real fault is one, and it has a one-line fix.
+  const heardLanguage = wrongLanguageHeard(speech.map((l) => l.spoken).join(" "), transcript);
+  if (heardLanguage) {
+    const first = speech.map((l) => windows.find((w) => w.number === l.sceneNumber)).find(Boolean);
+    findings.push({
+      code: "speech_wrong_language",
+      severity: "critical",
+      category: "speech",
+      message: `The clip was spoken in ${heardLanguage}, not ${language}: the script's lines were translated.`,
+      evidence: `Heard: "${transcript.slice(0, 120)}".`,
+      atSeconds: first?.start ?? 0,
+      correction: `Every spoken word must be in ${language}, exactly as quoted: no translation and no ${heardLanguage}. State at the top of the prompt that all speech is ${language}, then give each line in quotes.`,
+      source: "asr",
+    });
+    for (const line of speech) checks.push({ name: `speech_scene_${line.sceneNumber}`, ok: false, detail: `Spoken in ${heardLanguage}, not ${language}.`, severity: "critical" });
+    return { checks, findings, transcript };
+  }
   for (const line of speech) {
     const win = windows.find((w) => w.number === line.sceneNumber);
     const expected = spokenTokens(line.spoken);

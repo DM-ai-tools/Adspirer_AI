@@ -23,6 +23,7 @@ import { assetCautions, jobAssets, snapshotAssets, snapshotLogo } from "@/lib/vi
 import { narrationCautions } from "@/lib/video/evidence";
 import { claimProjectLease, getProject, releaseProjectLease, updateProject, type VideoProject } from "@/lib/video/projects";
 import { buildPlannedClipPrompt, type PlannedClipPromptInput, type PlannedVoice } from "@/lib/video/clip-prompt";
+import { lintClipPrompt } from "@/lib/video/prompt-guards";
 import { effectiveClaims } from "@/lib/video/claims";
 import type { VideoScript } from "@/lib/video/script";
 import { sceneSeconds } from "@/lib/video/timing";
@@ -245,6 +246,14 @@ function buildPlannedClipRequest(project: VideoProject, plan: GenerationPlan, cl
     // A clean video's footage is the finished picture: the prompt then says nothing about graphics, even for a plan made before clean video existed.
     clean: videoMode(project) === "clean",
   });
+  // The check before the money is spent: a clip costs about $10, so a prompt that already failed once is never sent again.
+  const problems = lintClipPrompt({
+    prompt,
+    speaks: Object.values(spoken).some((x) => Boolean(x?.text.trim())),
+    requiredPeople: cont.characterIds,
+    attachedPeople: chosenPeople.map((r) => r.id),
+  });
+  if (problems.length) throw new Error(`Clip ${clip.number} was not sent: ${problems.join(" ")}`);
   const content: ArkContent[] = [{ type: "text", text: prompt }];
   for (const url of [...chosenPeople.map((r) => r.url), ...chosenPlaces.map((r) => r.url), previousFrame]) {
     if (url) content.push({ type: "image_url", image_url: { url }, role: "reference_image" });
@@ -366,19 +375,32 @@ async function ensureReferences(project: VideoProject, plan: GenerationPlan, cli
   // A reference that exists but has expired would no longer match the earlier clips: say so instead of drifting.
   const stale = wanted.find((w) => w.store[w.id] && !fresh(w.store[w.id]!.createdAt, now) && clip.number > 1);
   if (stale) return { made: false, stale: stale.id };
-  let made = false;
-  for (const w of wanted) {
-    const existing = w.store[w.id];
-    if (existing && fresh(existing.createdAt, now)) continue;
-    const img = await createReferenceImage(model, w.kind, w.description);
-    w.store[w.id] = { url: img.url, key: null, createdAt: new Date(now).toISOString() };
-    made = true;
-  }
+  // The pictures are made side by side (each can take a couple of minutes), and each one is kept the moment it exists:
+  // when one fails the others are not lost, because every picture is paid for whether or not it is used.
+  const todo = wanted.filter((w) => !(w.store[w.id] && fresh(w.store[w.id]!.createdAt, now)));
+  const results = await Promise.allSettled(
+    todo.map(async (w) => {
+      const img = await createReferenceImage(model, w.kind, w.description);
+      w.store[w.id] = { url: img.url, key: null, createdAt: new Date(now).toISOString() };
+    }),
+  );
   const firstPerson = Object.values(refs.characters)[0];
   const firstPlace = Object.values(refs.environments)[0];
   plan.character = firstPerson ?? null;
   plan.setting = firstPlace ?? null;
-  return { made, stale: null };
+  const failed = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+  if (failed) throw new ReferenceImagesError(failed.reason instanceof Error ? failed.reason.message : String(failed.reason), results.some((r) => r.status === "fulfilled"));
+  return { made: todo.length > 0, stale: null };
+}
+
+/** A reference image could not be made. `partial` is true when others were made and are kept in the plan, which then needs saving. */
+class ReferenceImagesError extends Error {
+  constructor(
+    message: string,
+    readonly partial: boolean,
+  ) {
+    super(`The reference pictures for this video could not be made: ${message}`);
+  }
 }
 
 /** The clip put back to waiting for another attempt (its rejected file is dropped; the review stays in its attempt log). */
@@ -451,7 +473,11 @@ export async function step(projectId: string, now = Date.now()): Promise<StepRes
       if (previous && previous.status !== "succeeded") return "working";
 
       if (plan.creative) {
-        const refs = await ensureReferences(project, plan, clips, clip, now);
+        const refs = await ensureReferences(project, plan, clips, clip, now).catch(async (error) => {
+          // Pictures that were made before another failed are kept, so the next try only asks for what is missing.
+          if (error instanceof ReferenceImagesError && error.partial) await save({ plan });
+          throw error;
+        });
         if (refs.stale) {
           clip.status = "failed";
           clip.unresolved = true;
@@ -640,17 +666,60 @@ export async function step(projectId: string, now = Date.now()): Promise<StepRes
   return "done";
 }
 
+/** A step that fails this many times in a row stops the video and says why, instead of trying for ever. */
+export const MAX_STEP_FAILURES = 3;
+
+/**
+ * A step threw (a reference image could not be made, the storage refused a file...). It is tried again, but the
+ * failure is written onto the clip so the screen can say what is wrong, and after MAX_STEP_FAILURES in a row the
+ * clip and the video are marked failed so "Make again" is offered. Before this, the error was only logged and the
+ * screen said "creating the clip" for as long as the page stayed open.
+ */
+async function recordStepFailure(projectId: string, error: unknown): Promise<void> {
+  const message = error instanceof Error ? error.message : String(error);
+  logger.warn("Video generation step failed", { projectId, error: message });
+  try {
+    const project = await getProject(projectId);
+    if (!project?.clips || project.status !== "generating") return;
+    const clip = project.clips.find((c) => c.status !== "succeeded");
+    if (!clip) return;
+    clip.stepErrors = (clip.stepErrors ?? 0) + 1;
+    clip.error = message;
+    if (clip.stepErrors >= MAX_STEP_FAILURES) {
+      clip.status = "failed";
+      clip.unresolved = true;
+      clip.error = `Clip ${clip.number} could not be made after ${MAX_STEP_FAILURES} tries: ${message}`;
+      await updateProject(projectId, { clips: project.clips, status: "failed", error: clip.error });
+      return;
+    }
+    await updateProject(projectId, { clips: project.clips });
+  } catch (writeError) {
+    logger.warn("Could not record a failed video step", { projectId, error: writeError instanceof Error ? writeError.message : String(writeError) });
+  }
+}
+
+/** A step worked: failures before it were hiccups, so the count starts again. */
+async function clearStepFailures(projectId: string): Promise<void> {
+  const project = await getProject(projectId);
+  if (!project?.clips?.some((c) => c.stepErrors)) return;
+  await updateProject(projectId, { clips: project.clips.map((c) => (c.stepErrors ? { ...c, stepErrors: 0 } : c)) });
+}
+
 /** One locked step. Returns "idle" when someone else is already working on this video. */
 export async function advance(projectId: string): Promise<StepResult> {
-  // Planning and inspecting a clip take longer than submitting or polling one, so they hold the lease longer.
+  // Planning, inspecting a clip, and making the reference pictures (up to two minutes each) take far longer than polling a task, so they hold the lease longer.
+  // A lease that runs out mid-step lets a second step repeat the same paid work, which is how one clip was submitted twice.
   const peek = await getProject(projectId);
-  const heavy = Boolean(peek?.plan && (!peek.plan.creative || peek.clips?.some((c) => c.status === "reviewing")));
+  const heavy = Boolean(peek?.plan && (!peek.plan.creative || peek.clips?.some((c) => c.status === "reviewing" || c.status === "waiting")));
   if (!(await claimProjectLease(projectId, heavy ? HEAVY_LEASE_MS : LEASE_MS))) return "idle";
   try {
-    return await step(projectId);
+    const result = await step(projectId);
+    await clearStepFailures(projectId).catch(() => undefined);
+    return result;
   } catch (error) {
-    logger.warn("Video generation step failed", { projectId, error: error instanceof Error ? error.message : String(error) });
-    return "working";
+    await recordStepFailure(projectId, error);
+    const after = await getProject(projectId).catch(() => null);
+    return after?.status === "failed" ? "failed" : "working";
   } finally {
     await releaseProjectLease(projectId);
   }
@@ -811,7 +880,7 @@ export async function regenerateFrom(projectId: string, fromClip: number, option
     if (c.number < fromClip) return c;
     if (c.videoKey) void storage.delete(c.videoKey).catch(() => undefined);
     // The attempt log stays: what a rejected take cost and why it was rejected is part of the video's history.
-    return { ...c, approved: false, status: "waiting" as const, taskId: null, attempts: 0, error: null, videoKey: null, lastFrameUrl: null, sourceVideoUrl: null, finishedAt: null, tokens: null, usd: null, prompt: null, qa: null, corrections: [], qaAttempts: 0, redesigns: 0, unresolved: false, decision: null, acceptedWithIssues: false, override: null };
+    return { ...c, approved: false, status: "waiting" as const, stepErrors: 0, taskId: null, attempts: 0, error: null, videoKey: null, lastFrameUrl: null, sourceVideoUrl: null, finishedAt: null, tokens: null, usd: null, prompt: null, qa: null, corrections: [], qaAttempts: 0, redesigns: 0, unresolved: false, decision: null, acceptedWithIssues: false, override: null };
   });
   // From clip 1 the references are made fresh too, so a new take starts from new, matching people and places.
   const replan = Boolean(options.replan) && fromClip === 1;

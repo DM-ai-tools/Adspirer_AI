@@ -61,11 +61,68 @@ export const TEXT_FREE_RULE =
 
 /** Hands, faces and motion are where AI footage breaks first, so the shots are kept simple. */
 export const SIMPLE_ACTION_RULE =
-  "One clear action per shot. Keep hand actions simple: one hand holding, pointing or gesturing, fingers relaxed and apart, nothing intricate. Keep the face steady and unobstructed while speaking. Camera movement is slow and has a reason; no whip pans, no sudden zooms, no fast cuts inside a shot.";
+  "One clear action per shot, and it visibly develops from the first second to the last. Keep hand actions simple: one hand holding, pointing or gesturing, fingers relaxed and apart, nothing intricate. Keep the face stable and unobstructed while speaking. The camera always moves, slowly and with a reason; no whip pans, no sudden zooms, no fast cuts inside a shot.";
 
 /** The action-trailer version: energy from the camera and the subject, still one clear action and simple hands. */
 export const DYNAMIC_ACTION_RULE =
-  "One clear, physically plausible action per shot, performed with energy and momentum. Keep hand actions simple, fingers relaxed and apart, nothing intricate. Keep a speaking face steady and unobstructed. Camera moves are energetic but readable: tracking, fast push-ins, low angles, a crane-up; a whip pan only at the very end of a shot as a transition. No shaky chaos, no morphing during fast motion.";
+  "One clear, physically plausible action per shot, performed with energy and momentum. Keep hand actions simple, fingers relaxed and apart, nothing intricate. Keep a speaking face stable and unobstructed. Camera moves are energetic but readable: tracking, fast push-ins, low angles, a crane-up; a whip pan only at the very end of a shot as a transition. No shaky chaos, no morphing during fast motion.";
+
+// ---------------------------------------------------------------------------------------------
+// Motion. A clip that looks like a slide has no movement in it: the plan wrote a static camera and a
+// person "standing still", and the rules sent with it asked for calm, steady and still. Nothing asked
+// for the opposite, so the video model, which anchors hard on reference pictures, held the picture.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Sent with every clip: what makes footage read as filmed by a crew rather than as a slideshow.
+ * "Face stable" (no morphing) is a different thing from "person still"; the two are never confused.
+ */
+export const MOTION_RULE =
+  "Real footage is never still. In every shot the subject is visibly in motion for the whole shot (breathing, weight shifts, glances, gestures, steps), something in the background moves (people, light, steam, foliage, traffic), and the camera is never locked off: it always travels (a slow push, drift, arc, track or handheld sway), so the frame is never a held image. No frozen poses, no slideshow or parallax effect on a still picture, no long hold on a single posture.";
+
+/** A camera written as fixed: "static", "locked-off", "tripod", "no movement", "barely perceptible". */
+export const STATIC_CAMERA = /\b(static|locked[- ]?off|stationary|unmoving|tripod(?:[- ]mounted)?|(?:fixed|still) (?:frame|camera|shot)|no (?:camera )?movement|barely perceptible|imperceptible)\b/i;
+
+const CAMERA_MOVES = /\b(push|pull|drift|pan|tilt|track|dolly|orbit|arc|handheld|sway|crane|follow|glide|sweep|zoom|reveal)\w*/i;
+const DEFAULT_CAMERA_MOVE = "Slow handheld push-in with a gentle natural sway";
+
+/**
+ * The camera as it is sent to the video model: one written as static is made to move, because a locked-off
+ * frame is what makes a clip read as a slide. A camera that already moves is passed on exactly as written.
+ */
+export function liveCamera(camera: string): string {
+  const flat = camera.replace(/\s+/g, " ").trim().replace(/[.\s]+$/, "");
+  if (!flat) return DEFAULT_CAMERA_MOVE;
+  if (!STATIC_CAMERA.test(flat)) return flat;
+  let out = flat
+    .replace(/\b(?:barely|almost|hardly)\s+(?:perceptible|imperceptible|noticeable)\b/gi, "gentle")
+    .replace(/\bimperceptible\b/gi, "gentle")
+    .replace(/\bno (?:camera )?movement\b/gi, "")
+    .replace(/\b(?:static|locked[- ]?off|stationary|unmoving|tripod(?:[- ]mounted)?|(?:fixed|still) (?:frame|camera|shot))\b(?: shot| camera| frame)?/gi, "")
+    .replace(/\s+,/g, ",")
+    .replace(/,(?:\s*,)+/g, ",")
+    .replace(/^[\s,;:\-]+|[\s,;:\-]+$/g, "")
+    .replace(/\s{2,}/g, " ")
+    .replace(/^with\b/i, "Handheld with");
+  if (!out) return DEFAULT_CAMERA_MOVE;
+  if (!CAMERA_MOVES.test(out)) out = `${out}, ${DEFAULT_CAMERA_MOVE.toLowerCase()}`;
+  return out.charAt(0).toUpperCase() + out.slice(1);
+}
+
+/** An action that is written as holding still: it gives the model nothing to animate. */
+const STILL_ACTION = /\b(?:standing still|stands? still|stays? still|sits? still|remains? (?:still|motionless|stationary)|(?:perfectly|completely|absolutely|totally|very) (?:still|motionless)|motionless|holds? (?:a |the )?(?:natural,? |relaxed,? |steady )*(?:pose|posture|position|stance)|(?:the )?camera (?:holds?|lingers?|rests?|stays?|remains?) (?:on|at|over)|hover(?:s|ing)?|stares?|staring|frozen|unmoving|waits?|waiting)\b/i;
+
+export function isStillAction(action: string): boolean {
+  return STILL_ACTION.test(action);
+}
+
+/** The line added to every shot: what keeps moving in it, whether or not a person is in the frame. */
+export function movementLine(hasPerson: boolean, stillAction: boolean): string {
+  if (!hasPerson) return "Movement: something in the frame is visibly moving through every second (light flickering or shifting, dust or steam drifting, a chair swivelling slightly, a door or curtain moving, people passing in the distance), and the camera travels slowly through the space, so it is never a still picture even though no one is in it.";
+  return stillAction
+    ? "Movement: the person is never frozen: they keep breathing, shifting their weight, glancing and making small natural movements through every second, and the camera travels around them."
+    : "Movement: the person keeps moving naturally through every second (breathing, weight shifts, glances, small gestures), never a held pose, and the camera travels.";
+}
 
 /** The action and camera rule for a style: dynamic for an action trailer, calm for everything else. */
 export function actionRuleFor(style: string): string {

@@ -34,6 +34,8 @@ export type ClipState = {
   status: ClipStatus;
   /** The ModelArk task, while one exists. */
   taskId: string | null;
+  /** Steps in a row that threw while working on this clip (a reference picture or a saved file failed). Cleared when a step works. */
+  stepErrors?: number;
   attempts: number;
   error: string | null;
   /** The clip saved in our storage once it is done. */

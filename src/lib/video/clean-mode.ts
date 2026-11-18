@@ -131,5 +131,9 @@ export const CLEAN_PLAN_RULES = [
 export const CLEAN_FOOTAGE_RULE =
   "This footage is the finished picture: nothing is added to it afterwards. Film only the people, places and objects described. The spoken words are heard, never shown: do not draw subtitles, captions, titles, highlighted words, numbers, charts, dashboards, screens with content, logos, brand names, buttons, web addresses or watermarks anywhere in the frame.";
 
+/** The ending for a film whose last shot has no one in it: the place stays alive after the last word. */
+export const CLEAN_ENDING_RULE_NO_PERSON =
+  "This is the end of the film. After the last spoken word the shot stays alive for about one second (the light shifts, dust drifts, the camera keeps travelling slowly). The clip does not end mid-word, on a frozen frame, or on a cut to a card, text or logo.";
+
 export const CLEAN_ENDING_RULE =
   "This is the end of the film. After the last spoken word the person closes their mouth, holds a relaxed, composed expression and looks at the camera for about one second while the shot stays alive (breathing, a small natural movement). The clip does not end mid-word, on a frozen face, or on a cut to a card, text or logo.";

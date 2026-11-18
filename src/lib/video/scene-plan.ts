@@ -12,7 +12,8 @@ import { z } from "zod";
 import { modelCandidates, withModelFallback } from "@/lib/video/model-fallback";
 import { LANDING_PAUSE, WORDS_PER_SECOND, wordsIn } from "@/lib/video/timing";
 import { CLEAN_PLAN_RULES, footageOnly, graphicReference, stripGraphicPhrases } from "@/lib/video/clean-mode";
-import { REALISM_RULE, wantsRealism } from "@/lib/video/visual-rules";
+import { isStillAction, liveCamera, MOTION_RULE, REALISM_RULE, STATIC_CAMERA, wantsRealism } from "@/lib/video/visual-rules";
+import { liveFraming } from "@/lib/video/prompt-guards";
 import type {
   ApprovedClaim,
   CreativePlan,
@@ -86,9 +87,9 @@ export const sceneBriefModelSchema = z.object({
   narration: z.string().describe("The spoken words of this scene, copied verbatim from the script (empty if the script scene has none)"),
   subject: z.string().describe("The concrete thing or person the shot is about"),
   setting: z.string().describe("The specific place this shot happens in"),
-  action: z.string().describe("ONE observable primary action that the subject performs"),
+  action: z.string().describe("ONE observable primary action that the subject performs, that visibly develops from the first second to the last (never standing still, holding a pose or waiting)"),
   framing: z.string().describe("Shot size and angle"),
-  camera: z.string().describe("Camera movement, slow and motivated"),
+  camera: z.string().describe("Camera movement: it always moves, with a clear, visible travel (push, drift, arc, track, handheld sway); never static or locked off"),
   lighting: z.string().describe("The light: source, direction, colour, mood"),
   style: z.string().describe("The look and art direction of this shot"),
   characterId: z.string().nullable().describe("Id of a character from characters, or null when nobody recurring appears"),
@@ -214,9 +215,9 @@ const SCENE_FIELDS = [
   "narration: the scene's spoken line copied verbatim from the script",
   "subject: the concrete person or thing the shot is about",
   "setting: the specific place",
-  "action: ONE observable primary action",
+  "action: ONE observable primary action that visibly develops from the first second to the last (never standing still, holding a pose or waiting)",
   "framing: shot size and angle",
-  "camera: movement, slow and motivated",
+  "camera: always moving, with a clear visible travel (push, drift, arc, track, handheld sway); never static or locked off",
   "lighting",
   "style: look and art direction",
   "characterId and environmentId: continuity ids from your characters and environments lists (characterId may be null)",
@@ -260,6 +261,14 @@ export const SETTING_RULE =
 export const EDIT_RULE =
   "Shoot and cut it like a top paid-social editor: open on the most arresting image within the first second; vary shot sizes from scene to scene (wide, medium, close-up, detail insert) so no two cuts in a row repeat a size; move the camera with a reason; cut on action, on a look or on a matching shape where the story allows (a match_cut needs that link in its rationale); keep the rhythm tight to the voice; and use a dissolve or dip only where time or mood genuinely shifts.";
 
+/**
+ * Footage that looks like a slide has no movement in it. A plan that writes a static camera and a person "standing
+ * still" produces exactly that, however good the lighting is. Written for the planner; the clip prompt carries its own
+ * version (MOTION_RULE) to the video model.
+ */
+export const MOTION_PLAN_RULE =
+  "Every shot must move, the way a real crew's footage does. The camera is never locked off: write a visible move for every shot (a slow push-in, a drift, an arc, a track alongside, a handheld sway, a crane or tilt) and never the words static, locked-off, tripod, fixed or 'barely perceptible'. The action is something that visibly changes between the first second and the last: a person walks, turns, reaches, picks up, opens, leans in, gestures or reacts, and never the words standing still, holding a pose, hovering, staring or waiting. A shot of a person who is not speaking still moves (a step, a shift of weight, a turn of the head, a hand doing something), and a shot of an object has motion in it (a hand entering, steam, light moving, a slow orbit). Some of the background is alive too. " + MOTION_RULE;
+
 /** Several speakers: each keeps one fixed voice, and only the on-camera speaker is seen talking. */
 export const SEVERAL_VOICES_RULE =
   "This ad has several speaking voices (listed with the script). In the voice field, describe EACH voice in one sentence prefixed by who it is (for example 'Maya: ...; the narrator: ...'): gender, rough age, timbre, accent, pace. Each speaker keeps that same voice in every scene. A speaker marked on camera is the person seen talking in that shot; an off-camera speaker is never seen talking.";
@@ -287,7 +296,7 @@ const HARD_RULES = [
 export function hardRulesFor(input: Pick<PlanInput, "mode"> & { script?: Pick<PlanInput["script"], "style" | "voices"> }): string[] {
   // Realism is asked of live action only; a stylised animation keeps its own look.
   const voiceRule = (input.script?.voices?.length ?? 0) > 1 ? SEVERAL_VOICES_RULE : VOICE_RULE;
-  const craft = [CONCEPT_RULE, SETTING_RULE, EDIT_RULE, voiceRule, ...(!input.script || wantsRealism(input.script.style) ? [`Every shot is written to look real: ${REALISM_RULE}`] : [])];
+  const craft = [CONCEPT_RULE, SETTING_RULE, EDIT_RULE, MOTION_PLAN_RULE, voiceRule, ...(!input.script || wantsRealism(input.script.style) ? [`Every shot is written to look real: ${REALISM_RULE}`] : [])];
   if (!isClean(input)) return [...craft, ...HARD_RULES];
   const kept = HARD_RULES.filter((r) => !r.startsWith("The video model must NEVER draw readable text") && !r.startsWith("Use only the asset ids and claim ids"));
   return [
@@ -624,6 +633,10 @@ export function validatePlan(plan: Omit<CreativePlan, "validation">, ctx: Valida
     if (b.characterId && !characterIds.has(b.characterId)) add(n, "unknown_character", "error", `Scene ${n} uses character "${b.characterId}", which is not in characters. Add it to characters or use one that is listed.`);
     if (b.environmentId && !environmentIds.has(b.environmentId)) add(n, "unknown_environment", "error", `Scene ${n} uses environment "${b.environmentId}", which is not in environments. Add it to environments or use one that is listed.`);
     else if (!b.environmentId) add(n, "empty_environmentId", "error", `Scene ${n} has no environmentId. Assign it one of the listed environments.`);
+
+    // A camera that is locked off and a person standing still make a clip that looks like a slide.
+    if (!blank(b.camera) && STATIC_CAMERA.test(b.camera)) add(n, "static_camera", "warning", `Scene ${n}'s camera is written as static ("${b.camera}"). Give it a visible move (a slow push-in, a drift, an arc, a track, a handheld sway): a locked-off frame makes the clip look like a slide.`);
+    if (!blank(b.action) && isStillAction(b.action)) add(n, "still_action", "error", `Scene ${n}'s action is standing still ("${b.action}"), which gives the video model nothing to animate and makes the shot look like a slide. Write something the subject visibly does between the first second and the last (walks, turns, reaches, picks up, opens, leans in, reacts).`);
 
     // one primary action
     if (!blank(b.action)) {
@@ -1007,6 +1020,8 @@ const SOFT_PLAN_CODES = new Set([
   "text_in_footage",
   "graphic_in_footage",
   "ending_not_natural",
+  // A preference about how the shot moves: asked for, never a reason to stop the video (the clip prompt adds the movement itself).
+  "still_action",
 ]);
 
 /** After the last repair round: creative preferences become warnings; only problems that make the video impossible stay errors. */
@@ -1057,7 +1072,7 @@ export function autoRepairPlan<T extends Omit<CreativePlan, "validation">>(plan:
           setting: input.script.setting,
           action: s.visual,
           framing: "Medium shot at eye level",
-          camera: s.camera || "Slow, steady push-in",
+          camera: liveCamera(s.camera || "Slow handheld push-in"),
           lighting: "The natural light of this place and time of day",
           style: input.script.style,
           characterId: s.speaker === "on_camera" ? recurring : null,
@@ -1077,9 +1092,10 @@ export function autoRepairPlan<T extends Omit<CreativePlan, "validation">>(plan:
     b.narration = s.line;
     b.subject = fill(b.subject, b.characterId ? "the person" : "the scene");
     b.setting = fill(b.setting, input.script.setting || "the same place");
-    b.action = fill(b.action, b.characterId ? "the person holds a natural, relaxed posture" : "the scene plays out naturally");
-    b.framing = fill(b.framing, "Medium shot at eye level");
-    b.camera = fill(b.camera, "Slow, steady push-in");
+    b.action = fill(b.action, b.characterId ? "the person moves naturally, shifting their weight and glancing around" : "the scene plays out with natural movement");
+    b.framing = liveFraming(fill(b.framing, "Medium shot at eye level"));
+    // A camera written as static is made to move here, so the plan itself never carries a locked-off shot.
+    b.camera = liveCamera(fill(b.camera, "Slow handheld push-in"));
     b.lighting = fill(b.lighting, "The natural light of this place and time of day");
     b.style = fill(b.style, input.script.style);
     b.purpose = fill(b.purpose, `Carries the line of scene ${s.number}.`);

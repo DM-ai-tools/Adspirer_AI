@@ -10,6 +10,7 @@ import { runFfmpeg } from "@/lib/video/ffmpeg";
 import { transcribeWords } from "@/lib/video/asr";
 import { applyLexicon, buildLexicon, SEEDANCE_SPEECH_PROVIDER } from "@/lib/video/pronunciation";
 import { compareSpokenToExpected } from "@/lib/video/subtitles";
+import { languageFor, sceneCharacterIds } from "@/lib/video/prompt-guards";
 import { planCreative, redesignScene, type PlanInput } from "@/lib/video/scene-plan";
 import { correctionLines, createVisionReviewer, decideClip, redesignReasons, reviewClip } from "@/lib/video/clip-qa";
 import { estimateClipUsd, SEEDANCE_SPECS, splitIntoClips, type SeedanceModelKey, type VideoResolution } from "@/lib/video/seedance";
@@ -216,7 +217,11 @@ export function continuityFor(
   const speakerIds = new Set(briefs.filter(speaks).map((b) => b.characterId!));
   const prevSpeakerIds = new Set(prevBriefs.filter(speaks).map((b) => b.characterId!));
   const sameSpeaker = [...speakerIds].some((id) => prevSpeakerIds.has(id));
-  const characterIds = [...new Set(briefs.map((b) => b.characterId).filter((id): id is string => Boolean(id)))];
+  // Everyone who is in the clip gets a picture: the scene's main character, anyone the shot is written to show, and anyone
+  // who speaks on camera. A scene names one character only, so a two-shot would otherwise be filmed without the second person.
+  const onCameraSpeakers = (b: SceneBrief) =>
+    (script.scenes.find((s) => s.number === b.number)?.lines ?? []).filter((l) => l.onCamera && l.text.trim()).map((l) => script.voices?.find((v) => v.id === l.voiceId)?.who ?? l.voiceId);
+  const characterIds = [...new Set(briefs.flatMap((b) => sceneCharacterIds(plan.characters, b, onCameraSpeakers(b))))];
   const environmentIds = [...new Set(briefs.map((b) => b.environmentId))];
   return { characterIds, environmentIds, continues, sameSpeaker };
 }
@@ -302,7 +307,7 @@ export async function reviewDownloadedClip(project: VideoProject, plan: Generati
     if (expectsSpeech) {
       const actual = base.checks.find((c) => /length|duration/i.test(c.name))?.detail.match(/([\d.]+)s/)?.[1];
       const seconds = actual ? Number(actual) : clip.seconds;
-      const spoke = compareSpokenToExpected(speech, asr, windowsInClip(briefs, clip.seconds, seconds));
+      const spoke = compareSpokenToExpected(speech, asr, windowsInClip(briefs, clip.seconds, seconds), languageFor(project.inputs.locale).language);
       findings.push(...spoke.findings);
       checks.push(...spoke.checks);
       if (!asr) limitations.push("Speech was not transcribed (no OPENAI_API_KEY or the call failed), so what was said could not be checked against the script.");

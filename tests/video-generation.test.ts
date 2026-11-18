@@ -142,7 +142,8 @@ describe("the prompt for a clip", () => {
   });
   it("ends mid-action on every clip but the last", () => {
     expect(buildClipPrompt({ ...base, sceneNumbers: [1] })).toContain("mid-action");
-    expect(buildClipPrompt({ ...base, clipNumber: 2, sceneNumbers: [4] })).toContain("settled final moment");
+    // The last clip ends calm but alive: "a settled moment" came out as a held pose, then frozen frames.
+    expect(buildClipPrompt({ ...base, clipNumber: 2, sceneNumbers: [4] })).toContain("never a held pose or a frozen frame");
   });
 });
 

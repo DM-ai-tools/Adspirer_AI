@@ -397,6 +397,15 @@ describe("validatePlan", () => {
     expect(codes(validatePlan(decor, CTX), "warning")).toContain("decorative_transitions");
   });
 
+  it("sends back a shot whose action is standing still, and warns about a camera written as static", () => {
+    const still = mutate((p) => (scene(p, 2).action = "Standing still, looking out of the window"));
+    expect(codes(validatePlan(still, CTX), "error")).toContain("still_action");
+    const moving = mutate((p) => (scene(p, 2).action = "Walks along the corridor with the phone to his ear"));
+    expect(codes(validatePlan(moving, CTX))).not.toContain("still_action");
+    const locked = mutate((p) => (scene(p, 2).camera = "Static with a barely perceptible push"));
+    expect(codes(validatePlan(locked, CTX), "warning")).toContain("static_camera");
+  });
+
   it("flags a total over the maximum", () => {
     expect(codes(validatePlan(goodPlan(), { ...CTX, maxSeconds: 10 }), "error")).toContain("over_max_seconds");
   });
@@ -491,6 +500,31 @@ describe("planCreative", () => {
     expect(plan.basis.platform).toBe("Instagram Reels");
     expect(sceneForShot(plan, 3)?.number).toBe(3);
     expect(sceneForShot(plan, 99)).toBeUndefined();
+  });
+
+  it("tells the planner every shot must move, and never to write a static camera or a person standing still", () => {
+    const prompt = planPrompt(INPUT);
+    expect(prompt).toMatch(/never locked off/i);
+    expect(prompt).toMatch(/standing still/i);
+  });
+
+  it("makes a camera the planner wrote as static move, without asking the planner again", async () => {
+    const locked = mutate((p) => (scene(p, 1).camera = "Static with a barely perceptible slow push"));
+    const generate = vi.fn(async () => toModel(locked));
+    const plan = await planCreative(INPUT, { generate, now: fixedNow });
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(plan.scenes.find((s) => s.number === 1)!.camera).not.toMatch(/\bstatic\b|barely perceptible/i);
+    expect(plan.scenes.find((s) => s.number === 1)!.camera).toMatch(/push/i);
+    expect(plan.validation.ok).toBe(true);
+  });
+
+  it("keeps a still action as a warning after the planner has been asked to change it, instead of stopping the video", async () => {
+    const still = mutate((p) => (scene(p, 2).action = "Standing still, looking out of the window"));
+    const generate = vi.fn(async () => toModel(still));
+    const plan = await planCreative(INPUT, { generate, maxRepairs: 1, now: fixedNow });
+    expect(generate).toHaveBeenCalledTimes(2);
+    expect(plan.validation.ok).toBe(true);
+    expect(plan.validation.issues).toContainEqual(expect.objectContaining({ code: "still_action", severity: "warning" }));
   });
 
   it("repairs a bad first response using the issues in the second prompt", async () => {
