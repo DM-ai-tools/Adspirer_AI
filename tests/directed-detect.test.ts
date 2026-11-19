@@ -95,7 +95,7 @@ describe("detecting a direction", () => {
   });
 
   it("states the decided rules to the model", () => {
-    expect(DETECT_SYSTEM_PROMPT).toMatch(/headline.*alone.*open/is);
+    expect(DETECT_SYSTEM_PROMPT).toMatch(/headline[\s\S]*alone[\s\S]*open/i);
     expect(DETECT_SYSTEM_PROMPT).toMatch(/verbatim/i);
     expect(DETECT_SYSTEM_PROMPT).toContain(String(MAX_CHAT_DIRECTIONS));
   });
