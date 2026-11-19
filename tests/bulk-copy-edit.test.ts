@@ -5,7 +5,14 @@ import { resetConfigCache } from "@/lib/config";
 vi.mock("@/lib/security/auth", () => ({ getCurrentUser: vi.fn() }));
 import { getCurrentUser } from "@/lib/security/auth";
 vi.mock("@/lib/creatives/cloudinary", () => ({ isCloudinaryConfigured: () => false, uploadCreativeImage: async () => ({ url: "", mime: "image/png" }) }));
-vi.mock("@/lib/storage/r2", () => ({ getObjectStorage: () => ({ put: async () => undefined, get: async () => null, delete: async () => undefined }) }));
+const stored = new Map<string, Buffer>();
+vi.mock("@/lib/storage/r2", () => ({
+  getObjectStorage: () => ({
+    put: async (key: string, data: Buffer) => void stored.set(key, Buffer.from(data)),
+    get: async (key: string) => stored.get(key) ?? null,
+    delete: async (key: string) => void stored.delete(key),
+  }),
+}));
 
 const realignCalls: Array<Record<string, unknown>> = [];
 let realignResult: { headline: string; primary_text: string; description: string | null; onImage: null; changed: boolean; note: string } | null = null;
@@ -21,7 +28,7 @@ vi.mock("@/lib/creatives/realign-copy", async (importOriginal) => ({
 import { upsertCreativeDraftAsync, getCreativeDraftAsync } from "@/lib/creatives/drafts";
 import { createRun, getRun, updateRun } from "@/lib/creatives/bulk/runs";
 import { saveAdCopy } from "@/lib/creatives/bulk/copy/edit-copy";
-import { matchCopyToImage } from "@/lib/creatives/edit-image";
+import { matchCopyToImage, undoLastEdit } from "@/lib/creatives/edit-image";
 import { buildRealignPrompt } from "@/lib/creatives/realign-copy";
 import { withRunMarker } from "@/lib/creatives/formats";
 import sharp from "sharp";
@@ -50,6 +57,7 @@ beforeEach(() => {
   resetConfigCache();
   realignCalls.length = 0;
   realignResult = null;
+  stored.clear();
   const p = getDemoStore().profiles.find((x) => x.role === "admin")!;
   vi.mocked(getCurrentUser).mockResolvedValue({ id: p.id, email: p.email, profile: p });
 });
@@ -91,6 +99,45 @@ describe("saving one ad's copy", () => {
     await expect(saveAdCopy({ runId: run.id, draftId: drafts[1]!.id, headline: "x" })).rejects.toThrow(/still being made/i);
     await expect(saveAdCopy({ runId: run.id, draftId: "nope", headline: "x" })).rejects.toThrow(/not part of this run/i);
     await expect(saveAdCopy({ runId: run.id, draftId: drafts[0]!.id })).rejects.toThrow(/nothing to save/i);
+  });
+});
+
+describe("undoing an image edit", () => {
+  const withVersion = async (copyEdited: boolean) => {
+    const { run, drafts } = await makeRun();
+    stored.set("versions/earlier.png", await png());
+    const items = run.items.map((it, i) =>
+      i === 0 ? { ...it, copy_edited: copyEdited, versions: [{ id: "v1", key: "versions/earlier.png", at: new Date().toISOString(), instruction: "make it blue", mode: "edit" as const, copy: { headline: "Old headline", primary_text: "Old body", description: null } }] } : it,
+    );
+    await updateRun(run.id, { items });
+    return { run, drafts };
+  };
+
+  it("does not put the old copy back over copy the operator edited by hand", async () => {
+    const { run, drafts } = await withVersion(true);
+    await saveAdCopy({ runId: run.id, draftId: drafts[0]!.id, headline: "Hand written" }).catch(() => undefined);
+    await undoLastEdit(drafts[0]!.id);
+    const after = (await getCreativeDraftAsync(drafts[0]!.id))!;
+    expect(after.headline).not.toBe("Old headline");
+    expect(after.primary_text).not.toBe("Old body");
+  });
+
+  it("still puts the old copy back when the copy was never edited by hand (today's behaviour)", async () => {
+    const { drafts } = await withVersion(false);
+    await undoLastEdit(drafts[0]!.id);
+    const after = (await getCreativeDraftAsync(drafts[0]!.id))!;
+    expect(after).toMatchObject({ headline: "Old headline", primary_text: "Old body" });
+  });
+});
+
+describe("editing copy while a directions run is still writing it", () => {
+  it("is refused while the job is running, and allowed once it is ready or has stalled", async () => {
+    const writing = await makeRun({ copyStatus: "writing", copyStartedAt: new Date().toISOString() });
+    await expect(saveAdCopy({ runId: writing.run.id, draftId: writing.drafts[0]!.id, headline: "x" })).rejects.toThrow(/still being written/i);
+    const stalled = await makeRun({ copyStatus: "writing", copyStartedAt: new Date(Date.now() - 11 * 60_000).toISOString() });
+    await expect(saveAdCopy({ runId: stalled.run.id, draftId: stalled.drafts[0]!.id, headline: "x" })).resolves.toBeTruthy();
+    const ready = await makeRun({ copyStatus: "ready" });
+    await expect(saveAdCopy({ runId: ready.run.id, draftId: ready.drafts[0]!.id, headline: "x" })).resolves.toBeTruthy();
   });
 });
 

@@ -26,6 +26,8 @@ export async function startDirectedBulkRun(input: {
   landingPageUrl?: string | null;
   directions: Direction[];
   pastedCopy?: string | null;
+  /** The operator's offer facts (audience, proof, what to avoid): the ad copy may use them. */
+  notes?: string | null;
   /** How the ad copy should be written. When given, the copy is written from it (in the background); otherwise the printed words are the copy. */
   copyInstructions?: string | null;
   format: ImageFormat;
@@ -43,6 +45,7 @@ export async function startDirectedBulkRun(input: {
     landingPageUrl: input.landingPageUrl,
     inputs: {
       directed: true,
+      notes: input.notes?.trim() || null,
       pastedCopy: input.pastedCopy ?? null,
       ...(instructions ? { copyInstructions: instructions, copyStatus: "writing" as const, copyStartedAt: new Date().toISOString() } : {}),
     },
@@ -115,15 +118,17 @@ async function writeAndApplyDirectedCopy(runId: string): Promise<void> {
       ads: written.map((copy, i) => ({ id: run.items[i]!.draft_id, ...copy, fixedWords: (directions[i] as DirectedMeta).print.map((l) => l.text) })),
       facts,
     });
-    // Read again: the operator may have edited an ad's copy while this was being written.
-    const latest = (await getRun(runId)) ?? run;
-    const items = latest.items.map((item) => ({ ...item, ...(checked.notes[item.draft_id] && !item.copy_edited ? { copy_note: checked.notes[item.draft_id] } : {}) }));
+    // Each ad is checked right before it is saved (the operator may have edited it meanwhile), and the run is read
+    // again after the last save so nothing written in the meantime (copy edits, image edit history) is lost.
     for (const ad of checked.ads) {
-      const item = latest.items.find((i) => i.draft_id === ad.id);
+      const fresh = (await getRun(runId)) ?? run;
+      if (fresh.items.find((i) => i.draft_id === ad.id)?.copy_edited) continue;
       const draft = await getCreativeDraftAsync(ad.id);
-      if (!draft || item?.copy_edited) continue;
+      if (!draft) continue;
       await upsertCreativeDraftAsync({ ...draft, id: draft.id, headline: ad.headline, primary_text: ad.primary_text, description: ad.description });
     }
+    const latest = (await getRun(runId)) ?? run;
+    const items = latest.items.map((item) => ({ ...item, ...(checked.notes[item.draft_id] && !item.copy_edited ? { copy_note: checked.notes[item.draft_id] } : {}) }));
     await updateRun(runId, {
       items,
       inputs: { ...latest.inputs, copyRules: checked.rules, copyStatus: "ready", copyRepaired: checked.repaired.length, copyFlagged: Object.keys(checked.notes).length, copyMessage: null },

@@ -95,6 +95,7 @@ export async function POST(request: Request) {
         createdBy: user.id,
         landingPageUrl: body.landingPageUrl,
         directions: body.directions,
+        notes: body.notes,
         pastedCopy: body.pastedCopy,
         copyInstructions: body.copyInstructions,
         format: body.format,

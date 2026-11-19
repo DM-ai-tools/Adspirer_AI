@@ -287,6 +287,7 @@ function BulkInner() {
           pastedCopy: pastedCopy.trim() || undefined,
           copyInstructions: copyInstructions.trim() || undefined,
           directions: toRequestDirections(directions),
+          notes: notes.trim() || undefined,
           format,
         }),
       });
@@ -886,6 +887,11 @@ function BulkInner() {
                           {open ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
                           {open ? "Hide ad copy" : "Show full ad copy"}
                         </button>
+                        {view.copy?.status === "writing" ? (
+                          <p className="flex items-center gap-1 text-[11px] text-muted">
+                            <Loader2 className="h-3 w-3 animate-spin" /> Writing copy…
+                          </p>
+                        ) : null}
                         {card.copyNote ? <p className="text-[11px] text-amber-600">{card.copyNote}</p> : null}
                         {card.copyEdited ? <p className="text-[11px] text-muted">Ad copy edited by you</p> : null}
                         <p className="text-[11px] text-muted">
@@ -915,7 +921,8 @@ function BulkInner() {
                               size="sm"
                               variant="secondary"
                               className="h-8"
-                              disabled={savingCopy === card.id}
+                              disabled={savingCopy === card.id || view.copy?.status === "writing"}
+                              title={view.copy?.status === "writing" ? "The ad copy is still being written" : undefined}
                               onClick={() => setCopyEditing((m) => ({ ...m, [card.id]: m[card.id] ? undefined : { headline: card.headline, primary_text: card.primary_text, description: card.description ?? "" } }))}
                             >
                               <Pencil className="mr-1 h-3.5 w-3.5" />

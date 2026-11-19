@@ -180,6 +180,50 @@ describe("repairing the ads that miss", () => {
   });
 });
 
+describe("an ad that is not fixed always says so", () => {
+  const rules: CopyRules = { primary_text: { unit: "words", max: 10 }, checklist: ["Mention the free audit"] };
+
+  it("notes an ad that failed the checklist when the repair call fails", async () => {
+    const { generate } = fake({ judge: () => ({ results: [{ id: "a", failed: ["Mention the free audit"] }] }), repair: () => new Error("timed out") });
+    const out = await checkAndRepairCopy({ instructions: "x", ads: [ad("a"), ad("b")], facts: "" }, { generate, rules });
+    expect(out.notes.a).toBe("Did not fully follow your instructions: Does not meet: Mention the free audit");
+    expect(out.notes.b).toBeUndefined();
+  });
+
+  it("notes an ad whose repair came back unchanged while still missing a checklist item", async () => {
+    const { generate } = fake({
+      judge: () => ({ results: [{ id: "a", failed: ["Mention the free audit"] }] }),
+      repair: () => ({ ads: [{ id: "a", headline: "Headline a", primary_text: "Short body that is fine.", description: null, could_not: [] }] }),
+    });
+    const out = await checkAndRepairCopy({ instructions: "x", ads: [ad("a")], facts: "" }, { generate, rules });
+    expect(out.repaired).toEqual([]);
+    expect(out.notes.a).toMatch(/Does not meet: Mention the free audit/);
+  });
+
+  it("still matches a judge answer that differs from the checklist only in case, quotes or a final full stop", async () => {
+    const { generate, calls } = fake({
+      judge: () => ({ results: [{ id: "a", failed: ['"mention the free audit".'] }] }),
+      repair: () => ({ ads: [{ id: "a", headline: "H", primary_text: "Get your free audit today.", description: null, could_not: [] }] }),
+    });
+    const out = await checkAndRepairCopy({ instructions: "x", ads: [ad("a")], facts: "" }, { generate, rules });
+    expect(calls.map((c) => c.kind)).toEqual(["judge", "repair"]);
+    expect(out.ads[0]!.primary_text).toBe("Get your free audit today.");
+  });
+
+  it("keeps a could-not-follow note when the second check does not mention the ad at all", async () => {
+    let judged = 0;
+    const { generate } = fake({
+      judge: () => {
+        judged += 1;
+        return judged === 1 ? { results: [{ id: "a", failed: ["Mention the free audit"] }] } : { results: [] };
+      },
+      repair: () => ({ ads: [{ id: "a", headline: "Headline a", primary_text: "Short body that is fine.", description: null, could_not: [{ rule: "mention the free audit", reason: "no audit is on offer" }] }] }),
+    });
+    const out = await checkAndRepairCopy({ instructions: "x", ads: [ad("a")], facts: "" }, { generate, rules });
+    expect(out.notes.a).toMatch(/Could not follow: mention the free audit/);
+  });
+});
+
 describe("when a model call fails", () => {
   const rules: CopyRules = { primary_text: { unit: "words", max: 10 }, checklist: ["Mention the free audit"] };
 

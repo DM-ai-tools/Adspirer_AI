@@ -1,5 +1,6 @@
 import { getCreativeDraftAsync, isRenderStalled, upsertCreativeDraftAsync, type CreativeDraft } from "@/lib/creatives/drafts";
 import { getRun, updateRun } from "@/lib/creatives/bulk/runs";
+import { copySummary } from "@/lib/creatives/bulk/view";
 import { COPY_FIELD_LIMITS } from "@/lib/creatives/bulk/copy/rules";
 
 const LABEL = { headline: "Headline", primary_text: "Primary text", description: "Description" } as const;
@@ -13,6 +14,8 @@ export async function saveAdCopy(input: { runId: string; draftId: string; headli
   const run = await getRun(input.runId);
   if (!run) throw new Error("Run not found");
   if (!run.items.some((i) => i.draft_id === input.draftId)) throw new Error("That ad is not part of this run.");
+  // The copy job saves every ad when it finishes; an edit made meanwhile would be overwritten or would lose the job's save.
+  if (copySummary(run)?.status === "writing") throw new Error("The ad copy is still being written. Edit it when it is ready.");
   const draft = await getCreativeDraftAsync(input.draftId);
   if (!draft) throw new Error("Creative draft not found");
   if (draft.image_status === "generating" && !isRenderStalled(draft)) throw new Error("This ad's image is still being made. Edit its copy when it appears.");

@@ -23,11 +23,13 @@ vi.mock("@/lib/creatives/uploaded-logo", () => ({ loadUploadedLogoDataUri: async
 vi.mock("@/lib/creatives/cloudinary", () => ({ isCloudinaryConfigured: () => false, uploadCreativeImage: async () => ({ url: "", mime: "image/png" }) }));
 
 const sent: Array<{ prompt: string; logoUrl?: string | null; size?: string }> = [];
+let onGenerate: (() => Promise<void>) | null = null;
 let imageResult: { status: "succeeded" | "failed"; error?: string } = { status: "succeeded" };
 vi.mock("@/lib/creatives/openai-image", async (orig) => ({
   ...(await orig<typeof import("@/lib/creatives/openai-image")>()),
   generateOpenAIImage: async (input: { prompt: string; logoUrl?: string | null; size?: string }) => {
     sent.push({ prompt: input.prompt, logoUrl: input.logoUrl, size: input.size });
+    await onGenerate?.();
     if (imageResult.status === "failed") throw new Error(imageResult.error ?? "boom");
     return { imageUrl: null, b64: "aGVsbG8=", mime: "image/png", model: "gpt-image-test", prompt: input.prompt, status: "succeeded" as const, error: null, logoBox: { left: 1, top: 2, width: 3, height: 4 } };
   },
@@ -37,6 +39,7 @@ beforeEach(() => {
   process.env.OPENAI_API_KEY = "test";
   resetConfigCache();
   sent.length = 0;
+  onGenerate = null;
   imageResult = { status: "succeeded" };
   analysis = { brand_name: "Acme Co", colors: ["#ff0000"], logo_url: "https://acme.test/logo.png" };
   clientColors.value = ["#37ca37", "#111111"];
@@ -154,6 +157,19 @@ describe("rendering a directed draft", () => {
     const { renderDirectedDraft } = await import("@/lib/creatives/directed/render");
     await renderDirectedDraft(draft.id, { revisionNotes: "make it darker" });
     expect(sent[0]!.prompt).toContain("make it darker");
+  });
+
+  it("keeps copy that was saved while the image was rendering, instead of writing the old copy back", async () => {
+    const draft = await make();
+    const { upsertCreativeDraftAsync } = await import("@/lib/creatives/drafts");
+    onGenerate = async () => {
+      const current = (await getCreativeDraftAsync(draft.id))!;
+      await upsertCreativeDraftAsync({ ...current, id: current.id, headline: "Written while it rendered", primary_text: "Body written while it rendered" });
+    };
+    const { renderDirectedDraft } = await import("@/lib/creatives/directed/render");
+    await renderDirectedDraft(draft.id);
+    const after = (await getCreativeDraftAsync(draft.id))!;
+    expect(after).toMatchObject({ headline: "Written while it rendered", primary_text: "Body written while it rendered", image_status: "succeeded" });
   });
 
   it("marks the draft failed with the reason when the image model errors", async () => {

@@ -32,12 +32,14 @@ vi.mock("@/lib/meta/resolve-page", () => ({ listFacebookPagesForAccountId: async
 
 const writerPrompts: string[] = [];
 let writer: "ok" | "throw" = "ok";
+let duringWrite: (() => Promise<void>) | null = null;
 vi.mock("ai", () => ({
   generateObject: async ({ prompt, system }: { prompt: string; system?: string }) => {
     if (system?.includes("turn an operator's instructions")) return { object: { headline: null, primary_text: { unit: "words", max: 8 }, description: null, checklist: [] } };
     if (prompt.includes("JUDGE THESE ADS")) return { object: { results: [] } };
     if (prompt.includes("WRITE THE AD COPY")) {
       writerPrompts.push(prompt);
+      await duringWrite?.();
       if (writer === "throw") throw new Error("model overloaded");
       const indexes = [...prompt.matchAll(/^Image (\d+):/gm)].map((m) => Number(m[1]));
       return { object: { ads: indexes.map((index) => ({ index, headline: `Written ${index}`, primary_text: "Short written copy.", description: null })) } };
@@ -56,6 +58,7 @@ beforeEach(() => {
   imagesMade.length = 0;
   writerPrompts.length = 0;
   writer = "ok";
+  duringWrite = null;
 });
 
 const dirs = (n: number): Direction[] => Array.from({ length: n }, (_, i) => ({ picture: `Picture ${i + 1}`, print: [{ role: "headline", text: `Printed ${i + 1}` }, { role: "button", text: "Book now" }] }));
@@ -151,6 +154,32 @@ describe("a directions run with ad copy instructions", () => {
     const drafts = await Promise.all(done.items.map((i) => getCreativeDraftAsync(i.draft_id)));
     expect(drafts.map((d) => d!.headline)).toEqual(["Printed 1", "Printed 2"]);
     expect(imagesMade).toHaveLength(2);
+  });
+
+  it("uses the offer facts the operator typed when writing the copy", async () => {
+    const run = await start(2, { notes: "Offer: free audits for plumbers across Victoria" });
+    expect(run.inputs.notes).toBe("Offer: free audits for plumbers across Victoria");
+    await planAndRenderDirected(run.id);
+    expect(writerPrompts[0]).toContain("Operator notes: Offer: free audits for plumbers across Victoria");
+  });
+
+  it("does not overwrite an ad's copy, or lose an image's edit history, when the operator acts while the copy is being written", async () => {
+    const run = await start(3);
+    const { upsertCreativeDraftAsync } = await import("@/lib/creatives/drafts");
+    duringWrite = async () => {
+      const fresh = (await getRun(run.id))!;
+      const items = fresh.items.map((it, i) => (i === 0 ? { ...it, copy_edited: true } : i === 1 ? { ...it, versions: [{ id: "v1", key: "k1", at: "now", instruction: "make it blue", mode: "edit" as const }] } : it));
+      await updateRun(run.id, { items });
+      const d = (await getCreativeDraftAsync(fresh.items[0]!.draft_id))!;
+      await upsertCreativeDraftAsync({ ...d, id: d.id, headline: "My own headline" });
+    };
+    await planAndRenderDirected(run.id);
+    const done = (await getRun(run.id))!;
+    const drafts = await Promise.all(done.items.map((i) => getCreativeDraftAsync(i.draft_id)));
+    expect(drafts[0]!.headline).toBe("My own headline");
+    expect(done.items[0]!.copy_edited).toBe(true);
+    expect(done.items[1]!.versions).toHaveLength(1);
+    expect(drafts[2]!.headline).toBe("Written 3");
   });
 
   it("leaves copy the operator already edited by hand alone", async () => {

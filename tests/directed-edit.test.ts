@@ -5,6 +5,8 @@ import { getCreativeDraftAsync, upsertCreativeDraftAsync } from "@/lib/creatives
 import { withAspectMarker, withLogoMarker } from "@/lib/creatives/formats";
 import { readDirectedMarker, withDirectedMarker, type PrintLine } from "@/lib/creatives/directed/markers";
 import { editDirectedDraft, MAX_KEPT_VERSIONS, undoDirectedEdit } from "@/lib/creatives/directed/edit";
+import { createRun, getRun, updateRun } from "@/lib/creatives/bulk/runs";
+import { withRunMarker } from "@/lib/creatives/formats";
 
 const stored = new Map<string, Buffer>();
 let failPut = false;
@@ -86,6 +88,64 @@ describe("an edit that cannot even start never leaves the image stuck as generat
     const after = (await getCreativeDraftAsync(empty.id))!;
     expect(after.image_status).toBe("failed");
     expect(after.image_error).toMatch(/not available to edit/i);
+  });
+});
+
+describe("an edit never writes back copy that changed while it ran", () => {
+  it("keeps a headline saved during the edit when the printed words did not change", async () => {
+    const draft = await makeDraft();
+    const result = await editDirectedDraft(
+      { draftId: draft.id, instruction: "make the door blue" },
+      {
+        callEdit: (async () => {
+          const current = (await getCreativeDraftAsync(draft.id))!;
+          await upsertCreativeDraftAsync({ ...current, id: current.id, headline: "Saved during the edit" });
+          return solid(blue);
+        }) as never,
+        updatePrint: async (p) => p,
+      },
+    );
+    expect(result.ok).toBe(true);
+    expect((await getCreativeDraftAsync(draft.id))!.headline).toBe("Saved during the edit");
+  });
+});
+
+describe("an edit of an image in a bulk run whose copy was written to the operator's instructions or edited by hand", () => {
+  async function inRun(inputs: Record<string, unknown>, copyEdited = false) {
+    const run = await createRun({ clientId: "c1", inputs, format: "4:5" } as never);
+    const png = await solid(red);
+    const draft = await upsertCreativeDraftAsync({
+      client_id: "c1", service_id: null, conversation_id: null, task_id: null, brief_id: null, concept: "Acme — Direction 1", headline: "Written headline", primary_text: "Written body", description: null, cta: null,
+      creative_direction: withRunMarker(withLogoMarker(withAspectMarker(withDirectedMarker("", { picture: "A red door", print }), "4:5"), { left: 0, top: 0, width: 10, height: 10 }), run.id),
+      image_url: `data:image/png;base64,${png.toString("base64")}`, image_b64: png.toString("base64"), image_mime: "image/png", image_model: null, image_prompt: null, image_status: "succeeded", image_error: null,
+      landing_page_url: null, brand_colors: null, logo_url: null, revision_notes: null, status: "ready",
+    });
+    await updateRun(run.id, { items: [{ draft_id: draft.id, angle_key: null, angle_name: "Direction 1", stage: null, kind: null, targets: null, body_id: null, cta_label: null, copy_edited: copyEdited }] });
+    return { run, draft };
+  }
+  const newWords = async () => [{ role: "headline", text: "Go solar today" }];
+
+  it("changes the words printed on the image but leaves the ad copy alone when instructions wrote it", async () => {
+    const { draft } = await inRun({ copyInstructions: "Headline under 6 words." });
+    await editDirectedDraft({ draftId: draft.id, instruction: "change the headline to Go solar today" }, { callEdit: (async () => solid(blue)) as never, updatePrint: newWords });
+    const after = (await getCreativeDraftAsync(draft.id))!;
+    expect(readDirectedMarker(after.creative_direction)!.print).toEqual([{ role: "headline", text: "Go solar today" }]);
+    expect(after).toMatchObject({ headline: "Written headline", primary_text: "Written body" });
+  });
+
+  it("leaves copy the operator edited by hand alone, and undo does not touch it either", async () => {
+    const { draft, run } = await inRun({}, true);
+    await editDirectedDraft({ draftId: draft.id, instruction: "change the headline to Go solar today" }, { callEdit: (async () => solid(blue)) as never, updatePrint: newWords });
+    expect((await getCreativeDraftAsync(draft.id))).toMatchObject({ headline: "Written headline", primary_text: "Written body" });
+    await undoDirectedEdit(draft.id);
+    expect((await getCreativeDraftAsync(draft.id))).toMatchObject({ headline: "Written headline", primary_text: "Written body" });
+    expect((await getRun(run.id))!.items[0]!.copy_edited).toBe(true);
+  });
+
+  it("still lets the ad copy follow the printed words in a run with no instructions and no hand edit (today's behaviour)", async () => {
+    const { draft } = await inRun({});
+    await editDirectedDraft({ draftId: draft.id, instruction: "change the headline to Go solar today" }, { callEdit: (async () => solid(blue)) as never, updatePrint: newWords });
+    expect((await getCreativeDraftAsync(draft.id))!.headline).toBe("Go solar today");
   });
 });
 

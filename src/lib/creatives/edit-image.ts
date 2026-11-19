@@ -263,7 +263,9 @@ export async function undoLastEdit(draftId: string): Promise<void> {
   if (!found || !last) throw new Error("There is no earlier version to go back to.");
   const bytes = await getObjectStorage().get(last.key);
   if (!bytes) throw new Error("The earlier version is no longer stored.");
-  const restored = last.copy ? { ...draft, headline: last.copy.headline, primary_text: last.copy.primary_text, description: last.copy.description } : draft;
+  // Copy the operator edited by hand is not theirs to be rolled back by an image undo.
+  const copyEdited = Boolean(found.items[found.index]?.copy_edited);
+  const restored = last.copy && !copyEdited ? { ...draft, headline: last.copy.headline, primary_text: last.copy.primary_text, description: last.copy.description } : draft;
   await storeDraftImage(restored, { b64: bytes.toString("base64"), imageUrl: null, mime: "image/png", model: null, prompt: null, status: "succeeded", error: null, revisionNotes: null, direction: last.direction ?? null });
   const items = found.items.map((it, i) => (i === found.index ? { ...it, versions: versions.slice(0, -1), edit_error: null } : it));
   await updateRun(found.runId, { items });

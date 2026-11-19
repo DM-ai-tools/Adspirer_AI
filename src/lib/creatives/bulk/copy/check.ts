@@ -38,6 +38,9 @@ const repairSchema = z.object({
 
 const SYSTEM = "You are a meticulous ad copy editor for Meta ads. You follow the operator's instructions exactly, work only from the facts given, and never invent claims.";
 
+/** A judge answer compared without case, quotes or final punctuation, so a paraphrase does not lose a real failure. */
+const normItem = (s: string) => s.toLowerCase().replace(/^[\s"'“”‘’]+|[\s"'“”‘’.!;:]+$/g, "").trim();
+
 const show = (ad: CopyAd) => `[${ad.id}]\nHeadline: ${ad.headline}\nPrimary text: ${ad.primary_text}${ad.description !== null ? `\nDescription: ${ad.description}` : ""}`;
 
 /**
@@ -76,8 +79,12 @@ export async function checkAndRepairCopy(
           ads.map(show).join("\n\n"),
         ].join("\n\n"),
       });
-      const valid = new Set(rules.checklist);
-      return new Map(object.results.filter((r) => ads.some((a) => a.id === r.id)).map((r) => [r.id, r.failed.filter((f) => valid.has(f))] as const));
+      const canon = new Map(rules.checklist.map((c) => [normItem(c), c] as const));
+      return new Map(
+        object.results
+          .filter((r) => ads.some((a) => a.id === r.id))
+          .map((r) => [r.id, [...new Set(r.failed.map((f) => canon.get(normItem(f))).filter((f): f is string => Boolean(f)))]] as const),
+      );
     } catch (error) {
       logger.warn("Ad copy judge failed", { error: error instanceof Error ? error.message : String(error) });
       return null;
@@ -153,7 +160,8 @@ export async function checkAndRepairCopy(
   const disproved = new Set<string>();
   if (claimed.length && rules.checklist.length) {
     const again = await judge(claimed.map((ad) => apply(ad, rewritten.get(ad.id))));
-    for (const ad of claimed) if (again && !(again.get(ad.id)?.length)) disproved.add(ad.id);
+    // Disproved only when the second check names the ad and finds nothing wrong; an ad it leaves out stays unconfirmed.
+    for (const ad of claimed) if (again?.has(ad.id) && !again.get(ad.id)!.length) disproved.add(ad.id);
   }
 
   // 3. Apply what came back, re-check the limits in code, and note what is still wrong.
@@ -169,7 +177,12 @@ export async function checkAndRepairCopy(
     if (!problems.has(ad.id)) return next;
     const parts: string[] = [];
     const still = limitProblems(next, rules);
-    if (still.length) parts.push(`Did not fully follow your instructions: ${still.join(" ")}`);
+    const unchanged = next.headline === ad.headline && next.primary_text === ad.primary_text && next.description === ad.description;
+    // An ad the repair did not change (the call failed, or it came back as it was) and that has no explanation of its own is
+    // still carrying everything it was found to miss: say so, so no instruction is silently ignored.
+    const explained = !disproved.has(ad.id) && (r?.could_not ?? []).some((c) => c.rule.trim());
+    if (unchanged && !explained && !disproved.has(ad.id)) parts.push(`Did not fully follow your instructions: ${problems.get(ad.id)!.join(" ")}`);
+    else if (still.length) parts.push(`Did not fully follow your instructions: ${still.join(" ")}`);
     // A length limit is always met by shortening: a report that one could not be followed is dropped when the code finds it met.
     const couldNot = disproved.has(ad.id) ? [] : (r?.could_not ?? []).filter((c) => c.rule.trim() && !(/\b(words?|characters?|chars?|length|long|short)\b/i.test(c.rule) && !still.length));
     if (couldNot.length) parts.push(couldNot.map((c) => `Could not follow: ${c.rule.trim()}, because ${c.reason.trim().replace(/[.\s]+$/, "")}.`).join(" "));
