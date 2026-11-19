@@ -7,6 +7,7 @@ import { generationSize, readAspectMarker, readLogoMarker, readRunMarker, type I
 import { getRun, updateRun, type ImageVersion, type RunItem } from "@/lib/creatives/bulk/runs";
 import { resolveEditInstruction } from "@/lib/creatives/resolve-instruction";
 import { realignCopy, replaceOnImageText, type AdCopy } from "@/lib/creatives/realign-copy";
+import { limitProblems } from "@/lib/creatives/bulk/copy/rules";
 
 /**
  * Changing one thing in an image without redrawing it.
@@ -127,7 +128,7 @@ export type EditMode = "edit" | "full";
  * Never fails the edit: if the copy cannot be checked, the image edit still stands and the operator
  * is told the copy was left as it was. Returns what was there before, for undo.
  */
-async function matchCopyToImage(
+export async function matchCopyToImage(
   existing: CreativeDraft,
   newImage: Buffer | null,
   instruction: string,
@@ -136,6 +137,11 @@ async function matchCopyToImage(
   const before: AdCopy = { headline: existing.headline, primary_text: existing.primary_text, description: existing.description };
   try {
     const image = newImage ?? (await imageBytes(existing));
+    // The run's ad copy instructions still apply to copy an image edit rewrites; copy the operator edited by hand is not rewritten.
+    const found = await runItem(existing);
+    const run = found ? await getRun(found.runId) : null;
+    const locked = Boolean(found?.items[found.index]?.copy_edited);
+    const instructions = locked ? undefined : run?.inputs.copyInstructions?.trim() || undefined;
     const out = await realignCopy({
       image,
       instruction,
@@ -143,7 +149,18 @@ async function matchCopyToImage(
       copy: before,
       brandName: existing.concept.split("—")[0]?.trim() || null,
       facts: resolved.facts,
+      ...(instructions ? { instructions } : {}),
+      ...(locked ? { lockCopy: true } : {}),
     });
+    // A rewrite under instructions is checked against the run's stored limits; the ad carries a note when it still breaks one.
+    if (out.changed && instructions && run?.inputs.copyRules && found) {
+      const problems = limitProblems({ headline: out.headline, primary_text: out.primary_text, description: null }, run.inputs.copyRules);
+      const fresh = await getRun(found.runId);
+      if (fresh) {
+        const note = problems.length ? `Did not fully follow your instructions: ${problems.join(" ")}` : null;
+        await updateRun(found.runId, { items: fresh.items.map((it) => (it.draft_id === existing.id ? { ...it, copy_note: note } : it)) });
+      }
+    }
     const current = await getCreativeDraftAsync(existing.id);
     if (!current) return { note: "", before: null, direction: null };
     const direction = replaceOnImageText(current.creative_direction, out.onImage);
