@@ -1,8 +1,5 @@
 import { getConfig } from "@/lib/config";
-import { analyzeBrandFromUrl } from "@/lib/brand/analyze-url";
 import { logger } from "@/lib/observability/logger";
-import { loadScope } from "@/lib/creatives/service";
-import { loadUploadedLogoDataUri } from "@/lib/creatives/uploaded-logo";
 import { generateImageForDraft } from "@/lib/creatives/generate-draft-image";
 import { isDirectedDirection } from "@/lib/creatives/directed/markers";
 import { withAspectMarker, withRunMarker, type ImageFormat } from "@/lib/creatives/formats";
@@ -14,9 +11,9 @@ import {
   type CreativeDraft,
 } from "@/lib/creatives/drafts";
 import { nanoid } from "nanoid";
-import { readPageText } from "@/lib/creatives/page-text";
-import { findClientResults, type ClientResult } from "@/lib/creatives/bulk/results";
-import { BULK_RUN_SIZE, directionForHook, writeBulkPlan, type BulkBrief } from "@/lib/creatives/bulk/plan";
+import { BULK_RUN_SIZE, briefLines, directionForHook, writeBulkPlan } from "@/lib/creatives/bulk/plan";
+import { loadRunBrief } from "@/lib/creatives/bulk/run-brief";
+import { checkAndRepairCopy } from "@/lib/creatives/bulk/copy/check";
 import {
   describeStyleImages,
   hasStyleGuide,
@@ -85,6 +82,8 @@ export async function startBulkRun(input: {
   landingPageUrl?: string | null;
   notes?: string | null;
   pastedCopy?: string | null;
+  /** How the ad copy should be written (what to include, structure, length, tone). Common to every ad. */
+  copyInstructions?: string | null;
   /** The operator's own words on the look they want, and any style rules. */
   styleDirection?: string | null;
   /** Reference images as data URIs. Checked and stored before the run is created. */
@@ -106,6 +105,7 @@ export async function startBulkRun(input: {
     inputs: {
       notes: input.notes ?? null,
       pastedCopy: input.pastedCopy ?? null,
+      copyInstructions: input.copyInstructions?.trim() || null,
       styleDirection: input.styleDirection?.trim() || null,
       styleImageKeys,
       styleMatchAll: Boolean(input.styleMatchAll),
@@ -172,73 +172,46 @@ export async function resolveStyleGuide(run: CreativeRun): Promise<StyleGuide | 
   return hasStyleGuide(guide) ? guide : null;
 }
 
-/** The client results written on a page, or none when the page cannot be read or holds none. Never throws. */
-async function findResultsOnPage(url: string): Promise<ClientResult[]> {
-  try {
-    const page = await readPageText(url);
-    return page.readable ? await findClientResults(page.text) : [];
-  } catch (error) {
-    logger.warn("Bulk run: could not look for client results on the landing page", { url, error: error instanceof Error ? error.message : String(error) });
-    return [];
-  }
-}
-
 /** Read the brand, write the run's copy, and fill the placeholder drafts. Then render. */
 export async function planAndRender(runId: string): Promise<void> {
   const run = await getRun(runId);
   if (!run) return;
   try {
-    const scope = await loadScope({ clientId: run.client_id, serviceId: run.service_id ?? undefined });
-    const { client, service } = scope;
-    const landing = run.landing_page_url || service?.landing_page_url || undefined;
-    const brandSource = landing || client.website_url || undefined;
-    // Real client results and stats on the landing page, read alongside the brand analysis. Two or
-    // three images of the run showcase them; a page with none (or one that cannot be read) simply
-    // reserves nothing.
-    const resultsLookup = landing ? findResultsOnPage(landing) : Promise.resolve<ClientResult[]>([]);
-
-    let analysis: Awaited<ReturnType<typeof analyzeBrandFromUrl>> | null = null;
-    if (brandSource) {
-      try {
-        analysis = await analyzeBrandFromUrl(brandSource);
-      } catch (error) {
-        logger.warn("Bulk run: brand analysis failed; images will be unbranded", {
-          url: brandSource,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-    const colors = analysis?.colors?.length ? analysis.colors : client.brand_colors;
-    const logoUrl = analysis?.logo_url ?? (await loadUploadedLogoDataUri({ clientId: run.client_id }));
-    const brandName = analysis?.brand_name || client.name;
-
-    const brief: BulkBrief = {
-      brandName,
-      voice: analysis?.brand_voice || client.brand_voice,
-      colors,
-      imageryNotes: analysis?.imagery_notes,
-      pageExcerpt: analysis?.page_excerpt,
-      summary: analysis?.summary,
-      industry: (client as { industry?: string | null }).industry,
-      description: (client as { business_description?: string | null }).business_description,
-      valueProposition: client.value_proposition,
-      audience: client.target_audience,
-      offerName: service?.name ?? client.value_proposition ?? analysis?.title ?? brandName,
-      offerDescription: service?.description,
-      landingPageUrl: landing,
-      notes: run.inputs.notes,
-      pastedCopy: run.inputs.pastedCopy,
-      results: await resultsLookup,
-    };
+    const { brief, colors, logoUrl, brandName, landing } = await loadRunBrief(run);
 
     // Angles earlier runs for this client used are held back, so a second run reaches for new ones.
     const earlier = (await listRuns(run.client_id, 6)).filter((r) => r.id !== run.id).flatMap((r) => r.items.map((i) => i.angle_key ?? ""));
     const styleGuide = await resolveStyleGuide(run);
     const plan = await writeBulkPlan(brief, BULK_RUN_SIZE, earlier.filter(Boolean), styleGuide);
 
+    // The operator's ad copy instructions: every ad's copy is checked against them and the ones that miss are
+    // rewritten once. A check that cannot run never blocks the run: the copy is simply kept as written.
+    let hooks = plan.hooks;
+    let copyNotes: Record<string, string> = {};
+    let copyInputs: Partial<CreativeRun["inputs"]> = {};
+    const instructions = run.inputs.copyInstructions?.trim();
+    if (instructions) {
+      try {
+        const checked = await checkAndRepairCopy({
+          instructions,
+          ads: plan.hooks.map((h) => ({ id: h.angle.key, headline: h.postHeadline, primary_text: h.primaryText, description: null })),
+          facts: briefLines(brief).join("\n"),
+        });
+        const byKey = new Map(checked.ads.map((a) => [a.id, a] as const));
+        hooks = plan.hooks.map((h) => {
+          const ad = byKey.get(h.angle.key);
+          return ad ? { ...h, postHeadline: ad.headline, primaryText: ad.primary_text } : h;
+        });
+        copyNotes = checked.notes;
+        copyInputs = { copyRules: checked.rules, copyStatus: "ready", copyRepaired: checked.repaired.length, copyFlagged: Object.keys(checked.notes).length };
+      } catch (error) {
+        logger.warn("Bulk run: the ad copy check failed; the copy is kept as written", { runId, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+
     const items: RunItem[] = [];
     for (const [index, slot] of run.items.entries()) {
-      const hook = plan.hooks[index];
+      const hook = hooks[index];
       const existing = await getCreativeDraftAsync(slot.draft_id);
       if (!existing) continue;
       if (!hook) {
@@ -269,9 +242,19 @@ export async function planAndRender(runId: string): Promise<void> {
         targets: hook.targets,
         body_id: hook.bodyId,
         cta_label: cta?.label ?? null,
+        ...(copyNotes[hook.angle.key] ? { copy_note: copyNotes[hook.angle.key] } : {}),
       });
     }
-    await updateRun(run.id, { status: "rendering", items, message_map: plan.messageMap, bodies: plan.bodies, ctas: plan.ctas });
+    // The inputs are read again: resolving the style guide above saved its brief on the run.
+    const latest = await getRun(run.id);
+    await updateRun(run.id, {
+      status: "rendering",
+      items,
+      message_map: plan.messageMap,
+      bodies: plan.bodies,
+      ctas: plan.ctas,
+      ...(Object.keys(copyInputs).length ? { inputs: { ...(latest?.inputs ?? run.inputs), ...copyInputs } } : {}),
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn("Bulk run planning failed", { runId, error: message });
