@@ -25,6 +25,7 @@ import type { ImageFormat } from "@/lib/creatives/formats";
 import { STAGE_LABEL, type AwarenessStage } from "@/lib/creatives/bulk/angles";
 import { REFERENCE_CLOSE_COUNT, STYLE_IMAGE_LIMIT } from "@/lib/creatives/bulk/styles";
 import { shrinkImageToDataUri } from "@/lib/creatives/shrink-image";
+import { COPY_FIELD_LIMITS, copyHeaderLine, counterState } from "@/lib/creatives/bulk/copy/limits-ui";
 import { addItem, printChanged, printToText, readyToConfirm, removeItem, textToPrint, toRequestDirections, updateItem, type ConfirmItem } from "@/lib/creatives/directed/confirm-list";
 import { cn } from "@/lib/utils";
 import type { ClientService } from "@/types";
@@ -50,6 +51,9 @@ type Card = {
   item: Item;
   edits: Array<{ id: string; at: string; instruction: string; mode: "edit" | "full"; understood?: string }>;
   editError: string | null;
+  description?: string | null;
+  copyNote?: string | null;
+  copyEdited?: boolean;
 };
 
 type RunView = {
@@ -60,6 +64,7 @@ type RunView = {
     bodies: Array<{ id: string; format: string; text: string }> | null;
   };
   cards: Card[];
+  copy?: { status: "writing" | "ready" | "failed"; message: string | null; repaired: number; flagged: number } | null;
   progress: { total: number; succeeded: number; failed: number; rendering: number; waiting: number };
   needsContinue: boolean;
 };
@@ -112,6 +117,11 @@ function BulkInner() {
   const [landingUrl, setLandingUrl] = useState("");
   const [notes, setNotes] = useState("");
   const [pastedCopy, setPastedCopy] = useState("");
+  // How the ad copy should be written (what to include, structure, length, tone): common to every ad of the run.
+  const [copyInstructions, setCopyInstructions] = useState("");
+  // The ad copy editor open on each finished ad, and which ad is being saved.
+  const [copyEditing, setCopyEditing] = useState<Record<string, { headline: string; primary_text: string; description: string } | undefined>>({});
+  const [savingCopy, setSavingCopy] = useState<string | null>(null);
   // The operator's own style: reference images (shrunk data URIs), words on the look, and whether all images follow it.
   const [styleImages, setStyleImages] = useState<string[]>([]);
   const [styleDirection, setStyleDirection] = useState("");
@@ -275,6 +285,7 @@ function BulkInner() {
           serviceId,
           landingPageUrl: landingUrl.trim() || undefined,
           pastedCopy: pastedCopy.trim() || undefined,
+          copyInstructions: copyInstructions.trim() || undefined,
           directions: toRequestDirections(directions),
           format,
         }),
@@ -301,6 +312,7 @@ function BulkInner() {
           landingPageUrl: landingUrl.trim() || undefined,
           notes: notes.trim() || undefined,
           pastedCopy: pastedCopy.trim() || undefined,
+          copyInstructions: copyInstructions.trim() || undefined,
           styleDirection: styleDirection.trim() || undefined,
           styleImages: styleImages.length ? styleImages : undefined,
           styleMatchAll: hasStyle && styleMatchAll ? true : undefined,
@@ -313,6 +325,25 @@ function BulkInner() {
       toast.error(err instanceof Error ? err.message : "Could not start the run");
     } finally {
       setStarting(false);
+    }
+  }
+
+  async function saveCopy(card: Card) {
+    const draft = copyEditing[card.id];
+    if (!draft || !runId) return;
+    setSavingCopy(card.id);
+    try {
+      await apiFetch(`/api/creatives/bulk/${runId}/copy`, {
+        method: "POST",
+        body: JSON.stringify({ draftId: card.id, headline: draft.headline, primary_text: draft.primary_text, description: draft.description.trim() ? draft.description : null }),
+      });
+      toast.success("Ad copy saved");
+      setCopyEditing((m) => ({ ...m, [card.id]: undefined }));
+      setPollKey((k) => k + 1);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not save the ad copy");
+    } finally {
+      setSavingCopy(null);
     }
   }
 
@@ -525,6 +556,10 @@ function BulkInner() {
           {!runId && tab === "new" ? (
             <Card>
               <CardContent className="space-y-4 p-4">
+                <div>
+                  <p className="text-sm font-semibold">Images</p>
+                  <p className="text-[11px] text-muted">Everything about how the pictures should look: the page they come from, the facts, the style, or your own directions file.</p>
+                </div>
                 <div className="grid gap-3 md:grid-cols-2">
                   <div>
                     <p className="mb-1 text-xs text-muted">Landing page URL</p>
@@ -547,21 +582,12 @@ function BulkInner() {
                   </div>
                 </div>
                 <div>
-                  <p className="mb-1 text-xs text-muted">Notes on the offer, audience and proof (optional)</p>
+                  <p className="mb-1 text-xs text-muted">Offer facts the ads may use: audience, proof, what to avoid (optional)</p>
                   <Textarea
                     value={notes}
                     onChange={(e) => setNotes(e.target.value)}
                     placeholder="Who it is for, what they struggle with, results you can back up, anything to avoid saying…"
                     className="min-h-[88px]"
-                  />
-                </div>
-                <div>
-                  <p className="mb-1 text-xs text-muted">Existing ad copy to build the bodies from (optional)</p>
-                  <Textarea
-                    value={pastedCopy}
-                    onChange={(e) => setPastedCopy(e.target.value)}
-                    placeholder="Paste copy that already works and the bodies will be based on it."
-                    className="min-h-[72px]"
                   />
                 </div>
                 <div className="space-y-3 rounded-lg border border-border p-3">
@@ -707,6 +733,32 @@ function BulkInner() {
                   </div>
                 </div>
                 <ImageFormatPicker value={format} onChange={setFormat} disabled={starting} />
+                <div className="space-y-3 rounded-lg border border-border p-3">
+                  <div>
+                    <p className="text-sm font-semibold">Ad copy</p>
+                    <p className="text-[11px] text-muted">How the headline, primary text and description should be written. The same instructions apply to every ad, and every ad is checked against them. You can edit the copy of each ad once the run is done.</p>
+                  </div>
+                  <div>
+                    <p className="mb-1 text-xs text-muted">Ad copy instructions (optional)</p>
+                    <Textarea
+                      value={copyInstructions}
+                      onChange={(e) => setCopyInstructions(e.target.value)}
+                      maxLength={2000}
+                      placeholder="e.g. Primary text under 40 words, three short sentences. Open with the problem, mention the free audit, end with a question. Headline under 6 words. Friendly Australian tone, no exclamation marks."
+                      className="min-h-[88px]"
+                    />
+                    <p className="mt-1 text-[11px] text-muted">{copyInstructions.length} / 2000</p>
+                  </div>
+                  <div>
+                    <p className="mb-1 text-xs text-muted">Copy that already works (optional)</p>
+                    <Textarea
+                      value={pastedCopy}
+                      onChange={(e) => setPastedCopy(e.target.value)}
+                      placeholder={copyInstructions.trim() ? "Paste copy you like and the new copy is based on its substance and voice." : "Paste copy that already works and it is used as the starting point."}
+                      className="min-h-[72px]"
+                    />
+                  </div>
+                </div>
                 {directions ? (
                   <div className="flex flex-wrap items-center gap-3">
                     <Button onClick={() => void startDirected()} disabled={starting || !readyToConfirm(directions).ok}>
@@ -752,6 +804,9 @@ function BulkInner() {
                         {view.progress.failed ? ` · ${view.progress.failed} failed` : ""}
                       </p>
                     )}
+                    {copyHeaderLine(view.copy ?? null) ? (
+                      <p className={cn("text-[11px]", view.copy?.status === "failed" ? "text-amber-600" : "text-muted")}>{copyHeaderLine(view.copy ?? null)}</p>
+                    ) : null}
                     {view.run.bodies?.length ? (
                       <p className="text-[11px] text-muted">
                         {view.run.bodies.length} bodies reused behind the hooks:{" "}
@@ -767,7 +822,7 @@ function BulkInner() {
                       </a>
                     </Button>
                     {downloadable.length > 0 && view.progress.rendering === 0 ? (
-                      <Button size="sm" onClick={() => setPublishOpen((o) => !o)} disabled={!selectedClientId}>
+                      <Button size="sm" onClick={() => setPublishOpen((o) => !o)} disabled={!selectedClientId || view.copy?.status === "writing"} title={view.copy?.status === "writing" ? "The ad copy is still being written" : undefined}>
                         <Send className="mr-1 h-3.5 w-3.5" />
                         Send to Meta ({downloadable.length})
                       </Button>
@@ -831,6 +886,8 @@ function BulkInner() {
                           {open ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
                           {open ? "Hide ad copy" : "Show full ad copy"}
                         </button>
+                        {card.copyNote ? <p className="text-[11px] text-amber-600">{card.copyNote}</p> : null}
+                        {card.copyEdited ? <p className="text-[11px] text-muted">Ad copy edited by you</p> : null}
                         <p className="text-[11px] text-muted">
                           {card.item.body_id ? `Body ${card.item.body_id}` : ""}
                           {card.item.cta_label ? ` · CTA: ${card.item.cta_label}` : ""}
@@ -854,6 +911,16 @@ function BulkInner() {
                               <Copy className="mr-1 h-3.5 w-3.5" />
                               More like this
                             </Button>
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              className="h-8"
+                              disabled={savingCopy === card.id}
+                              onClick={() => setCopyEditing((m) => ({ ...m, [card.id]: m[card.id] ? undefined : { headline: card.headline, primary_text: card.primary_text, description: card.description ?? "" } }))}
+                            >
+                              <Pencil className="mr-1 h-3.5 w-3.5" />
+                              Edit ad copy
+                            </Button>
                             <Button size="sm" variant="secondary" className="h-8" disabled={busyId === card.id} onClick={() => setEditing((m) => ({ ...m, [card.id]: m[card.id] ? undefined : { text: "", mode: "edit" } }))}>
                               <Pencil className="mr-1 h-3.5 w-3.5" />
                               Edit this image
@@ -862,6 +929,48 @@ function BulkInner() {
                               <X className="mr-1 h-3.5 w-3.5" />
                               Reject
                             </Button>
+                          </div>
+                        ) : null}
+                        {copyEditing[card.id] ? (
+                          <div className="space-y-2 rounded-md border border-border p-2">
+                            {(
+                              [
+                                ["headline", "Headline", 1],
+                                ["primary_text", "Primary text", 5],
+                                ["description", "Description (optional)", 2],
+                              ] as const
+                            ).map(([field, label, rows]) => {
+                              const counter = counterState(copyEditing[card.id]![field], COPY_FIELD_LIMITS[field]);
+                              return (
+                                <div key={field}>
+                                  <div className="flex items-center justify-between">
+                                    <p className="text-[11px] text-muted">{label}</p>
+                                    <p className={cn("text-[10px]", counter.over ? "text-destructive" : "text-muted")}>{counter.label}</p>
+                                  </div>
+                                  <Textarea
+                                    rows={rows}
+                                    className="min-h-0 text-xs"
+                                    value={copyEditing[card.id]![field]}
+                                    onChange={(e) => setCopyEditing((m) => ({ ...m, [card.id]: { ...m[card.id]!, [field]: e.target.value } }))}
+                                  />
+                                </div>
+                              );
+                            })}
+                            <div className="flex gap-2">
+                              <Button
+                                size="sm"
+                                className="h-8"
+                                disabled={savingCopy === card.id || (["headline", "primary_text", "description"] as const).some((f) => counterState(copyEditing[card.id]![f], COPY_FIELD_LIMITS[f]).over)}
+                                onClick={() => void saveCopy(card)}
+                              >
+                                {savingCopy === card.id ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : null}
+                                Save ad copy
+                              </Button>
+                              <Button size="sm" variant="ghost" className="h-8" onClick={() => setCopyEditing((m) => ({ ...m, [card.id]: undefined }))}>
+                                Cancel
+                              </Button>
+                            </div>
+                            <p className="text-[10px] text-muted">Only this ad changes. Editing the image later never rewrites copy you edited.</p>
                           </div>
                         ) : null}
                         {editing[card.id] ? (

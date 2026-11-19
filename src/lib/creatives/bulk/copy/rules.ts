@@ -16,8 +16,7 @@ export type CopyRules = {
 
 export type AdFields = { headline: string; primary_text: string; description: string | null };
 
-/** The most each field may hold (what Meta publishing allows); the copy editor enforces these. */
-export const COPY_FIELD_LIMITS = { headline: 255, primary_text: 2200, description: 255 } as const;
+export { COPY_FIELD_LIMITS } from "@/lib/creatives/bulk/copy/limits-ui";
 
 export function wordCount(text: string): number {
   return text.split(/\s+/).filter(Boolean).length;
