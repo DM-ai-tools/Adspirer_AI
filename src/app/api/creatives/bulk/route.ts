@@ -96,6 +96,7 @@ export async function POST(request: Request) {
         landingPageUrl: body.landingPageUrl,
         directions: body.directions,
         pastedCopy: body.pastedCopy,
+        copyInstructions: body.copyInstructions,
         format: body.format,
       });
       runAfterResponse("bulk-directed-run", () => planAndRenderDirected(directed.id));
