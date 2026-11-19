@@ -62,7 +62,8 @@ export async function extractCopyRules(instructions: string, deps: { generate?: 
       model,
       schema: rulesSchema,
       temperature: 0,
-      system: "You turn an operator's instructions for ad copy into a precise checklist. Copy only what they actually said: lengths they gave (and for which field), things to include, things to avoid, structure and tone. Never add a rule they did not state.",
+      system:
+        "You turn an operator's instructions for ad copy into a precise checklist. Copy only what they actually said: lengths they gave (and for which field), things to include, things to avoid, structure and tone. Never add a rule they did not state. For lengths return the MAXIMUM allowed number: 'under N', 'less than N' and 'fewer than N' mean a maximum of N-1 (under N means N-1 at most); 'up to N', 'at most N', 'no more than N', 'maximum N' and 'within N' mean N.",
       prompt: instructions.slice(0, 2000),
     });
     const headline = keep(object.headline);

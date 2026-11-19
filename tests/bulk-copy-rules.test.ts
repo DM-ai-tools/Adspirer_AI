@@ -66,6 +66,13 @@ describe("reading the operator's instructions into rules", () => {
     expect(generate).not.toHaveBeenCalled();
   });
 
+  it("tells the model that 'under N' means at most N-1 and 'up to N' means N (a live run read 'under 6 words' as 6)", async () => {
+    let system = "";
+    await extractCopyRules("Headline under 6 words", { generate: (async (i: { system?: string }) => { system = i.system ?? ""; return { object: { headline: { unit: "words", max: 5 }, primary_text: null, description: null, checklist: [] } }; }) as never });
+    expect(system).toMatch(/under N[^.]*N-1/i);
+    expect(system).toMatch(/up to N[^.]*N/i);
+  });
+
   it("ignores nonsense limits (zero, negative)", async () => {
     const rules = await extractCopyRules("x", { generate: (async () => ({ object: { headline: { unit: "words", max: 0 }, primary_text: { unit: "words", max: -3 }, description: null, checklist: [] } })) as never });
     expect(rules).toEqual({ checklist: [] });

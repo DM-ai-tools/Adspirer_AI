@@ -74,6 +74,21 @@ describe("repairing the ads that miss", () => {
     expect(calls[1]!.prompt).not.toContain("Headline c");
   });
 
+  it("tells the repair that a length limit is always met by shortening, so it is never reported as something it could not follow", async () => {
+    const { generate, calls } = fake({ judge: () => ({ results: [] }), repair: () => ({ ads: [{ id: "a", headline: "H", primary_text: "Short.", description: null, could_not: [] }] }) });
+    await checkAndRepairCopy({ instructions: "x", ads: [ad("a", { primary_text: long })], facts: "" }, { generate, rules });
+    expect(calls.find((c) => c.kind === "repair")!.prompt).toMatch(/length limit[^\n]*shorten[^\n]*never[^\n]*could_not|never report a length limit in could_not/i);
+  });
+
+  it("drops a could-not-follow report about a length limit when the code finds the limit now met", async () => {
+    const { generate } = fake({
+      judge: () => ({ results: [] }),
+      repair: () => ({ ads: [{ id: "a", headline: "Fits now", primary_text: "Short.", description: null, could_not: [{ rule: "Primary text under 10 words", reason: "it needs the context" }] }] }),
+    });
+    const out = await checkAndRepairCopy({ instructions: "x", ads: [ad("a", { primary_text: long })], facts: "" }, { generate, rules });
+    expect(out.notes).toEqual({});
+  });
+
   it("tells the repair what each ad failed, the facts, and the precedence order", async () => {
     const { generate, calls } = fake({ judge: () => ({ results: [] }), repair: () => ({ ads: [{ id: "a", headline: "H", primary_text: "Short.", description: null, could_not: [] }] }) });
     await checkAndRepairCopy({ instructions: "primary text under 10 words", ads: [ad("a", { primary_text: long })], facts: "The audit is free for 30 minutes." }, { generate, rules });
@@ -89,6 +104,21 @@ describe("repairing the ads that miss", () => {
     expect(out.notes.a).toBe("Did not fully follow your instructions: Primary text is 30 words; your limit is 10.");
   });
 
+  it("gives an ad that is still over a length limit one more pass that only shortens it", async () => {
+    const wordRule: CopyRules = { primary_text: { unit: "words", max: 10 }, checklist: [] };
+    const { generate, calls } = fake({
+      repair: (prompt) =>
+        prompt.includes("SHORTEN THESE ADS")
+          ? { ads: [{ id: "a", headline: "H", primary_text: "Now it fits in ten words.", description: null, could_not: [] }] }
+          : { ads: [{ id: "a", headline: "H", primary_text: long, description: null, could_not: [{ rule: "primary text under 10 words", reason: "it loses meaning" }] }] },
+    });
+    const out = await checkAndRepairCopy({ instructions: "x", ads: [ad("a", { primary_text: long })], facts: "" }, { generate, rules: wordRule });
+    expect(calls.map((c) => c.kind)).toEqual(["repair", "repair"]);
+    expect(calls[1]!.prompt).toContain("Primary text is 30 words; your limit is 10.");
+    expect(out.ads[0]!.primary_text).toBe("Now it fits in ten words.");
+    expect(out.notes).toEqual({});
+  });
+
   it("never invents a fact to satisfy a rule: the ad keeps its copy and says it could not follow", async () => {
     const { generate } = fake({
       judge: () => ({ results: [{ id: "a", failed: ["Include a price"] }] }),
@@ -97,6 +127,41 @@ describe("repairing the ads that miss", () => {
     const out = await checkAndRepairCopy({ instructions: "include a price", ads: [ad("a")], facts: "No prices." }, { generate, rules: { checklist: ["Include a price"] } });
     expect(out.ads[0]).toMatchObject({ headline: "Headline a", primary_text: "Short body that is fine." });
     expect(out.notes.a).toBe("Could not follow: include a price, because no price appears in the facts.");
+  });
+
+  it("drops a 'could not follow' note the repair model made about a rule the copy now meets, after a second check confirms it", async () => {
+    let judged = 0;
+    const { generate, calls } = fake({
+      judge: () => {
+        judged += 1;
+        return judged === 1 ? { results: [{ id: "a", failed: ["End with a question"] }] } : { results: [{ id: "a", failed: [] }] };
+      },
+      repair: () => ({ ads: [{ id: "a", headline: "Headline a", primary_text: "Ready for your free audit?", description: null, could_not: [{ rule: "end with a question", reason: "it feels forced" }] }] }),
+    });
+    const out = await checkAndRepairCopy({ instructions: "x", ads: [ad("a")], facts: "" }, { generate, rules: { checklist: ["End with a question"] } });
+    expect(calls.map((c) => c.kind)).toEqual(["judge", "repair", "judge"]);
+    expect(out.notes).toEqual({});
+    expect(out.ads[0]!.primary_text).toBe("Ready for your free audit?");
+  });
+
+  it("keeps the note when the second check agrees the ad still misses the rule, and when that check cannot run", async () => {
+    const still = fake({
+      judge: () => ({ results: [{ id: "a", failed: ["Include a price"] }] }),
+      repair: () => ({ ads: [{ id: "a", headline: "Headline a", primary_text: "Short body that is fine.", description: null, could_not: [{ rule: "include a price", reason: "no price in the facts" }] }] }),
+    });
+    const a = await checkAndRepairCopy({ instructions: "x", ads: [ad("a")], facts: "" }, { generate: still.generate, rules: { checklist: ["Include a price"] } });
+    expect(a.notes.a).toMatch(/Could not follow: include a price/);
+
+    let judged = 0;
+    const flaky = fake({
+      judge: () => {
+        judged += 1;
+        return judged === 1 ? { results: [{ id: "a", failed: ["Include a price"] }] } : new Error("rate limited");
+      },
+      repair: () => ({ ads: [{ id: "a", headline: "Headline a", primary_text: "Short body that is fine.", description: null, could_not: [{ rule: "include a price", reason: "no price in the facts" }] }] }),
+    });
+    const b = await checkAndRepairCopy({ instructions: "x", ads: [ad("a")], facts: "" }, { generate: flaky.generate, rules: { checklist: ["Include a price"] } });
+    expect(b.notes.a).toMatch(/Could not follow: include a price/);
   });
 
   it("keeps the printed words of a directions image in front of the repair, as words that must not change", async () => {
