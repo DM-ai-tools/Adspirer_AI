@@ -25,7 +25,7 @@ import type { ImageFormat } from "@/lib/creatives/formats";
 import { STAGE_LABEL, type AwarenessStage } from "@/lib/creatives/bulk/angles";
 import { REFERENCE_CLOSE_COUNT, STYLE_IMAGE_LIMIT } from "@/lib/creatives/bulk/styles";
 import { shrinkImageToDataUri } from "@/lib/creatives/shrink-image";
-import { addItem, printToText, readyToConfirm, removeItem, textToPrint, toRequestDirections, updateItem, type ConfirmItem } from "@/lib/creatives/directed/confirm-list";
+import { addItem, printChanged, printToText, readyToConfirm, removeItem, textToPrint, toRequestDirections, updateItem, type ConfirmItem } from "@/lib/creatives/directed/confirm-list";
 import { cn } from "@/lib/utils";
 import type { ClientService } from "@/types";
 
@@ -620,7 +620,11 @@ function BulkInner() {
                           <Textarea
                             key={`${i}:${printToText(d.print)}`}
                             defaultValue={printToText(d.print)}
-                            onBlur={(e) => setDirections(updateItem(directions, i, { print: textToPrint(e.target.value) }))}
+                            onBlur={(e) => {
+                              // Leaving the box without changing a word changes nothing (and keeps the "check this one" note).
+                              if (!printChanged(d.print, e.target.value)) return;
+                              setDirections(updateItem(directions, i, { print: textToPrint(e.target.value, d.print.map((l) => l.role ?? "").filter(Boolean)) }));
+                            }}
                             placeholder="Words to print, one per line (e.g. Headline: Open the right door). Leave empty for no words."
                             className="min-h-[56px] text-xs"
                           />

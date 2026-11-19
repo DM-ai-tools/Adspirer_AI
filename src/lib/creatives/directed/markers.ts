@@ -19,6 +19,8 @@ export type DirectedMeta = Direction & {
   versions?: string[];
   /** The printed lines as they were before each kept version, oldest first (parallel to `versions`). */
   printBefore?: PrintLine[][];
+  /** The edit instructions applied to this image so far, oldest first, so a variation or a redo is of the image as it is now. */
+  edits?: string[];
 };
 
 const MARKER = /^DIRECTED: (\S+)$/m;
@@ -61,6 +63,15 @@ export function readDirectedMarker(direction: string | null | undefined): Direct
 
 export function isDirectedDirection(direction: string | null | undefined): boolean {
   return readDirectedMarker(direction) !== null;
+}
+
+/**
+ * The copy a directed image goes to Meta with. An image with a single printed line has no separate body, so its
+ * primary text is that same line (the operator's own words, nothing invented). Other drafts are untouched.
+ */
+export function publishCopy(draft: { headline: string; primary_text: string; creative_direction: string | null }): { headline: string; primaryText: string } {
+  const primaryText = draft.primary_text || (isDirectedDirection(draft.creative_direction) ? draft.headline : "");
+  return { headline: draft.headline, primaryText };
 }
 
 /** The ad's headline and primary text from the printed lines, for publishing. Pasted copy, when given, is the primary text. */

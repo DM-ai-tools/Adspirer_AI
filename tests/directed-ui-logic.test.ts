@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addItem, printToText, readyToConfirm, removeItem, textToPrint, toRequestDirections, updateItem, type ConfirmItem } from "@/lib/creatives/directed/confirm-list";
+import { addItem, printChanged, printToText, readyToConfirm, removeItem, textToPrint, toRequestDirections, updateItem, type ConfirmItem } from "@/lib/creatives/directed/confirm-list";
 
 const item = (over: Partial<ConfirmItem> = {}): ConfirmItem => ({ picture: "A red door", print: [{ role: "headline", text: "Open it" }], unsure: false, note: null, ...over });
 
@@ -20,6 +20,30 @@ describe("the words box in the confirm step", () => {
       { role: null, text: "What: not a role" },
     ]);
     expect(textToPrint("")).toEqual([]);
+  });
+});
+
+describe("role labels the parser chose that the words box does not know", () => {
+  const print = [
+    { role: "Title", text: "Summer Sale" },
+    { role: "Main headline", text: "Everything must go" },
+    { role: null, text: "Ends Sunday" },
+  ];
+
+  it("round-trips them when the box is told which roles the item already has, so no label becomes printed text", () => {
+    const roles = print.map((l) => l.role).filter((r): r is string => Boolean(r));
+    expect(textToPrint(printToText(print), roles)).toEqual(print);
+  });
+
+  it("without that knowledge an unknown label is just words (the old behaviour), never silently dropped", () => {
+    expect(textToPrint("Title: Summer Sale")).toEqual([{ role: null, text: "Title: Summer Sale" }]);
+  });
+
+  it("reports no change when the box is left as it was, and a change when a word is edited", () => {
+    expect(printChanged(print, printToText(print))).toBe(false);
+    expect(printChanged(print, printToText(print) + "\n")).toBe(false);
+    expect(printChanged(print, printToText(print).replace("Summer", "Winter"))).toBe(true);
+    expect(printChanged([], "")).toBe(false);
   });
 });
 

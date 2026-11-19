@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { getCurrentUser } from "@/lib/security/auth";
 import { assertAuthenticated, assertClientAccess } from "@/lib/authz/assert";
-import { getCreativeDraftAsync, toPublicDraft, upsertCreativeDraftAsync } from "@/lib/creatives/drafts";
+import { getCreativeDraftAsync, isRenderStalled, toPublicDraft, upsertCreativeDraftAsync } from "@/lib/creatives/drafts";
+import { isDirectedDirection } from "@/lib/creatives/directed/markers";
 import { generateImagesForDrafts } from "@/lib/creatives/service";
 import { createDirectedVariations } from "@/lib/creatives/directed/variations";
 import { editDirectedDraft, undoDirectedEdit } from "@/lib/creatives/directed/edit";
@@ -26,6 +27,9 @@ export async function POST(request: Request) {
     const existing = await getCreativeDraftAsync(body.draftId);
     if (!existing) throw new Error("Creative draft not found");
     await assertClientAccess(user.id, existing.client_id);
+    // Checked before anything is marked as working, so a refused request leaves the card exactly as it was.
+    if (!isDirectedDirection(existing.creative_direction)) throw new Error("This only works on an image that was made from a direction.");
+    if (existing.image_status === "generating" && !isRenderStalled(existing)) throw new Error("This image is still being made. Try again when it appears.");
 
     if (body.action === "undo") {
       await undoDirectedEdit(body.draftId);

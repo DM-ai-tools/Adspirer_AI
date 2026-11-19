@@ -91,6 +91,12 @@ describe("four variations of a directed image", () => {
     }
   });
 
+  it("carries the edits already made to the source, so a variation is of the image as it is now", async () => {
+    const src = await source(withDirectedMarker("", { picture: "A", print, edits: ["make the door red", "add morning light"], versions: ["k1"], printBefore: [print] }));
+    const { drafts } = await createDirectedVariations({ draftId: src.id });
+    for (const d of drafts) expect(readDirectedMarker(d.creative_direction)!.edits).toEqual(["make the door red", "add morning light"]);
+  });
+
   it("refuses a draft that was not made from a direction", async () => {
     const src = await source("STYLE: a poster.");
     await expect(createDirectedVariations({ draftId: src.id })).rejects.toThrow(/direction/i);

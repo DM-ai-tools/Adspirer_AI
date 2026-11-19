@@ -44,10 +44,20 @@ export const DETECT_SYSTEM_PROMPT = [
   "mode=variations: they ask for variations / more versions / alternatives of an image already made in this chat. mode=edit: they ask to change something about an image already made in this chat (put the change in edit_instruction). Use these two only if an image from a direction already exists in the chat (the prompt says whether it does).",
   "mode=unsure: it might be a direction but you cannot tell what to draw; give one short question.",
   `Never invent a picture instruction or any printed word the operator did not give. If a message contains more than ${MAX_CHAT_DIRECTIONS} directions, still return them all; the caller handles the limit.`,
+  "Return ONE direction for one image. A message with a single direction that says 'give me 3 images of this' or 'make a few of these' is still one direction (extra versions are only made when the operator later asks for variations), never the same direction repeated.",
   "no_logo is true only if the operator explicitly says to leave the logo off.",
 ].join("\n");
 
 const clean = (s: string | null | undefined) => (s ?? "").trim();
+
+/** A stated shape, or null when none was stated or it cannot be read (the chat's own default then applies). */
+function readFormat(value: string | null): ImageFormat | null {
+  const v = clean(value);
+  if (!v) return null;
+  if ((IMAGE_FORMATS as readonly string[]).includes(v)) return v as ImageFormat;
+  // parseImageFormat answers 4:5 for anything it does not know, so only accept its answer when the text names a shape.
+  return /reel|stor|vertical|9\s*[x:]\s*16|square|1\s*[x:]\s*1|1\.91|1,91|link ad|16\s*[:x]\s*9|landscape|wide|horizontal|4\s*[x:]\s*5|portrait|feed/i.test(v) ? parseImageFormat(v) : null;
+}
 
 /** What the model returned, made safe: blank pictures dropped, limits applied, impossible modes turned into open. */
 export function normaliseDetection(rawValue: unknown, hasDirectedImage: boolean): Detection {
@@ -55,14 +65,22 @@ export function normaliseDetection(rawValue: unknown, hasDirectedImage: boolean)
   if (!parsed.success) return OPEN;
   const raw = parsed.data;
 
+  // The same direction twice ("give me 3 images of this") is one image: extras only come from asking for variations.
+  const seen = new Set<string>();
   const directions: Direction[] = raw.directions
     .map((d) => {
       const print: PrintLine[] = d.print.filter((p) => clean(p.text)).map((p) => ({ role: clean(p.role) || null, text: p.text }));
       return { picture: clean(d.picture), print, ...(d.no_logo ? { noLogo: true } : {}) };
     })
-    .filter((d) => d.picture);
+    .filter((d) => d.picture)
+    .filter((d) => {
+      const key = JSON.stringify([d.picture, d.print, d.noLogo ?? false]);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 
-  const format = raw.format ? (((IMAGE_FORMATS as readonly string[]).includes(raw.format.trim()) ? raw.format.trim() : parseImageFormat(raw.format)) as ImageFormat) : null;
+  const format = readFormat(raw.format);
   const base = { directions: [] as Direction[], format, editInstruction: null as string | null, question: clean(raw.question) || null, overflow: false };
 
   switch (raw.mode) {

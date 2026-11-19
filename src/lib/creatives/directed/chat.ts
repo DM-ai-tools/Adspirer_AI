@@ -18,14 +18,22 @@ export type DirectedTurn = {
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-/** The most recent image of this chat that came from a direction (a variation counts). */
+/**
+ * The image a typed "change it" or "variations" refers to: the newest image of this chat, of any kind. It is only a
+ * target when it came from a direction; when the newest is a concept from the existing flow, the existing rework
+ * and "More like this" behaviour applies and this path stays out of it.
+ */
 function latestDirected(drafts: CreativeDraft[]): CreativeDraft | null {
-  return (
-    drafts
-      .filter((d) => isDirectedDirection(d.creative_direction) && d.status !== "rejected" && d.image_status !== "failed")
-      .sort((a, b) => b.created_at.localeCompare(a.created_at))[0] ?? null
-  );
+  const newest = drafts.filter((d) => d.status !== "rejected" && d.image_status !== "failed").sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+  return newest && isDirectedDirection(newest.creative_direction) ? newest : null;
 }
+
+const STILL_RENDERING: DirectedTurn = {
+  summary: "That image is still rendering. Ask again in a moment, once it appears below.",
+  cards: [],
+  rendering: false,
+  run: null,
+};
 
 /**
  * The chat's exact-direction path. Decides, from the operator's own words, whether this message is a direction
@@ -86,6 +94,7 @@ export async function runDirectedTurn(
     }
     case "variations": {
       if (!target) return null;
+      if (target.image_status !== "succeeded") return STILL_RENDERING;
       const { source, drafts } = await createDirectedVariations({ draftId: target.id });
       return {
         summary: "Making 4 variations of your image: the same picture and the same words, with a different layout in each.",
@@ -96,6 +105,7 @@ export async function runDirectedTurn(
     }
     case "edit": {
       if (!target || !detection.editInstruction) return null;
+      if (target.image_status !== "succeeded") return STILL_RENDERING;
       const instruction = detection.editInstruction;
       const working = await upsertCreativeDraftAsync({ ...target, id: target.id, image_status: "generating", image_error: null });
       return {

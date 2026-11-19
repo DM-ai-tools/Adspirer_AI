@@ -39,7 +39,7 @@ export async function createDirectedVariations(input: { draftId: string }): Prom
         primary_text: source.primary_text,
         description: source.description,
         cta: source.cta,
-        creative_direction: withAspectMarker(withDirectedMarker("", { picture: meta.picture, print: meta.print, ...(meta.noLogo ? { noLogo: true } : {}), tweak }), format),
+        creative_direction: withAspectMarker(withDirectedMarker("", { picture: meta.picture, print: meta.print, ...(meta.noLogo ? { noLogo: true } : {}), ...(meta.edits?.length ? { edits: meta.edits } : {}), tweak }), format),
         image_url: null,
         image_b64: null,
         image_mime: "image/png",

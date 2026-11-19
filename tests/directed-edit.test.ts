@@ -7,9 +7,13 @@ import { readDirectedMarker, withDirectedMarker, type PrintLine } from "@/lib/cr
 import { editDirectedDraft, MAX_KEPT_VERSIONS, undoDirectedEdit } from "@/lib/creatives/directed/edit";
 
 const stored = new Map<string, Buffer>();
+let failPut = false;
 vi.mock("@/lib/storage/r2", () => ({
   getObjectStorage: () => ({
-    put: async (key: string, data: Buffer) => void stored.set(key, Buffer.from(data)),
+    put: async (key: string, data: Buffer) => {
+      if (failPut) throw new Error("storage unavailable");
+      stored.set(key, Buffer.from(data));
+    },
     get: async (key: string) => stored.get(key) ?? null,
     delete: async (key: string) => void stored.delete(key),
   }),
@@ -59,6 +63,42 @@ beforeEach(() => {
   process.env.OPENAI_API_KEY = "test";
   resetConfigCache();
   stored.clear();
+  failPut = false;
+});
+
+describe("an edit that cannot even start never leaves the image stuck as generating", () => {
+  it("reports the failure and returns to the image when storage fails before the edit", async () => {
+    const draft = await makeDraft();
+    await upsertCreativeDraftAsync({ ...draft, id: draft.id, image_status: "generating" }); // the caller marks it working first
+    failPut = true;
+    const result = await editDirectedDraft({ draftId: draft.id, instruction: "make the door blue" }, { callEdit: (async () => solid(blue)) as never, updatePrint: async (p) => p });
+    expect(result).toEqual({ ok: false, error: "storage unavailable" });
+    const after = (await getCreativeDraftAsync(draft.id))!;
+    expect(after.image_status).toBe("succeeded");
+    expect(after.image_error).toBeNull();
+  });
+
+  it("marks a draft that has no image yet as failed with the reason, not as generating", async () => {
+    const draft = await makeDraft();
+    const empty = await upsertCreativeDraftAsync({ ...draft, id: draft.id, image_url: null, image_b64: null, image_status: "generating" });
+    const result = await editDirectedDraft({ draftId: empty.id, instruction: "make the door blue" }, { callEdit: (async () => solid(blue)) as never, updatePrint: async (p) => p });
+    expect(result.ok).toBe(false);
+    const after = (await getCreativeDraftAsync(empty.id))!;
+    expect(after.image_status).toBe("failed");
+    expect(after.image_error).toMatch(/not available to edit/i);
+  });
+});
+
+describe("the edits made so far are remembered", () => {
+  it("records each instruction, and undo takes the last one back out", async () => {
+    const draft = await makeDraft();
+    const deps = { callEdit: (async () => solid(blue)) as never, updatePrint: async (p: PrintLine[]) => p };
+    await editDirectedDraft({ draftId: draft.id, instruction: "make the door blue" }, deps);
+    await editDirectedDraft({ draftId: draft.id, instruction: "add morning light" }, deps);
+    expect(readDirectedMarker((await getCreativeDraftAsync(draft.id))!.creative_direction)!.edits).toEqual(["make the door blue", "add morning light"]);
+    await undoDirectedEdit(draft.id);
+    expect(readDirectedMarker((await getCreativeDraftAsync(draft.id))!.creative_direction)!.edits).toEqual(["make the door blue"]);
+  });
 });
 
 describe("editing a directed image", () => {

@@ -14,6 +14,8 @@ export function buildDirectedImagePrompt(input: {
   hasLogo: boolean;
   tweak?: string;
   revisionNotes?: string | null;
+  /** Edits already made to this image; a redraw or a variation applies them so it is the image as it is now. */
+  edits?: string[];
 }): string {
   const lines = input.print.filter((l) => l.text.trim());
   const palette = (input.colors ?? []).filter(Boolean).slice(0, 4);
@@ -32,6 +34,7 @@ export function buildDirectedImagePrompt(input: {
       : null,
     input.hasLogo ? "The brand logo is added afterwards, so do not draw any logo or brand mark; leave one corner calm and uncluttered for it." : null,
     "Photographic or illustrative detail is clean and believable: anatomically correct hands and faces, no distorted objects.",
+    input.edits?.length ? `Apply these changes the operator already asked for (they are part of this image now):\n${input.edits.map((e) => `- ${e}`).join("\n")}` : null,
     input.tweak ? `VARIATION: keep everything the same except: ${input.tweak}` : null,
     input.revisionNotes ? `Operator revision request: ${input.revisionNotes}` : null,
     formatPromptRule(input.format),

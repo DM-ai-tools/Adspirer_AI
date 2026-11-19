@@ -7,23 +7,37 @@ import { MAX_DIRECTIONS, type Direction, type PrintLine } from "@/lib/creatives/
 export type ConfirmItem = Direction & { unsure: boolean; note: string | null };
 
 /** Role labels the words box understands when typed at the start of a line ("Headline: Open it"). */
-const ROLE_LINE = /^(headline|sub-?headline|sub-?line|button|cta|tagline|body|footer|label)\s*:\s*(\S.*)$/i;
+const ROLE_WORDS = "headline|sub-?headline|sub-?line|button|cta|tagline|body|footer|label";
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** The words box text for the printed lines: "Role: words" when a line has a role, else the words alone. */
 export function printToText(print: PrintLine[]): string {
   return print.map((l) => (l.role ? `${l.role}: ${l.text}` : l.text)).join("\n");
 }
 
-/** The printed lines from the words box text. Blank lines are ignored; the words themselves are never changed. */
-export function textToPrint(text: string): PrintLine[] {
+/**
+ * The printed lines from the words box text. Blank lines are ignored; the words themselves are never changed.
+ * `knownRoles` are the labels the item already uses (the parser may have chosen any: "Title", "Main headline"), so
+ * a line that starts with one of them keeps its role and the label is never turned into printed words.
+ */
+export function textToPrint(text: string, knownRoles: string[] = []): PrintLine[] {
+  const labels = [ROLE_WORDS, ...knownRoles.filter((r) => r.trim()).map((r) => escapeRegExp(r.trim()))].join("|");
+  const roleLine = new RegExp(`^(${labels})\\s*:\\s*(\\S.*)$`, "i");
   const out: PrintLine[] = [];
   for (const raw of text.split("\n")) {
     const line = raw.trim();
     if (!line) continue;
-    const m = line.match(ROLE_LINE);
+    const m = line.match(roleLine);
     out.push(m ? { role: m[1]!, text: m[2]!.trim() } : { role: null, text: line });
   }
   return out;
+}
+
+const squash = (text: string) => text.split("\n").map((l) => l.trim()).filter(Boolean).join("\n");
+
+/** True only when the words box text differs from the printed lines (blank lines and trailing spaces do not count). */
+export function printChanged(print: PrintLine[], text: string): boolean {
+  return squash(text) !== squash(printToText(print));
 }
 
 /** One item changed; an edit by the operator settles the parser's doubt about it. */

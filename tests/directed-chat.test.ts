@@ -30,7 +30,13 @@ const base = { clientId: "c1", conversationId: "conv1", taskId: "t1", message: "
 const run = (over: Partial<Parameters<typeof runDirectedTurn>[0]>, d: Detection) =>
   runDirectedTurn({ ...base, wantsInlineCreatives: true, drafts: [], ...over }, { detect: (async () => d) as never, loadBrand: (async () => brand) as never });
 
-async function directedDraft(created: string, picture = "A red door") {
+async function conceptDraft(created: string) {
+  const d = await directedDraft(created, "x");
+  const plain = await upsertCreativeDraftAsync({ ...d, id: undefined, creative_direction: "STYLE: a poster. ON-IMAGE TEXT: headline" });
+  return { ...plain, created_at: created } as CreativeDraft;
+}
+
+async function directedDraft(created: string, picture = "A red door", imageStatus: "succeeded" | "generating" = "succeeded") {
   const d = await upsertCreativeDraftAsync({
     client_id: "c1",
     service_id: null,
@@ -48,7 +54,7 @@ async function directedDraft(created: string, picture = "A red door") {
     image_mime: "image/png",
     image_model: null,
     image_prompt: null,
-    image_status: "succeeded",
+    image_status: imageStatus,
     image_error: null,
     landing_page_url: "https://acme.test",
     brand_colors: null,
@@ -134,6 +140,38 @@ describe("a direction", () => {
     const out = (await run({}, detection({ mode: "unsure", question: "What should the picture show?" })))!;
     expect(out.summary).toContain("What should the picture show?");
     expect(out.cards).toEqual([]);
+  });
+});
+
+describe("which image a typed edit or variations request acts on", () => {
+  it("does not act on an older directed image when the latest image is a concept from the existing flow", async () => {
+    const directed = await directedDraft("2026-11-19T09:00:00Z");
+    const concept = await conceptDraft("2026-11-19T12:00:00Z");
+    const detect = vi.fn(async () => detection({ mode: "variations" }));
+    const before = await count();
+    const out = await runDirectedTurn({ ...base, wantsInlineCreatives: false, drafts: [directed, concept] }, { detect: detect as never, loadBrand: (async () => brand) as never });
+    expect(out).toBeNull();
+    expect(await count()).toBe(before);
+    // and when it is an image request, the detector is told there is no directed image to act on
+    const detect2 = vi.fn(async () => detection({ mode: "edit", editInstruction: "make it darker" }));
+    const out2 = await runDirectedTurn({ ...base, wantsInlineCreatives: true, drafts: [directed, concept] }, { detect: detect2 as never, loadBrand: (async () => brand) as never });
+    expect(out2).toBeNull();
+    expect(detect2).toHaveBeenCalledWith(expect.objectContaining({ hasDirectedImage: false }));
+    expect(edits).toEqual([]);
+  });
+
+  it("says the image is still rendering instead of editing or varying it", async () => {
+    const rendering = await directedDraft("2026-11-19T11:00:00Z", "new", "generating");
+    const before = await count();
+    const edit = (await run({ drafts: [rendering], wantsInlineCreatives: false }, detection({ mode: "edit", editInstruction: "make the text bigger" })))!;
+    expect(edit.summary).toMatch(/still rendering/i);
+    expect(edit.run).toBeNull();
+    expect(edit.cards).toEqual([]);
+    const vary = (await run({ drafts: [rendering], wantsInlineCreatives: false }, detection({ mode: "variations" })))!;
+    expect(vary.summary).toMatch(/still rendering/i);
+    expect(vary.run).toBeNull();
+    expect(await count()).toBe(before);
+    expect(edits).toEqual([]);
   });
 });
 

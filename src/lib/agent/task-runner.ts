@@ -69,6 +69,7 @@ import { logger, newCorrelationId } from "@/lib/observability/logger";
 import { findRepeatedFigures } from "@/lib/audit/repeat-check";
 import { startCreativeGeneration } from "@/lib/creatives/service";
 import { runDirectedTurn, type DirectedTurn } from "@/lib/creatives/directed/chat";
+import { isDirectedDirection } from "@/lib/creatives/directed/markers";
 import { insertLandingPageTables, insertPerformanceTables } from "@/lib/audit/performance-tables";
 import { runAfterResponse } from "@/lib/api/background";
 import {
@@ -931,6 +932,8 @@ ${gathered.strategyAppendix}`;
         ).filter(
           (d) =>
             d.image_status === "generating" &&
+            // An image being made from the operator's own direction is not a batch of concepts to reuse.
+            !isDirectedDirection(d.creative_direction) &&
             !isRenderStalled(d) &&
             (!namedUrl || sameLandingPage(namedUrl, d.landing_page_url)),
         );

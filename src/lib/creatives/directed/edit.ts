@@ -12,6 +12,8 @@ import { copyFromPrint, readDirectedMarker, withDirectedMarker, type DirectedMet
 
 /** How many earlier versions of one directed image are kept for undo. */
 export const MAX_KEPT_VERSIONS = 5;
+/** How many edit instructions are remembered for variations and redraws. */
+const MAX_KEPT_EDITS = 10;
 
 const printSchema = z.object({ print: z.array(z.object({ role: z.string().nullable(), text: z.string() })) });
 
@@ -65,13 +67,14 @@ export async function editDirectedDraft(
   const callEdit = deps.callEdit ?? callImageEdit;
   const updatePrint = deps.updatePrint ?? updatePrintedWords;
   const storage = getObjectStorage();
-
-  const original = await imageBytes(existing);
   const key = `creatives/versions/${existing.id}/${Date.now()}.png`;
-  await storage.put(key, original, "image/png");
-  await upsertCreativeDraftAsync({ ...existing, id: existing.id, image_status: "generating", image_error: null });
 
+  // Callers show the card as working before this runs, so every step from here is guarded: whatever fails,
+  // the card goes back to showing the image (or says it has none), never stays "generating".
   try {
+    const original = await imageBytes(existing);
+    await storage.put(key, original, "image/png");
+    await upsertCreativeDraftAsync({ ...existing, id: existing.id, image_status: "generating", image_error: null });
     const hasLogo = Boolean(existing.logo_url) && !meta.noLogo;
     const edited = await callEdit(original, buildEditPrompt(instruction, hasLogo), generationSize(format));
     const finished = await finishEdit(original, edited, readLogoMarker(existing.creative_direction));
@@ -85,7 +88,7 @@ export async function editDirectedDraft(
       printBefore.shift();
       await storage.delete(dropped).catch(() => undefined);
     }
-    const nextMeta: DirectedMeta = { ...meta, print, versions, printBefore };
+    const nextMeta: DirectedMeta = { ...meta, print, versions, printBefore, edits: [...(meta.edits ?? []), instruction].slice(-MAX_KEPT_EDITS) };
     const copy = changedWords ? copyAfter(existing, meta.print, print) : {};
     await storeDraftImage({ ...existing, ...copy }, {
       b64: finished.toString("base64"),
@@ -102,7 +105,13 @@ export async function editDirectedDraft(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn("Directed image edit failed", { draftId: input.draftId, error: message });
-    await upsertCreativeDraftAsync({ ...existing, id: existing.id, image_status: "succeeded", image_error: null }).catch(() => undefined);
+    // Put the card back from what is stored now (not from the copy read at the start): a draft with an image shows it
+    // again; one with none says so. The version file saved for this attempt is removed.
+    const current = await getCreativeDraftAsync(input.draftId).catch(() => null);
+    if (current) {
+      const hasImage = Boolean(current.image_url) || Boolean(current.image_b64);
+      await upsertCreativeDraftAsync({ ...current, id: current.id, image_status: hasImage ? "succeeded" : "failed", image_error: hasImage ? null : message }).catch(() => undefined);
+    }
     await storage.delete(key).catch(() => undefined);
     return { ok: false, error: message };
   }
@@ -122,7 +131,7 @@ export async function undoDirectedEdit(draftId: string): Promise<void> {
 
   const printBefore = [...(meta.printBefore ?? [])];
   const restoredPrint = printBefore.pop() ?? meta.print;
-  const nextMeta: DirectedMeta = { ...meta, print: restoredPrint, versions: versions.slice(0, -1), printBefore };
+  const nextMeta: DirectedMeta = { ...meta, print: restoredPrint, versions: versions.slice(0, -1), printBefore, edits: (meta.edits ?? []).slice(0, -1) };
   await storeDraftImage({ ...draft, ...copyAfter(draft, meta.print, restoredPrint) }, {
     b64: bytes.toString("base64"),
     imageUrl: null,

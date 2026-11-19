@@ -35,6 +35,7 @@ export async function renderDirectedDraft(draftId: string, options: { revisionNo
     colors: existing.brand_colors,
     hasLogo: Boolean(logoUrl),
     tweak: meta.tweak,
+    edits: meta.edits,
     revisionNotes: options.revisionNotes ?? existing.revision_notes,
   });
 

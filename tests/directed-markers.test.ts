@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { copyFromPrint, isDirectedDirection, readDirectedMarker, withDirectedMarker, type DirectedMeta } from "@/lib/creatives/directed/markers";
+import { copyFromPrint, isDirectedDirection, publishCopy, readDirectedMarker, withDirectedMarker, type DirectedMeta } from "@/lib/creatives/directed/markers";
 import { buildDirectedImagePrompt } from "@/lib/creatives/directed/prompt";
 import { stripAspectMarker, withAspectMarker } from "@/lib/creatives/formats";
 
@@ -55,6 +55,17 @@ describe("copy for the ad from the printed lines", () => {
   });
 });
 
+describe("the copy sent to Meta for a directed image", () => {
+  const directed = withDirectedMarker("", { picture: "x", print: [] });
+  it("uses the headline as the primary text when only one line was printed (the operator's own words, nothing invented)", () => {
+    expect(publishCopy({ headline: "Ride further", primary_text: "", creative_direction: directed })).toEqual({ headline: "Ride further", primaryText: "Ride further" });
+  });
+  it("leaves real copy, and every non-directed draft, exactly as it is", () => {
+    expect(publishCopy({ headline: "H", primary_text: "Body", creative_direction: directed })).toEqual({ headline: "H", primaryText: "Body" });
+    expect(publishCopy({ headline: "H", primary_text: "", creative_direction: "STYLE: x" })).toEqual({ headline: "H", primaryText: "" });
+  });
+});
+
 describe("the directed image prompt", () => {
   const base = { picture: "A red door in a white wall", print: meta.print, format: "4:5" as const, hasLogo: false };
 
@@ -87,6 +98,13 @@ describe("the directed image prompt", () => {
   it("says the logo is added afterwards and must not be drawn, when there is one", () => {
     expect(buildDirectedImagePrompt({ ...base, hasLogo: true })).toMatch(/logo is added afterwards[^.]*do not draw/i);
     expect(buildDirectedImagePrompt(base)).not.toMatch(/logo is added afterwards/i);
+  });
+
+  it("applies the edits already made to the image, in order, and none when there are none", () => {
+    const p = buildDirectedImagePrompt({ ...base, edits: ["make the door red", "add morning light"] });
+    expect(p).toMatch(/apply these changes the operator already asked for[^\n]*\n- make the door red\n- add morning light/i);
+    expect(buildDirectedImagePrompt(base)).not.toMatch(/already asked for/i);
+    expect(buildDirectedImagePrompt({ ...base, edits: [] })).not.toMatch(/already asked for/i);
   });
 
   it("includes revision notes and the format rule, and none of the agency craft brief", () => {

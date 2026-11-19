@@ -52,6 +52,19 @@ describe("normalising what the model returned", () => {
     expect(normaliseDetection(raw({ directions: many.slice(0, MAX_CHAT_DIRECTIONS) }), false).directions).toHaveLength(MAX_CHAT_DIRECTIONS);
   });
 
+  it("makes one image for 'give me 3 images of this': identical directions collapse to one", () => {
+    const same = { picture: "A red door", print: [{ role: "headline", text: "Open it" }], no_logo: false };
+    expect(normaliseDetection(raw({ directions: [same, same, same] }), false).directions).toHaveLength(1);
+    const other = { ...same, picture: "A blue door" };
+    expect(normaliseDetection(raw({ directions: [same, other, same] }), false).directions.map((d) => d.picture)).toEqual(["A red door", "A blue door"]);
+  });
+
+  it("falls back to no stated format for a shape it cannot read, instead of forcing 4:5", () => {
+    expect(normaliseDetection(raw({ format: "make it pop" }), false).format).toBeNull();
+    expect(normaliseDetection(raw({ format: "reels" }), false).format).toBe("9:16");
+    expect(normaliseDetection(raw({ format: "1:1" }), false).format).toBe("1:1");
+  });
+
   it("treats variations and edit as open when the chat has no directed image", () => {
     expect(normaliseDetection(raw({ mode: "variations", directions: [] }), false).mode).toBe("open");
     expect(normaliseDetection(raw({ mode: "edit", directions: [], edit_instruction: "darker" }), false).mode).toBe("open");
@@ -98,5 +111,6 @@ describe("detecting a direction", () => {
     expect(DETECT_SYSTEM_PROMPT).toMatch(/headline[\s\S]*alone[\s\S]*open/i);
     expect(DETECT_SYSTEM_PROMPT).toMatch(/verbatim/i);
     expect(DETECT_SYSTEM_PROMPT).toContain(String(MAX_CHAT_DIRECTIONS));
+    expect(DETECT_SYSTEM_PROMPT).toMatch(/images of this[\s\S]*one direction/i);
   });
 });

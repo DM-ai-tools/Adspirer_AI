@@ -83,6 +83,24 @@ describe("POST /api/creatives/directed", () => {
     expect((await post({ action: "undo", draftId: src.id })).status).toBeGreaterThanOrEqual(400);
   });
 
+  it("edit: refuses a draft that is not from a direction without touching its status", async () => {
+    const src = await directedDraft();
+    const plain = await upsertCreativeDraftAsync({ ...src, id: undefined, creative_direction: "STYLE: a poster." });
+    const res = await post({ action: "edit", draftId: plain.id, instruction: "make it darker" });
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect((await getCreativeDraftAsync(plain.id))!.image_status).toBe("succeeded");
+    expect(actions).toEqual([]);
+  });
+
+  it("edit and undo: refused while the image is still rendering", async () => {
+    const src = await directedDraft();
+    const rendering = await upsertCreativeDraftAsync({ ...src, id: src.id, image_status: "generating" });
+    expect((await post({ action: "edit", draftId: rendering.id, instruction: "make it darker" })).status).toBeGreaterThanOrEqual(400);
+    expect((await post({ action: "undo", draftId: rendering.id })).status).toBeGreaterThanOrEqual(400);
+    expect((await getCreativeDraftAsync(src.id))!.image_status).toBe("generating");
+    expect(actions).toEqual([]);
+  });
+
   it("undo: says so when there is nothing to undo", async () => {
     const src = await directedDraft();
     expect((await post({ action: "undo", draftId: src.id })).status).toBeGreaterThanOrEqual(400);
