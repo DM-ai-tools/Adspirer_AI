@@ -23,7 +23,7 @@ vi.mock("@/lib/creatives/cloudinary", () => ({ isCloudinaryConfigured: () => fal
 import { runDirectedTurn } from "@/lib/creatives/directed/chat";
 
 const brand = { brandName: "Acme", colors: ["#111111"], logoUrl: null, landingUrl: "https://acme.test" };
-const none: Detection = { mode: "open", directions: [], format: null, editInstruction: null, question: null, overflow: false };
+const none: Detection = { mode: "open", directions: [], website: null, format: null, editInstruction: null, question: null, overflow: false };
 const detection = (over: Partial<Detection>): Detection => ({ ...none, ...over });
 
 const base = { clientId: "c1", conversationId: "conv1", taskId: "t1", message: "make an image", recent: [], defaultFormat: "4:5" as const };
@@ -116,11 +116,39 @@ describe("a direction", () => {
     expect(rendered).toEqual([[draft.id]]);
   });
 
-  it("says so when no brand colours or logo could be found, instead of silently drawing without them", async () => {
+  it("asks for the website instead of drawing an image with no brand colours, and makes nothing", async () => {
     const bare = { brandName: "Acme", colors: null, logoUrl: null, landingUrl: null };
+    const before = await count();
     const out = (await runDirectedTurn({ ...base, wantsInlineCreatives: true, drafts: [] }, { detect: (async () => detection({ mode: "directed", directions: [door] })) as never, loadBrand: (async () => bare) as never }))!;
-    expect(out.summary).toMatch(/couldn.t find your brand colours/i);
-    expect(out.summary).toMatch(/logo/i);
+    expect(out.summary).toMatch(/website address/i);
+    expect(out.summary).toMatch(/brand colours and logo/i);
+    expect(out.cards).toEqual([]);
+    expect(out.run).toBeNull();
+    expect(await count()).toBe(before);
+  });
+
+  it("names the page it could not read when the operator gave one, and asks for another", async () => {
+    const bare = { brandName: "Acme", colors: null, logoUrl: null, landingUrl: "https://acme.test/" };
+    const out = (await runDirectedTurn({ ...base, wantsInlineCreatives: true, drafts: [] }, { detect: (async () => detection({ mode: "directed", directions: [door], website: "https://acme.test/" })) as never, loadBrand: (async () => bare) as never }))!;
+    expect(out.summary).toContain("https://acme.test/");
+    expect(out.summary).toMatch(/couldn.t read/i);
+  });
+
+  it("reads the brand from the website the operator gives in the message", async () => {
+    const seen: Array<string | null | undefined> = [];
+    const loadBrand = (async (i: { landingUrl?: string | null }) => {
+      seen.push(i.landingUrl);
+      return brand;
+    }) as never;
+    await runDirectedTurn({ ...base, landingUrl: "https://older.test/", wantsInlineCreatives: true, drafts: [] }, { detect: (async () => detection({ mode: "directed", directions: [door], website: "https://trafficradius.com.au/" })) as never, loadBrand });
+    expect(seen).toEqual(["https://trafficradius.com.au/"]);
+  });
+
+  it("makes the image with a note when only the logo could not be found", async () => {
+    const noLogo = { brandName: "Acme", colors: ["#111111"], logoUrl: null, landingUrl: "https://acme.test" };
+    const out = (await runDirectedTurn({ ...base, wantsInlineCreatives: true, drafts: [] }, { detect: (async () => detection({ mode: "directed", directions: [door] })) as never, loadBrand: (async () => noLogo) as never }))!;
+    expect(out.cards).toHaveLength(1);
+    expect(out.summary).toMatch(/couldn.t find your logo/i);
     const full = { brandName: "Acme", colors: ["#111111"], logoUrl: "https://acme.test/logo.png", landingUrl: "https://acme.test" };
     const withBrand = (await runDirectedTurn({ ...base, wantsInlineCreatives: true, drafts: [] }, { detect: (async () => detection({ mode: "directed", directions: [door] })) as never, loadBrand: (async () => full) as never }))!;
     expect(withBrand.summary).not.toMatch(/couldn.t find/i);

@@ -52,6 +52,14 @@ describe("normalising what the model returned", () => {
     expect(normaliseDetection(raw({ directions: many.slice(0, MAX_CHAT_DIRECTIONS) }), false).directions).toHaveLength(MAX_CHAT_DIRECTIONS);
   });
 
+  it("normalises a website the operator gave, and ignores anything that is not an address", () => {
+    expect(normaliseDetection(raw({ website: "trafficradius.com.au" }), false).website).toBe("https://trafficradius.com.au/");
+    expect(normaliseDetection(raw({ website: "https://www.acme.test/offer?x=1" }), false).website).toBe("https://www.acme.test/offer?x=1");
+    expect(normaliseDetection(raw({ website: "not a website" }), false).website).toBeNull();
+    expect(normaliseDetection(raw({ website: null }), false).website).toBeNull();
+    expect(normaliseDetection(raw({}), false).website).toBeNull();
+  });
+
   it("makes one image for 'give me 3 images of this': identical directions collapse to one", () => {
     const same = { picture: "A red door", print: [{ role: "headline", text: "Open it" }], no_logo: false };
     expect(normaliseDetection(raw({ directions: [same, same, same] }), false).directions).toHaveLength(1);
@@ -105,6 +113,22 @@ describe("detecting a direction", () => {
     const generate = vi.fn() as never;
     expect((await detectDirection(input, { generate })).mode).toBe("open");
     expect(generate).not.toHaveBeenCalled();
+  });
+
+  it("shows the model long earlier messages whole, so a concept given before is not cut off", async () => {
+    const concept = "Create a photorealistic case study cover. " + "A very detailed scene description. ".repeat(60);
+    let prompt = "";
+    const generate = (async (i: { prompt: string }) => {
+      prompt = i.prompt;
+      return { object: raw() };
+    }) as never;
+    await detectDirection({ message: "use trafficradius.com.au and create the image according to the concept I gave", recent: [`user: ${concept}`], hasDirectedImage: false }, { generate });
+    expect(prompt).toContain(concept.trim());
+  });
+
+  it("tells the model to use a concept given earlier in the chat when the message only points back to it or only adds a website", () => {
+    expect(DETECT_SYSTEM_PROMPT).toMatch(/earlier in this chat[\s\S]*verbatim/i);
+    expect(DETECT_SYSTEM_PROMPT).toMatch(/website/i);
   });
 
   it("states the decided rules to the model", () => {

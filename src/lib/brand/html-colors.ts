@@ -46,6 +46,21 @@ export function extractBrandColorsFromHtml(html: string): string[] {
     .slice(0, 5);
 }
 
+/** Bootstrap 4 and 5 default theme colours. A model asked to "infer the palette" often returns exactly these, and sites that ship Bootstrap declare them as variables. */
+const FRAMEWORK_DEFAULTS = new Set([
+  "#007bff", "#6c757d", "#28a745", "#17a2b8", "#ffc107", "#dc3545", "#343a40", "#f8f9fa",
+  "#0d6efd", "#6610f2", "#6f42c1", "#d63384", "#fd7e14", "#198754", "#20c997", "#0dcaf0", "#212529",
+]);
+
+/**
+ * A palette made mostly of a CSS framework's default colours is not the brand's own: it is dropped, so the caller falls
+ * back to a real source instead of drawing an ad in Bootstrap blue. One colour that merely equals a default is kept.
+ */
+export function withoutFrameworkDefaults(colors: string[]): string[] {
+  const isDefault = (c: string) => FRAMEWORK_DEFAULTS.has(c.trim().toLowerCase());
+  return colors.filter(isDefault).length >= 3 ? colors.filter((c) => !isDefault(c)) : colors;
+}
+
 /** The page's own brand colours lead, then the others, without duplicates. */
 export function mergeBrandColors(fromHtml: string[], others: string[]): string[] {
   return [...new Set([...fromHtml, ...others])].slice(0, 5);

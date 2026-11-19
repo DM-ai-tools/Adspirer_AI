@@ -13,13 +13,15 @@ export type DetectionMode = "directed" | "open" | "variations" | "edit" | "unsur
 export type Detection = {
   mode: DetectionMode;
   directions: Direction[];
+  /** A website address the operator gave in this message for their brand (normalised to https), else null. */
+  website: string | null;
   format: ImageFormat | null;
   editInstruction: string | null;
   question: string | null;
   overflow: boolean;
 };
 
-const OPEN: Detection = { mode: "open", directions: [], format: null, editInstruction: null, question: null, overflow: false };
+const OPEN: Detection = { mode: "open", directions: [], website: null, format: null, editInstruction: null, question: null, overflow: false };
 
 const schema = z.object({
   mode: z.enum(["directed", "open", "variations", "edit", "unsure"]),
@@ -31,6 +33,7 @@ const schema = z.object({
         .describe("The exact words to print on the image; empty when the operator gave none"),
     }),
   ),
+  website: z.string().nullable().describe("A website address the operator gave in THIS message for their brand or business (for example trafficradius.com.au), exactly as written, else null"),
   format: z.string().nullable().describe("Image shape if stated (4:5, 1:1, 9:16, 16:9, 1.91:1, reels, story, square…), else null"),
   edit_instruction: z.string().nullable().describe("For mode edit: the change to make, as the operator asked"),
   question: z.string().nullable().describe("For mode unsure: one short question that would settle it"),
@@ -41,6 +44,7 @@ export const DETECT_SYSTEM_PROMPT = [
   "mode=directed: the message says what the image should show (a picture idea / scene / layout / style), with or without exact words to print. Return one direction per distinct image they describe, with the picture instruction and the words to print VERBATIM (never reworded, corrected, shortened or added to; keep capitals and punctuation). If the operator labels words (headline, button, sub-line) put the label in role.",
   "mode=open: any other request for ads or images, including a message that only supplies a headline or ad copy for the writer to build ideas around (a headline alone is open, not directed), questions, and anything unrelated to images.",
   "mode=variations: they ask for variations / more versions / alternatives of an image already made in this chat. mode=edit: they ask to change something about an image already made in this chat (put the change in edit_instruction). Use these two only if an image from a direction already exists in the chat (the prompt says whether it does).",
+  "A message may point back to a concept or direction given EARLIER in this chat ('the concept I gave', 'that idea', 'the one above') or may only add a detail to an image request that is still waiting for it (for example the operator's website after the assistant asked for it). In both cases answer mode=directed using the picture instruction and the words to print taken from that earlier message in this chat, copied verbatim (the recent messages are shown whole). If the operator gives a website address, return it in website.",
   "mode=unsure: it might be a direction but you cannot tell what to draw; give one short question.",
   `Never invent a picture instruction or any printed word the operator did not give. If a message contains more than ${MAX_CHAT_DIRECTIONS} directions, still return them all; the caller handles the limit.`,
   "Return ONE direction for one image. A message with a single direction that says 'give me 3 images of this' or 'make a few of these' is still one direction (extra versions are only made when the operator later asks for variations), never the same direction repeated.",
@@ -58,9 +62,21 @@ function readFormat(value: string | null): ImageFormat | null {
   return /reel|stor|vertical|9\s*[x:]\s*16|square|1\s*[x:]\s*1|1\.91|1,91|link ad|16\s*[:x]\s*9|landscape|wide|horizontal|4\s*[x:]\s*5|portrait|feed/i.test(v) ? parseImageFormat(v) : null;
 }
 
+/** A website address from the operator's words as an https URL, or null when it is not an address. */
+function readWebsite(value: string | null | undefined): string | null {
+  const v = clean(value);
+  if (!v || /\s/.test(v)) return null;
+  try {
+    const u = new URL(/^https?:\/\//i.test(v) ? v : `https://${v}`);
+    return u.hostname.includes(".") && /^[a-z0-9.-]+$/i.test(u.hostname) ? u.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
 /** What the model returned, made safe: blank pictures dropped, limits applied, impossible modes turned into open. */
 export function normaliseDetection(rawValue: unknown, hasDirectedImage: boolean): Detection {
-  const parsed = schema.safeParse(rawValue);
+  const parsed = schema.safeParse(rawValue && typeof rawValue === "object" ? { website: null, ...(rawValue as object) } : rawValue);
   if (!parsed.success) return OPEN;
   const raw = parsed.data;
 
@@ -80,7 +96,7 @@ export function normaliseDetection(rawValue: unknown, hasDirectedImage: boolean)
     });
 
   const format = readFormat(raw.format);
-  const base = { directions: [] as Direction[], format, editInstruction: null as string | null, question: clean(raw.question) || null, overflow: false };
+  const base = { directions: [] as Direction[], website: readWebsite(raw.website), format, editInstruction: null as string | null, question: clean(raw.question) || null, overflow: false };
 
   switch (raw.mode) {
     case "directed": {
@@ -121,7 +137,7 @@ export async function detectDirection(
       temperature: 0,
       system: DETECT_SYSTEM_PROMPT,
       prompt: [
-        input.recent.length ? `Recent messages in this chat (oldest first):\n${input.recent.map((m) => `- ${m.slice(0, 500)}`).join("\n")}` : null,
+        input.recent.length ? `Recent messages in this chat (oldest first):\n${input.recent.map((m) => `- ${m.slice(0, 4000)}`).join("\n")}` : null,
         `An image made from an exact direction already exists in this chat: ${input.hasDirectedImage ? "yes" : "no"}.`,
         `The message to classify:\n${input.message.slice(0, 6000)}`,
       ]

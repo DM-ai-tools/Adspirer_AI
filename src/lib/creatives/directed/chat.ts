@@ -75,7 +75,20 @@ export async function runDirectedTurn(
           run: null,
         };
       }
-      const brand = await (deps.loadBrand ?? loadDirectedBrand)({ clientId: input.clientId, serviceId: input.serviceId, landingUrl: input.landingUrl, conversationId: input.conversationId });
+      // A website the operator gives in this message wins over any address found in the chat or the client record.
+      const brand = await (deps.loadBrand ?? loadDirectedBrand)({ clientId: input.clientId, serviceId: input.serviceId, landingUrl: detection.website ?? input.landingUrl, conversationId: input.conversationId });
+      // The brand colours are always applied. With none found, ask for the website instead of drawing without them.
+      if (!brand.colors?.length) {
+        const tried = detection.website ?? brand.landingUrl;
+        return {
+          summary: tried
+            ? `I couldn't read your brand colours from ${tried}. What's your website address (the page that shows your brand)? I'll read the colours and logo from it, then make the image from your concept.`
+            : "To make this in your brand colours and logo I need your website address. What is it? I'll read the colours and logo from it, then make the image from your concept.",
+          cards: [],
+          rendering: false,
+          run: null,
+        };
+      }
       const drafts = await createDirectedDrafts({
         clientId: input.clientId,
         serviceId: input.serviceId,

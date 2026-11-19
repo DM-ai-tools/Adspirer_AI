@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractBrandColorsFromHtml, mergeBrandColors } from "@/lib/brand/html-colors";
+import { extractBrandColorsFromHtml, mergeBrandColors, withoutFrameworkDefaults } from "@/lib/brand/html-colors";
 
 const SITE = `
 <meta name="theme-color" content="#14181c">
@@ -20,6 +20,24 @@ describe("extractBrandColorsFromHtml", () => {
   it("expands short hex and ignores pages with no brand variables", () => {
     expect(extractBrandColorsFromHtml("<style>:root{--brand:#0af}</style>")).toEqual(["#00aaff"]);
     expect(extractBrandColorsFromHtml("<p>no styles</p>")).toEqual([]);
+  });
+});
+
+describe("withoutFrameworkDefaults", () => {
+  it("drops a palette that is Bootstrap's defaults (the one a live run took for a client's brand)", () => {
+    expect(withoutFrameworkDefaults(["#007BFF", "#28A745", "#FFC107", "#DC3545", "#6C757D"])).toEqual([]);
+    expect(withoutFrameworkDefaults(["#0d6efd", "#198754", "#ffc107", "#dc3545", "#6c757d"])).toEqual([]);
+  });
+
+  it("keeps a real brand palette untouched", () => {
+    expect(withoutFrameworkDefaults(["#a4d36b", "#f00000", "#072032", "#f9fbff"])).toEqual(["#a4d36b", "#f00000", "#072032", "#f9fbff"]);
+    expect(withoutFrameworkDefaults([])).toEqual([]);
+  });
+
+  it("removes the framework colours from a mixed palette only when they dominate it, keeping the brand's own", () => {
+    expect(withoutFrameworkDefaults(["#a4d36b", "#007bff", "#28a745", "#ffc107", "#6c757d"])).toEqual(["#a4d36b"]);
+    // one brand colour that happens to equal a framework default is not enough to call the palette generic
+    expect(withoutFrameworkDefaults(["#dc3545", "#a4d36b", "#072032"])).toEqual(["#dc3545", "#a4d36b", "#072032"]);
   });
 });
 

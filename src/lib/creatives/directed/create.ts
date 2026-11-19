@@ -8,6 +8,17 @@ import { copyFromPrint, withDirectedMarker, type Direction } from "@/lib/creativ
 
 export type DirectedBrand = { brandName: string; colors: string[] | null; logoUrl: string | null; landingUrl: string | null };
 
+/** The same address with www added or removed: a site can answer differently for the two (the plain one read as Bootstrap's defaults, the www one as the real brand). */
+function otherHost(url: string): string | null {
+  try {
+    const u = new URL(url);
+    u.hostname = u.hostname.startsWith("www.") ? u.hostname.slice(4) : `www.${u.hostname}`;
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
 /** The client's most recent earlier image that carries brand colours or a logo: where the brand comes from when no site is saved. */
 async function latestBrandedDraft(clientId: string): Promise<CreativeDraft | null> {
   try {
@@ -30,11 +41,25 @@ export async function loadDirectedBrand(input: { clientId: string; serviceId?: s
   const landing = input.landingUrl || service?.landing_page_url || undefined;
   const source = landing || client.website_url || earlier?.landing_page_url || undefined;
   let analysis: Awaited<ReturnType<typeof analyzeBrandFromUrl>> | null = null;
+  let analysedUrl: string | undefined = source;
   if (source) {
     try {
       analysis = await analyzeBrandFromUrl(source);
     } catch (error) {
       logger.warn("Directed image: brand analysis failed; using the client's saved colours", { url: source, error: error instanceof Error ? error.message : String(error) });
+    }
+    // No real palette from that address: the other form of it (with or without www) often answers properly.
+    const alternate = analysis?.colors?.length ? null : otherHost(source);
+    if (alternate) {
+      try {
+        const second = await analyzeBrandFromUrl(alternate);
+        if (second.colors?.length) {
+          analysis = second;
+          analysedUrl = alternate;
+        }
+      } catch {
+        // the first answer stands
+      }
     }
   }
   const fromEarlier = earlier ?? (analysis ? null : await latestBrandedDraft(input.clientId));
@@ -44,7 +69,7 @@ export async function loadDirectedBrand(input: { clientId: string; serviceId?: s
     (await loadUploadedLogoDataUri({ clientId: input.clientId, conversationId: input.conversationId }).catch(() => null)) ??
     fromEarlier?.logo_url ??
     null;
-  return { brandName: analysis?.brand_name || client.name, colors, logoUrl, landingUrl: landing ?? client.website_url ?? earlier?.landing_page_url ?? fromEarlier?.landing_page_url ?? null };
+  return { brandName: analysis?.brand_name || client.name, colors, logoUrl, landingUrl: (analysedUrl !== source ? analysedUrl : undefined) ?? landing ?? client.website_url ?? earlier?.landing_page_url ?? fromEarlier?.landing_page_url ?? null };
 }
 
 /** One draft per direction, in order. Rendering is started by the caller. */

@@ -3,7 +3,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { getConfig } from "@/lib/config";
 import { logger } from "@/lib/observability/logger";
 import { scrapeWebsiteServices } from "@/lib/scraping/firecrawl";
-import { extractBrandColorsFromHtml, mergeBrandColors } from "@/lib/brand/html-colors";
+import { extractBrandColorsFromHtml, mergeBrandColors, withoutFrameworkDefaults } from "@/lib/brand/html-colors";
 import { extractLogoFromHtml } from "@/lib/brand/html-logo";
 
 export type BrandUrlAnalysis = {
@@ -68,10 +68,10 @@ export async function analyzeBrandFromUrl(url: string): Promise<BrandUrlAnalysis
   const withLogo: BrandUrlAnalysis = pageLogo
     ? { ...analysis, logo_url: pageLogo, logo_description: `Logo read from the header of ${url}` }
     : analysis;
-  if (!fromHtml.length) return withLogo;
+  if (!fromHtml.length) return { ...withLogo, colors: withoutFrameworkDefaults(withLogo.colors) };
   return {
     ...withLogo,
-    colors: mergeBrandColors(fromHtml, analysis.colors),
+    colors: withoutFrameworkDefaults(mergeBrandColors(fromHtml, analysis.colors)),
     summary: `${analysis.summary} Brand colours read from the site's own CSS variables.`,
   };
 }

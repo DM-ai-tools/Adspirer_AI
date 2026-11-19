@@ -12,9 +12,15 @@ vi.mock("@/lib/creatives/service", () => ({
     brief: null,
   }),
 }));
-let analysis: { brand_name?: string; colors?: string[]; logo_url?: string | null } | Error = { brand_name: "Acme Co", colors: ["#ff0000"], logo_url: "https://acme.test/logo.png" };
+type Analysis = { brand_name?: string; colors?: string[]; logo_url?: string | null };
+let analysis: Analysis | Error = { brand_name: "Acme Co", colors: ["#ff0000"], logo_url: "https://acme.test/logo.png" };
+// By address: a page can answer differently for the www and the plain host (the live case).
+let analysisByUrl: Record<string, Analysis> | null = null;
+const analysed: string[] = [];
 vi.mock("@/lib/brand/analyze-url", () => ({
-  analyzeBrandFromUrl: async () => {
+  analyzeBrandFromUrl: async (url: string) => {
+    analysed.push(url);
+    if (analysisByUrl) return analysisByUrl[url] ?? { colors: [], logo_url: null };
     if (analysis instanceof Error) throw analysis;
     return analysis;
   },
@@ -39,6 +45,8 @@ beforeEach(() => {
   sent.length = 0;
   imageResult = { status: "succeeded" };
   analysis = { brand_name: "Acme Co", colors: ["#ff0000"], logo_url: "https://acme.test/logo.png" };
+  analysisByUrl = null;
+  analysed.length = 0;
   clientColors.value = ["#37ca37", "#111111"];
   clientColors.site = "https://acme.test";
 });
@@ -64,6 +72,30 @@ describe("loading the brand for directed images", () => {
     expect(b.brandName).toBe("Acme");
     expect(b.colors).toEqual(["#37ca37", "#111111"]);
     expect(b.logoUrl).toBeNull();
+  });
+});
+
+describe("a site that answers differently with and without www", () => {
+  it("tries the other form of the address when the first gives no brand colours, and uses what it finds", async () => {
+    analysisByUrl = { "https://acme.test/offer": { colors: [], logo_url: null }, "https://www.acme.test/offer": { brand_name: "Acme Co", colors: ["#a4d36b", "#072032"], logo_url: "https://acme.test/real-logo.png" } };
+    const { loadDirectedBrand } = await import("@/lib/creatives/directed/create");
+    const b = await loadDirectedBrand({ clientId: "c1", landingUrl: "https://acme.test/offer" });
+    expect(analysed).toEqual(["https://acme.test/offer", "https://www.acme.test/offer"]);
+    expect(b).toMatchObject({ colors: ["#a4d36b", "#072032"], logoUrl: "https://acme.test/real-logo.png", landingUrl: "https://www.acme.test/offer" });
+  });
+
+  it("does not try another address when the first already gave a real palette", async () => {
+    analysisByUrl = { "https://acme.test/offer": { colors: ["#a4d36b"], logo_url: null } };
+    const { loadDirectedBrand } = await import("@/lib/creatives/directed/create");
+    await loadDirectedBrand({ clientId: "c1", landingUrl: "https://acme.test/offer" });
+    expect(analysed).toEqual(["https://acme.test/offer"]);
+  });
+
+  it("falls back to the client's colours when neither form gives a palette", async () => {
+    analysisByUrl = {};
+    const { loadDirectedBrand } = await import("@/lib/creatives/directed/create");
+    const b = await loadDirectedBrand({ clientId: "c1", landingUrl: "https://acme.test/offer" });
+    expect(b.colors).toEqual(["#37ca37", "#111111"]);
   });
 });
 
