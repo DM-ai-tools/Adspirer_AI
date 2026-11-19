@@ -25,6 +25,8 @@ const startSchema = z.object({
   /** Reference images as data URIs, already shrunk by the page. Three of this size stay inside a request's body limit. */
   styleImages: z.array(z.string().max(1_300_000).regex(/^data:image\/(png|jpe?g|webp);base64,/i)).max(STYLE_IMAGE_LIMIT).optional(),
   styleMatchAll: z.boolean().optional(),
+  /** How the ad copy should be written (what to include, structure, length, tone): common to every ad in the run. */
+  copyInstructions: z.string().max(2000).optional(),
   format: z.enum(IMAGE_FORMATS).optional().default("4:5"),
   /** The operator's own picture instructions and printed words, one per image (from a directions file). When present, no hooks are planned. */
   directions: z
@@ -93,7 +95,9 @@ export async function POST(request: Request) {
         createdBy: user.id,
         landingPageUrl: body.landingPageUrl,
         directions: body.directions,
+        notes: body.notes,
         pastedCopy: body.pastedCopy,
+        copyInstructions: body.copyInstructions,
         format: body.format,
       });
       runAfterResponse("bulk-directed-run", () => planAndRenderDirected(directed.id));
@@ -107,6 +111,7 @@ export async function POST(request: Request) {
       landingPageUrl: body.landingPageUrl,
       notes: body.notes,
       pastedCopy: body.pastedCopy,
+      copyInstructions: body.copyInstructions,
       styleDirection: body.styleDirection,
       styleImages: body.styleImages,
       styleMatchAll: body.styleMatchAll,

@@ -45,11 +45,15 @@ export async function renderDirectedDraft(draftId: string, options: { revisionNo
     image = await generateOpenAIImage({ prompt, size: generationSize(format), logoUrl, format });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const failed = await upsertCreativeDraftAsync({ ...existing, id: existing.id, creative_direction: direction, image_status: "failed", image_error: message, status: "failed" });
+    // The draft is read again: its copy may have been written or edited while the image was being made.
+    const now = (await getCreativeDraftAsync(draftId)) ?? existing;
+    const failed = await upsertCreativeDraftAsync({ ...now, id: now.id, creative_direction: direction, image_status: "failed", image_error: message, status: "failed" });
     return { draft: failed, displayUrl: null, imageStatus: "failed", imageError: message };
   }
 
-  const stored = await storeDraftImage(existing, {
+  // A render takes a minute or more. Save onto the draft as it is now, so copy written or edited meanwhile is kept.
+  const current = (await getCreativeDraftAsync(draftId)) ?? existing;
+  const stored = await storeDraftImage(current, {
     b64: image.b64,
     imageUrl: image.imageUrl,
     mime: image.mime,

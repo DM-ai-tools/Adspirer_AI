@@ -32,6 +32,10 @@ export type RunItem = {
   versions?: ImageVersion[];
   /** Why the last edit failed, if it did. */
   edit_error?: string | null;
+  /** What this ad's copy still does not follow of the operator's instructions (or could not follow, and why). */
+  copy_note?: string | null;
+  /** True once the operator edited this ad's copy by hand: an image edit never rewrites it after that. */
+  copy_edited?: boolean;
 };
 
 export type RunStatus = "planning" | "rendering" | "done" | "failed";
@@ -56,6 +60,18 @@ export type CreativeRun = {
     styleBrief?: string | null;
     /** True when the images follow the operator's own directions (a directions file) and no hooks were planned. */
     directed?: boolean;
+    /** The operator's instructions for the ad copy, common to every ad in the run. */
+    copyInstructions?: string | null;
+    /** Those instructions read into length limits and a checklist, kept so an image edit that rewrites copy can honour them. */
+    copyRules?: import("@/lib/creatives/bulk/copy/rules").CopyRules;
+    /** Directions runs write the copy in the background: "writing" until done, "failed" if it could not be (or stalled). */
+    copyStatus?: "writing" | "ready" | "failed";
+    copyStartedAt?: string;
+    /** Plain line for the run header, e.g. why the copy could not be written. */
+    copyMessage?: string | null;
+    /** How many ads the check rewrote, and how many still carry a note. */
+    copyRepaired?: number;
+    copyFlagged?: number;
   };
   image_format: ImageFormat;
   status: RunStatus;

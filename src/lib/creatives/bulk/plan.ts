@@ -75,6 +75,8 @@ export type BulkBrief = {
   notes?: string | null;
   /** Copy the operator already has; it seeds the bodies. */
   pastedCopy?: string | null;
+  /** The operator's instructions for the ad copy (what to include, structure, length, tone). Followed as hard rules. */
+  copyInstructions?: string | null;
   /** Real client results and stats found on the landing page. Up to three images are reserved to showcase them. */
   results?: ClientResult[] | null;
 };
@@ -233,7 +235,15 @@ const STYLE_RULE_CATALOGUE =
 const STYLE_RULE_REFERENCE =
   "Every hook is made in its ASSIGNED STYLE, and each assigned style points back to the REFERENCE STYLE above: the visual idea is yours, the treatment (medium, light, colour treatment, layout, mood) is the reference's. The image model never sees the reference, only your creative_direction, so write each creative_direction with the reference's concrete traits in your own words (what it is made as, how it is lit, how colour and type are handled, how the frame is built); never just say 'in the reference style'. The brand palette still sets the hues. The operator's own words beat any assigned style when they conflict. Set style to the assigned name exactly.";
 
-function briefLines(b: BulkBrief): string[] {
+/**
+ * The operator's ad copy instructions as binding rules for the writer. They override the lengths and structure the
+ * prompt and the field descriptions give by default ("45-90 words", "under 40 characters").
+ */
+export function copyRulesBlock(instructions: string): string {
+  return ["", "AD COPY RULES from the operator. They apply to every headline, primary text and description you write, and they OVERRIDE any length, word count or structure stated anywhere else in this prompt or in the field descriptions. Never invent a fact, price, statistic, award, guarantee or customer to satisfy them.", instructions.trim().slice(0, 2000), ""].join("\n");
+}
+
+export function briefLines(b: BulkBrief): string[] {
   return [
     `Business: ${b.brandName}`,
     b.industry ? `Industry: ${b.industry}` : null,
@@ -289,6 +299,7 @@ export async function writeBulkPlan(
       facts,
       `\nMessage map:\n${JSON.stringify(messageMap)}`,
       brief.pastedCopy ? `\nThe operator's own copy (base body A on it, keeping its substance and claims):\n${brief.pastedCopy.slice(0, 2500)}` : null,
+      brief.copyInstructions?.trim() ? copyRulesBlock(brief.copyInstructions) : null,
       `\nWrite exactly ${BULK_BODY_COUNT} distinct bodies (primary texts): one demonstration of how it works, one proof-led, one educational, one story. They are reused behind many different hooks, so none opens with a hook of its own and each stands on real facts. Then write 1-2 CTAs, using the page's own call to action where it has one.`,
     ]
       .filter(Boolean)
@@ -353,6 +364,7 @@ export async function writeBulkPlan(
         `\nCTAs: ${ctas.map((c, i) => `${i}: ${c.label}`).join("; ")}`,
         `\nWrite ${angles.length} hook${angles.length === 1 ? "" : "s"}, one for EACH assigned angle below, using the exact angle_key${angles.length === 1 ? "" : ", and return all of them in the hooks array"}. Each hook targets a different pain, hope, objection or belief, so the set tests genuinely different reasons a prospect might care, not rewordings. Pick for each the body that best proves or fulfils it (a "how we cut setup time" hook must sit on a body that shows that), and rephrase that body so it flows from the hook, keeping its facts.`,
         guide ? `\n${referenceBlock(guide)}\n` : null,
+        brief.copyInstructions?.trim() ? copyRulesBlock(brief.copyInstructions) : null,
         angles
           .map((a, i) => {
             const st = styles.get(a.key)!;

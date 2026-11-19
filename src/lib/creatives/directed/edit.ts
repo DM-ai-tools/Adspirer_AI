@@ -7,7 +7,8 @@ import { pickModel } from "@/lib/creatives/concept-writer";
 import { getCreativeDraftAsync, upsertCreativeDraftAsync, type CreativeDraft } from "@/lib/creatives/drafts";
 import { storeDraftImage } from "@/lib/creatives/generate-draft-image";
 import { buildEditPrompt, callImageEdit, finishEdit, imageBytes } from "@/lib/creatives/edit-image";
-import { generationSize, readAspectMarker, readLogoMarker, type ImageFormat } from "@/lib/creatives/formats";
+import { generationSize, readAspectMarker, readLogoMarker, readRunMarker, type ImageFormat } from "@/lib/creatives/formats";
+import { getRun } from "@/lib/creatives/bulk/runs";
 import { copyFromPrint, readDirectedMarker, withDirectedMarker, type DirectedMeta, type PrintLine } from "@/lib/creatives/directed/markers";
 
 /** How many earlier versions of one directed image are kept for undo. */
@@ -39,6 +40,19 @@ export async function updatePrintedWords(print: PrintLine[], instruction: string
     logger.warn("Could not check whether the edit changed the printed words", { error: error instanceof Error ? error.message : String(error) });
     return print;
   }
+}
+
+/**
+ * True when this image's ad copy is not the printed words' to change: it is in a bulk run and either the operator
+ * edited that ad's copy by hand or the run's copy was written to the operator's instructions (the ad headline may
+ * differ from the printed one). Chat images and runs without instructions keep the ad copy following the words.
+ */
+async function copyLocked(draft: CreativeDraft): Promise<boolean> {
+  const runId = readRunMarker(draft.creative_direction);
+  if (!runId) return false;
+  const run = await getRun(runId).catch(() => null);
+  if (!run) return false;
+  return Boolean(run.items.find((i) => i.draft_id === draft.id)?.copy_edited) || Boolean(run.inputs.copyInstructions?.trim());
 }
 
 /** Headline (and primary text, only when it was the one made from the printed lines) follow the printed words. */
@@ -89,8 +103,10 @@ export async function editDirectedDraft(
       await storage.delete(dropped).catch(() => undefined);
     }
     const nextMeta: DirectedMeta = { ...meta, print, versions, printBefore, edits: [...(meta.edits ?? []), instruction].slice(-MAX_KEPT_EDITS) };
-    const copy = changedWords ? copyAfter(existing, meta.print, print) : {};
-    await storeDraftImage({ ...existing, ...copy }, {
+    // Saved onto the draft as it is now: copy written or edited while the edit ran is kept.
+    const current = (await getCreativeDraftAsync(input.draftId)) ?? existing;
+    const copy = changedWords && !(await copyLocked(current)) ? copyAfter(current, meta.print, print) : {};
+    await storeDraftImage({ ...current, ...copy }, {
       b64: finished.toString("base64"),
       imageUrl: null,
       mime: "image/png",
@@ -99,7 +115,7 @@ export async function editDirectedDraft(
       status: "succeeded",
       error: null,
       revisionNotes: instruction,
-      direction: withDirectedMarker(existing.creative_direction, nextMeta),
+      direction: withDirectedMarker(current.creative_direction, nextMeta),
     });
     return { ok: true };
   } catch (error) {
@@ -132,7 +148,8 @@ export async function undoDirectedEdit(draftId: string): Promise<void> {
   const printBefore = [...(meta.printBefore ?? [])];
   const restoredPrint = printBefore.pop() ?? meta.print;
   const nextMeta: DirectedMeta = { ...meta, print: restoredPrint, versions: versions.slice(0, -1), printBefore, edits: (meta.edits ?? []).slice(0, -1) };
-  await storeDraftImage({ ...draft, ...copyAfter(draft, meta.print, restoredPrint) }, {
+  const locked = await copyLocked(draft);
+  await storeDraftImage({ ...draft, ...(locked ? {} : copyAfter(draft, meta.print, restoredPrint)) }, {
     b64: bytes.toString("base64"),
     imageUrl: null,
     mime: "image/png",

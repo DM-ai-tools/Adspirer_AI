@@ -13,6 +13,7 @@ import { z } from "zod";
 import { generateObject } from "ai";
 import { withModelFallback } from "@/lib/video/model-fallback";
 import { onImageTextLine } from "@/lib/creatives/concept-writer";
+import { copyRulesBlock } from "@/lib/creatives/bulk/plan";
 
 export type AdCopy = { headline: string; primary_text: string; description: string | null };
 
@@ -52,6 +53,8 @@ export function buildRealignPrompt(input: {
   copy: AdCopy;
   brandName?: string | null;
   facts?: string[];
+  /** The operator's ad copy instructions for the run: a rewrite must still follow them. */
+  instructions?: string;
 }): string {
   return [
     `An ad image was just edited. The operator asked: "${input.instruction}"`,
@@ -61,6 +64,7 @@ export function buildRealignPrompt(input: {
     "The edited image is attached.",
     `\nThe ad's current copy:\nHeadline: ${input.copy.headline}\nPrimary text: ${input.copy.primary_text}\nDescription: ${input.copy.description ?? "(none)"}`,
     "\nThe copy runs next to this image in the feed, so the two must tell one story: the copy should pick up the message, offer, numbers and promise the image now shows, and must never contradict it (old stats, an old offer, a headline about something no longer on the image).",
+    input.instructions?.trim() ? copyRulesBlock(input.instructions) : null,
     "If the copy still fits, set matches to true and return it exactly as it is. Otherwise change only what no longer fits: keep everything that is still true, the facts, the call to action and the voice. Never invent numbers, prices, customers, results or claims; use only what is in the current copy, on the image, or in the facts above.",
   ]
     .filter(Boolean)
@@ -81,6 +85,9 @@ export async function realignCopy(input: {
   copy: AdCopy;
   brandName?: string | null;
   facts?: string[];
+  instructions?: string;
+  /** The copy was edited by hand: it is returned exactly as it is, and only the words printed on the image are read. */
+  lockCopy?: boolean;
 }): Promise<RealignedCopy> {
   const picture = await imagePart(input.image);
   const out = await withModelFallback(
@@ -101,7 +108,7 @@ export async function realignCopy(input: {
   const printed = out.on_image.headline.trim()
     ? { headline: out.on_image.headline.trim(), highlights: out.on_image.highlights.map((h) => h.trim()).filter(Boolean), cta_label: out.on_image.cta_label.trim() }
     : null;
-  if (out.matches || !headline || !primary) return { ...input.copy, onImage: printed, changed: false, note: "" };
+  if (input.lockCopy || out.matches || !headline || !primary) return { ...input.copy, onImage: printed, changed: false, note: "" };
   const description = out.description.trim() || null;
   const changed = headline !== input.copy.headline || primary !== input.copy.primary_text || description !== (input.copy.description ?? null);
   return { headline, primary_text: primary, description, onImage: printed, changed, note: changed ? out.note.trim() || "Ad copy updated to match the image." : "" };

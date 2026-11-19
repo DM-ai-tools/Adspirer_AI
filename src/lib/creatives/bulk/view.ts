@@ -8,7 +8,29 @@ import { leaseActive, type CreativeRun, type RunItem } from "@/lib/creatives/bul
 export const MONTHLY_TARGET = 300;
 
 /** The card's item without storage keys, plus what edits it has had. */
-export type BulkCard = ReturnType<typeof toPublicDraft> & { item: Omit<RunItem, "versions">; edits: Array<{ id: string; at: string; instruction: string; mode: "edit" | "full"; understood?: string }>; editError: string | null };
+export type BulkCard = ReturnType<typeof toPublicDraft> & {
+  item: Omit<RunItem, "versions">;
+  edits: Array<{ id: string; at: string; instruction: string; mode: "edit" | "full"; understood?: string }>;
+  editError: string | null;
+  /** What this ad's copy still does not follow of the operator's instructions, or null. */
+  copyNote: string | null;
+  /** True once the operator edited this ad's copy by hand. */
+  copyEdited: boolean;
+};
+
+/** A copy-writing job still "writing" this long after it started is treated as lost (a restart can kill it). */
+export const COPY_STALL_MS = 10 * 60 * 1000;
+
+export type CopySummary = { status: "writing" | "ready" | "failed"; message: string | null; repaired: number; flagged: number };
+
+/** The run's ad copy state for its header, or null when no ad copy instructions were given. A stalled job reads as failed. */
+export function copySummary(run: CreativeRun, now = Date.now()): CopySummary | null {
+  const { copyStatus, copyStartedAt, copyMessage, copyRepaired, copyFlagged } = run.inputs;
+  if (!copyStatus) return null;
+  const stalled = copyStatus === "writing" && copyStartedAt !== undefined && now - Date.parse(copyStartedAt) > COPY_STALL_MS;
+  if (stalled) return { status: "failed", message: "The ad copy took too long to write, so each ad keeps the words printed on its image.", repaired: copyRepaired ?? 0, flagged: copyFlagged ?? 0 };
+  return { status: copyStatus, message: copyMessage ?? null, repaired: copyRepaired ?? 0, flagged: copyFlagged ?? 0 };
+}
 
 export type BulkProgress = { total: number; succeeded: number; failed: number; rendering: number; waiting: number };
 
@@ -47,12 +69,15 @@ export async function loadRunView(run: CreativeRun) {
           ? directedEdits
           : (versions ?? []).map((v) => ({ id: v.id, at: v.at, instruction: v.instruction, mode: v.mode, ...(v.understood ? { understood: v.understood } : {}) })),
         editError: item.edit_error ?? null,
+        copyNote: item.copy_note ?? null,
+        copyEdited: Boolean(item.copy_edited),
       };
     })
     .filter((c): c is BulkCard => Boolean(c));
   return {
     run: { ...run, message_map: undefined },
     cards,
+    copy: copySummary(run),
     progress: progressOf(drafts),
     needsContinue: run.status === "rendering" && !leaseActive(run) && pendingDrafts(drafts).length > 0,
   };

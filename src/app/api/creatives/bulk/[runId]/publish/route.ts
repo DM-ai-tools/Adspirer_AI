@@ -12,6 +12,7 @@ import { listFacebookPagesForAccountId } from "@/lib/meta/resolve-page";
 import { resolveProvider } from "@/lib/adspirer/client";
 import { toMetaCta } from "@/lib/workflow/queue-campaign";
 import { publishCopy } from "@/lib/creatives/directed/markers";
+import { copySummary } from "@/lib/creatives/bulk/view";
 import { jsonOk, parseBody, withApiHandler } from "@/lib/api/response";
 
 type Ctx = { params: Promise<{ runId: string }> };
@@ -40,6 +41,11 @@ async function readyAds(run: NonNullable<Awaited<ReturnType<typeof getRun>>>, on
   return out;
 }
 
+/** Ads go to Meta with the copy they have, so not while the ad copy of a directions run is still being written. */
+function assertCopyReady(run: NonNullable<Awaited<ReturnType<typeof getRun>>>): void {
+  if (copySummary(run)?.status === "writing") throw new Error("The ad copy is still being written. Try again in a moment.");
+}
+
 async function accountFor(clientId: string, requested: string | null): Promise<string> {
   const mapped = (await loadMappedMetaAccounts(clientId)).filter((a) => a.access_status === "granted").map((a) => a.meta_account_id);
   const accountId = pickAllowedAccount(requested, mapped, await resolvePrimaryAccountId(clientId));
@@ -58,6 +64,7 @@ export async function GET(request: Request, ctx: Ctx) {
     const run = await getRun(runId);
     if (!run) throw new Error("Run not found");
     await assertClientAccess(user.id, run.client_id);
+    assertCopyReady(run);
     const accountId = await accountFor(run.client_id, new URL(request.url).searchParams.get("accountId"));
     const ads = await readyAds(run);
 
@@ -152,6 +159,7 @@ export async function POST(request: Request, ctx: Ctx) {
     const run = await getRun(runId);
     if (!run) throw new Error("Run not found");
     await assertClientAccess(user.id, run.client_id);
+    assertCopyReady(run);
     const body = await parseBody(request, bodySchema);
     const accountId = await accountFor(run.client_id, body.accountId ?? null);
 
