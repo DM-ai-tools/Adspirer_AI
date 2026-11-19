@@ -649,7 +649,9 @@ export async function step(projectId: string, now = Date.now()): Promise<StepRes
       continue;
     }
     // failed, expired or cancelled: try once more, then stop and say why.
-    const reason = result.error ? `${result.error.code}: ${result.error.message}` : `The task ${result.status}.`;
+    // The audio check judges the words spoken. The same words fail every time, so say so instead of leaving a bare code.
+    const audioHint = result.error?.code.startsWith("OutputAudioSensitiveContentDetected") ? " The video model's audio check rejected something said in this clip; the same words fail on every try, so change a spoken line (reword it) and make the clip again." : "";
+    const reason = (result.error ? `${result.error.code}: ${result.error.message}` : `The task ${result.status}.`) + audioHint;
     clip.error = reason;
     clip.taskId = null;
     if (clip.attempts >= MAX_ATTEMPTS) {

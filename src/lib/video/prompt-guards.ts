@@ -51,6 +51,17 @@ export function languageReminder(locale: string): string {
   return `All speech in this clip is ${languageFor(locale).language}, word for word as written in the braces.`;
 }
 
+/**
+ * Words the video model's audio check rejects. Seedance 2.5 fails a clip with OutputAudioSensitiveContentDetected when the
+ * speech contains "nobody": a live bisect (19 Nov 2026, 4s clips, one line changed at a time) failed "The account nobody
+ * checked twice", "The campaign nobody checked twice" and "The account nobody checked", and passed "The account no one
+ * checked twice" and the other sentences of the same script. Only what was tested is listed here; add a word when a bisect
+ * shows it. Applied to the words sent to the model and to the words the clip review expects to hear, never to the script.
+ */
+export function voiceSafe(text: string): string {
+  return text.replace(/\bnobody\b/gi, (m) => (m === m.toUpperCase() ? "NO ONE" : m[0] === m[0].toUpperCase() ? "No one" : "no one"));
+}
+
 // ------------------------------------------------------------------ people
 
 const norm = (s: string) =>

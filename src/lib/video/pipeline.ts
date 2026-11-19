@@ -2,6 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { syncSceneLines } from "@/lib/video/script-writer";
+import { voiceSafe } from "@/lib/video/prompt-guards";
 import { logger } from "@/lib/observability/logger";
 import { getObjectStorage } from "@/lib/storage/r2";
 import { providerCapabilities } from "@/lib/video/capabilities";
@@ -273,7 +274,8 @@ export async function reviewDownloadedClip(project: VideoProject, plan: Generati
     await writeFile(file, bytes);
     const briefs = briefsFor(creative, clip);
     const script = project.chosen_script!;
-    const speech = (plan.speech?.lines ?? []).filter((l) => clip.sceneNumbers.includes(l.sceneNumber));
+    // What the voice was asked to say is the safe wording, so that is what the review expects to hear.
+    const speech = (plan.speech?.lines ?? []).filter((l) => clip.sceneNumbers.includes(l.sceneNumber)).map((l) => ({ ...l, spoken: voiceSafe(l.spoken) }));
     const expectsSpeech = speech.length > 0;
 
     let asr = null as Awaited<ReturnType<typeof transcribeWords>>;

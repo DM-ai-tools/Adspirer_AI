@@ -3,7 +3,7 @@ import { actionRuleFor, classifyStyle, clipVisual, isStillAction, liveCamera, MO
 import { CLEAN_ENDING_RULE, CLEAN_ENDING_RULE_NO_PERSON, CLEAN_FOOTAGE_RULE, footageOnly, graphicReference, stripGraphicPhrases } from "@/lib/video/clean-mode";
 import type { VideoScene, VideoScript } from "@/lib/video/script";
 import type { PlanCharacter, PlanEnvironment, SceneBrief } from "@/lib/video/pipeline-types";
-import { accentFor, characterOfVoice, dropAimlessPointer, languageReminder, languageRule, liveAction, liveFraming, onlyInShotLine, PLAIN_SURFACES_RULE, pointingLine, presentFromFirstFrame, reconcileVoicesWithCast, SAY_ONCE_RULE, sceneCharacterIds, showPointedAt } from "@/lib/video/prompt-guards";
+import { accentFor, characterOfVoice, dropAimlessPointer, voiceSafe, languageReminder, languageRule, liveAction, liveFraming, onlyInShotLine, PLAIN_SURFACES_RULE, pointingLine, presentFromFirstFrame, reconcileVoicesWithCast, SAY_ONCE_RULE, sceneCharacterIds, showPointedAt } from "@/lib/video/prompt-guards";
 
 export { accentFor };
 
@@ -41,7 +41,7 @@ function shot(scene: VideoScene, offset: number, graphic: boolean, hasPresenter:
           ? "The presenter (Image 1) says to camera"
           : "The presenter says to camera"
         : "The presenter's voice, off camera, says";
-    parts.push(`${who}, in real time: "${scene.line}"`);
+    parts.push(`${who}, in real time: "${voiceSafe(scene.line)}"`);
   } else {
     parts.push("No one speaks.");
   }
@@ -246,7 +246,7 @@ export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
     return at >= 0 ? `${who} (Image ${at + 1})` : who;
   };
   // Words to be said go in braces, the form the guide uses for dialogue; a brace inside the words themselves is dropped.
-  const braced = (t: string) => `{${t.split(/\s+/).join(" ").replace(/[{}]/g, "").trim()}}`;
+  const braced = (t: string) => `{${voiceSafe(t).split(/\s+/).join(" ").replace(/[{}]/g, "").trim()}}`;
   const shots = scenes.map((s) => {
     // The length is a pace, not a hard cut: the guide warns that forced time ranges give unstable results.
     const range = `Shot ${s.number} (about ${s.seconds} seconds)`;
