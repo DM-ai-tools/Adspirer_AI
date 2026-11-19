@@ -1,10 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { Check, ChevronDown, ChevronUp, Copy, Download, Loader2, X } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, Copy, Download, Loader2, Pencil, Undo2, X } from "lucide-react";
 import { toast } from "sonner";
 import { apiFetch } from "@/lib/api-client";
+import { isDirectedDirection } from "@/lib/creatives/directed/markers";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { creativeDownloadUrl } from "@/lib/creatives/download";
@@ -18,6 +20,8 @@ export type CreativeDraftCard = {
   image_status?: string | null;
   image_error?: string | null;
   status?: string | null;
+  /** Carries the DIRECTED marker for an image the operator made from their own direction. */
+  creative_direction?: string | null;
 };
 
 export function InlineCreativeCards({
@@ -87,6 +91,37 @@ export function InlineCreativeCards({
       toast.error(err instanceof Error ? err.message : "Could not make variations");
     } finally {
       setBusyId(null);
+    }
+  }
+
+  // Images made from the operator's own direction: edit one thing, undo it, or make 4 variations (same words).
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editText, setEditText] = useState<Record<string, string>>({});
+
+  async function directedAction(draftId: string, body: Record<string, unknown>, success: string) {
+    setBusyId(draftId);
+    try {
+      await apiFetch("/api/creatives/directed", { method: "POST", body: JSON.stringify({ draftId, ...body }) });
+      toast.success(success);
+      await onUpdated?.();
+      return true;
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "That didn't work");
+      return false;
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function applyEdit(draftId: string) {
+    const instruction = editText[draftId]?.trim();
+    if (!instruction || instruction.length < 3) {
+      toast.error("Say what you want changed");
+      return;
+    }
+    if (await directedAction(draftId, { action: "edit", instruction }, "Editing: only that changes. The updated image replaces this one when ready")) {
+      setEditingId(null);
+      setEditText((prev) => ({ ...prev, [draftId]: "" }));
     }
   }
 
@@ -280,7 +315,34 @@ export function InlineCreativeCards({
                     </a>
                   </Button>
                 ) : null}
-                {draft.image_url && draft.image_status === "succeeded" ? (
+                {draft.image_url && draft.image_status === "succeeded" && isDirectedDirection(draft.creative_direction) ? (
+                  <>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      className="h-8"
+                      title="Change one thing in this image and keep everything else"
+                      disabled={disabled || busyId === draft.id}
+                      onClick={() => setEditingId(editingId === draft.id ? null : draft.id)}
+                    >
+                      <Pencil className="mr-1 h-3.5 w-3.5" />
+                      Edit
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      className="h-8"
+                      title="Make 4 variations: the same picture and the same words, a different layout in each"
+                      disabled={disabled || busyId === draft.id}
+                      onClick={() => void directedAction(draft.id, { action: "variations" }, "Making 4 variations: they appear below")}
+                    >
+                      <Copy className="mr-1 h-3.5 w-3.5" />
+                      Variations (4)
+                    </Button>
+                  </>
+                ) : draft.image_url && draft.image_status === "succeeded" ? (
                   <Button
                     type="button"
                     size="sm"
@@ -307,6 +369,38 @@ export function InlineCreativeCards({
                 </Button>
               </div>
             )}
+            {editingId === draft.id && isDirectedDirection(draft.creative_direction) ? (
+              <div className="space-y-2 rounded-md border border-border bg-background/60 p-2">
+                <Input
+                  autoFocus
+                  value={editText[draft.id] ?? ""}
+                  onChange={(e) => setEditText((prev) => ({ ...prev, [draft.id]: e.target.value }))}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void applyEdit(draft.id);
+                  }}
+                  placeholder="What should change? e.g. make the background darker"
+                  className="h-8 text-xs"
+                />
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button type="button" size="sm" className="h-8" disabled={disabled || busyId === draft.id} onClick={() => void applyEdit(draft.id)}>
+                    {busyId === draft.id ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : null}
+                    Apply edit
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    className="h-8"
+                    title="Put back the image as it was before the last edit"
+                    disabled={disabled || busyId === draft.id}
+                    onClick={() => void directedAction(draft.id, { action: "undo" }, "Went back to the earlier version")}
+                  >
+                    <Undo2 className="mr-1 h-3.5 w-3.5" />
+                    Undo last edit
+                  </Button>
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
       ))}

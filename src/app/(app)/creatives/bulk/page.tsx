@@ -25,6 +25,7 @@ import type { ImageFormat } from "@/lib/creatives/formats";
 import { STAGE_LABEL, type AwarenessStage } from "@/lib/creatives/bulk/angles";
 import { REFERENCE_CLOSE_COUNT, STYLE_IMAGE_LIMIT } from "@/lib/creatives/bulk/styles";
 import { shrinkImageToDataUri } from "@/lib/creatives/shrink-image";
+import { addItem, printChanged, printToText, readyToConfirm, removeItem, textToPrint, toRequestDirections, updateItem, type ConfirmItem } from "@/lib/creatives/directed/confirm-list";
 import { cn } from "@/lib/utils";
 import type { ClientService } from "@/types";
 
@@ -118,6 +119,11 @@ function BulkInner() {
   const [readingImages, setReadingImages] = useState(false);
   const styleFileInput = useRef<HTMLInputElement>(null);
   const [format, setFormat] = useState<ImageFormat>("4:5");
+  // A directions file the operator uploaded: one item per image, read, shown here to check and edit before anything renders.
+  const [directions, setDirections] = useState<ConfirmItem[] | null>(null);
+  const [directionsFile, setDirectionsFile] = useState<string | null>(null);
+  const [readingFile, setReadingFile] = useState(false);
+  const directionsInput = useRef<HTMLInputElement>(null);
   const [tab, setTab] = useState<"new" | "history">(searchParams.get("tab") === "history" ? "history" : "new");
   const [starting, setStarting] = useState(false);
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -223,6 +229,63 @@ function BulkInner() {
     } finally {
       setReadingImages(false);
       if (styleFileInput.current) styleFileInput.current.value = "";
+    }
+  }
+
+  async function readDirectionsFile(file: File | undefined) {
+    if (!file || !selectedClientId) return;
+    setReadingFile(true);
+    try {
+      const form = new FormData();
+      form.set("clientId", selectedClientId);
+      form.set("file", file);
+      const res = await fetch("/api/creatives/bulk/directions", { method: "POST", body: form, credentials: "same-origin" });
+      const json = (await res.json()) as { ok: boolean; data?: { fileName: string; directions: ConfirmItem[] }; error?: { message?: string } };
+      if (!json.ok || !json.data) throw new Error(json.error?.message ?? "Could not read that file");
+      setDirections(json.data.directions);
+      setDirectionsFile(json.data.fileName);
+      const flagged = json.data.directions.filter((d) => d.unsure).length;
+      toast.success(`Read ${json.data.directions.length} directions${flagged ? `; ${flagged} need a look` : ""}. Check them, then confirm.`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not read that file");
+    } finally {
+      setReadingFile(false);
+      if (directionsInput.current) directionsInput.current.value = "";
+    }
+  }
+
+  function clearDirections() {
+    setDirections(null);
+    setDirectionsFile(null);
+  }
+
+  async function startDirected() {
+    if (!selectedClientId || !directions) return;
+    const ready = readyToConfirm(directions);
+    if (!ready.ok) {
+      toast.error(ready.reason ?? "Check the list first");
+      return;
+    }
+    setStarting(true);
+    try {
+      const data = await apiFetch<{ runId: string }>("/api/creatives/bulk", {
+        method: "POST",
+        body: JSON.stringify({
+          clientId: selectedClientId,
+          serviceId,
+          landingPageUrl: landingUrl.trim() || undefined,
+          pastedCopy: pastedCopy.trim() || undefined,
+          directions: toRequestDirections(directions),
+          format,
+        }),
+      });
+      clearDirections();
+      router.replace(`/creatives/bulk?runId=${data.runId}`);
+      toast.success("Run started. You can leave this page; it keeps going.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not start the run");
+    } finally {
+      setStarting(false);
     }
   }
 
@@ -503,6 +566,78 @@ function BulkInner() {
                 </div>
                 <div className="space-y-3 rounded-lg border border-border p-3">
                   <div>
+                    <p className="text-xs font-medium">Directions file (optional)</p>
+                    <p className="text-[11px] text-muted">
+                      Upload your own creative directions (txt, md, csv, docx, pdf or xlsx). Each direction becomes one image, in order, with your picture instruction and your exact words.
+                      Nothing is made until you check the list and confirm.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      ref={directionsInput}
+                      type="file"
+                      accept=".txt,.md,.markdown,.csv,.docx,.pdf,.xlsx"
+                      className="hidden"
+                      onChange={(e) => void readDirectionsFile(e.target.files?.[0])}
+                    />
+                    <Button type="button" size="sm" variant="secondary" disabled={readingFile || starting} onClick={() => directionsInput.current?.click()}>
+                      {readingFile ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <FileSpreadsheet className="mr-1 h-3.5 w-3.5" />}
+                      {directionsFile ? "Choose another file" : "Upload directions file"}
+                    </Button>
+                    {directionsFile ? (
+                      <>
+                        <span className="text-[11px] text-muted">
+                          {directionsFile} · {directions?.length ?? 0} directions
+                        </span>
+                        <button type="button" onClick={clearDirections} className="text-[11px] font-medium text-accent hover:underline">
+                          Remove file
+                        </button>
+                      </>
+                    ) : null}
+                  </div>
+                  {directions ? (
+                    <div className="space-y-2">
+                      {directions.map((d, i) => (
+                        <div key={i} className={cn("space-y-2 rounded-md border p-2", d.unsure || !d.picture.trim() ? "border-amber-500/60 bg-amber-500/5" : "border-border")}>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-medium">Image {i + 1}</span>
+                            <button
+                              type="button"
+                              aria-label={`Remove image ${i + 1}`}
+                              onClick={() => setDirections(removeItem(directions, i))}
+                              className="rounded p-0.5 text-muted hover:text-foreground"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                          {d.unsure || !d.picture.trim() ? <p className="text-[11px] text-amber-600">Check this one: {d.note ?? "it has no picture instruction yet."}</p> : null}
+                          <Textarea
+                            value={d.picture}
+                            onChange={(e) => setDirections(updateItem(directions, i, { picture: e.target.value }))}
+                            placeholder="Picture instruction: what the image shows"
+                            className="min-h-[56px] text-xs"
+                          />
+                          <Textarea
+                            key={`${i}:${printToText(d.print)}`}
+                            defaultValue={printToText(d.print)}
+                            onBlur={(e) => {
+                              // Leaving the box without changing a word changes nothing (and keeps the "check this one" note).
+                              if (!printChanged(d.print, e.target.value)) return;
+                              setDirections(updateItem(directions, i, { print: textToPrint(e.target.value, d.print.map((l) => l.role ?? "").filter(Boolean)) }));
+                            }}
+                            placeholder="Words to print, one per line (e.g. Headline: Open the right door). Leave empty for no words."
+                            className="min-h-[56px] text-xs"
+                          />
+                        </div>
+                      ))}
+                      <Button type="button" size="sm" variant="secondary" onClick={() => setDirections(addItem(directions))} disabled={directions.length >= 30}>
+                        Add a direction
+                      </Button>
+                    </div>
+                  ) : null}
+                </div>
+                <div className={cn("space-y-3 rounded-lg border border-border p-3", directions && "hidden")}>
+                  <div>
                     <p className="text-xs font-medium">Style reference (optional)</p>
                     <p className="text-[11px] text-muted">
                       Show or describe the look you want. Without one, every image gets a different style.
@@ -572,16 +707,28 @@ function BulkInner() {
                   </div>
                 </div>
                 <ImageFormatPicker value={format} onChange={setFormat} disabled={starting} />
-                <div className="flex flex-wrap items-center gap-3">
-                  <Button onClick={() => void start()} disabled={!canStart || starting}>
-                    {starting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Layers className="mr-2 h-4 w-4" />}
-                    Create {summary?.runSize ?? 15} ads
-                  </Button>
-                  <p className="text-[11px] text-muted">
-                    Makes {summary?.runSize ?? 15} images, so it uses {summary?.runSize ?? 15} image generations. Takes a few minutes and keeps
-                    going if you leave.
-                  </p>
-                </div>
+                {directions ? (
+                  <div className="flex flex-wrap items-center gap-3">
+                    <Button onClick={() => void startDirected()} disabled={starting || !readyToConfirm(directions).ok}>
+                      {starting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Layers className="mr-2 h-4 w-4" />}
+                      Confirm and make {directions.length} image{directions.length === 1 ? "" : "s"}
+                    </Button>
+                    <p className="text-[11px] text-muted">
+                      {readyToConfirm(directions).reason ?? `Makes exactly ${directions.length} image${directions.length === 1 ? "" : "s"}, one per direction, in this order, so it uses ${directions.length} image generations.`}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap items-center gap-3">
+                    <Button onClick={() => void start()} disabled={!canStart || starting}>
+                      {starting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Layers className="mr-2 h-4 w-4" />}
+                      Create {summary?.runSize ?? 15} ads
+                    </Button>
+                    <p className="text-[11px] text-muted">
+                      Makes {summary?.runSize ?? 15} images, so it uses {summary?.runSize ?? 15} image generations. Takes a few minutes and keeps
+                      going if you leave.
+                    </p>
+                  </div>
+                )}
               </CardContent>
             </Card>
           ) : !view ? (

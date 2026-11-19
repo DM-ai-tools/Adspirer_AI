@@ -33,6 +33,15 @@ export async function generateImageForDraft(
     throw new Error("Creative draft not found");
   }
 
+  // A draft made from the operator's own direction is drawn from that direction alone, not from the brand art director.
+  if (existing.creative_direction?.includes("DIRECTED: ")) {
+    const { readDirectedMarker } = await import("@/lib/creatives/directed/markers");
+    if (readDirectedMarker(existing.creative_direction)) {
+      const { renderDirectedDraft } = await import("@/lib/creatives/directed/render");
+      return renderDirectedDraft(draftId, { revisionNotes, format: requestedFormat });
+    }
+  }
+
   // A rework keeps the shape the draft was made in unless a new one is asked for.
   const format: ImageFormat = requestedFormat ?? readAspectMarker(existing.creative_direction) ?? "4:5";
   const direction = requestedFormat

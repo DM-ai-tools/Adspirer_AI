@@ -68,6 +68,8 @@ import { nowIso } from "@/lib/utils";
 import { logger, newCorrelationId } from "@/lib/observability/logger";
 import { findRepeatedFigures } from "@/lib/audit/repeat-check";
 import { startCreativeGeneration } from "@/lib/creatives/service";
+import { runDirectedTurn, type DirectedTurn } from "@/lib/creatives/directed/chat";
+import { isDirectedDirection } from "@/lib/creatives/directed/markers";
 import { insertLandingPageTables, insertPerformanceTables } from "@/lib/audit/performance-tables";
 import { runAfterResponse } from "@/lib/api/background";
 import {
@@ -853,10 +855,54 @@ ${gathered.strategyAppendix}`;
       }
     }
 
+    // Exact-direction images: when the operator writes the picture instruction (and the words to print) themselves,
+    // or asks for variations of / a change to such an image, that path handles the turn. Everything else, and any
+    // failure of this path, falls through to the concept flow below exactly as before.
+    let directedTurn: DirectedTurn | null = null;
+    if (task.conversation_id && !agentResult.failure) {
+      try {
+        const requestText = task.goal ?? task.title;
+        const imageUi = agentResult.ui?.imageChoice ?? gathered.imageChoice;
+        directedTurn = await runDirectedTurn({
+          clientId: task.client_id,
+          conversationId: task.conversation_id,
+          taskId: task.id,
+          message: requestText,
+          recent: history.slice(-6).map((m) => `${m.role}: ${m.content}`),
+          landingUrl: imageUi?.landing_page_url ?? requestText.match(/https?:\/\/[^\s)]+/i)?.[0],
+          defaultFormat: parseImageFormat(imageUi?.format),
+          wantsInlineCreatives,
+          drafts: await listCreativeDraftsAsync(task.client_id, { conversationId: task.conversation_id }),
+        });
+      } catch (error) {
+        log.warn("Exact-direction path failed; using the normal creative flow", { error: error instanceof Error ? error.message : String(error) });
+        directedTurn = null;
+      }
+    }
+    if (directedTurn) {
+      const { imageChoice: _choice, ...uiRest } = agentResult.ui ?? {};
+      agentResult.summary = directedTurn.summary;
+      agentResult.ui = {
+        ...uiRest,
+        ...(directedTurn.cards.length ? { creativePicker: { drafts: directedTurn.cards, status: directedTurn.rendering ? "generating" : "ready" } } : {}),
+      };
+      steps = completeStepsThrough(steps, "generate_creatives");
+      if (directedTurn.cards.length && steps.some((s) => s.id === "pick_creative")) steps = activateStep(steps, "pick_creative");
+      if (directedTurn.run) runAfterResponse("chat-directed-images", directedTurn.run);
+      await emit({
+        phase: "generating_creatives",
+        label: directedTurn.rendering ? "Rendering your image…" : "Waiting for your answer",
+        stepId: "generate_creatives",
+        summary: directedTurn.summary,
+        ui: agentResult.ui ?? undefined,
+      });
+    }
+
     const shouldGenerateCreatives =
       wantsInlineCreatives &&
       Boolean(task.conversation_id) &&
-      !agentResult.failure;
+      !agentResult.failure &&
+      !directedTurn;
 
     if (shouldGenerateCreatives) {
       const conversationId = task.conversation_id!;
@@ -886,6 +932,8 @@ ${gathered.strategyAppendix}`;
         ).filter(
           (d) =>
             d.image_status === "generating" &&
+            // An image being made from the operator's own direction is not a batch of concepts to reuse.
+            !isDirectedDirection(d.creative_direction) &&
             !isRenderStalled(d) &&
             (!namedUrl || sameLandingPage(namedUrl, d.landing_page_url)),
         );
@@ -1038,7 +1086,7 @@ ${gathered.strategyAppendix}`;
         ].join("\n");
         steps = failStep(steps, "generate_creatives");
       }
-    } else {
+    } else if (!directedTurn) {
       agentResult.summary = stripUnstartedGenerationClaims(agentResult.summary);
     }
     if (agentResult.ui?.servicePicker?.services?.length) {

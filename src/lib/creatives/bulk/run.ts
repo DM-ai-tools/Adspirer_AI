@@ -4,6 +4,7 @@ import { logger } from "@/lib/observability/logger";
 import { loadScope } from "@/lib/creatives/service";
 import { loadUploadedLogoDataUri } from "@/lib/creatives/uploaded-logo";
 import { generateImageForDraft } from "@/lib/creatives/generate-draft-image";
+import { isDirectedDirection } from "@/lib/creatives/directed/markers";
 import { withAspectMarker, withRunMarker, type ImageFormat } from "@/lib/creatives/formats";
 import {
   getCreativeDraftAsync,
@@ -295,7 +296,7 @@ export async function renderPending(runId: string, options: { budgetMs?: number 
   try {
     const run = await getRun(runId);
     if (!run) return { started: 0, remaining: 0 };
-    const todo = pendingDrafts(await runDrafts(run)).filter((d) => d.status !== "failed" && d.primary_text);
+    const todo = pendingDrafts(await runDrafts(run)).filter((d) => d.status !== "failed" && (d.primary_text || isDirectedDirection(d.creative_direction)));
     const brandName = todo[0]?.concept.split("—")[0]?.trim();
     await runPool(
       todo,
@@ -314,7 +315,7 @@ export async function renderPending(runId: string, options: { budgetMs?: number 
     await releaseLease(runId);
   }
   const run = await getRun(runId);
-  const remaining = run ? pendingDrafts(await runDrafts(run)).filter((d) => d.primary_text).length : 0;
+  const remaining = run ? pendingDrafts(await runDrafts(run)).filter((d) => d.primary_text || isDirectedDirection(d.creative_direction)).length : 0;
   if (run && remaining === 0 && run.status === "rendering") await updateRun(runId, { status: "done" });
   return { started, remaining };
 }

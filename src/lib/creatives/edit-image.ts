@@ -29,7 +29,7 @@ export function buildEditPrompt(instruction: string, hasLogo: boolean): string {
   ].join(" ");
 }
 
-async function imageBytes(draft: CreativeDraft): Promise<Buffer> {
+export async function imageBytes(draft: CreativeDraft): Promise<Buffer> {
   const full = await getCreativeDraftAsync(draft.id, { withImageData: true });
   const b64 = full?.image_b64 ?? (full?.image_url?.startsWith("data:") ? full.image_url.split(",")[1] : null);
   if (b64) return Buffer.from(b64, "base64");

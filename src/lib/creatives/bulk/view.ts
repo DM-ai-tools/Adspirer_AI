@@ -1,5 +1,6 @@
 import { listCreativeDraftsAsync, toPublicDraft, type CreativeDraft } from "@/lib/creatives/drafts";
 import { readRunMarker } from "@/lib/creatives/formats";
+import { readDirectedMarker } from "@/lib/creatives/directed/markers";
 import { pendingDrafts } from "@/lib/creatives/bulk/run";
 import { leaseActive, type CreativeRun, type RunItem } from "@/lib/creatives/bulk/runs";
 
@@ -33,11 +34,18 @@ export async function loadRunView(run: CreativeRun) {
       if (!d) return null;
       const pub = toPublicDraft(d);
       const { versions, ...rest } = item;
+      // An image made from a direction keeps its kept versions and edit instructions in its own marker, not on the run item.
+      const directed = readDirectedMarker(d.creative_direction);
+      const kept = directed?.versions ?? [];
+      const instructions = directed?.edits ?? [];
+      const directedEdits = kept.map((key, i) => ({ id: key, at: d.updated_at, instruction: instructions[instructions.length - kept.length + i] ?? "Edit", mode: "edit" as const }));
       return {
         ...pub,
         image_status: d.image_status === "pending" ? ("pending" as const) : pub.image_status,
         item: rest,
-        edits: (versions ?? []).map((v) => ({ id: v.id, at: v.at, instruction: v.instruction, mode: v.mode, ...(v.understood ? { understood: v.understood } : {}) })),
+        edits: directed
+          ? directedEdits
+          : (versions ?? []).map((v) => ({ id: v.id, at: v.at, instruction: v.instruction, mode: v.mode, ...(v.understood ? { understood: v.understood } : {}) })),
         editError: item.edit_error ?? null,
       };
     })

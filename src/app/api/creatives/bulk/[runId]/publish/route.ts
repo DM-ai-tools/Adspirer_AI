@@ -11,6 +11,7 @@ import { BulkPublishError, buildBulkPublishArgs, isPrivateImageUrl, type BulkPub
 import { listFacebookPagesForAccountId } from "@/lib/meta/resolve-page";
 import { resolveProvider } from "@/lib/adspirer/client";
 import { toMetaCta } from "@/lib/workflow/queue-campaign";
+import { publishCopy } from "@/lib/creatives/directed/markers";
 import { jsonOk, parseBody, withApiHandler } from "@/lib/api/response";
 
 type Ctx = { params: Promise<{ runId: string }> };
@@ -30,8 +31,7 @@ async function readyAds(run: NonNullable<Awaited<ReturnType<typeof getRun>>>, on
     out.push({
       draftId: draft.id,
       draft,
-      headline: draft.headline,
-      primaryText: draft.primary_text,
+      ...publishCopy(draft),
       description: draft.description,
       name: item.angle_name,
       imageUrl,
