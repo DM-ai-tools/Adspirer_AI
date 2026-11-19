@@ -388,6 +388,8 @@ export type AgentRunResult = {
 
 export async function runAdspirerAgent(input: {
   task: Task;
+  /** Tools to leave out of the writer's tool set for this turn (for example when another path is making the images). */
+  withoutTools?: string[];
   clientContext: string;
   toolEvidence?: string;
   reportDraft?: string;
@@ -666,6 +668,8 @@ async function runOpenAIWriter(
 
 type WriterInput = {
   task: Task;
+  /** Tools to leave out of the writer's tool set for this turn. */
+  withoutTools?: string[];
   clientContext: string;
   toolEvidence?: string;
   reportDraft?: string;
@@ -1155,18 +1159,21 @@ async function streamWriterText(args: {
   // Every question gets the read-only tools (Meta, GA4, Search Console, Google
   // Ads, categories), so a question the evidence doesn't cover is answered by
   // reading, not refused. The fixed picker flows keep their own steps.
-  const { buildWorkspaceReadToolSetForClient, writerHasTools } = await import(
+  const { buildWorkspaceReadToolSetForClient, writerHasTools, withoutNamedTools } = await import(
     "@/lib/agent/diagnose-tools-ai"
   );
   const tools =
     !input.reportDraft && writerHasTools(intent)
-      ? await buildWorkspaceReadToolSetForClient({
-          clientId: input.task.client_id,
-          userId: input.task.created_by,
-          taskId: input.task.id,
-          conversationId: input.task.conversation_id,
-          correlationId: input.correlationId,
-        })
+      ? withoutNamedTools(
+          await buildWorkspaceReadToolSetForClient({
+            clientId: input.task.client_id,
+            userId: input.task.created_by,
+            taskId: input.task.id,
+            conversationId: input.task.conversation_id,
+            correlationId: input.correlationId,
+          }),
+          input.withoutTools,
+        )
       : undefined;
   const label = writingLabel(input);
   const result = streamText({

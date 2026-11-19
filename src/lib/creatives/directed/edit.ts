@@ -75,7 +75,7 @@ export async function editDirectedDraft(
     const original = await imageBytes(existing);
     await storage.put(key, original, "image/png");
     await upsertCreativeDraftAsync({ ...existing, id: existing.id, image_status: "generating", image_error: null });
-    const hasLogo = Boolean(existing.logo_url) && !meta.noLogo;
+    const hasLogo = Boolean(existing.logo_url);
     const edited = await callEdit(original, buildEditPrompt(instruction, hasLogo), generationSize(format));
     const finished = await finishEdit(original, edited, readLogoMarker(existing.creative_direction));
     const print = await updatePrint(meta.print, instruction);

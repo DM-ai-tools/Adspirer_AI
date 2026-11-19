@@ -26,9 +26,9 @@ describe("normalising what the model returned", () => {
     expect(d.overflow).toBe(false);
   });
 
-  it("carries no_logo and a stated format", () => {
+  it("carries a stated format, and never an option to leave the brand logo off", () => {
     const d = normaliseDetection(raw({ directions: [{ picture: "A", print: [], no_logo: true }], format: "9:16" }), false);
-    expect(d.directions[0]).toEqual({ picture: "A", print: [], noLogo: true });
+    expect(d.directions[0]).toEqual({ picture: "A", print: [] });
     expect(d.format).toBe("9:16");
   });
 

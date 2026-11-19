@@ -42,9 +42,10 @@ describe("normalising parsed directions", () => {
     expect(out.map((d) => d.picture)).toEqual(["A", "C"]);
   });
 
-  it("carries the unsure note, no_logo and returns nothing for garbage", () => {
+  it("carries the unsure note, never a no-logo option, and returns nothing for garbage", () => {
     const out = normaliseParsed({ directions: [item({ unsure: true, note: "Two pictures in one row", no_logo: true })] });
-    expect(out[0]).toMatchObject({ unsure: true, note: "Two pictures in one row", noLogo: true });
+    expect(out[0]).toMatchObject({ unsure: true, note: "Two pictures in one row" });
+    expect(out[0]).not.toHaveProperty("noLogo");
     expect(normaliseParsed(null)).toEqual([]);
     expect(normaliseParsed({ directions: "nope" })).toEqual([]);
   });

@@ -29,8 +29,18 @@ export function buildDirectedImagePrompt(input: {
           "Print no other words anywhere: no extra slogans, labels, lorem ipsum, gibberish, fake interface text or watermarks.",
         ].join("\n")
       : "Print no words anywhere on the image: no text, letters, numbers, captions or watermarks.",
+    // The picture instruction is only the visual idea. The brand palette and logo are always applied, whatever the instruction says.
     palette.length
-      ? `Brand colours (use them only for what the picture instruction does not specify; if the instruction names its own colours, those override these): ${palette.join(", ")}.`
+      ? [
+          "The picture instruction decides what is shown and how it is composed (subject, scene, layout, style, mood). It never changes the brand palette.",
+          `BRAND PALETTE (always followed, sampled from the brand's own site): ${palette.join(", ")}.`,
+          `Use ${palette[0]} as the dominant colour across roughly half the frame (the background field, main surface or key styling).`,
+          palette[1] ? `Use ${palette[1]} for the strongest supporting element, accent shape or the button.` : null,
+          palette[2] ? `Use ${palette[2]} sparingly for contrast and detail.` : null,
+          "Every other colour must be a neutral or a tint or shade of the palette: do not introduce an unrelated hue. A colour the picture instruction gives to one specific object may stay as a small detail only; the overall look stays in the brand palette.",
+        ]
+          .filter(Boolean)
+          .join(" ")
       : null,
     input.hasLogo ? "The brand logo is added afterwards, so do not draw any logo or brand mark; leave one corner calm and uncluttered for it." : null,
     "Photographic or illustrative detail is clean and believable: anatomically correct hands and faces, no distorted objects.",

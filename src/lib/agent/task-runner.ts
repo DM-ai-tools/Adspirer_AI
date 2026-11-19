@@ -698,8 +698,37 @@ export async function runTask(
       saveOptimizeOffer(task, { items: [], period: brief.period, scopeMentions: [] });
     }
 
+    // Exact-direction images: when the operator writes the picture instruction (and the words to print) themselves,
+    // or asks for variations of / a change to such an image, that path handles the turn. It is decided BEFORE the
+    // agent runs, because the agent has its own tool that renders 4 concept images: left on, it made those 4 as well
+    // as the one image asked for. Everything else, and any failure of this path, goes to the agent and the concept
+    // flow exactly as before.
+    let directedTurn: DirectedTurn | null = null;
+    if (task.conversation_id) {
+      try {
+        const requestText = task.goal ?? task.title;
+        const recentUrl = [...history].reverse().map((m) => String(m.content ?? "").match(/https?:\/\/[^\s)]+/i)?.[0]).find(Boolean);
+        directedTurn = await runDirectedTurn({
+          clientId: task.client_id,
+          conversationId: task.conversation_id,
+          taskId: task.id,
+          message: requestText,
+          recent: history.slice(-6).map((m) => `${m.role}: ${m.content}`),
+          landingUrl: gathered.imageChoice?.landing_page_url ?? requestText.match(/https?:\/\/[^\s)]+/i)?.[0] ?? recentUrl,
+          defaultFormat: parseImageFormat(gathered.imageChoice?.format),
+          wantsInlineCreatives,
+          drafts: await listCreativeDraftsAsync(task.client_id, { conversationId: task.conversation_id }),
+        });
+      } catch (error) {
+        log.warn("Exact-direction path failed; using the normal creative flow", { error: error instanceof Error ? error.message : String(error) });
+        directedTurn = null;
+      }
+    }
+
     const agentResult = await runAdspirerAgent({
       task,
+      // The agent must not start its own batch of concept images for a turn this path is handling.
+      withoutTools: directedTurn ? ["generate_ad_images"] : undefined,
       clientContext: `${context}\n\n${research}`,
       toolEvidence: gathered.evidence,
       reportDraft,
@@ -855,30 +884,7 @@ ${gathered.strategyAppendix}`;
       }
     }
 
-    // Exact-direction images: when the operator writes the picture instruction (and the words to print) themselves,
-    // or asks for variations of / a change to such an image, that path handles the turn. Everything else, and any
-    // failure of this path, falls through to the concept flow below exactly as before.
-    let directedTurn: DirectedTurn | null = null;
-    if (task.conversation_id && !agentResult.failure) {
-      try {
-        const requestText = task.goal ?? task.title;
-        const imageUi = agentResult.ui?.imageChoice ?? gathered.imageChoice;
-        directedTurn = await runDirectedTurn({
-          clientId: task.client_id,
-          conversationId: task.conversation_id,
-          taskId: task.id,
-          message: requestText,
-          recent: history.slice(-6).map((m) => `${m.role}: ${m.content}`),
-          landingUrl: imageUi?.landing_page_url ?? requestText.match(/https?:\/\/[^\s)]+/i)?.[0],
-          defaultFormat: parseImageFormat(imageUi?.format),
-          wantsInlineCreatives,
-          drafts: await listCreativeDraftsAsync(task.client_id, { conversationId: task.conversation_id }),
-        });
-      } catch (error) {
-        log.warn("Exact-direction path failed; using the normal creative flow", { error: error instanceof Error ? error.message : String(error) });
-        directedTurn = null;
-      }
-    }
+    // The exact-direction turn (decided above, before the agent ran) shows its cards and message here.
     if (directedTurn) {
       const { imageChoice: _choice, ...uiRest } = agentResult.ui ?? {};
       agentResult.summary = directedTurn.summary;

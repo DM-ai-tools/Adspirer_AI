@@ -29,7 +29,6 @@ const schema = z.object({
       print: z
         .array(z.object({ role: z.string().nullable().describe("headline, sub-line, button, tagline… only if the operator named it, else null"), text: z.string().describe("The words to print, copied VERBATIM") }))
         .describe("The exact words to print on the image; empty when the operator gave none"),
-      no_logo: z.boolean().describe("True only when the operator said not to put the logo on this image"),
     }),
   ),
   format: z.string().nullable().describe("Image shape if stated (4:5, 1:1, 9:16, 16:9, 1.91:1, reels, story, square…), else null"),
@@ -45,7 +44,7 @@ export const DETECT_SYSTEM_PROMPT = [
   "mode=unsure: it might be a direction but you cannot tell what to draw; give one short question.",
   `Never invent a picture instruction or any printed word the operator did not give. If a message contains more than ${MAX_CHAT_DIRECTIONS} directions, still return them all; the caller handles the limit.`,
   "Return ONE direction for one image. A message with a single direction that says 'give me 3 images of this' or 'make a few of these' is still one direction (extra versions are only made when the operator later asks for variations), never the same direction repeated.",
-  "no_logo is true only if the operator explicitly says to leave the logo off.",
+  "The brand colours and logo are always applied by the system; the operator's direction is only the visual idea, so never return anything about colours or logo placement as a separate field.",
 ].join("\n");
 
 const clean = (s: string | null | undefined) => (s ?? "").trim();
@@ -70,11 +69,11 @@ export function normaliseDetection(rawValue: unknown, hasDirectedImage: boolean)
   const directions: Direction[] = raw.directions
     .map((d) => {
       const print: PrintLine[] = d.print.filter((p) => clean(p.text)).map((p) => ({ role: clean(p.role) || null, text: p.text }));
-      return { picture: clean(d.picture), print, ...(d.no_logo ? { noLogo: true } : {}) };
+      return { picture: clean(d.picture), print };
     })
     .filter((d) => d.picture)
     .filter((d) => {
-      const key = JSON.stringify([d.picture, d.print, d.noLogo ?? false]);
+      const key = JSON.stringify([d.picture, d.print]);
       if (seen.has(key)) return false;
       seen.add(key);
       return true;

@@ -4,9 +4,10 @@ import { getCreativeDraftAsync } from "@/lib/creatives/drafts";
 import { readAspectMarker, readRunMarker } from "@/lib/creatives/formats";
 import { readDirectedMarker, type Direction } from "@/lib/creatives/directed/markers";
 
+const clientColors = vi.hoisted(() => ({ value: ["#37ca37", "#111111"] as string[] | null, site: "https://acme.test" as string | null }));
 vi.mock("@/lib/creatives/service", () => ({
   loadScope: async () => ({
-    client: { id: "c1", name: "Acme", brand_voice: null, brand_colors: ["#37ca37", "#111111"], website_url: "https://acme.test", target_audience: null, value_proposition: null },
+    client: { id: "c1", name: "Acme", brand_voice: null, brand_colors: clientColors.value, website_url: clientColors.site, target_audience: null, value_proposition: null },
     service: null,
     brief: null,
   }),
@@ -38,6 +39,8 @@ beforeEach(() => {
   sent.length = 0;
   imageResult = { status: "succeeded" };
   analysis = { brand_name: "Acme Co", colors: ["#ff0000"], logo_url: "https://acme.test/logo.png" };
+  clientColors.value = ["#37ca37", "#111111"];
+  clientColors.site = "https://acme.test";
 });
 
 const directions: Direction[] = [
@@ -61,6 +64,37 @@ describe("loading the brand for directed images", () => {
     expect(b.brandName).toBe("Acme");
     expect(b.colors).toEqual(["#37ca37", "#111111"]);
     expect(b.logoUrl).toBeNull();
+  });
+});
+
+describe("finding the brand when the client has no website saved", () => {
+  const latest = async (over: Record<string, unknown>) => {
+    const { upsertCreativeDraftAsync } = await import("@/lib/creatives/drafts");
+    return upsertCreativeDraftAsync({
+      client_id: "c1", service_id: null, conversation_id: null, task_id: null, brief_id: null, concept: "Acme — earlier", headline: "h", primary_text: "p", description: null, cta: null,
+      creative_direction: "STYLE: x", image_url: "https://x/y.png", image_b64: null, image_mime: "image/png", image_model: null, image_prompt: null, image_status: "succeeded", image_error: null,
+      landing_page_url: "https://old.acme.test/", brand_colors: ["#abcdef", "#123456"], logo_url: "https://old.acme.test/logo.png", revision_notes: null, status: "ready", ...over,
+    } as never);
+  };
+
+  it("reuses the colours, logo and page of the client's most recent earlier image instead of drawing without a brand", async () => {
+    analysis = new Error("no network in this test");
+    clientColors.value = null;
+    clientColors.site = null;
+    await latest({});
+    const { loadDirectedBrand } = await import("@/lib/creatives/directed/create");
+    const b = await loadDirectedBrand({ clientId: "c1", landingUrl: null });
+    expect(b.colors).toEqual(["#abcdef", "#123456"]);
+    expect(b.logoUrl).toBe("https://old.acme.test/logo.png");
+    expect(b.landingUrl).toBe("https://old.acme.test/");
+  });
+
+  it("prefers a page the operator names over earlier images", async () => {
+    await latest({});
+    const { loadDirectedBrand } = await import("@/lib/creatives/directed/create");
+    const b = await loadDirectedBrand({ clientId: "c1", landingUrl: "https://acme.test/offer" });
+    expect(b.colors).toEqual(["#ff0000"]);
+    expect(b.logoUrl).toBe("https://acme.test/logo.png");
   });
 });
 
@@ -107,12 +141,12 @@ describe("rendering a directed draft", () => {
     expect(stored.image_status).toBe("succeeded");
   });
 
-  it("sends no logo when the direction says none", async () => {
-    const draft = await make({ noLogo: true });
+  it("always puts the brand logo on, even when the picture instruction says no logo", async () => {
+    const draft = await make({ picture: "A red door, no logo please" });
     const { renderDirectedDraft } = await import("@/lib/creatives/directed/render");
     await renderDirectedDraft(draft.id);
-    expect(sent[0]!.logoUrl).toBeNull();
-    expect(sent[0]!.prompt).not.toMatch(/logo is added afterwards/i);
+    expect(sent[0]!.logoUrl).toBe("https://acme.test/logo.png");
+    expect(sent[0]!.prompt).toMatch(/logo is added afterwards/i);
   });
 
   it("passes revision notes into the prompt", async () => {

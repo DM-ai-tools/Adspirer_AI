@@ -10,7 +10,7 @@ export const MAX_DIRECTIONS = 30;
 
 export type PrintLine = { role: string | null; text: string };
 
-export type Direction = { picture: string; print: PrintLine[]; noLogo?: boolean };
+export type Direction = { picture: string; print: PrintLine[] };
 
 export type DirectedMeta = Direction & {
   /** A variation's one layout change. */

@@ -181,6 +181,12 @@ export async function buildWorkspaceReadToolSetForClient(ctx: ToolContext): Prom
   };
 }
 
+/** The tool set without the named tools (unchanged when none are named). */
+export function withoutNamedTools(tools: ToolSet, names: readonly string[] | undefined): ToolSet {
+  if (!names?.length) return tools;
+  return Object.fromEntries(Object.entries(tools).filter(([name]) => !names.includes(name))) as ToolSet;
+}
+
 export function workspaceReadToolNames(): string[] {
   return WORKSPACE_READ_ALLOWLIST.filter((name) => classify(name) === "diagnose" && getTool(name));
 }

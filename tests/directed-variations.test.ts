@@ -31,7 +31,7 @@ async function source(direction?: string) {
     primary_text: "Get your audit",
     description: null,
     cta: null,
-    creative_direction: direction ?? withAspectMarker(withDirectedMarker("", { picture: "A cold aisle at 3am", print, noLogo: true }), "9:16"),
+    creative_direction: direction ?? withAspectMarker(withDirectedMarker("", { picture: "A cold aisle at 3am", print }), "9:16"),
     image_url: "https://x/y.png",
     image_b64: null,
     image_mime: "image/png",
@@ -59,14 +59,13 @@ describe("four variations of a directed image", () => {
     expect(drafts.map((d) => d.concept)).toEqual([1, 2, 3, 4].map((n) => `Acme — Your direction 1 · Variation ${n}`));
   });
 
-  it("keeps the picture instruction, the printed words and the no-logo choice exactly", async () => {
+  it("keeps the picture instruction and the printed words exactly", async () => {
     const src = await source();
     const { drafts } = await createDirectedVariations({ draftId: src.id });
     for (const d of drafts) {
       const meta = readDirectedMarker(d.creative_direction)!;
       expect(meta.picture).toBe("A cold aisle at 3am");
       expect(meta.print).toEqual(print);
-      expect(meta.noLogo).toBe(true);
       expect(d.headline).toBe("The account nobody checked twice.");
     }
   });

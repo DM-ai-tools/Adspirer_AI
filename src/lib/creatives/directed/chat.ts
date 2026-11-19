@@ -85,8 +85,11 @@ export async function runDirectedTurn(
         format: detection.format ?? input.defaultFormat,
         brand,
       });
+      // The brand colours and logo are always applied; when none could be found, say so rather than drawing without them quietly.
+      const missing = [!brand.colors?.length ? "brand colours" : null, !brand.logoUrl ? "logo" : null].filter(Boolean);
+      const brandNote = missing.length ? ` I couldn't find your ${missing.join(" or ")} (no website is saved for this client), so ${drafts.length === 1 ? "this image carries" : "these images carry"} no ${missing.join(" or ")}. Send me your website address and I'll apply them.` : "";
       return {
-        summary: `Making ${plural(drafts.length, "image")} exactly from your direction${drafts.length === 1 ? "" : "s"}: your picture instruction and your words, as written. ${drafts.length === 1 ? "It appears" : "They appear"} below when ready (30–90s). Ask me to change something and I'll edit it, or ask for **variations** and I'll make 4.`,
+        summary: `Making ${plural(drafts.length, "image")} exactly from your direction${drafts.length === 1 ? "" : "s"}: your picture instruction and your words, as written, in your brand colours with your logo. ${drafts.length === 1 ? "It appears" : "They appear"} below when ready (30–90s). Ask me to change something and I'll edit it, or ask for **variations** and I'll make 4.${brandNote}`,
         cards: drafts.map(toPublicDraft),
         rendering: true,
         run: render(drafts.map((d) => d.id), brand.brandName),

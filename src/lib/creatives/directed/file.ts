@@ -17,7 +17,6 @@ const parsedSchema = z.object({
     z.object({
       picture: z.string().describe("The picture instruction for this one image, in the file's own words; empty string if the item gives none"),
       print: z.array(z.object({ role: z.string().nullable(), text: z.string() })).describe("The words to print on this image, copied VERBATIM from the file, one entry per line or element; empty if none"),
-      no_logo: z.boolean(),
       unsure: z.boolean().describe("True if you could not tell where this item starts or ends, what the picture is, or which words are meant to be printed"),
       note: z.string().nullable().describe("Why you are unsure, in a few words, else null"),
     }),
@@ -29,7 +28,7 @@ export const PARSE_SYSTEM_PROMPT = [
   "Each item has a picture instruction (what the image shows: scene, subject, style, layout, colours) and the exact words to print on the image (headline, sub-line, button and so on).",
   "Rules: one item per image, in file order. Never merge two images, drop one, reorder, or invent one. Copy every printed word VERBATIM (same capitals, spelling, punctuation and numbers): never reword, correct or shorten them. Never invent a picture instruction or any printed word.",
   "A header row, title, preamble or notes that are not an image are not items. A table row or numbered section is one item. If an item has words but no picture instruction, still return it with an empty picture and unsure=true.",
-  "Mark unsure=true (with a short note) for any item you had to guess about. no_logo is true only if the file says that image has no logo.",
+  "Mark unsure=true (with a short note) for any item you had to guess about.",
 ].join("\n");
 
 const clean = (s: string | null | undefined) => (s ?? "").trim();
@@ -46,7 +45,6 @@ export function normaliseParsed(rawValue: unknown): ParsedDirection[] {
     out.push({
       picture,
       print,
-      ...(d.no_logo ? { noLogo: true } : {}),
       unsure: d.unsure || !picture,
       note: clean(d.note) || (picture ? null : "No clear picture instruction was found for this one."),
     });

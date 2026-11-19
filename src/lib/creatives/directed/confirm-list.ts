@@ -41,7 +41,7 @@ export function printChanged(print: PrintLine[], text: string): boolean {
 }
 
 /** One item changed; an edit by the operator settles the parser's doubt about it. */
-export function updateItem(items: ConfirmItem[], index: number, patch: Partial<Pick<ConfirmItem, "picture" | "print" | "noLogo">>): ConfirmItem[] {
+export function updateItem(items: ConfirmItem[], index: number, patch: Partial<Pick<ConfirmItem, "picture" | "print">>): ConfirmItem[] {
   return items.map((item, i) => (i === index ? { ...item, ...patch, unsure: false, note: null } : item));
 }
 
@@ -67,5 +67,5 @@ export function readyToConfirm(items: ConfirmItem[]): { ok: boolean; reason: str
 
 /** The directions as the start-run request wants them: in order, nothing else. */
 export function toRequestDirections(items: ConfirmItem[]): Direction[] {
-  return items.map((i) => ({ picture: i.picture.trim(), print: i.print, ...(i.noLogo ? { noLogo: true } : {}) }));
+  return items.map((i) => ({ picture: i.picture.trim(), print: i.print }));
 }

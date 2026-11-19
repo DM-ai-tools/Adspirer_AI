@@ -88,11 +88,15 @@ describe("the directed image prompt", () => {
     expect(buildDirectedImagePrompt({ ...base, tweak: "crop closer" })).toContain("VARIATION: keep everything the same except: crop closer");
   });
 
-  it("uses brand colours only for what the picture instruction does not name", () => {
-    const p = buildDirectedImagePrompt({ ...base, colors: ["#111111", "#ff0000"] });
+  it("always binds the image to the brand palette, whatever colours the picture instruction mentions", () => {
+    const p = buildDirectedImagePrompt({ ...base, colors: ["#111111", "#ff0000", "#37ca37"] });
+    expect(p).toMatch(/BRAND PALETTE[^\n]*always/i);
     expect(p).toContain("#111111");
-    expect(p).toMatch(/instruction names its own colours[^.]*override/i);
-    expect(buildDirectedImagePrompt(base)).not.toContain("Brand colours");
+    expect(p).toMatch(/#111111 as the dominant colour/);
+    expect(p).toMatch(/#ff0000 for the strongest supporting/);
+    expect(p).toMatch(/picture instruction[^\n]*decides what is shown[^\n]*never[^\n]*palette/i);
+    expect(p).not.toMatch(/colours[^.\n]*override/i);
+    expect(buildDirectedImagePrompt(base)).not.toContain("BRAND PALETTE");
   });
 
   it("says the logo is added afterwards and must not be drawn, when there is one", () => {

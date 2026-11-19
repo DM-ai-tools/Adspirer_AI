@@ -86,9 +86,9 @@ describe("whether the list can be confirmed", () => {
 
 describe("what is sent to start the run", () => {
   it("sends every item in order with its picture, printed lines and no-logo choice, and nothing else", () => {
-    const out = toRequestDirections([item({ picture: " A ", noLogo: true, unsure: true, note: "x" }), item({ picture: "B", print: [] })]);
+    const out = toRequestDirections([item({ picture: " A ", unsure: true, note: "x" }), item({ picture: "B", print: [] })]);
     expect(out).toEqual([
-      { picture: "A", print: [{ role: "headline", text: "Open it" }], noLogo: true },
+      { picture: "A", print: [{ role: "headline", text: "Open it" }] },
       { picture: "B", print: [] },
     ]);
   });

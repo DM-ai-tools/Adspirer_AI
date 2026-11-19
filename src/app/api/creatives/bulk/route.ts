@@ -32,7 +32,6 @@ const startSchema = z.object({
       z.object({
         picture: z.string().trim().min(1, "Every direction needs a picture instruction."),
         print: z.array(z.object({ role: z.string().nullable(), text: z.string() })),
-        noLogo: z.boolean().optional(),
       }),
     )
     .min(1)

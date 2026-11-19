@@ -27,7 +27,8 @@ export async function renderDirectedDraft(draftId: string, options: { revisionNo
     status: existing.status === "selected" ? existing.status : "generating",
   });
 
-  const logoUrl = meta.noLogo ? null : existing.logo_url;
+  // The brand logo is always put on; a picture instruction is only the visual idea.
+  const logoUrl = existing.logo_url;
   const prompt = buildDirectedImagePrompt({
     picture: meta.picture,
     print: meta.print,

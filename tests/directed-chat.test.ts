@@ -116,6 +116,17 @@ describe("a direction", () => {
     expect(rendered).toEqual([[draft.id]]);
   });
 
+  it("says so when no brand colours or logo could be found, instead of silently drawing without them", async () => {
+    const bare = { brandName: "Acme", colors: null, logoUrl: null, landingUrl: null };
+    const out = (await runDirectedTurn({ ...base, wantsInlineCreatives: true, drafts: [] }, { detect: (async () => detection({ mode: "directed", directions: [door] })) as never, loadBrand: (async () => bare) as never }))!;
+    expect(out.summary).toMatch(/couldn.t find your brand colours/i);
+    expect(out.summary).toMatch(/logo/i);
+    const full = { brandName: "Acme", colors: ["#111111"], logoUrl: "https://acme.test/logo.png", landingUrl: "https://acme.test" };
+    const withBrand = (await runDirectedTurn({ ...base, wantsInlineCreatives: true, drafts: [] }, { detect: (async () => detection({ mode: "directed", directions: [door] })) as never, loadBrand: (async () => full) as never }))!;
+    expect(withBrand.summary).not.toMatch(/couldn.t find/i);
+    expect(withBrand.summary).toMatch(/brand colours with your logo/i);
+  });
+
   it("uses the shape the operator stated over the chat's default", async () => {
     const out = (await run({}, detection({ mode: "directed", directions: [door], format: "9:16" })))!;
     expect(readAspectMarker((await getCreativeDraftAsync(out.cards[0]!.id))!.creative_direction)).toBe("9:16");
