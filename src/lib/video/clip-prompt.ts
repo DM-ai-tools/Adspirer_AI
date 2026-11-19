@@ -309,7 +309,9 @@ export function buildPlannedClipPrompt(input: PlannedClipPromptInput): string {
     actionRuleFor(input.style),
     MOTION_RULE,
     ...(talks ? [SAY_ONCE_RULE] : []),
-    "Audio: (no background music); natural room sound and the speakers' voices only.",
+    // Plain words, never the ( ) marker: in the Seedance guide ( ) is music to be played, so "(no background music)" asked for music
+    // and the clip came back OutputAudioSensitiveContentDetected twice. Music is only ever asked for by leaving it out.
+    "No background music, no song and no singing; only the speakers' voices and the natural sound of the place.",
     // The guide's own fix for duplicated people: each one appears once, as in their picture.
     ...(people.length ? ["Each person appears exactly once in the frame and looks exactly like their reference picture. No duplicate avatars, no twin or repeated copies of anyone, and nobody who is not described."] : []),
     "Cut cleanly between shots. Keep the same person, clothes and colour grade for the shots they share; a new place may have its own light.",

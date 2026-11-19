@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildPlannedClipPrompt, type PlannedClipPromptInput } from "@/lib/video/clip-prompt";
+import { buildClipPrompt, buildPlannedClipPrompt, type PlannedClipPromptInput } from "@/lib/video/clip-prompt";
 import type { PlanCharacter, SceneBrief } from "@/lib/video/pipeline-types";
 import run from "./fixtures/weather-forecast-run.json";
 
@@ -36,6 +36,16 @@ const input = (nums: number[], over: Partial<PlannedClipPromptInput> = {}): Plan
 });
 
 const prompt = buildPlannedClipPrompt(input([5, 6, 7]));
+const buildClipPromptLegacy = () =>
+  buildClipPrompt({
+    script: { style: run.style, character: "a presenter", setting: "an office", scenes: [{ number: 1, seconds: 5, visual: "Presenter at a desk", camera: "Medium shot", line: "Hello there.", speaker: "on_camera", sound: "" } as never] },
+    sceneNumbers: [1],
+    clipNumber: 1,
+    clipCount: 1,
+    locale: "en-AU",
+    refs: { presenter: false, location: false, previousFrame: false, previousVideo: false },
+    graphicSceneNumbers: [],
+  });
 const shots = prompt.split("\n").filter((l) => /^Shot \d+ \(/.test(l));
 
 describe("the clip prompt in the Seedance guide's format", () => {
@@ -77,11 +87,18 @@ describe("the clip prompt in the Seedance guide's format", () => {
     expect(prompt).toMatch(/word for word as written in the braces/);
   });
 
-  it("ends with constraints, among them no duplicated people and music in brackets", () => {
+  it("never puts music, or a ban on music, in the ( ) marker: that marker asks for music to be played", () => {
+    // Live run vid_kjhH8u6JAC_z: "Audio: (no background music)" was read as a music cue and both attempts
+    // came back OutputAudioSensitiveContentDetected. Only music that is wanted may go in ( ).
+    expect(prompt).not.toMatch(/\([^)]*music[^)]*\)/i);
+    expect(buildClipPromptLegacy()).not.toMatch(/\([^)]*music[^)]*\)/i);
+  });
+
+  it("ends with constraints, among them no duplicated people and a plain ban on music", () => {
     const at = prompt.indexOf("Constraints:");
     expect(at).toBeGreaterThan(prompt.indexOf("Storyboard"));
     const tail = prompt.slice(at);
-    expect(tail).toMatch(/Audio: \(no background music\)/);
+    expect(tail).toMatch(/No background music, no song and no singing; only the speakers' voices and the natural sound of the place\./);
     expect(tail).toMatch(/no duplicate avatars, no twin or repeated copies/i);
     expect(tail).toMatch(/subtitles|captions/i);
   });
