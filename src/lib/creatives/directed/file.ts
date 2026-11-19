@@ -2,10 +2,9 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import { pickModel } from "@/lib/creatives/concept-writer";
 import { extensionOf, extractDocumentText } from "@/lib/documents/extract-text";
-import type { Direction, PrintLine } from "@/lib/creatives/directed/markers";
+import { MAX_DIRECTIONS, type Direction, type PrintLine } from "@/lib/creatives/directed/markers";
 
-/** The most directions one bulk file may hold. A longer file is refused, never cut. */
-export const MAX_DIRECTIONS = 30;
+export { MAX_DIRECTIONS };
 
 export type ParsedDirection = Direction & { unsure: boolean; note: string | null };
 

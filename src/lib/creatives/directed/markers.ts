@@ -5,6 +5,9 @@
  * imports so the chat cards can use it too.
  */
 
+/** The most directions one bulk run may hold. A longer list is refused, never cut. */
+export const MAX_DIRECTIONS = 30;
+
 export type PrintLine = { role: string | null; text: string };
 
 export type Direction = { picture: string; print: PrintLine[]; noLogo?: boolean };
