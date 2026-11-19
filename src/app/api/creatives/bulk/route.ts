@@ -7,6 +7,8 @@ import { listCreativeDraftsAsync, toPublicDraft } from "@/lib/creatives/drafts";
 import { planAndRender, startBulkRun } from "@/lib/creatives/bulk/run";
 import { MONTHLY_TARGET, monthlyCount } from "@/lib/creatives/bulk/view";
 import { BULK_RUN_SIZE } from "@/lib/creatives/bulk/plan";
+import { planAndRenderDirected, startDirectedBulkRun } from "@/lib/creatives/bulk/directed-run";
+import { MAX_DIRECTIONS } from "@/lib/creatives/directed/file";
 import { STYLE_IMAGE_LIMIT } from "@/lib/creatives/bulk/styles";
 import { runAfterResponse } from "@/lib/api/background";
 import { jsonOk, parseBody, withApiHandler } from "@/lib/api/response";
@@ -24,6 +26,18 @@ const startSchema = z.object({
   styleImages: z.array(z.string().max(1_300_000).regex(/^data:image\/(png|jpe?g|webp);base64,/i)).max(STYLE_IMAGE_LIMIT).optional(),
   styleMatchAll: z.boolean().optional(),
   format: z.enum(IMAGE_FORMATS).optional().default("4:5"),
+  /** The operator's own picture instructions and printed words, one per image (from a directions file). When present, no hooks are planned. */
+  directions: z
+    .array(
+      z.object({
+        picture: z.string().trim().min(1, "Every direction needs a picture instruction."),
+        print: z.array(z.object({ role: z.string().nullable(), text: z.string() })),
+        noLogo: z.boolean().optional(),
+      }),
+    )
+    .min(1)
+    .max(MAX_DIRECTIONS)
+    .optional(),
 });
 
 /** A run that is still planning or rendering and was touched recently. */
@@ -72,6 +86,20 @@ export async function POST(request: Request) {
       (r) => (r.status === "planning" || r.status === "rendering") && Date.now() - Date.parse(r.updated_at) < ACTIVE_WINDOW_MS,
     );
     if (recent) throw new Error("A bulk run for this client is still in progress. Wait for it to finish before starting another.");
+
+    if (body.directions) {
+      const directed = await startDirectedBulkRun({
+        clientId: body.clientId,
+        serviceId: body.serviceId,
+        createdBy: user.id,
+        landingPageUrl: body.landingPageUrl,
+        directions: body.directions,
+        pastedCopy: body.pastedCopy,
+        format: body.format,
+      });
+      runAfterResponse("bulk-directed-run", () => planAndRenderDirected(directed.id));
+      return jsonOk({ runId: directed.id });
+    }
 
     const run = await startBulkRun({
       clientId: body.clientId,

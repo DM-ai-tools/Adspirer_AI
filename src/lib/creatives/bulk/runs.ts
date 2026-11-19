@@ -54,6 +54,8 @@ export type CreativeRun = {
     styleMatchAll?: boolean;
     /** The reference images written up as a style brief (kept so it is read once). */
     styleBrief?: string | null;
+    /** True when the images follow the operator's own directions (a directions file) and no hooks were planned. */
+    directed?: boolean;
   };
   image_format: ImageFormat;
   status: RunStatus;
