@@ -82,7 +82,7 @@ export function withAspectMarker(direction: string | null | undefined, format: I
 export function stripAspectMarker(direction: string | null | undefined): string {
   return (direction ?? "")
     .split("\n")
-    .filter((line) => !/^(ASPECT|RUN|LOGO): \S+$/.test(line.trim()))
+    .filter((line) => !/^(ASPECT|RUN|LOGO|DIRECTED): \S+$/.test(line.trim()))
     .join("\n")
     .trim();
 }
